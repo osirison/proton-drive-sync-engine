@@ -5426,3 +5426,59 @@ no screen drew a segmented control. A `segment` kind carries the correct tone; `
 
 Two CSS comments in the same file said the day-chip and stepper numbers were "not numbers any gate
 checks", true only while nothing rendered them. Both corrected.
+
+### §104f · What the adversarial review found, and the two counts this PR quoted wrongly
+
+Round 1 on PR #371 produced nine findings, all upheld. Recorded here because three of them are
+about *this section's own evidence*.
+
+**The daylight-saving policy was inverted in the shipped binary.** §104's first version — and the
+module doc, the test name and `CLAUDE.md` — all said an ambiguous local time takes the **earlier**
+instant. The code took `LocalResult::Ambiguous`'s field 0, and `chrono 0.4.45`'s `Local` returns
+`(later, earlier)` despite documenting `(earliest, latest)`. Measured on Europe/Berlin's 2026-10-25
+fold: field 0 is `+01:00` (ts 1792891800), field 1 is `+02:00` (ts 1792888200), so field 0 is the
+later instant and `.earliest()` returns it too. The fix compares instants (`a.min(b)`) rather than
+trusting an order, and the test now asserts the policy under **both** field orders — a test that
+fixed one order pinned the field rather than the policy, which is exactly how "earlier" shipped as
+"later".
+
+**The `unwrap_or(Duration::ZERO)` fallback was a spin loop, latent behind that bug.** Across a
+fold, the naive→instant map is not monotonic: `Local::now()` can already be past the earlier mapping
+of a naive time still in the clock's future, so the subtraction went negative, clamped to zero, and
+the timer's own re-arm recomputed the same zero for the rest of the window — a full O(folders) sweep
+per iteration, or a bare CPU loop while paused. It was unreachable only because chrono's field order
+happened to hide it, so *fixing* chrono would have switched it on. `next_full_sweep_in` now advances
+to the next occurrence instead of clamping, and there is no zero fallback at all.
+
+**Two counts this section quoted were wrong.**
+
+1. *"copy gate 339/339 drawn strings matched, 0 missing"* was quoted as verification while the total
+   had **dropped from 340**, and the string it lost is the one §104b is about: `monthEdgeNote`
+   became a template, and `copy-gate.mjs`'s `walk` collects strings only. The gate's own comments
+   already record this hole for `PLAN.destructiveLocal`/`.destructiveMany`, with the same remedy —
+   pin it in a unit test — which is what
+   `the_month_edge_note_names_the_day_it_is_about` now does. Closing the hole properly needs a
+   reason for each of the **47** templates that are in neither table (118 in the deck, 71 in
+   `DRAWN`), and inventing 47 reasons is what §60 forbids, so it is filed as #372 rather than
+   absorbed.
+2. *"the monthly crop maps only its header … so none of this is gate-checked there"* was true and
+   incomplete. The stronger fact: **the app never rendered the monthly variant at all.**
+   `ui.schedule` was declared by the fixture and read by nothing, so `?frame=8a Schedule monthly`
+   drew the weekly panel and the entire monthly branch was exercised by zero fixtures, zero
+   assertions and zero screenshots. `settingsProps` reads it now, and the frame carries its own
+   `monthly day 15, 03:00` config. The contrast gate's node count went 1210 → 1233, which is that
+   variant appearing.
+
+**Two more, on behaviour rather than evidence.** The Weekly/Monthly control was **inert whenever a
+schedule existed** — the mode was read off the schedule and the click merely latched, so clearing
+the schedule later jumped the panel to a mode chosen several actions ago, and reaching the monthly
+editor meant guessing that clicking the selected day chip clears first. And the daemon's parser
+accepted **eight** shapes the GUI's rejected (`monthly day 15,03:00`, `weekly sun  03:00`,
+`monthly day 015, …` and five more), every divergence in the dangerous direction: the daemon would
+run a sweep on schedule while Settings rendered `full_scan_schedule · not set`. Both parsers now
+agree on a 34-value corpus, checked differentially.
+
+Also fixed: four code comments cited **§85** (S9's notifications) instead of §104;
+`website/.../screens.md` still listed `scan_interval_secs` on the Folders tab; `format.js`'s
+`ordinal` doc said the teens rule costs "exactly one" value in 1..31 when it is three (11, 12, 13);
+and the `fids.js` and `fixtures/settings.js` comments still said the panel "does not build".

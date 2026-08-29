@@ -901,7 +901,7 @@ export const SETTINGS = {
    * grid with `15` selected — and **every month has a 15th**, so the drawn sentence is false about
    * its own drawn value. It is plainly a template the designer filled in; read as one it is exactly
    * right, and it is only *true* for 29, 30 and 31. The screen shows it for those three days and
-   * omits it otherwise, rather than stating a rule that cannot apply. DEVIATIONS §85.
+   * omits it otherwise, rather than stating a rule that cannot apply. DEVIATIONS §104.
    */
   monthEdgeNote: (day) => `Months without a ${ordinal(day)} are skipped to the last day.`,
   /** No schedule in the file — see `SETTINGS.scheduleUnset`. */

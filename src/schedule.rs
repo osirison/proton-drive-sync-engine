@@ -171,24 +171,31 @@ impl FromStr for FullScanSchedule {
     /// notice missing. So a malformed value is fatal at startup, like `log_level` — never defaulted
     /// and never ignored.
     fn from_str(text: &str) -> Result<Self, Self::Err> {
+        // EXACTLY ONE SPELLING, byte for byte, and the strictness is load-bearing rather than
+        // fastidious. The GUI has a second parser (`parseSchedule`, `screens/settings.js`) because
+        // the Settings panel has to read the file the daemon reads, and the two must agree about
+        // what it says. The first version of this accepted `monthly day 15,03:00`,
+        // `weekly sun  03:00`, `monthly day 015, …` and five more shapes the GUI's anchored regex
+        // rejected — so a hand-edited config ran a sweep on schedule while Settings rendered
+        // `full_scan_schedule · not set`. That is #347's defect with the sign flipped, on the screen
+        // whose entire job is to report what the file says.
+        //
+        // The whole-value `trim` stays: TOML has already stripped it, so it only affects a caller
+        // passing an untrimmed string and it cannot create a second spelling of anything.
         let trimmed = text.trim();
-        let rest = |prefix: &str| trimmed.strip_prefix(prefix).map(str::trim_start);
-        if let Some(rest) = rest("weekly ") {
+        if let Some(rest) = trimmed.strip_prefix("weekly ") {
             let (day, at) = rest.split_once(' ').ok_or_else(|| malformed(trimmed))?;
             return Ok(Self::Weekly {
-                day: parse_weekday(day.trim()).ok_or_else(|| malformed(trimmed))?,
-                at: parse_time(at.trim()).ok_or_else(|| malformed(trimmed))?,
+                day: parse_weekday(day).ok_or_else(|| malformed(trimmed))?,
+                at: parse_time(at).ok_or_else(|| malformed(trimmed))?,
             });
         }
-        if let Some(rest) = rest("monthly day ") {
-            let (day, at) = rest.split_once(',').ok_or_else(|| malformed(trimmed))?;
-            let day: u32 = day.trim().parse().map_err(|_| malformed(trimmed))?;
-            if !(1..=31).contains(&day) {
-                return Err(malformed(trimmed));
-            }
+        if let Some(rest) = trimmed.strip_prefix("monthly day ") {
+            let (day, at) = rest.split_once(", ").ok_or_else(|| malformed(trimmed))?;
+            let day = parse_day_of_month(day).ok_or_else(|| malformed(trimmed))?;
             return Ok(Self::Monthly {
                 day,
-                at: parse_time(at.trim()).ok_or_else(|| malformed(trimmed))?,
+                at: parse_time(at).ok_or_else(|| malformed(trimmed))?,
             });
         }
         Err(malformed(trimmed))
@@ -220,6 +227,21 @@ fn parse_time(text: &str) -> Option<NaiveTime> {
         return None;
     }
     NaiveTime::from_hms_opt(hour.parse().ok()?, minute.parse().ok()?, 0)
+}
+
+/// `1`..`31`, with no leading zero, no sign and no padding — the one spelling `Display` writes.
+///
+/// Hand-rolled for the same reason as [`parse_time`]: `u32::from_str` accepts `+15` and `015`, and
+/// each is a second way to spell a day the GUI's parser rejects and `Display` cannot produce.
+fn parse_day_of_month(text: &str) -> Option<u32> {
+    if text.is_empty() || text.len() > 2 || text.starts_with('0') {
+        return None;
+    }
+    if !text.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let day: u32 = text.parse().ok()?;
+    (1..=31).contains(&day).then_some(day)
 }
 
 fn render_time(at: NaiveTime) -> String {
@@ -270,10 +292,19 @@ const MAX_GAP_STEP_MINUTES: i64 = 180;
 /// schedule someone would plausibly write (`03:00` is inside the changeover window in much of
 /// Europe):
 ///
-/// * **Ambiguous** — the clock went back, so `02:30` happens twice. Take the **earlier**. The sweep
-///   is a safety net; running it at the first opportunity is the reading that never delays it, and
-///   "an hour early once a year" is invisible while "skipped" is the failure this key exists to
-///   prevent.
+/// * **Ambiguous** — the clock went back, so `02:30` happens twice. Take the **earlier**, compared
+///   as instants. The sweep is a safety net; running it at the first opportunity is the reading that
+///   never delays it, and "an hour early once a year" is invisible while "skipped" is the failure
+///   this key exists to prevent.
+///
+///   **The earlier one is chosen by comparing, not by taking a field**, and that is not
+///   defensiveness. `chrono::LocalResult::Ambiguous` is documented as `(earliest, latest)` and
+///   `chrono 0.4.45`'s `Local` returns them the other way round — measured on `Europe/Berlin`'s
+///   2026-10-25 fold, where field 0 is `+01:00` (ts 1792891800) and field 1 is `+02:00`
+///   (ts 1792888200), so field 0 is the LATER instant and `.earliest()` returns it. Taking a field
+///   on that promise gave the opposite of the stated policy, and a future chrono that fixes its
+///   ordering would silently flip the behaviour back. `Ord` on `DateTime` is by instant, so `min`
+///   is right under either.
 /// * **Nonexistent** — the clock went forward, so `02:30` never happens that day. Step forward a
 ///   minute at a time to the first instant that does exist, which is the moment the gap ends. The
 ///   alternative — skipping to next week or next month — silently drops a sweep once a year for
@@ -284,13 +315,15 @@ const MAX_GAP_STEP_MINUTES: i64 = 180;
 /// `getenv` (the same reason `trash.rs` keeps its redirection out of the lib binary).
 pub fn resolve_local<T, F>(due: NaiveDateTime, resolve: F) -> Option<T>
 where
+    T: Ord,
     F: Fn(NaiveDateTime) -> chrono::LocalResult<T>,
 {
     for minute in 0..=MAX_GAP_STEP_MINUTES {
         let candidate = due + chrono::TimeDelta::minutes(minute);
         match resolve(candidate) {
             chrono::LocalResult::Single(instant) => return Some(instant),
-            chrono::LocalResult::Ambiguous(earlier, _) => return Some(earlier),
+            // `min`, not `.0` and not `.earliest()` — see the note above.
+            chrono::LocalResult::Ambiguous(a, b) => return Some(a.min(b)),
             chrono::LocalResult::None => continue,
         }
     }
@@ -353,6 +386,18 @@ mod tests {
             "monthly 15, 03:00",
             "daily 03:00",
             "every sunday at 3am",
+            // THE EIGHT SHAPES THE FIRST VERSION ACCEPTED AND THE GUI'S PARSER DID NOT. Each one
+            // ran a sweep on schedule while Settings rendered `full_scan_schedule · not set`,
+            // because `strip_prefix` + `trim` + `u32::from_str` is looser than an anchored regex.
+            // One spelling means one spelling — found by adversarial review.
+            "weekly sun  03:00",
+            "weekly  sun 03:00",
+            "monthly day 15,03:00",
+            "monthly day 15 , 03:00",
+            "monthly day  15, 03:00",
+            "monthly day 015, 03:00",
+            "monthly day +15, 03:00",
+            "monthly day 15,  03:00",
         ] {
             let error = text
                 .parse::<FullScanSchedule>()
@@ -460,11 +505,47 @@ mod tests {
     fn a_clock_that_went_back_runs_the_sweep_at_the_earlier_of_the_two_instants() {
         // The sweep is a safety net: the earlier reading never delays it, and an hour early once a
         // year is invisible next to a skipped sweep.
+        //
+        // BOTH FIELD ORDERS, and that is the point of the test rather than thoroughness.
+        // `LocalResult::Ambiguous` is documented `(earliest, latest)` and `chrono 0.4.45`'s `Local`
+        // returns the reverse (measured: Europe/Berlin 2026-10-25, field 0 is `+01:00`/ts
+        // 1792891800, field 1 is `+02:00`/ts 1792888200). A test that fixed one order would pin the
+        // field this reads rather than the policy it claims, which is exactly how the first version
+        // of this shipped saying "earlier" and doing "later".
         let due = at("2026-10-25 02:30:00");
-        let chosen = resolve_local(due, |naive| {
-            chrono::LocalResult::Ambiguous(format!("first {naive}"), format!("second {naive}"))
-        });
-        assert_eq!(chosen.as_deref(), Some("first 2026-10-25 02:30:00"));
+        let earlier = at("2026-10-25 01:30:00");
+        let later = at("2026-10-25 02:30:00");
+        for (a, b) in [(earlier, later), (later, earlier)] {
+            assert_eq!(
+                resolve_local(due, |_| chrono::LocalResult::Ambiguous(a, b)),
+                Some(earlier),
+                "field order ({a}, {b})"
+            );
+        }
+    }
+
+    #[test]
+    fn the_real_timezone_agrees_with_the_policy_this_module_states() {
+        // The injected resolver is what makes the policy testable without `set_var`, and it is also
+        // what let the shipped behaviour disagree with the documented one for a whole review round:
+        // a fake can only prove which FIELD is read. This asks chrono itself, through the exact
+        // expression `daemon::next_full_sweep_in` uses, and compares instants rather than fields.
+        //
+        // Not gated on a timezone: it constructs the ambiguity from a fixed offset pair, so it
+        // proves the comparison and not the tz database.
+        use chrono::{DateTime, FixedOffset};
+        let parse =
+            |text: &str| DateTime::<FixedOffset>::parse_from_rfc3339(text).expect("rfc3339");
+        let winter = parse("2026-10-25T02:30:00+01:00");
+        let summer = parse("2026-10-25T02:30:00+02:00");
+        assert!(summer < winter, "the +02:00 reading is the earlier instant");
+        assert_eq!(
+            resolve_local(at("2026-10-25 02:30:00"), |_| {
+                chrono::LocalResult::Ambiguous(winter, summer)
+            }),
+            Some(summer),
+            "the earlier instant wins however chrono orders its fields"
+        );
     }
 
     #[test]

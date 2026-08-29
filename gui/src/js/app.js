@@ -2643,12 +2643,15 @@ let settingsEdits = {};
  */
 let settingsDrafts = { exclude: "", include: "" };
 /**
- * Which full-sweep editor the schedule panel shows while NO schedule is configured (#193).
+ * Which full-sweep editor the schedule panel is showing (#193). `null` until someone picks a
+ * segment, and back to `null` whenever a schedule is set or cleared — at which point the schedule
+ * itself says which editor to show.
  *
- * Frontend state, deliberately: a mode is not a schedule. Once one exists the panel reads the mode
- * off it and this is ignored, so the two can never disagree about a configured value.
+ * Frontend state, deliberately: a mode is not a schedule, so switching it stages nothing and leaves
+ * the screen clean. It has to OUTRANK the configured schedule while it is set, or the
+ * Weekly/Monthly control is inert on every daemon that has one — see `schedulePanel`.
  */
-let settingsScheduleMonthly = false;
+let settingsScheduleMonthly = null;
 let settingsSaving = false;
 /**
  * A `Sweep now` in flight.
@@ -2798,9 +2801,10 @@ function settingsProps() {
     // The frame names it; otherwise the staged value, then what is on disk.
     notifyPolicy: ui?.notifyPolicy ?? notifyPolicyEdit ?? notifyPolicy,
     drafts: settingsDrafts,
-    // Which schedule editor is showing while none is configured. Frontend state and not a config
-    // value, for the reason `onScheduleMode` gives: a mode is not a schedule.
-    scheduleDraftMonthly: settingsScheduleMonthly,
+    // Which schedule editor is showing. A FRAME NAMES IT (`8a Schedule monthly`), which is what
+    // makes the monthly variant reachable by the fixture harness at all — without this the frame
+    // rendered the weekly panel and every monthly node went unexercised by every gate.
+    scheduleDraftMonthly: ui?.schedule ? ui.schedule === "monthly" : settingsScheduleMonthly,
     saving: settingsSaving,
     // The ending the last save's restart left UNRESOLVED, or null (#320/#335) — the one post-save
     // state with an action attached, which is why the bar reads it rather than reading the sentence

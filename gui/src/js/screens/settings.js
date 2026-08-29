@@ -356,7 +356,7 @@ const WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 /** The same seven days in the spelling the config file holds, in the same order as the labels. */
 const WEEKDAY_TOKENS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 /** 1..31. The frame's grid stops at 20, which cannot reach the days its own note is about — see
- * DEVIATIONS §85. */
+ * DEVIATIONS §104. */
 const MONTH_DAYS = Array.from({ length: 31 }, (_, i) => String(i + 1));
 /** Where the controls sit before anything is chosen: the time both frames draw. */
 const DEFAULT_SWEEP_TIME = "03:00";
@@ -562,12 +562,23 @@ function livePanel(props) {
  * value to fill in. The controls have to sit somewhere, so they sit at the drawn defaults — but the
  * key line says `not set` and a sentence says so in words. Rendering `full_scan_schedule · weekly
  * sun 03:00` under untouched controls would claim a value the file does not hold, which is #347's
- * defect on the screen whose entire job is to report what the file says. DEVIATIONS §85.
+ * defect on the screen whose entire job is to report what the file says. DEVIATIONS §104.
  */
 function schedulePanel(props) {
   const { config, handlers } = props;
   const schedule = parseSchedule(config.full_scan_schedule);
-  const monthly = schedule ? schedule.kind === "monthly" : props.scheduleDraftMonthly === true;
+  // THE DRAFT WINS WHEN THERE IS ONE, and it is `null` until someone clicks a segment.
+  //
+  // Reading the mode off the schedule first made the Weekly/Monthly control INERT whenever one was
+  // configured — and worse than inert: the click was latched and applied later, so clearing the
+  // schedule jumped the panel to a mode chosen several actions ago. Reaching the monthly editor
+  // meant guessing that clicking the already-selected day chip clears the schedule first. Found by
+  // adversarial review, driven headlessly against the `8a Settings` fixture.
+  //
+  // With a weekly schedule set and `Monthly` clicked, the panel shows the monthly editor with no
+  // day selected while the key line still reports `weekly sun 03:00` — which is the honest reading:
+  // the editor is showing you a mode, and the file still says what it says until you pick a day.
+  const monthly = props.scheduleDraftMonthly ?? (schedule ? schedule.kind === "monthly" : false);
   const at = schedule?.at ?? DEFAULT_SWEEP_TIME;
 
   const setSchedule = (next) => handlers.onSchedule?.(next);
@@ -689,7 +700,7 @@ function schedulePanel(props) {
         // the reverse of the weekly row above. Two frames of one panel; each is built as drawn.
         el("div", { class: "settings-panel-control" }, key, timeStepper()),
         // Only for a day a month can actually lack. The frame draws this sentence under a selected
-        // `15`, where it is false about its own value — see `SETTINGS.monthEdgeNote`, DEVIATIONS §85.
+        // `15`, where it is false about its own value — see `SETTINGS.monthEdgeNote`, DEVIATIONS §104.
         ...(day != null && day > 28 ? [fid(monthEdgeNote(day), "scheduleEdgeNote")] : []),
         ...unset,
       ),

@@ -4850,6 +4850,22 @@ download_batch_size = 5
             "got {error}"
         );
 
+        // THE `key_present` ARM, which the classification guards do NOT cover: `ConfigKey::scope`
+        // is exhaustive so the compiler demands an arm there, but `key_present` returning the wrong
+        // `bool` is free — measured, the whole 112-test config suite stayed green with this key's
+        // arm hard-wired to `false`. Rule 1 reads that answer, so a `false` would accept a file
+        // that sets the schedule at the top level AND declares `[[pair]]` tables, silently dropping
+        // the top-level one. Found by adversarial review.
+        let error = validate_file_config_text(
+            "full_scan_schedule = \"weekly sun 03:00\"\n\
+             \n[[pair]]\nname = \"a\"\nlocal_root = \"/a\"\nremote_root = \"/Drive/a\"\n",
+        )
+        .expect_err("one setting written two ways has no defensible precedence");
+        assert!(
+            error.to_string().contains("full_scan_schedule"),
+            "the refusal must name the offending key, got {error}"
+        );
+
         // And unset stays unset: every config written before this key means "no scheduled sweep",
         // and must keep meaning it.
         let (config, _) =

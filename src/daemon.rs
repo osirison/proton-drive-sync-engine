@@ -88,10 +88,10 @@ const BROWSE_GATE_WAIT: Duration = Duration::from_secs(2);
 const EVENTS_POLL_INTERVAL: Duration = Duration::from_secs(30);
 
 /// What the scheduled-sweep timer is parked on when there is no schedule, or when one cannot be
-/// resolved to an instant at all. The arm's precondition means it is never polled — this exists
-/// only because a pinned `sleep` needs a deadline. A day rather than `Duration::MAX`, which
-/// overflows tokio's timer wheel, and rather than something short, which would wake the loop for
-/// nothing on every daemon that has no schedule (which is every daemon today).
+/// resolved to an instant at all. **The arm is disabled in both cases** — it is gated on the
+/// resolved deadline, not on the key being present — so this deadline exists only because a pinned
+/// `sleep` needs one, and is never reached. A day rather than `Duration::MAX`, which overflows
+/// tokio's timer wheel, and rather than something short, which would wake the loop for nothing.
 const NO_SCHEDULE_PARK: Duration = Duration::from_secs(86_400);
 /// Dedicated `tracing` target for the per-file upload/download log lines, so operators can filter
 /// or silence the (potentially high-volume, filename-bearing) transfer trace independently of the
@@ -1826,9 +1826,9 @@ impl<C: ProtonClient> Daemon<C> {
         // A daemon with no schedule still needs a future to pin, so it gets a far one and the
         // precondition keeps it from ever being polled. It is deliberately not `Duration::MAX`,
         // which overflows tokio's timer.
-        let mut full_sweep = std::pin::pin!(tokio::time::sleep(
-            self.next_full_sweep_in().unwrap_or(NO_SCHEDULE_PARK)
-        ));
+        let mut sweep_due = self.next_full_sweep_in();
+        let mut full_sweep =
+            std::pin::pin!(tokio::time::sleep(sweep_due.unwrap_or(NO_SCHEDULE_PARK)));
 
         let shutdown = shutdown_signal();
         tokio::pin!(shutdown);
@@ -1903,13 +1903,18 @@ impl<C: ProtonClient> Daemon<C> {
                     // pass that runs long, or is skipped by a pause, cannot make the next deadline
                     // drift by however long it took. The latch itself survives a pause for the
                     // reason `resync` does: it describes the next pass, not this moment.
-                    _ = full_sweep.as_mut(),
-                        if self.pair().config.full_scan_schedule.is_some() => {
+                    // GATED ON A RESOLVED DEADLINE, not on the key being set. A schedule that
+                    // parses but resolves to no instant parks on the 24h sentinel, and gating on
+                    // `full_scan_schedule.is_some()` would have let that sentinel fire — a daily
+                    // sweep from a daemon this file documents as inert.
+                    _ = full_sweep.as_mut(), if sweep_due.is_some() => {
                         self.latch_scheduled_full_sweep();
                         self.reconcile_if_needed().await?;
+                        // Re-armed from a fresh clock read AFTER the pass, so a long sweep cannot
+                        // make the next deadline drift by however long it took.
+                        sweep_due = self.next_full_sweep_in();
                         full_sweep.as_mut().reset(
-                            tokio::time::Instant::now()
-                                + self.next_full_sweep_in().unwrap_or(NO_SCHEDULE_PARK),
+                            tokio::time::Instant::now() + sweep_due.unwrap_or(NO_SCHEDULE_PARK),
                         );
                     }
                     _ = &mut shutdown => {
@@ -1932,20 +1937,44 @@ impl<C: ProtonClient> Daemon<C> {
     /// what is left here is reading the clock. Nothing about *when* a sweep happens is decided in
     /// the `select!`, which is what makes it testable without wall clock.
     ///
-    /// `None` for a schedule whose instant cannot be resolved at all — see `resolve_local`'s bound.
-    /// The arm is then simply not armed, which is the same inert state a daemon with no schedule is
-    /// in.
+    /// `None` for a schedule whose instant cannot be resolved at all — see `resolve_local`'s bound —
+    /// and for one whose next eight occurrences have all already passed in real time. The run loop
+    /// gates its arm on this answer rather than on the key being set, so `None` really is the same
+    /// inert state a daemon with no schedule is in.
     fn next_full_sweep_in(&self) -> Option<Duration> {
         let schedule = self.pair().config.full_scan_schedule?;
         let now = Local::now();
-        let due = schedule.next_due(now.naive_local());
-        let instant =
-            crate::schedule::resolve_local(due, |naive| Local.from_local_datetime(&naive))?;
-        // `next_due` answers strictly after `now`, and `resolve_local` only ever steps forward, so
-        // this is positive — but the subtraction is signed and a clock stepped backwards between
-        // the two reads would make it negative, which `to_std` rejects. Firing immediately is the
-        // right answer there: the sweep is a safety net and the timer re-arms from a fresh read.
-        Some((instant - now).to_std().unwrap_or(Duration::ZERO))
+        let mut cursor = now.naive_local();
+        // AN OCCURRENCE THAT IS LATER ON THE CLOCK CAN BE EARLIER IN REAL TIME, and this loop is
+        // the whole reason there is no "fire immediately" fallback here.
+        //
+        // `next_due` is strictly after `cursor` in NAIVE time, which is what a schedule is written
+        // in. The map from naive to instant is not monotonic across a daylight-saving fold: during
+        // the repeated hour, `Local::now()` may already be past the earlier mapping of a naive time
+        // that is still in the clock's future. Subtracting then gives a negative duration.
+        //
+        // The obvious fallback — clamp to zero and let it fire — is a **spin**: the timer arm
+        // re-arms by calling this again, the mapping is still non-monotonic, and it recomputes the
+        // same zero for the rest of the window. Each turn latches `force_full_walk` and runs an
+        // O(folders) sweep; with the daemon paused, `reconcile_if_needed` returns at once and it is
+        // a bare 100%-CPU loop. Found by adversarial review, latent rather than live only because
+        // `chrono 0.4.45` orders its ambiguous fields the opposite way to its own documentation —
+        // so a chrono upgrade would have switched it on.
+        //
+        // Instead: if an occurrence has already passed in real time, ask for the one after it. The
+        // bound is a backstop rather than a limit the arithmetic needs — one fold can swallow at
+        // most one occurrence — and answering `None` there is the same "not armed" state as an
+        // unresolvable schedule, which the caller checks rather than assumes.
+        for _ in 0..8 {
+            let due = schedule.next_due(cursor);
+            let instant =
+                crate::schedule::resolve_local(due, |naive| Local.from_local_datetime(&naive))?;
+            if let Ok(delay) = (instant - now).to_std() {
+                return Some(delay);
+            }
+            cursor = due;
+        }
+        None
     }
 
     /// A scheduled moment arrived: the next pass is a full sweep.

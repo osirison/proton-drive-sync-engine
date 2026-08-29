@@ -403,6 +403,26 @@ test("the time stepper wraps at midnight rather than clamping", () => {
   assert.equal(stepTimeOfDay("23:30", 1), "00:00");
 });
 
+test("the month-edge note names the day it is about, and only for a day a month can lack", () => {
+  // PINNED HERE BECAUSE THE COPY GATE CANNOT SEE IT. `monthEdgeNote` is a template, and `walk` in
+  // copy-gate.mjs collects strings only — so turning a checked constant into a template drops it out
+  // of the gate silently (measured: the drawn-string total went 340 → 339 across that change). The
+  // gate's own comments record the same hole for `PLAN.destructiveLocal` and `.destructiveMany` and
+  // the same remedy: pin it in a unit test. Filed as #372 — 47 of the deck's 118 templates are in
+  // neither of that gate's tables.
+  assert.equal(SETTINGS.monthEdgeNote(31), "Months without a 31st are skipped to the last day.");
+  assert.equal(SETTINGS.monthEdgeNote(30), "Months without a 30th are skipped to the last day.");
+  // The teens rule, which is the whole reason the suffix is computed rather than looked up by last
+  // digit — and 13 is inside the 1..31 range this is used over.
+  assert.equal(SETTINGS.monthEdgeNote(13), "Months without a 13th are skipped to the last day.");
+  assert.equal(SETTINGS.monthEdgeNote(1), "Months without a 1st are skipped to the last day.");
+  assert.equal(SETTINGS.monthEdgeNote(22), "Months without a 22nd are skipped to the last day.");
+  // And the shape the frame draws, which is FALSE about its own drawn value — every month has a
+  // 15th. The screen shows this only for 29, 30 and 31; the string still has to render correctly,
+  // because the reason it is not shown is a judgement about truth and not about grammar.
+  assert.equal(SETTINGS.monthEdgeNote(15), "Months without a 15th are skipped to the last day.");
+});
+
 test("an absent schedule and a cleared one are the same staged state", () => {
   // Picking a day and unpicking it must land back on "no change" rather than on a staged edit that
   // would save nothing — `""` is how the screen spells the absence `write_config` clears the key on.

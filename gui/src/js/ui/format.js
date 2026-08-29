@@ -52,8 +52,8 @@ export const plural = (n, one, many) => (Number(n) === 1 ? one : many);
  * `1st`, `2nd`, `3rd`, `4th` … `21st`, `31st` — the day-of-month suffix.
  *
  * The teens are the whole reason this is a function: 11, 12 and 13 take `th` despite ending in 1, 2
- * and 3, which is the rule a naive last-digit lookup gets wrong three times in every hundred and
- * exactly once in the range this is used over (`13th`).
+ * and 3, which is the rule a naive last-digit lookup gets wrong. Over the 1..31 range this is used
+ * for, that is **three** values — 11, 12 and 13 — not one.
  */
 export function ordinal(n) {
   const value = Number(n);
