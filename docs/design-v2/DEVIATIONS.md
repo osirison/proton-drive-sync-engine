@@ -5482,3 +5482,46 @@ Also fixed: four code comments cited **§85** (S9's notifications) instead of §
 `website/.../screens.md` still listed `scan_interval_secs` on the Folders tab; `format.js`'s
 `ordinal` doc said the teens rule costs "exactly one" value in 1..31 when it is three (11, 12, 13);
 and the `fids.js` and `fixtures/settings.js` comments still said the panel "does not build".
+
+### §104g · The fidelity gate had a wall-clock dependency, and this PR's CI run is what found it
+
+`npm run fidelity` failed in CI on **`9a Review`** — a screen this change does not touch — with two
+`box.w` failures and the same two rows reported as *stale*, which is the shape of a measurement that
+moved rather than a bug that appeared.
+
+**Measured, not inferred.** Driving `?frame=9a Review` and reading the span at four elapsed times:
+
+| waited after load | rendered | `box.w` |
+| --- | --- | --- |
+| 0 s | `worked out 0 seconds ago` | 158.41 |
+| 2 s | `worked out 2 seconds ago` | 158.41 |
+| 25 s | `worked out 1 minute ago` | **151.81** |
+
+`151.81` — and the spacer's `672.17` beside it — are **exactly** the numbers CI reported. The gate's
+result depended on how long the runner took to reach that frame.
+
+Two causes, and the second is the one worth keeping:
+
+1. **`planTiming` was declared by the fixture and read by nothing.** `onboardingProps` passed the
+   app's own `onboardingCheckedAt`, stamped from the wall clock at render, so the frame drew
+   `0 seconds ago` where the frame itself draws `40 seconds ago`. The same defect shape the review
+   found in `ui.schedule` one screen over (§104f), found the same way — by asking what actually
+   reads a fixture field. Reading it renders `40 seconds ago` at 165px, which is also closer to the
+   drawn 356.41 than the value it replaces.
+
+2. **The clock convention was a claim, not a fact.** `fixtures/clock.js` says *"`ago(120)` is always
+   '2 minutes ago' whatever the wall clock says"* — true only if nothing moves between the fixture
+   being built and `since()` formatting it, and `since()` reads `Date.now()` at render. Fixing (1)
+   alone buys twenty seconds of headroom before `40 seconds` becomes `1 minute`; it does not remove
+   the class. **The clock is now frozen while `?frame=` is set**, scoped exactly as the
+   `data-fid` stamping is, so the shipped app is untouched.
+
+**Both directions verified.** With the clock frozen and its base shifted **90 seconds** forward — a
+slow runner, simulated — the gate reports `51/51 frames mapped, 97896 assertions, 0 failures`. With
+the fix reverted, the two rows fail again. The deviation details are re-pinned from
+`356.41 vs 158.41` / `467.58 vs 665.58` to `356.41 vs 165` / `467.58 vs 658.98`, which are now
+values a second machine will reproduce.
+
+Worth stating plainly: this was a **pre-existing** hole that a slower run would have tripped on any
+commit. It surfaced here because the monthly schedule variant (§104f) renders 23 more text nodes,
+which pushed the run past the boundary.
