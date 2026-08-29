@@ -300,8 +300,26 @@ fn pair_change(
     sidecar: &ConflictSide,
 ) -> Option<PairChange> {
     use proton_drive_sync_engine::ancestor::compare_to_ancestor;
-    let mine = LineSummary::of(original.text.as_deref()?)?;
-    let theirs = LineSummary::of(sidecar.text.as_deref()?)?;
+    let mine_text = original.text.as_deref()?;
+    let theirs_text = sidecar.text.as_deref()?;
+
+    // A SIDECAR CAN BE A COPY OF THE LOCAL FILE, and then nothing here knows anything about
+    // Proton's copy. `sync.rs` writes one for `(Changed, Missing)` — a local edit whose remote copy
+    // was deleted elsewhere (#46) — because a conflict with no sidecar has no exit. The GUI's disk
+    // walk cannot tell that sidecar from a downloaded one, so comparing it as "Proton's version"
+    // reports the user's OWN edit as something Proton did. Identical bytes are the case this can
+    // see, and it is the state such a conflict is recorded in.
+    //
+    // The residual is honest and filed rather than papered over: if the local file is edited AFTER
+    // such a sidecar is written, the two differ and this test passes, and `theirs` then describes
+    // the user's earlier edit. Telling them apart needs provenance the wire does not carry — the
+    // daemon knows (`PlannedAction::sidecar_from_local_copy`) and nothing records it.
+    if mine_text == theirs_text {
+        return None;
+    }
+
+    let mine = LineSummary::of(mine_text)?;
+    let theirs = LineSummary::of(theirs_text)?;
     Some(PairChange {
         mine: compare_to_ancestor(ancestor, &mine)?.into(),
         theirs: compare_to_ancestor(ancestor, &theirs)?.into(),
@@ -708,6 +726,30 @@ mod pair_tests {
                 .unwrap()
                 .happened
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn a_sidecar_that_is_a_copy_of_the_local_file_attributes_nothing_to_proton() {
+        // FOUND BY ADVERSARIAL REVIEW. `sync.rs` writes the sidecar as a byte copy of the surviving
+        // local file when the remote node is confirmed gone (#46), and the disk walk cannot tell
+        // that from a downloaded one — so both sides compared against the ancestor reported the
+        // user's own edit twice, once attributed to Proton. Proton's copy was DELETED; the card
+        // said it had been edited, which is an affirmative claim about the other side that nothing
+        // checked.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let edited = "# Todo\n- buy milk\n- call Alice\n";
+        std::fs::write(root.join("notes.txt"), edited).unwrap();
+        std::fs::write(root.join("notes.proton-cloud.txt"), edited).unwrap();
+        let ancestor = LineSummary::of("# Todo\n- buy oat milk\n- call Alice\n").unwrap();
+
+        assert!(
+            read_conflict_pair(root, &conflict(), Some(&ancestor))
+                .unwrap()
+                .happened
+                .is_none(),
+            "identical sides say nothing about what the other side did"
         );
     }
 

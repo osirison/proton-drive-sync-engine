@@ -1897,11 +1897,19 @@ version of the diff problem; it is a different one, needing a capability nothing
 time in that sentence comes from the mtimes and is fine — the verb is the gap. Filed as **#217**.
 `CONFLICTS.mineChange` / `theirsChange` stay in the deck as the drawn constants.
 
-Related, and for S2 to resolve: `3a Conflict` draws `You added a line` while `3a Conflict diff` draws
+**CLOSED by #217/#347 — see §105.** The engine captures a line summary of the agreed version at the
+moment it is agreed, so the verb is computed now and the line is omitted when it cannot be. Two
+things this record got wrong and §105 corrects: the constants no longer exist (they are
+`CONFLICTS.happened`, a template), and the "related" paragraph below only half-solved the
+contradiction it names.
+
+Related, and resolved by §105b: `3a Conflict` draws `You added a line` while `3a Conflict diff` draws
 the left side with four lines against the right's five, row 2 highlighted as a changed pair and row 5
-absent. Under the alignment the frame itself draws, yours **changed** a line and added nothing — and
-only that reading also makes `2 lines differ · 3 lines identical` true. The two cards were generated
-by two different models.
+absent. This record concluded that yours **changed** a line, which is right — but the two drawn cards
+are not merely in tension with the diff, they are **impossible together**: `added − removed ==
+|side| − |ancestor|`, so `You added a line` needs a 3-line ancestor and `Changed a line and added
+one` needs a 4-line one. No ancestor has both lengths. The relative time is now drawn on your side
+only, because nothing preserves a remote mtime — see §105.
 
 ### 70a. What the grammar covers, and what falls back to silence
 
@@ -2104,7 +2112,7 @@ Phase 2. Each Phase-1 fallback gets a row here as its screen lands — G1–G5 c
 | S1     | `2a Syncing`     | a progress bar at the real percentage  | no track at all                     | E1 #98    |
 | S1     | `2a Syncing`     | `386 MB sent · 1.1 GB received today`  | the folder pair (the shell's line)  | G2 #191   |
 | S7     | `9a Review`      | `Needs 38.4 GB free. You have 214 GB.` | the free-space half only (§71)      | G6 #206   |
-| S2     | `3a Conflict`    | `You added a line, 5 minutes ago`      | the relative time (§70)             | G12 #217  |
+| S2     | `3a Conflict`    | `You added a line, 5 minutes ago`      | computed since §105; see there      | G12 #217  |
 | S7     | `9a CLI missing` | `sudo apt install proton-drive`        | the manual path for everyone (§102) | (decided) |
 
 ### 74. S2 · the conflicts screen

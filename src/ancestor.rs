@@ -103,9 +103,11 @@ impl LineSummary {
 
 /// What one side did to the agreed version, in the three counts the card's vocabulary needs.
 ///
-/// Counted by **file position**, the same rule `ui/diff.js` states for the live comparison: a line
-/// replaced is one `changed`, not one removed plus one added, or `2 lines differ · 3 lines
-/// identical` would not sum to the length of the longer file.
+/// Counted the way `ui/diff.js`'s `pairBlocks` counts, because the panel drawn under this sentence
+/// is built from that: a removal and an insertion **inside one contiguous run** are one `changed`,
+/// and runs separated by an agreeing line are never paired with each other. Pairing globally is
+/// wrong and was measurably wrong — a line removed at the top and a different line added at the
+/// bottom read as "one line changed" while the disclosure beneath found zero changed pairs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct VersionFacts {
     pub added: usize,
@@ -205,30 +207,61 @@ pub fn compare_to_ancestor(ancestor: &LineSummary, current: &LineSummary) -> Opt
         }
     }
 
-    let (mut only_before, mut only_after) = (0usize, 0usize);
+    // The op stream, in file order: kept lines, lines only the ancestor had, lines only the current
+    // version has.
+    #[derive(PartialEq, Eq, Clone, Copy)]
+    enum Op {
+        Keep,
+        OnlyBefore,
+        OnlyAfter,
+    }
+    let mut ops: Vec<Op> = Vec::new();
     let (mut i, mut j) = (0usize, 0usize);
     while i < before.len() && j < after.len() {
         if before[i] == after[j] {
+            ops.push(Op::Keep);
             i += 1;
             j += 1;
         } else if table[(i + 1) * columns + j] >= table[i * columns + (j + 1)] {
-            only_before += 1;
+            ops.push(Op::OnlyBefore);
             i += 1;
         } else {
-            only_after += 1;
+            ops.push(Op::OnlyAfter);
             j += 1;
         }
     }
-    only_before += before.len() - i;
-    only_after += after.len() - j;
+    ops.extend(std::iter::repeat_n(Op::OnlyBefore, before.len() - i));
+    ops.extend(std::iter::repeat_n(Op::OnlyAfter, after.len() - j));
 
-    // A line present only in the ancestor and one present only in the current version, at the same
-    // position, are one line CHANGED. What is left over on either side is a removal or an addition.
-    let changed = only_before.min(only_after);
+    // PAIRED WITHIN EACH CONTIGUOUS RUN, never across the whole file — and this is the rule, not an
+    // optimisation. `ui/diff.js`'s `pairBlocks` pairs per block, and the panel drawn directly under
+    // this sentence is built from it: pairing globally called a line removed at the top and a
+    // different line added at the bottom "one line changed", while the panel beneath found zero
+    // changed pairs and one line exclusive to each side. The card and its own disclosure then
+    // contradicted each other, which `pairBlocks`' doc already names as worse than either alone.
+    let (mut added, mut changed, mut removed) = (0usize, 0usize, 0usize);
+    let mut at = 0;
+    while at < ops.len() {
+        if ops[at] == Op::Keep {
+            at += 1;
+            continue;
+        }
+        let start = at;
+        while at < ops.len() && ops[at] != Op::Keep {
+            at += 1;
+        }
+        let block = &ops[start..at];
+        let only_before = block.iter().filter(|op| **op == Op::OnlyBefore).count();
+        let only_after = block.len() - only_before;
+        let paired = only_before.min(only_after);
+        changed += paired;
+        removed += only_before - paired;
+        added += only_after - paired;
+    }
     Some(VersionFacts {
-        added: only_after - changed,
+        added,
         changed,
-        removed: only_before - changed,
+        removed,
     })
 }
 
@@ -308,21 +341,29 @@ mod tests {
     }
 
     #[test]
-    fn the_drawn_conflict_frames_are_reconciled_by_exactly_one_ancestor() {
+    fn the_drawn_conflict_cards_describe_a_state_no_ancestor_produces() {
         // #217's adjacent question, answered with the frames' own numbers. `3a Conflict diff` draws
         //
-        //   yours    # Todo | - buy milk     | - call Alice | - ship v1
-        //   Proton's # Todo | - buy oat milk | - call Alice | - ship v1 | - relax
+        //   yours    # Todo | - buy milk     | - call Alice | - ship v1     (4 lines)
+        //   Proton's # Todo | - buy oat milk | - call Alice | - ship v1 | - relax  (5 lines)
         //   footer   2 lines differ · 3 lines identical
         //
         // which is self-consistent. `3a Conflict` draws `You added a line` and `Changed a line and
-        // added one` beside it, and those two force `ancestor == yours` — under which the local
-        // file never moved, the planner reaches `(Unchanged, Changed)` and plans a plain download.
-        // THE DRAWN CARD SENTENCES DESCRIBE A STATE THIS ENGINE CANNOT PRODUCE.
+        // added one` beside it, and THOSE TWO CANNOT BOTH BE TRUE OF ANY ANCESTOR.
+        //
+        // The derivation is a length identity, not a search: for either side,
+        // `added - removed == |side| - |ancestor|`. `You added a line` gives `1 - 0 == 4 - |B|`, so
+        // `|B| == 3`. `Changed a line and added one` gives `1 - 0 == 5 - |B|`, so `|B| == 4`. No
+        // ancestor has both lengths. (An earlier version of this test claimed the two "force
+        // ancestor == yours" and that exactly ONE ancestor reconciles the frames — adversarial
+        // review refuted both: the drawn diff constrains only yours against Proton's, so the
+        // ancestors consistent with it are infinite, and `- buy soy milk` is another.)
+        //
+        // What the fixture needs is therefore not "the" ancestor but A defensible one: consistent
+        // with the drawn diff and a genuine two-sided conflict. This is the one it carries.
         let mine = "# Todo\n- buy milk\n- call Alice\n- ship v1\n";
         let theirs = "# Todo\n- buy oat milk\n- call Alice\n- ship v1\n- relax\n";
 
-        // The one ancestor that makes the drawn diff true AND is a genuine two-sided conflict.
         let ancestor = "# Todo\n- buy oat milk\n- call Alice\n- ship v1\n";
         assert_eq!(
             facts(ancestor, mine),
@@ -343,8 +384,117 @@ mod tests {
             "Proton added a line"
         );
 
-        // And the ancestor the drawn CARDS imply is the local file itself, which is not a conflict.
-        assert!(facts(mine, mine).is_unchanged());
+        // The length identity itself, so the refutation is asserted rather than argued in a comment.
+        let lines_of = |t: &str| LineSummary::of(t).expect("summary").line_count() as i64;
+        let implied = |side: &str, added: i64, removed: i64| lines_of(side) - (added - removed);
+        assert_eq!(
+            implied(mine, 1, 0),
+            3,
+            "`You added a line` implies a 3-line ancestor"
+        );
+        assert_eq!(
+            implied(theirs, 1, 0),
+            4,
+            "`Changed a line and added one` implies a 4-line ancestor"
+        );
+
+        // And another ancestor reconciles the diff just as well, which is why "exactly one" was
+        // wrong: the drawn diff says nothing about the ancestor at all.
+        let alternative = "# Todo\n- buy soy milk\n- call Alice\n- ship v1\n";
+        assert_eq!(
+            facts(alternative, mine),
+            VersionFacts {
+                added: 0,
+                changed: 1,
+                removed: 0
+            }
+        );
+    }
+
+    #[test]
+    fn a_removal_and_an_unrelated_addition_are_not_one_changed_line() {
+        // FOUND BY ADVERSARIAL REVIEW, and it contradicted the panel drawn directly beneath the
+        // sentence. Pairing across the whole file called a line removed at the top and a different
+        // line added at the bottom "one line changed", while `ui/diff.js`'s `compare` on the same
+        // two files reported zero changed pairs and one line exclusive to each side — the card and
+        // its own disclosure disagreeing, which is the failure `pairBlocks` names as worse than
+        // either alone.
+        assert_eq!(
+            facts(
+                "alpha\nbeta\ngamma\ndelta\n",
+                "beta\ngamma\ndelta\nepsilon\n"
+            ),
+            VersionFacts {
+                added: 1,
+                changed: 0,
+                removed: 1
+            },
+            "a removal and an addition separated by agreeing lines are two moves, not one"
+        );
+        // Five and five, the review's larger case.
+        assert_eq!(
+            facts(
+                "a1\na2\na3\na4\na5\nkeep1\nkeep2\n",
+                "keep1\nkeep2\nz1\nz2\nz3\nz4\nz5\n"
+            ),
+            VersionFacts {
+                added: 5,
+                changed: 0,
+                removed: 5
+            }
+        );
+        // And the pairing still happens INSIDE a run, which is what makes `changed` a real verb.
+        assert_eq!(
+            facts("a\nb\nc\n", "a\nx\ny\nc\n"),
+            VersionFacts {
+                added: 1,
+                changed: 1,
+                removed: 0
+            },
+            "one replaced line and one inserted line in the same run"
+        );
+    }
+
+    /// The corpus both diffs are held to. **Kept byte-identical in `gui/test/diff.test.js`**, where
+    /// `ui/diff.js`'s `compare` is asserted to the same numbers — because the card's first line and
+    /// the panel drawn beneath it come from two different implementations, and the only way that
+    /// stays true is to check it rather than to say it in a comment. Verified differentially over
+    /// these twenty pairs; the four that used to disagree are the first four.
+    const AGREEING_CORPUS: &[(&str, &str, [usize; 3])] = &[
+        // added, changed, removed
+        (
+            "alpha\nbeta\ngamma\ndelta",
+            "beta\ngamma\ndelta\nepsilon",
+            [1, 0, 1],
+        ),
+        (
+            "a1\na2\na3\na4\na5\nkeep1\nkeep2",
+            "keep1\nkeep2\nz1\nz2\nz3\nz4\nz5",
+            [5, 0, 5],
+        ),
+        ("head\nx\ntail", "head\ny\nz\ntail", [1, 1, 0]),
+        ("head\nx\ny\ntail", "head\nz\ntail", [0, 1, 1]),
+        ("a\nb\nc", "a\nx\ny\nc", [1, 1, 0]),
+        ("a\nb\nc", "a\nb\nc", [0, 0, 0]),
+        ("a\nb\nc\nd\ne", "a\nc\ne", [0, 0, 2]),
+        ("l1\nl2\nl3\nl4\nl5\nl6", "l1\nX\nl3\nl4\nY\nl6", [0, 2, 0]),
+        ("a\na\na", "a\na", [0, 0, 1]),
+        ("p\nq", "p\nq\nr\ns", [2, 0, 0]),
+    ];
+
+    #[test]
+    fn the_rust_and_javascript_diffs_agree_on_a_shared_corpus() {
+        for (before, after, [added, changed, removed]) in AGREEING_CORPUS {
+            assert_eq!(
+                facts(before, after),
+                VersionFacts {
+                    added: *added,
+                    changed: *changed,
+                    removed: *removed
+                },
+                "{before:?} -> {after:?}"
+            );
+        }
     }
 
     #[test]

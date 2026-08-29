@@ -496,3 +496,33 @@ test("the relative time is appended, and its absence leaves no dangling comma", 
   assert.equal(CONFLICTS.happenedAt("You added a line", "5 minutes ago"), "You added a line, 5 minutes ago");
   assert.equal(CONFLICTS.happenedAt("You added a line", null), "You added a line");
 });
+
+// The corpus `src/ancestor.rs` holds its own diff to, byte-identical and asserted to the same
+// numbers. The card's first line comes from the Rust implementation and the panel drawn beneath it
+// from this one, so "they agree" is a property that has to be checked rather than stated — pairing
+// globally instead of per block made the card say `You changed a line` over a panel showing zero
+// changed pairs, and only a shared corpus catches that.
+const AGREEING_CORPUS = [
+  // [ancestor, current, added, changed, removed]
+  ["alpha\nbeta\ngamma\ndelta", "beta\ngamma\ndelta\nepsilon", 1, 0, 1],
+  ["a1\na2\na3\na4\na5\nkeep1\nkeep2", "keep1\nkeep2\nz1\nz2\nz3\nz4\nz5", 5, 0, 5],
+  ["head\nx\ntail", "head\ny\nz\ntail", 1, 1, 0],
+  ["head\nx\ny\ntail", "head\nz\ntail", 0, 1, 1],
+  ["a\nb\nc", "a\nx\ny\nc", 1, 1, 0],
+  ["a\nb\nc", "a\nb\nc", 0, 0, 0],
+  ["a\nb\nc\nd\ne", "a\nc\ne", 0, 0, 2],
+  ["l1\nl2\nl3\nl4\nl5\nl6", "l1\nX\nl3\nl4\nY\nl6", 0, 2, 0],
+  ["a\na\na", "a\na", 0, 0, 1],
+  ["p\nq", "p\nq\nr\ns", 2, 0, 0],
+];
+
+test("this diff and the engine's agree line for line on a shared corpus", () => {
+  for (const [ancestor, current, added, changed, removed] of AGREEING_CORPUS) {
+    const c = compare(ancestor, current);
+    assert.deepEqual(
+      { added: c.onlyTheirs.length, changed: c.changed.length, removed: c.onlyMine.length },
+      { added, changed, removed },
+      `${JSON.stringify(ancestor)} -> ${JSON.stringify(current)}`,
+    );
+  }
+});

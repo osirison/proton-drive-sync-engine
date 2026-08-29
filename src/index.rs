@@ -76,11 +76,10 @@ CREATE TABLE IF NOT EXISTS withheld_deletions (
     PRIMARY KEY (path, direction)
 );
 CREATE TABLE IF NOT EXISTS agreed_line_summaries (
-    path BLOB NOT NULL,
+    path BLOB NOT NULL PRIMARY KEY,
     agreed_digest TEXT NOT NULL,
     line_digests TEXT NOT NULL,
-    recorded_at INTEGER NOT NULL,
-    PRIMARY KEY (path, agreed_digest)
+    recorded_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_agreed_line_summaries_at ON agreed_line_summaries(recorded_at);
 "#;
@@ -876,29 +875,40 @@ pub fn clear_event_cursor(connection: &Connection, scope_id: &str) -> AppResult<
 /// `AutoLink`s an already-agreeing local/remote pair rather than re-transferring it. The approvals
 /// go with it because each is pinned to a `fingerprint` derived from the baseline this erases —
 /// keeping them would leave standing consent for a deletion nothing can still describe.
-/// How many agreed-line summaries the index keeps (#217).
+/// How many agreed-line summaries the index keeps (#217) — **one per path**, so this is a bound on
+/// how many *files* carry an ancestor, not on how many versions are remembered.
 ///
-/// A standing per-file cost, so it is bounded like [`HistoryRetention`] rather than left to grow.
-/// At the [`crate::ancestor::MAX_SUMMARY_LINES`] cap a row is ~64 KiB of hex, but the ordinary
-/// source file is a few hundred lines and a few KiB — so this is single-digit megabytes for a
-/// tree of ordinary text files, and the cap is what stops one pathological repository from
-/// deciding the number.
+/// Measured row sizes, since the first version of this comment guessed and guessed low:
 ///
-/// Eviction is by **age**, oldest first, and a missing summary is the say-less case. That is the
+/// | lines | `encode()` | × 20 000 |
+/// | --- | --- | --- |
+/// | 30 | 509 B | 9.7 MB |
+/// | 100 | 1.7 KB | 32 MB |
+/// | 300 | 5.1 KB | 97 MB |
+/// | 4096 (the cap) | 68 KB | 1.3 GB |
+///
+/// So the honest statement is that a tree of short files costs tens of megabytes and a tree of
+/// 20 000 large ones could cost a gigabyte. The row cap is what stops that being unbounded; the
+/// per-path key is what stops a file's *history* multiplying it.
+///
+/// Eviction is by **age**, oldest first, and a missing summary is the say-less case — which is the
 /// property that makes any bound defensible here: nothing breaks when a row goes, the card simply
 /// draws one line fewer.
 pub const MAX_AGREED_SUMMARIES: usize = 20_000;
 
-/// Record the agreed version's line summary for `path`, keyed by the digest it was agreed at.
+/// Record the agreed version's line summary for `path`.
 ///
-/// **Keyed by `(path, agreed_digest)`, and that is what gives "dropped when the conflict resolves"
-/// for free** (#217): resolving syncs new content under a new digest, so the old row is superseded
-/// and ages out. There is no resolve hook to forget to call, and no window in which a stale summary
-/// answers for a version that is no longer the ancestor.
+/// **One row per path, and the digest is data rather than key.** The first version keyed
+/// `(path, agreed_digest)` and claimed that gave "dropped when the conflict resolves" for free —
+/// which was false, and adversarial review measured it: `INSERT OR REPLACE` only replaces a row
+/// with the *same* key, so every version a file was ever agreed at kept its own row. Five syncs of
+/// one file left five rows, and eviction being global by age meant one busy path could crowd out
+/// every quiet one — precisely the files a conflict card is most likely to be asked about, since a
+/// conflict needs a second machine.
 ///
-/// `INSERT OR REPLACE` rather than `INSERT OR IGNORE`: re-agreeing on the same digest is the same
-/// content, so the summary is identical and the write only refreshes `recorded_at`, which is what
-/// keeps a file that is synced often from ageing out ahead of one nobody touches.
+/// Keying on the path makes the supersession real: agreeing on new content REPLACES the row, so a
+/// resolved conflict's ancestor is gone the moment a new one exists, and the table is bounded by
+/// the size of the tree rather than by its history.
 pub fn store_agreed_summary(
     connection: &Connection,
     path: &Path,
@@ -943,21 +953,19 @@ pub fn load_agreed_summary(
     }
 }
 
-/// The **most recent** agreed summary for `path`, whatever digest it was agreed at.
+/// The agreed summary for `path`, whatever digest it was agreed at.
 ///
 /// This is the read the conflict card needs, and it cannot key on the index row's digest: by the
 /// time a conflict exists, `SyncAction::Conflict` has already upserted `FileRecord::from_local`, so
-/// the row carries the *diverged local* file's hash. The newest row for a path is the last version
-/// the two sides agreed on, because [`store_agreed_summary`] is only ever called for a `Synced`
-/// record — the digest key is there to supersede, not to look up by.
+/// the row carries the *diverged local* file's hash. There is one row per path and
+/// [`store_agreed_summary`] writes it only for a `Synced` record, so that row IS the last version
+/// the two sides agreed on.
 pub fn newest_agreed_summary(
     connection: &Connection,
     path: &Path,
 ) -> AppResult<Option<crate::ancestor::LineSummary>> {
-    let mut statement = connection.prepare(
-        "SELECT line_digests FROM agreed_line_summaries WHERE path = ?1 \
-         ORDER BY recorded_at DESC, rowid DESC LIMIT 1",
-    )?;
+    let mut statement =
+        connection.prepare("SELECT line_digests FROM agreed_line_summaries WHERE path = ?1")?;
     let mut rows = statement.query(params![index_key(path)])?;
     match rows.next()? {
         Some(row) => {
@@ -2279,9 +2287,27 @@ pub fn local_directory_state(root: &Path, absolute_path: &Path) -> AppResult<Loc
     })
 }
 
-pub fn compute_sha1(path: &Path) -> AppResult<String> {
+/// The SHA-1 of bytes already in memory, in the same lowercase hex [`compute_sha1`] produces.
+///
+/// Separate from `compute_sha1` because that one streams a file it opens, and the one caller here
+/// (#217's ancestor capture) must hash **the bytes it actually read** rather than re-reading a file
+/// that may have changed in between — which is the whole point of the check it feeds.
+pub fn sha1_hex(bytes: &[u8]) -> String {
+    hex_digest(Sha1::digest(bytes))
+}
+
+fn hex_digest(digest: impl AsRef<[u8]>) -> String {
     use std::fmt::Write as _;
 
+    let digest = digest.as_ref();
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        write!(hex, "{byte:02x}").expect("writing hex digits to a String cannot fail");
+    }
+    hex
+}
+
+pub fn compute_sha1(path: &Path) -> AppResult<String> {
     let file = File::open(path)?;
     let mut reader = BufReader::new(file);
     let mut hasher = Sha1::new();
@@ -2295,12 +2321,7 @@ pub fn compute_sha1(path: &Path) -> AppResult<String> {
         hasher.update(&buffer[..read]);
     }
 
-    let digest = hasher.finalize();
-    let mut hex = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        write!(hex, "{byte:02x}").expect("writing hex digits to a String cannot fail");
-    }
-    Ok(hex)
+    Ok(hex_digest(hasher.finalize()))
 }
 
 pub fn path_key(path: &Path) -> String {
@@ -2352,6 +2373,59 @@ mod tests {
     use super::*;
     use std::io::Write;
     use tempfile::tempdir;
+
+    #[test]
+    fn one_agreed_summary_per_path_so_a_busy_file_cannot_evict_a_quiet_one() {
+        // FOUND BY ADVERSARIAL REVIEW. Keying `(path, agreed_digest)` kept a row per VERSION —
+        // `INSERT OR REPLACE` only replaces the same key — so five syncs of one file left five
+        // rows, "dropped when the conflict resolves" was false, and eviction being global by age
+        // meant one busy path could crowd out every quiet one. The quiet files are exactly the
+        // ones a conflict card is asked about, since a conflict needs a second machine.
+        let directory = tempdir().expect("tempdir");
+        let connection = open_database(&directory.path().join("index.db")).expect("open");
+        let path = Path::new("busy.txt");
+
+        for (n, digest) in ["d1", "d2", "d3", "d4", "d5"].iter().enumerate() {
+            let summary = crate::ancestor::LineSummary::of(&"a\n".repeat(n + 1)).expect("summary");
+            store_agreed_summary(&connection, path, digest, &summary, 1_000 + n as u64)
+                .expect("store");
+        }
+        let rows: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM agreed_line_summaries WHERE path = ?1",
+                params![index_key(path)],
+                |row| row.get(0),
+            )
+            .expect("count");
+        assert_eq!(rows, 1, "one row per path, whatever its history");
+
+        // And the row that survives is the LAST agreed version, not the first.
+        assert_eq!(
+            newest_agreed_summary(&connection, path)
+                .expect("load")
+                .expect("a summary")
+                .line_count(),
+            5
+        );
+
+        // A quiet file with one ancestor survives a busy neighbour, which is the property the
+        // per-version key destroyed.
+        let quiet = Path::new("quiet.txt");
+        let summary = crate::ancestor::LineSummary::of("only\n").expect("summary");
+        store_agreed_summary(&connection, quiet, "q1", &summary, 1).expect("store");
+        for n in 0..50 {
+            let summary = crate::ancestor::LineSummary::of("x\n").expect("summary");
+            store_agreed_summary(&connection, path, &format!("d{n}"), &summary, 2_000 + n)
+                .expect("store");
+        }
+        prune_agreed_summaries(&connection).expect("prune");
+        assert!(
+            newest_agreed_summary(&connection, quiet)
+                .expect("load")
+                .is_some(),
+            "a file synced once keeps its ancestor however often its neighbour is synced"
+        );
+    }
 
     #[test]
     fn computes_empty_file_sha1() {

@@ -11,13 +11,14 @@
 // `read_conflict_pair` already returns both texts, so the whole thing is computable in the browser
 // with no new socket verb and no daemon work. That is the entire point of C3.
 //
-// PART (1) IS NOT COMPUTABLE AND THIS MODULE DOES NOT PRETEND OTHERWISE. `You added a line` is a
-// statement about your version against the **last agreed** version, and no last-agreed version
-// exists anywhere on this machine: the conflict sidecar is Proton's *current* copy, the local file
-// is yours, and the index keeps the baseline's SHA-1 without its content. Against Proton's copy
-// alone the same edit reads as a removal, so attributing a change to one side is not a harder
-// version of this problem — it is a different one, needing a capability nothing has. The relative
-// time in that sentence comes from the mtimes and is fine; the verb is a gap.
+// PART (1) IS NOT THIS MODULE'S, AND IS NO LONGER A GAP. `You added a line` is a statement about
+// your version against the **last agreed** version — a different question from this one, since
+// against Proton's copy alone the same edit reads as a removal. #217 gave the engine an ancestor:
+// `src/ancestor.rs` summarises the agreed version when it is agreed, `read_conflict_pair` returns
+// how far each side moved from it, and `CONFLICTS.happened` puts that into words. This module still
+// answers only (2), and the two are held to a shared corpus in `test/diff.test.js` — the card's
+// first line and the panel below it come from two implementations, so their agreement is checked
+// rather than assumed.
 //
 // THE FALLBACK IS SILENCE, NOT A DIFF. `04-conflicts.md` is explicit: if a summary can't be
 // generated, fall back to the metadata row alone and **do not** show the raw diff there — that is

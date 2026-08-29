@@ -24,9 +24,13 @@
 // one, the screen has stopped doing its job.
 //
 // WHAT PHASE 1 CANNOT DRAW, each recorded in DEVIATIONS.md §74 with the issue that closes it:
-// the cards' first line (`You added a line, 5 minutes ago` — #217, no last-agreed version exists),
-// the meta line's `last agreed 3 hours ago` (same gap), the non-text side-by-side preview (no
-// command serves file bytes), and the light theme's assertions (§58b, S10's extractor work).
+// the meta line's `last agreed 3 hours ago` (#217 gave the engine the agreed version's LINES, not
+// the moment it was agreed, and `FileRecord` still has no last-synced field), the non-text
+// side-by-side preview (no command serves file bytes), and the light theme's assertions (§58b,
+// S10's extractor work).
+//
+// The cards' first line came off that list with #217/#347 — it is computed from the agreed version
+// now, and omitted when there is none. DEVIATIONS §105.
 
 import { el } from "../ui/el.js";
 import { CONFLICTS } from "../ui/copy.js";
@@ -153,10 +157,14 @@ function versionCard({ side, pair, facts }) {
 
   const card = fid(el("div", { class: "cf-card" }), "card", at);
   const change = side === "mine" ? pair?.happened?.mine : pair?.happened?.theirs;
-  const happened = CONFLICTS.happenedAt(
-    CONFLICTS.happened(side, change),
-    source?.mtime_epoch_secs == null ? null : since(source.mtime_epoch_secs),
-  );
+  // THE TIME IS APPENDED FOR YOUR SIDE ONLY, and that asymmetry is the honest one. Both frames draw
+  // a relative time on both cards, but the sidecar's mtime is when the DAEMON wrote it — nothing
+  // preserves a remote mtime anywhere in the engine, and `file_index` holds no remote-side
+  // timestamp at all. `Added a line, 2 minutes ago` would read as "someone edited it two minutes
+  // ago", which is a claim about another machine that nothing here can make. The metadata row still
+  // shows the sidecar's own file time, stated as a file property rather than welded to a verb.
+  const ago = side === "mine" && source?.mtime_epoch_secs != null ? since(source.mtime_epoch_secs) : null;
+  const happened = CONFLICTS.happenedAt(CONFLICTS.happened(side, change), ago);
   // APPENDED ONLY WHEN THERE IS ONE. `append(null)` inserts the literal word `null` — this project
   // has shipped that twice — so the absent case is a branch rather than a falsy argument.
   if (happened) {

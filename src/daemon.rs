@@ -11,8 +11,8 @@ use crate::index::{
     local_file_state, mark_modified, matching_delete_approval, open_database, path_for_proton_id,
     prune_agreed_summaries, prune_history, purge_record, purge_subtree_records, recent_passes,
     replace_unsyncable_items, replace_withheld_deletions, reset_index_state, scan_local_tree,
-    store_agreed_summary, store_event_cursor, store_warm_start_count, upsert_delete_approval,
-    upsert_record,
+    sha1_hex, store_agreed_summary, store_event_cursor, store_warm_start_count,
+    upsert_delete_approval, upsert_record,
 };
 use crate::ipc::{
     ACTIVITY_EVENTS_DEFAULT_LIMIT, ACTIVITY_EVENTS_MAX_LIMIT, ApplyOutcome, AuthState,
@@ -6295,6 +6295,20 @@ fn collect_agreed_summaries(
         let Some(text) = readable else {
             continue;
         };
+        // THE BYTES MUST HASH TO THE DIGEST THEY ARE FILED UNDER, and this check is not belt and
+        // braces — it closes a window the design opens. An adoption is index-only, so its `Upsert`
+        // accumulates until the FINAL commit: on a full sweep the read happens at the end of a pass
+        // whose scan was taken at the start, and a file edited in between is summarised as the
+        // edited content under the agreed digest. The card would then compare that file against a
+        // summary of itself, find nothing moved, and draw "Your lines are unchanged" about a file
+        // the user had just changed — the one sentence the deck calls certainly wrong.
+        //
+        // Re-hashing is cheap next to the read that just happened, and a mismatch simply drops the
+        // summary: the file is mid-edit, so there is no agreed version to record, and the next pass
+        // that agrees on one will record it.
+        if sha1_hex(text.as_bytes()) != digest {
+            continue;
+        }
         if let Some(summary) = LineSummary::of(&text) {
             summaries.push((record.file_path.clone(), digest.to_owned(), summary));
         }
@@ -10981,6 +10995,55 @@ mod tests {
             .is_none(),
             "the diverged version must not be filed as an ancestor"
         );
+    }
+
+    #[test]
+    fn a_file_edited_between_the_scan_and_the_commit_is_never_filed_as_the_agreed_version() {
+        // FOUND BY ADVERSARIAL REVIEW, and the design opens the window rather than merely allowing
+        // it: an adoption is index-only, so its `Upsert` accumulates until the FINAL commit — on a
+        // full sweep the read happens at the end of a pass whose scan was taken at the start.
+        //
+        // Without the re-hash, the summary would be of the EDITED content filed under the AGREED
+        // digest. `newest_agreed_summary` reads by path, so that poisoned row is the one the card
+        // uses: it would compare the edited file against a summary of itself, find nothing moved,
+        // and draw "Your lines are unchanged" about a file the user had just changed — which the
+        // copy deck calls the one answer that is certainly wrong.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+
+        let agreed = "one\ntwo\nthree\n";
+        let agreed_hash = sha1_bytes(agreed.as_bytes());
+        // The record says the agreed digest; the file on disk has already moved on, which is
+        // exactly the state a mid-pass edit leaves behind.
+        fs::write(
+            local_root.join("notes.txt"),
+            "one\ntwo\nthree\nfour\nfive\n",
+        )
+        .expect("the edit that lands during the pass");
+
+        let record = FileRecord {
+            file_path: PathBuf::from("notes.txt"),
+            entity_kind: EntityKind::File,
+            file_size: agreed.len() as u64,
+            mtime: 0,
+            sha1_hash: Some(agreed_hash.clone()),
+            proton_id: Some("vol~n1".to_owned()),
+            sync_status: SyncStatus::Synced,
+        };
+        let captured =
+            collect_agreed_summaries(&[IndexMutation::Upsert(record.clone())], &local_root);
+        assert!(
+            captured.is_empty(),
+            "bytes that do not hash to the digest they would be filed under are not an ancestor"
+        );
+
+        // And the ordinary case still captures, so the check is a guard rather than an off switch.
+        fs::write(local_root.join("notes.txt"), agreed).expect("restore the agreed content");
+        let captured = collect_agreed_summaries(&[IndexMutation::Upsert(record)], &local_root);
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].1, agreed_hash);
+        assert_eq!(captured[0].2.line_count(), 3);
     }
 
     #[test]
@@ -19027,6 +19090,20 @@ mod tests {
             get_record(&daemon.pair().connection, Path::new("local-only.txt"))
                 .expect("lookup")
                 .is_none()
+        );
+        // AND NO ANCESTOR SUMMARY (#217). A rehearsal runs the same local walk as a real pass, so
+        // it sees every file that would become agreed — recording one here would spend a fact the
+        // real pass is supposed to establish. It holds today because a plan pass reaches neither
+        // `commit_checkpoint` nor the final commit, but this guard is where the rule lives, and a
+        // new persisted store outside it is how the next one gets added silently.
+        assert!(
+            crate::index::newest_agreed_summary(
+                &daemon.pair().connection,
+                Path::new("local-only.txt")
+            )
+            .expect("lookup")
+            .is_none(),
+            "a rehearsal records no agreed version"
         );
         // And nothing was transferred: the local tree is exactly as it was.
         assert!(
