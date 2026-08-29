@@ -6,6 +6,7 @@ compile_error!(
      std::os::unix::ffi::OsStrExt) and have not been validated on other platforms."
 );
 
+pub mod ancestor;
 pub mod config;
 pub mod daemon;
 pub mod dirconfig;

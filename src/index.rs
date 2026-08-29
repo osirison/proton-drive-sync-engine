@@ -75,6 +75,14 @@ CREATE TABLE IF NOT EXISTS withheld_deletions (
     first_seen INTEGER NOT NULL,
     PRIMARY KEY (path, direction)
 );
+CREATE TABLE IF NOT EXISTS agreed_line_summaries (
+    path BLOB NOT NULL,
+    agreed_digest TEXT NOT NULL,
+    line_digests TEXT NOT NULL,
+    recorded_at INTEGER NOT NULL,
+    PRIMARY KEY (path, agreed_digest)
+);
+CREATE INDEX IF NOT EXISTS idx_agreed_line_summaries_at ON agreed_line_summaries(recorded_at);
 "#;
 
 /// Speeds up [`path_for_proton_id`] (turning a volume event's node id into its local path).
@@ -868,6 +876,85 @@ pub fn clear_event_cursor(connection: &Connection, scope_id: &str) -> AppResult<
 /// `AutoLink`s an already-agreeing local/remote pair rather than re-transferring it. The approvals
 /// go with it because each is pinned to a `fingerprint` derived from the baseline this erases —
 /// keeping them would leave standing consent for a deletion nothing can still describe.
+/// How many agreed-line summaries the index keeps (#217).
+///
+/// A standing per-file cost, so it is bounded like [`HistoryRetention`] rather than left to grow.
+/// At the [`crate::ancestor::MAX_SUMMARY_LINES`] cap a row is ~64 KiB of hex, but the ordinary
+/// source file is a few hundred lines and a few KiB — so this is single-digit megabytes for a
+/// tree of ordinary text files, and the cap is what stops one pathological repository from
+/// deciding the number.
+///
+/// Eviction is by **age**, oldest first, and a missing summary is the say-less case. That is the
+/// property that makes any bound defensible here: nothing breaks when a row goes, the card simply
+/// draws one line fewer.
+pub const MAX_AGREED_SUMMARIES: usize = 20_000;
+
+/// Record the agreed version's line summary for `path`, keyed by the digest it was agreed at.
+///
+/// **Keyed by `(path, agreed_digest)`, and that is what gives "dropped when the conflict resolves"
+/// for free** (#217): resolving syncs new content under a new digest, so the old row is superseded
+/// and ages out. There is no resolve hook to forget to call, and no window in which a stale summary
+/// answers for a version that is no longer the ancestor.
+///
+/// `INSERT OR REPLACE` rather than `INSERT OR IGNORE`: re-agreeing on the same digest is the same
+/// content, so the summary is identical and the write only refreshes `recorded_at`, which is what
+/// keeps a file that is synced often from ageing out ahead of one nobody touches.
+pub fn store_agreed_summary(
+    connection: &Connection,
+    path: &Path,
+    agreed_digest: &str,
+    summary: &crate::ancestor::LineSummary,
+    recorded_at_epoch_secs: u64,
+) -> AppResult<()> {
+    connection.execute(
+        "INSERT OR REPLACE INTO agreed_line_summaries \
+         (path, agreed_digest, line_digests, recorded_at) VALUES (?1, ?2, ?3, ?4)",
+        params![
+            // `index_key`, not `path_key`: byte-exact, so two paths differing only in invalid
+            // UTF-8 cannot share a row — the same rule every other per-path table here follows.
+            index_key(path),
+            agreed_digest,
+            summary.encode(),
+            i64::try_from(recorded_at_epoch_secs).unwrap_or(i64::MAX)
+        ],
+    )?;
+    Ok(())
+}
+
+/// The agreed version's summary for `path` at `agreed_digest`, or `None`.
+///
+/// `None` is ordinary and has many causes — never summarised (binary, or past the caps), evicted,
+/// or the baseline has moved since. Every one of them means the same thing to the caller: say less.
+pub fn load_agreed_summary(
+    connection: &Connection,
+    path: &Path,
+    agreed_digest: &str,
+) -> AppResult<Option<crate::ancestor::LineSummary>> {
+    let mut statement = connection.prepare(
+        "SELECT line_digests FROM agreed_line_summaries WHERE path = ?1 AND agreed_digest = ?2",
+    )?;
+    let mut rows = statement.query(params![index_key(path), agreed_digest])?;
+    match rows.next()? {
+        Some(row) => {
+            let stored: String = row.get(0)?;
+            Ok(Some(crate::ancestor::LineSummary::decode(&stored)))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Drop the oldest summaries past [`MAX_AGREED_SUMMARIES`].
+///
+/// Called from the same place the history prune is, so a pass that wrote nothing pays nothing.
+pub fn prune_agreed_summaries(connection: &Connection) -> AppResult<()> {
+    connection.execute(
+        "DELETE FROM agreed_line_summaries WHERE rowid NOT IN \
+         (SELECT rowid FROM agreed_line_summaries ORDER BY recorded_at DESC, rowid DESC LIMIT ?1)",
+        params![MAX_AGREED_SUMMARIES as i64],
+    )?;
+    Ok(())
+}
+
 pub fn reset_index_state(connection: &Connection) -> AppResult<()> {
     // A guarded transaction, not a `BEGIN; …; COMMIT;` batch. `execute_batch` returns on the first
     // failing statement with the `BEGIN` still open — SQLite does not implicitly roll back — and
@@ -884,6 +971,10 @@ pub fn reset_index_state(connection: &Connection) -> AppResult<()> {
         "warm_start_state",
         "delete_approvals",
         "unsyncable_items",
+        // The ancestor summaries are things the daemon has LEARNED about content it agreed on, so
+        // a reset that kept them would leave a conflict card answering from a baseline the reset
+        // discarded (#217).
+        "agreed_line_summaries",
     ] {
         transaction.execute(&format!("DELETE FROM {table}"), [])?;
     }
