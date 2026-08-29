@@ -1493,10 +1493,17 @@ export const KNOWN_UNCLAIMED = [
     class: "issue",
     issue: "#380",
     why:
-      "both side count blocks and `next full check in 4m`. Filed against #380 rather than #207: " +
-      "that issue is CLOSED and `ControlResponse.index_totals` reports index-wide files and bytes " +
-      "at HEAD, so `no command reports index-wide totals` is false. The countdown is the one " +
-      "genuine gap \u2014 #193 gave the daemon a schedule and no reply carries the next-due moment.",
+      "TWO unbuilt blocks with two causes, one issue. (a) Both side count blocks, filed against " +
+      "#380 rather than #207: that issue is CLOSED and `ControlResponse.index_totals` reports " +
+      "index-wide files and bytes at HEAD, so `no command reports index-wide totals` is false. " +
+      "(b) `Last things to move` \u2014 its head, its three file rows and the `All 7 files` button, " +
+      "20 of these keys. `screens/activity.js` drops them saying they `need per-file recent " +
+      "activity, which nothing returns`, and that sentence is STALE the same way #207 was: #230 " +
+      "closed, and `ControlCommand::Activity` with no selector reaches `index::file_events` with " +
+      "`path: None`, which is the newest events across every path. So it is #380's shape again " +
+      "and is recorded there as a fourth block, not a fourth issue. The countdown " +
+      "(`next full check in 4m`) is the one genuine gap in this frame \u2014 #193 gave the daemon a " +
+      "schedule and no reply carries the next-due moment.",
     keys: [
       "div[3]/div[1]/div[0]",
       "div[2]/div[2]/div[0]/div[1]",
@@ -1759,7 +1766,7 @@ export const KNOWN_UNCLAIMED = [
     frame: "5a Checking",
     class: "unmappable",
     why:
-      "the four footer doors, and the reason is already at `fids.js`'s `planShell`: `door` IS " +
+      "the four footer doors, and the reason is already at `fids.js`'s `PLAN_CHECKING_FIDS`: `door` IS " +
       "UNDECLARED HERE, and it is the one slot in that file dropped because the PROTOTYPE is wrong " +
       "rather than because the app cannot draw it. `02-shell.md:42` says the active door is " +
       "`#F2F4F7`; `5a Checking` is the plan screen, so `Plan a sync` should be lit and the frame " +
@@ -1781,9 +1788,11 @@ export const KNOWN_UNCLAIMED = [
       "the per-file progress track and its fill, which the app does not render because a per-file " +
       "percentage is unreachable BY CONSTRUCTION rather than pending: an upload has a total and no " +
       "progress, a download has progress and no total, and `totalStorageSize` is not a file size " +
-      "(0 on 873 of 5424 healthy files). `ipc.rs` says so at `TransferActivity`. Filed as `issue " +
-      "#98` in the first version of this list, which is the very defect §106e records: #98 is " +
-      "CLOSED, and a class defined as `a capability gap with an open number` may not cite it.",
+      "(0 on 873 of 5424 healthy files). `ipc.rs` says so at `TransferActivity`. The first version " +
+      "of this list filed it as `mapping #377` — claiming the app renders it, which it does not; " +
+      "the SECOND filed it as `issue #98`, which is the defect §106e records arriving one round " +
+      "later, #98 being CLOSED and a class defined as `a capability gap with an open number` may " +
+      "not cite it. It is neither: the app renders nothing there, on purpose.",
     keys: ["div[1]", "div[1]/div"],
   },
   {

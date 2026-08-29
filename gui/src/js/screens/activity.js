@@ -511,19 +511,26 @@ function neverSyncedBand(never, onShow) {
 /**
  * The rung under the body — the sentence and the way to the other tab.
  *
- * WHAT IS LEFT OF `Last things to move`. Its head and its three rows both need per-file recent
- * activity, which nothing returns, so both go; this row stays because the tab switch is in it and
- * dropping it would strand the passes tab with no way in. `All 7 files` goes with the rows: it has
- * no destination in any frame, no id in `routes.js` and no count to put in it — the same shape as
- * S3's #224 and S4's #227, and this time there is nothing to file that the rows' own gap does not
- * already cover.
+ * WHAT IS LEFT OF `Last things to move`. Its head and its three rows are not built; this row stays
+ * because the tab switch is in it and dropping it would strand the passes tab with no way in.
+ * `All 7 files` goes with the rows: it has no destination in any frame and no id in `routes.js` —
+ * the same shape as S3's #224 and S4's #227. (Its *count* is no longer a reason: the query below
+ * would supply it.)
  *
- * AND `ACTIVITY.nothingRecent` IS NOT DRAWN HERE, which is worth stating because it looks like it
- * should be. `14-behaviour-and-state.md:129` gives it as the empty state for `Activity › files`:
- * "Nothing has moved in the last hour." But that sentence is a CLAIM about the last hour, and the
- * gap that removed the rows (#230) is exactly the absence of any per-file record to make it from —
- * so the app cannot know whether it is true. `quietIsNormal` is the frame's own sentence, says
- * nothing the daemon has not reported, and is what stays.
+ * THE REASON RECORDED HERE FOR DROPPING THEM — "they need per-file recent activity, which nothing
+ * returns" — IS STALE, and saying so is the point of this paragraph rather than a footnote. #230
+ * closed, and `ControlCommand::Activity` sent with **no selector** reaches `index::file_events`
+ * with `path: None`, which is the newest events across every path — exactly what these rows draw.
+ * The block is unbuilt, not blocked, which is a different state and is recorded as such in #380
+ * (found by #250's census, whose `7a Activity quiet` entry points here).
+ *
+ * The same correction lands on `ACTIVITY.nothingRecent`, WHICH IS STILL NOT DRAWN HERE.
+ * `14-behaviour-and-state.md:129` gives it as the empty state for `Activity › files`: "Nothing has
+ * moved in the last hour." The old argument was that the app cannot know whether that is true; it
+ * can — `window_secs` bounds the same query, and events are retained for 90 days, so an empty
+ * one-hour window IS the evidence. What keeps `quietIsNormal` here is narrower and survives: this
+ * footer is drawn on a screen with no file rows above it, so an empty-state sentence for a list
+ * that is not built would be answering a question nothing asked. It goes in with the rows.
  */
 function listFooter(onPasses) {
   return fid(

@@ -5773,9 +5773,10 @@ restored                           →                                          
 Plus #250's own scenario — a fixture stops naming a node it renders — which fails as an unclaimed
 node.
 
-**Every row reads "1 fault" because the first three used to read "2".** A typo'd class produced both
-"not one of" and "needs an issue number" — one cause, two diagnoses, and the summary line then said
-*2 malformed entries* about one entry. Each arm now yields at most one fault per cause, and the
+**The first two rows used to read "2 malformed entries".** A typo'd class produced both "not one of"
+and "needs an issue number" — one cause, two diagnoses — and a key repeated inside one entry was
+reported as a collision with an entry that does not exist. The third row always read "1": the old
+classifier's missing-issue arm fired once, which the old table recorded correctly. Each arm now yields at most one fault per cause, and the
 count is taken over the entries' **indices** rather than their frame labels, since six frames hold
 two entries each.
 
@@ -5812,3 +5813,41 @@ component is hardest to see when it is yours and an hour old.
 It says `fid()` null-checks the factory rather than its result, so a factory answering `null` stamps
 `data-fid="<frame>:null"`. At HEAD it checks the **result** — S9 fixed it, and the comment above
 those lines records why.
+
+### §106k · Round three, and what a third pass is for
+
+Rounds 1 and 2 found false *reasons* — the gate about to enforce something untrue. Round 3 found
+none: every per-key class, every count, every poison and the `PROBE_DEPTH` measurement reproduced.
+What it found instead was five **prose** errors, and the shape they share is worth the section.
+
+Four were self-history — the census describing its own past wrongly:
+
+- §106h said *"the first three rows used to read 2 faults"*. Two did. The old table, quoted in the
+  same commit's diff, already said `1` for the third.
+- `7a File pending`'s entry said it had been filed as `issue #98` *"in the first version of this
+  list"*. Round 1 filed it as `mapping #377`; round 2 introduced #98. §106e in the same commit gets
+  it right (*"one round later"*) and the entry contradicted it.
+- `5a Checking`'s entry pointed at `fids.js`'s `planShell`. The comment is in
+  `PLAN_CHECKING_FIDS`; `planShell`'s is about the chip (§76). The **same commit** corrected that
+  reference in two other places and left the entry.
+- `README.md` opened *"Eight gates"* above a table headed *"The nine gates"*, and the commit had
+  edited the adjacent count in the same file.
+
+A record of what went wrong decays exactly like any other claim, and it decays **fastest right
+after being written**, while the rounds are still being counted. The rule for a changed number
+applies to a correction's own narrative: grep for the OLD figure, including inside the sentence
+explaining why it changed.
+
+The fifth was different and is recorded in **#380**: `7a Activity quiet`'s `issue` entry cited #380
+for all 27 of its keys, and #380 covered 7 of them. The other 20 are `Last things to move`, whose
+reason was already on file in `screens/activity.js` — *"they need per-file recent activity, which
+nothing returns"* — and **that sentence is stale**: `ControlCommand::Activity` with no selector
+reaches `file_events` with `path: None`. It is §106e's defect one layer out: there the census cited
+a closed issue, here it cited an OPEN one that did not cover the keys, and the stale reason was in
+the app source the entry pointed at. Only asking whether the cited issue covered the keys surfaced
+it — reading the entry alone, it looked correct. **An entry may name a true issue and still be wrong about most
+of its keys.**
+
+Round 3 also observed that `classifyUnclaimed` had no test — its four schema arms were verified by
+six hand-run poisons and nothing in CI. `test/known-unclaimed.test.js` closes that: nine cases,
+each counterfactualled by deleting the arm it covers.
