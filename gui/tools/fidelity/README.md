@@ -10,20 +10,21 @@ npm run fidelity:fixtures   # the fixture registry gate                         
 npm run fidelity:contrast   # the contrast gate on its own; `--report` writes the distribution
 ```
 
-## The eight gates
+## The nine gates
 
 | Gate                              | Compares                                                                        | Runs today?                        |
 | --------------------------------- | ------------------------------------------------------------------------------- | ---------------------------------- |
 | **style** `assert.mjs`            | every mapped app node's computed styles against the drawn node                  | on whatever carries a `data-fid`   |
 | **unstamped** `assert.mjs`        | a frame's declared fid slots against the ones the app stamped                   | yes, every declared slot           |
+| **unclaimed** `assert.mjs`        | every drawn node against the slots that name it — the mirror of the row above   | yes, 270 declared in 31 entries    |
 | **fit** `assert.mjs`              | every full window renders at exactly 1040×764, nothing painting over the footer | yes                                |
 | **hue** `assert.mjs`              | a settled surface contains no saturated colour anywhere                         | yes, all 5 settled frames          |
 | **squeeze** `assert.mjs`          | a compact panel keeps its drawn height in a window too short for it             | yes, all 11 compact frames         |
 | **copy** `copy-gate.mjs`          | every fixed string in `ui/copy.js` appears verbatim in the frames               | yes, every string and 71 templates |
-| **contrast** `check-contrast.mjs` | every text node is legible against what is actually behind it, in both themes   | yes, 1064 nodes across 51 frames   |
+| **contrast** `check-contrast.mjs` | every text node is legible against what is actually behind it, in both themes   | yes, 1233 nodes across 51 frames   |
 | **fixtures** `check-fixtures.mjs` | every in-scope frame has a dataset, of the shape its class implies              | yes, all 51                        |
 
-The first seven need a browser and run in the `fidelity` CI job. The last does not, and runs in
+The first eight need a browser and run in the `fidelity` CI job. The last does not, and runs in
 `frontend` alongside the linters — a gate that can run in the fifteen-second job should.
 
 ## The squeeze gate, and the condition the other seven cannot be in (S8)
@@ -146,9 +147,15 @@ all four nodes.
 
 Two things the probe still cannot reach, and both fail **safe** — the key is never produced, so the
 slot is never reported: an index past `PROBE_DEPTH`, and a factory wanting a non-numeric argument.
-Neither bites today, and both were checked rather than assumed: raising the depth to 30 reaches not
-one drawn key that 10 does not, and every fid factory takes at most three arguments and is keyed by
-position.
+**Both bite today**, which is a correction: this paragraph used to say neither did, on the strength
+of two checks that had gone stale.
+
+`settingsShell.tab` is keyed by a tab **id** (`(id) => [...].indexOf(id)`), so the numeric grid
+yields nothing for it and the four Settings pills are outside the unstamped check entirely. And
+`11a Rules` draws twelve `silentChip`s where the grid reaches ten. Measured through declarations
+alone; measuring through the unclaimed census instead hides the second, because that census counts a
+**stamped** node as claimed — a verification sharing a component with the thing it verifies is not
+independent. See `assert.mjs`'s `probeSlot`, which carries the same correction.
 
 ## The node key, and why it is a path
 

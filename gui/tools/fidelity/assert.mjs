@@ -161,8 +161,15 @@ const PROBE_DEPTH = 10;
  * produces no keys at all — so the four Settings pills are invisible to the UNSTAMPED direction of
  * this gate, and read as unclaimed in the other until a stamped node is counted as claimed.
  *
- * The first half still holds and was re-measured: raising `PROBE_DEPTH` to 30 reaches not one drawn
- * key that 10 does not, across every factory slot of every mapped frame.
+ * THE FIRST HALF DOES NOT HOLD EITHER, and the way that was established is worth recording. The
+ * original claim — "raising the depth to 30 reaches not one drawn key that 10 does not" — was
+ * re-measured **through the unclaimed census**, which counts a stamped node as claimed, and came
+ * back unchanged. That is not a measurement of the probe: the stamped rule hides exactly the
+ * difference being looked for. Measured on declarations alone, depth 30 finds two keys depth 10
+ * does not — `11a Rules`' `silentChip(10)` and `silentChip(11)`, both of which the app stamps.
+ * Twelve chips are drawn there and the grid reaches ten.
+ *
+ * A verification sharing a component with the thing it verifies is not independent.
  *
  * Both still fail SAFE — the key is never produced, so the slot is never reported, and this gate
  * only ever accuses. What changed is that one of them is now a real gap rather than a hypothetical.
@@ -651,7 +658,15 @@ const {
   recorded: recordedUnclaimed,
   unexplained: unexplainedUnclaimed,
   stale: staleUnclaimed,
+  malformed: malformedUnclaimed,
 } = classifyUnclaimed(unclaimed);
+if (malformedUnclaimed.length) {
+  console.error("\nKNOWN_UNCLAIMED entries that are malformed:\n");
+  for (const m of malformedUnclaimed) console.error(`  ${m}`);
+  console.error(
+    `\nfidelity:assert: ${malformedUnclaimed.length} malformed KNOWN_UNCLAIMED entr${malformedUnclaimed.length === 1 ? "y" : "ies"}.`,
+  );
+}
 if (recordedUnclaimed.length) {
   const byClass = new Map();
   for (const u of recordedUnclaimed) byClass.set(u.class, (byClass.get(u.class) ?? 0) + 1);
@@ -836,6 +851,7 @@ if (
   unexplained.length ||
   blankFrames.length ||
   unexplainedUnclaimed.length ||
-  staleUnclaimed.length
+  staleUnclaimed.length ||
+  malformedUnclaimed.length
 )
   process.exit(1);

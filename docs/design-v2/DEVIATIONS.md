@@ -3554,9 +3554,11 @@ fails, exit 1 — an exact-detail pin on a parent covers a child's construction 
 be caught; it is caught because a neighbour happens to be pinned to the pixel. No rule says which
 undeclared nodes are deliberate, so the next one may have no such neighbour. That is the convention's
 blind spot rather than this slot's, and it is bigger than this section:
-**268 of the 1,452 drawn nodes on mapped frames are claimed by no slot at all — 18%.** Most are
+**268 of the 1,452 drawn nodes on mapped frames are claimed by no slot at all — 18%.** (Re-measured
+as **270 of 1,948 across 25 frames** once every frame carried a map; §106 carries the corrected
+census and the gate that now enforces it.) Most are
 correct (S4 leaves `5a Checking`'s progress line undeclared, S5 the four history rows, S6 the
-twenty-bar chart), and almost none of those reasons is written where a gate can read it. Sorting 268
+twenty-bar chart), and almost none of those reasons was written where a gate could read it — until §106. Sorting 268
 nodes is the same unit of work the twelve and the thirty-nine were, so it is **#250** with the
 measurement attached rather than a clause bolted on here.
 
@@ -5101,9 +5103,9 @@ nothing, because `8a Deletions tab` has no slot for it. So adding a whole panel 
 changed the gate's reading by nothing at all: 51/51 frames, 96793 assertions, 0 failures, before and
 after.
 
-This is **#250's gap**, not a new one — a drawn node claimed by no slot has no rule saying whether
-it is deliberate, and this panel is now one of them. It is deliberate, and this section is the only
-record of that. Coverage is `settings.test.js`'s _"the disposal cards are their own setting,
+This was **#250's gap**, not a new one — a drawn node claimed by no slot had no rule saying whether
+it was deliberate, and this panel was one of them. §106 closed it: `KNOWN_UNCLAIMED` now carries the
+declaration, and this section remains the long-form record behind it. Coverage is `settings.test.js`'s _"the disposal cards are their own setting,
 defaulting to the recoverable one"_, which is where an undrawn state belongs.
 
 ### 100b. The mixed queue has no fixture, and could not have one
@@ -5629,10 +5631,33 @@ from every gate at once: the style gate never compares it, the unstamped gate ne
 `check-fixtures.mjs`'s "alive somewhere" rule keeps a factory alive on index 0 without ever
 examining index 1.
 
-`KNOWN_UNCLAIMED` closes it, in both directions: an unclaimed node with no entry fails the build,
-and an entry whose nodes are claimed now fails too.
+`KNOWN_UNCLAIMED` closes it in both directions, and in four more the first version did not have.
 
-### §106a · The census, re-measured — and #250's own number was wrong in two ways
+### §106a · The sort was done twice, and the first one was wrong
+
+Recorded first because it is the part worth learning from.
+
+The first version sorted 270 nodes by reading `frames/*.json` and reasoning about what the app
+probably does. Adversarial review checked them by **rendering each frame**, and found reasons
+covering roughly half the keys were false: entries classed *"the app deliberately draws nothing
+there"* over nodes the app demonstrably renders (all 36 of `8a Schedule monthly`, 28 of
+`6a Activity passes`' 55, all four `5a Checking` doors); 107 keys filed against **closed** issues
+whose data is on the wire; and three specimen entries contradicted by `preview.js`, whose true
+reasons already existed as `frame-classes.mjs`'s `SPECIMEN_ARTEFACT`.
+
+#250's own text warns about exactly this — *"rushing that is how a plausible-looking reason ends up
+on file"*, §60 — and the first version quoted that sentence in its own header.
+
+**A gate that enforces a false reason is worse than the silent absence it replaces.** The absence at
+least does not send the next reader anywhere; a recorded reason does, and it outlives whoever wrote
+it. One of the first version's entries recorded a live bug as deliberate (§106f).
+
+The method, for whoever edits this next: serve `gui/src`, open `?frame=<label>`, dump every element
+with its tag, class, box and own text, and match it against the frame's node. Distinctive text
+settles most keys outright; a spacer or an `svg` path settles on tag plus box. One browser run per
+frame.
+
+### §106b · The census, and both of #250's numbers were stale
 
 | | #250 (as filed) | now |
 | --- | --- | --- |
@@ -5640,68 +5665,112 @@ and an entry whose nodes are claimed now fails too.
 | drawn nodes | 1,452 | **1,948** |
 | unclaimed | 268 (18%) | **270 across 25 frames (13.9%)** |
 
-The first difference is capability: fifteen more frames gained mappings. The second is a **defect in
-the gate's own probe**, found while building this.
+Ten nodes read as unclaimed while the app stamps them on every render, and counting a **stamped**
+node as claimed removes them exactly. Two causes, not one — the first version attributed all ten to
+the first:
 
-`probeSlot` walks a numeric grid, and its doc claimed *"a factory wanting a non-numeric argument
-(none exist — every fid factory is keyed by position)"*. That stopped being true when S9 keyed the
-Settings tabs by **id** (`tab: (id) => [...].indexOf(id)`), so the probe passes `0`, `indexOf(0)` is
-`-1`, and the slot produces no keys at all. Ten nodes read as unclaimed while the app stamps them on
-every render. Counting a **stamped** node as claimed removes them exactly, with no guessing.
+- **eight** Settings pills, whose slot is keyed by a tab **id** (`(id) => [...].indexOf(id)`) that
+  `probeSlot`'s numeric grid cannot reach;
+- **two** `11a Rules` chips at `silentChip(10)` and `(11)`, past `PROBE_DEPTH`, where twelve are
+  drawn and the grid reaches ten.
 
-The narrower half of that gap is left open and recorded rather than papered over: the *unstamped*
-direction still cannot enumerate a string-keyed slot, so `settingsShell.tab` has been outside it
-since S9.
-
-The other half of the probe's doc was re-measured and **holds**: raising `PROBE_DEPTH` from 10 to 30
-reaches not one drawn key that 10 does not.
-
-### §106b · Three classes, and the honest split
+### §106c · Five classes, each naming an authority rather than an opinion
 
 | class | nodes | what it means |
 | --- | --- | --- |
-| `decision` | 118 | the frame draws something this app deliberately does not — a mock host desktop, a specimen sheet's own documentation table, a button whose absence is a recorded decision |
-| `issue` | 116 | a capability gap with a number (#207, #190, #229, #236, #241) |
-| `mapping` | 36 | **the app draws it and nobody declared a slot** — the bugs this census exists to find |
+| `scenery` | 65 | the frame draws something that is **not product**. `frame-classes.mjs`'s `SPECIMEN_ARTEFACT` is the authority — a swatch sheet's card, a mock desktop's wallpaper and clock. Note this is **not** "the app cannot draw it": `preview.js` renders most of it deliberately, to place the artefact |
+| `issue` | 90 | a capability gap with an **open** number |
+| `mapping` | 48 | the app renders it and nobody declared a slot — the bugs the census exists to find (#377) |
+| `drawing` | 40 | **the prototype is wrong, or two frames of one thing disagree**, so mapping the node would assert the mistake |
+| `decision` | 27 | a recorded decision that the app renders nothing there, or that a differently shaped node is measured elsewhere |
 
-The `mapping` 36 are recorded rather than fixed here, and filed as **#377**. Declaring a slot makes
-the node *compared*, which can surface unrelated style failures on frames this change does not
-otherwise touch — and one of them is not a missing declaration at all but a structural question
-(the frame splits transfers across the seam's two columns; the app renders one list), which needs
-answering before its keys are declared rather than by declaring them.
+`drawing` is the class the first version did not have, and two clusters needed it. `5a Checking`'s
+four doors: `02-shell.md:42` says the active door is `#F2F4F7`, this frame is the plan screen, and it
+paints all four unlit — the app follows the prose and renders five doors, so mapping them would
+assert the drawn mistake (§77, and `fids.js`'s `planShell` already said so). `8a Schedule monthly`:
+that crop and `8a Settings` disagree about the same panel's own numbers, so a mapped node fails
+whichever it is not (§104b).
 
-### §106c · Membership is pinned, never prefixed
+### §106d · Three frames hold more than one entry, and that is the point
 
-Entries carry exact `keys`. A prefix rule (`everything under div[2]`) would auto-excuse whatever a
-re-extracted frame added underneath it — a suppression that widens itself, which is precisely the
-shape this list exists to remove.
+`6a Activity passes`, `7a Activity quiet`, `7a File lookup` and `7a File pending` each split, because
+their nodes have different causes. In each, part of the frame is a block the app does not build and
+part is a block it renders unstamped — one class for both would be false for half the keys, and the
+gate would then enforce that.
 
-### §106d · Verified against itself
+### §106e · Three "capability gaps" whose capability had landed
 
-A new gate that does not fire is the failure this project has shipped before (#247 landed with its
-check below an early `continue`), so all three directions were run:
+`6a Activity passes`' chart cited #229, `7a Activity quiet`'s counts cited #207, `7a File lookup`'s
+history rows cited #190. **All three are closed**, and the data exists: `PassRecord.duration_ms`
+documents itself as what that chart draws, `PASS_HISTORY_REPORTED = 20` matches its twenty bars, and
+`ControlResponse.index_totals` reports index-wide files and bytes — which makes the first version's
+*"no command reports index-wide totals"* false at HEAD.
+
+They now cite **#380**, which records the real state: the capability landed and the block was never
+built. A census entry pointing at a closed issue is a dead end, and nothing here self-invalidates on
+issue state.
+
+### §106f · One entry hid a live bug
+
+`2a Settled`'s header spacer was filed as *"the main-screen map does not declare it"*. It does — and
+`map.spacer = "div[1]"` **overwrites** `mainShell.spacer`, so the header's 0-height gap is stamped
+with the 1040×229 tail block's key. That is `planShell`'s documented collision (fixed there with
+`tailSpacer`), unfixed on the main screen. Filed as **#379**.
+
+It is also the live instance of a hazard in this census: `stampedKeys` is keyed by string, so two
+elements stamping one key are indistinguishable from one. Here the collision resolves toward the
+tail block, so the header spacer reads unclaimed and gets reported. Had it resolved the other way,
+the frame's real `div[1]` would have read *claimed* with nothing naming it, silently.
+
+### §106g · Membership is pinned, and the schema is checked
+
+Entries carry exact `keys`, never a prefix — a prefix would auto-excuse whatever a re-extracted
+frame added underneath it, a suppression that widens itself.
+
+Four schema faults passed the first classifier silently and now fail the build: an unknown `class`
+value, a key repeated inside one entry, two entries claiming one key (the worst — a `decision` entry
+could fully shadow a `mapping` one and neither would go stale), and a `mapping`/`issue` entry with no
+issue number.
+
+### §106h · Verified against itself, in six directions
+
+A new gate that does not fire is a failure this project has shipped before (#247 landed with its
+check below an early `continue`):
 
 ```
-a KEY removed from an entry        → 1 unclaimed drawn node(s)      exit 1
-a key added that is not unclaimed  → 1 stale KNOWN_UNCLAIMED entry  exit 1
-#250's own scenario: a fixture stops naming a node it renders
-                                   → 1 unclaimed drawn node(s)      exit 1
-restored                           → exit 0
+unknown class value                → 2 malformed KNOWN_UNCLAIMED entries   exit 1
+duplicate key inside one entry     → 2 malformed KNOWN_UNCLAIMED entries   exit 1
+mapping entry with no issue        → 1 malformed KNOWN_UNCLAIMED entry     exit 1
+two entries claiming one key       → malformed                             exit 1
+a key removed from an entry        → 1 unclaimed drawn node(s)             exit 1
+a key that is not unclaimed        → 1 stale KNOWN_UNCLAIMED entry         exit 1
+restored                           →                                       exit 0
 ```
 
-The first attempt at those poisons produced **no output at all** — the edit had broken the module,
-`KNOWN_UNCLAIMED` was `undefined`, and `assert.mjs` failed to import. A poison that breaks the thing
-it is poisoning proves nothing, and reads exactly like a gate that does not fire.
+Plus #250's own scenario — a fixture stops naming a node it renders — which fails as an unclaimed
+node.
 
-### §106e · The adjacent item in #250 is already closed
+Two poisons taught something on the way. One produced **no output at all**, because the edit had
+broken the module: `KNOWN_UNCLAIMED` was `undefined` and `assert.mjs` failed to import. A poison that
+breaks the thing it poisons proves nothing, and reads exactly like a gate that does not fire. Another
+was applied to the wrong classifier — `classifyUnstamped` and `classifyUnclaimed` end in the same
+line, and a first-match replace found the wrong one.
 
-#250's "Adjacent, and smaller" section says `fid()` null-checks the factory rather than its result,
-so a factory returning `null` stamps `data-fid="<frame>:null"`. At HEAD it reads:
+### §106i · The verification that shared a component with the thing it verified
 
-```js
-const key = typeof declared === "function" ? declared(...args) : declared;
-if (key == null) return node;
-```
+`probeSlot`'s doc claimed two limits that *"neither bite today"*. The first version corrected one and
+re-measured the other **through the unclaimed census**, got "no difference", and wrote *"the
+measurement refuted me"* into three files.
 
-It checks the result. S9 fixed it — the comment above those lines records why — so that half of the
-issue was closed before this pass and needs nothing.
+The census counts a stamped node as claimed — which is exactly the rule that hides that difference.
+Measured on declarations alone, depth 30 finds two keys depth 10 does not. The original hypothesis
+was right.
+
+**A verification sharing a component with the thing it verifies is not independent**, and the shared
+component is hardest to see when it is yours and an hour old.
+
+### §106j · #250's adjacent item is already closed
+
+It says `fid()` null-checks the factory rather than its result, so a factory answering `null` stamps
+`data-fid="<frame>:null"`. At HEAD it checks the **result** — S9 fixed it, and the comment above
+those lines records why.
