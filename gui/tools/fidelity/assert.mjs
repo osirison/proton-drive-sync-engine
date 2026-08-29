@@ -170,9 +170,20 @@ const unclaimed = [];
  * WHAT IT STILL CANNOT SEE: one ELEMENT stamped by two slots. The second `setAttribute` overwrites,
  * leaving one element and one key, so nothing here counts two. The losing key is caught by the
  * unstamped gate only when that frame draws it (`expected.has(key)` below), so a double-stamp whose
- * losing key THAT frame does not draw is silent here. The gap is one frame wide rather than
- * unbounded: a slot no frame at all draws still trips `check-fixtures.mjs`'s dead-slot rule. Stated
- * rather than solved, the way `probeSlot` states its two.
+ * losing key THAT frame does not draw is silent here.
+ *
+ * HOW FAR THAT SILENCE REACHES DEPENDS ON THE SLOT'S SHAPE, and two earlier attempts at this
+ * sentence got it wrong in both directions — first stated as an absolute, then "corrected" to a
+ * one-frame bound that is *less* true. For a **string** slot the backstop holds: a key no frame
+ * draws trips `check-fixtures.mjs`'s dead-slot rule. For a **factory** it does not. That rule keys
+ * one site per slot and marks it alive if ANY probed index resolves (`site.alive ||=
+ * produced.some(...)`), so a losing key at index ≥ 1 is never examined; and a factory whose
+ * numeric probes all answer `null` — `settingsShell.tab`, keyed by a tab id — is never registered
+ * at all, its `probes` array being empty. The census loop below already says the first half of
+ * this ("keeps a factory alive on index 0 and never examines index 1"), which is where the
+ * one-frame claim should have been checked before it was written.
+ *
+ * Stated rather than solved, the way `probeSlot` states its two.
  */
 const collisions = [];
 

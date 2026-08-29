@@ -194,9 +194,12 @@ One trap worth naming: **the app rendering different text is not the app renderi
 
 ## Two elements carrying one data-fid (#379)
 
-The narrowest gate here: the only one whose subject is a **duplication** rather than a node. (It
-does not read the mapping — it reads the `data-fid` the app stamped. Reading the mapping itself is
-`check-fixtures.mjs`'s dead-slot rule.)
+The narrowest gate here, and the only one whose subject is a **duplication** rather than a node. It
+reads the `data-fid` the app stamped, not the mapping — but that is not a distinction from the other
+gates, several of which read the mapping too (`unstamped` and `unclaimed` both resolve
+`resolveFixture(label)?.fids`, and `check-fixtures.mjs` reads it in three of its rules). An earlier
+version of this line claimed it was the only gate reading the mapping, then the only one _not_
+reading it; both were exclusivity claims nobody had measured.
 
 A fixture's map is built by spreading several tables into one object — `SHELL_FIDS[label]` and then
 `mainFids(...)`, in the fixture literal — so a later table declaring a name an earlier one used
@@ -230,7 +233,11 @@ stops there being a third.
 
 **What it still cannot see**: one _element_ stamped by two slots. The second `setAttribute`
 overwrites, leaving one element and one key, so nothing counts two. The losing key is caught by the
-unstamped gate only when that frame draws it; a double-stamp whose losing key is undrawn is silent.
+unstamped gate only when that frame draws it — and how far the silence reaches depends on the slot's
+shape. For a **string** slot, a key no frame draws trips `check-fixtures.mjs`'s dead-slot rule. For a
+**factory** it does not: that rule keys one site per slot and marks it alive if any probed index
+resolves, so a losing key at index ≥ 1 is never examined, and a factory whose numeric probes all
+answer `null` (`settingsShell.tab`) is never registered at all.
 
 ## The node key, and why it is a path
 
