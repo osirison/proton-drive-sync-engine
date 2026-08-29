@@ -75,6 +75,7 @@ import {
   renderSaveRefused,
   settingsBarShape,
   configUpdate,
+  formatSchedule,
   isDirty,
   removalCost,
   restartEndingOf,
@@ -2641,6 +2642,13 @@ let settingsEdits = {};
  * decide what is backed up at all.
  */
 let settingsDrafts = { exclude: "", include: "" };
+/**
+ * Which full-sweep editor the schedule panel shows while NO schedule is configured (#193).
+ *
+ * Frontend state, deliberately: a mode is not a schedule. Once one exists the panel reads the mode
+ * off it and this is ignored, so the two can never disagree about a configured value.
+ */
+let settingsScheduleMonthly = false;
 let settingsSaving = false;
 /**
  * A `Sweep now` in flight.
@@ -2790,6 +2798,9 @@ function settingsProps() {
     // The frame names it; otherwise the staged value, then what is on disk.
     notifyPolicy: ui?.notifyPolicy ?? notifyPolicyEdit ?? notifyPolicy,
     drafts: settingsDrafts,
+    // Which schedule editor is showing while none is configured. Frontend state and not a config
+    // value, for the reason `onScheduleMode` gives: a mode is not a schedule.
+    scheduleDraftMonthly: settingsScheduleMonthly,
     saving: settingsSaving,
     // The ending the last save's restart left UNRESOLVED, or null (#320/#335) — the one post-save
     // state with an action attached, which is why the bar reads it rather than reading the sentence
@@ -2854,7 +2865,18 @@ function settingsProps() {
       onRoot: (key, value) => stageSetting(key, value),
       onField: (key, value) => stageSetting(key, value),
       onEvents: (on) => stageSetting("events_driven", on),
-      onInterval: (secs) => stageSetting("scan_interval_secs", secs),
+      // #193. `null` stages the EMPTY STRING, not a missing key: `write_config` clears a key whose
+      // value is empty, and clearing is how a scheduled sweep is turned off — there is no off value
+      // to write. Staging `undefined` would drop the field from the update and leave the old
+      // schedule on disk while the screen showed none.
+      onSchedule: (schedule) => stageSetting("full_scan_schedule", schedule ? formatSchedule(schedule) : ""),
+      // The editor's mode, NOT a setting. With no schedule configured there is nothing to convert,
+      // and switching a live one would move the sweep to a day nobody chose — so this stages
+      // nothing and the screen stays clean until a day is picked.
+      onScheduleMode: (monthly) => {
+        settingsScheduleMonthly = monthly;
+        render();
+      },
       // ONE FIELD, not three. `deletion_policy` is a daemon key now (#194) and `set_deletion_policy`
       // always writes both directions, in whichever spelling the file already uses — so staging the
       // two booleans beside it would briefly put both spellings in one document, which is a config

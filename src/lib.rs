@@ -15,6 +15,7 @@ pub mod ipc;
 pub mod paths;
 pub mod proton;
 pub mod reconstruct;
+pub mod schedule;
 pub mod session;
 pub mod sync;
 pub mod trash;

@@ -189,12 +189,20 @@ const NOT_DRAWN = new Map([
   // what should happen to a sentence that is a subset of a drawn one. A new sentence needs a row
   // here; an amputated one does not.
   //
-  // 1. The schedule panel on its Phase-1 subject (G4 #193).
+  // 1. The schedule panel's two states no frame draws (#193 built the panel; `SETTINGS.timer` and
+  //    `timerSub`, its Phase-1 subject, are gone).
   [
-    "SETTINGS.timer",
-    "G4 (#193): no `full_scan_schedule` key exists, so the panel is about `scan_interval_secs` instead",
+    "SETTINGS.fullScanSubUnknown",
+    "G7 (#207): the drawn sub-line counts the sync folder's files, and only `skip_rule_usage` counts them — a full metadata walk the Folders tab deliberately does not run. Same gap as the local helper one panel up, on a different sentence",
   ],
-  ["SETTINGS.timerSub", "G4 (#193): the sub-line of that panel, on the same subject"],
+  [
+    "SETTINGS.scheduleUnsetKey",
+    "#193: no frame draws the panel with no schedule configured, which is what every config written before the key is in",
+  ],
+  [
+    "SETTINGS.scheduleUnset",
+    "#193: the sentence beside that key line, for the same reason — and it must not read as a schedule, or the controls' resting positions would claim a value the file does not hold",
+  ],
   // 2. A drawn sentence whose every clause needs data nothing returns, so nothing of it survives.
   [
     "SETTINGS.fullSweepNoteUnknown",

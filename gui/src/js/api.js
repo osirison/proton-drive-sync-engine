@@ -147,6 +147,10 @@ export const EMPTY_CONFIG = {
   local_root: null,
   remote_root: null,
   scan_interval_secs: null,
+  // Null, and it stays null: an absent `full_scan_schedule` means NO scheduled sweep (#193), which
+  // is a real state rather than a default to substitute. Unlike the two below it, there is nothing
+  // the daemon resolves this to — the absence IS the answer.
+  full_scan_schedule: null,
   events_driven: null,
   include: [],
   exclude: [],
@@ -499,6 +503,7 @@ function mockInvoke(cmd, args) {
         local_root: "~/ProtonDrive",
         remote_root: "/Drive/RemoteFolder",
         scan_interval_secs: 300,
+        full_scan_schedule: "weekly sun 03:00",
         events_driven: true,
         include: [],
         exclude: ["*.tmp"],

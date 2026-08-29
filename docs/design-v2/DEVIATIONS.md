@@ -5340,3 +5340,89 @@ conversion above: 51/51 frames mapped, 96793 assertions, 0 failures, 41 Phase-1 
 structural, **71 decided** — the assertion count unchanged (nothing rendered differently), the
 Phase-1/decided split moved by exactly 26 in opposite directions, and no stale-deviation error either
 run.
+
+## 104. The full-sweep schedule (G4, #193) — built, and the two places the drawing contradicts itself
+
+`full_scan_schedule` is now a config key, a daemon timer and the panel `8a Settings` draws. This
+section records what building it settled, what it retired, and the two states the frames do not
+cover — the second of which is a drawn sentence that is **false about its own drawn value**.
+
+**The three `#193` deviation rows are retired, and the replacement is declared rather than merely
+present.** The rows recorded the schedule panel's head-row text block, its title and its sub-line
+each taking `938px` where the frame draws `762.88` — the width the missing Weekly/Monthly control
+and its 20px gap were holding. `scheduleMode` (and the two segment buttons) are now in `fids.js`, so
+those three nodes are checked rather than un-flagged. **Verified by counterfactual**, because a
+retirement and a fresh divergence cancel out silently: with the control removed again,
+`npm run fidelity` reports `3 failures` on exactly those three keys plus `3 unexplained unstamped
+slot(s)`. Restored: `51/51 frames mapped, 97896 assertions, 0 failures`.
+
+### §104a · No schedule is a state, and no frame draws it
+
+Every config written before this key has none, which is most of them. The controls have to rest
+somewhere, so they rest where the frame draws them — `Weekly`, `Sun` unselected, `03:00` — but the
+key line reads `full_scan_schedule · not set` and a sentence beneath says *No full sweep is
+scheduled. Pick a day to start one.*
+
+Rendering `full_scan_schedule · weekly sun 03:00` under untouched controls was the alternative, and
+it is exactly #347's defect on the screen whose entire job is to report what the file says: a
+sentence the app cannot have computed, drawn as if it were live. Choosing a day is what commits;
+switching Weekly/Monthly commits nothing, because a mode is not a schedule and converting one would
+move a sweep to a day nobody chose.
+
+Both strings are exempt in `copy-gate.mjs` with that reason.
+
+### §104b · The monthly grid cannot reach the days its own note is about
+
+`8a Schedule monthly` draws a `repeat(10,1fr)` day grid whose box is **56px — two complete rows, 20
+chips**, not a clipped view of more. Beneath it: *Months without a 15th are skipped to the last day.*
+
+Two things follow, and they are both measured rather than argued:
+
+1. **Every month has a 15th**, so the drawn sentence is false about the drawn selection (`15`, the
+   one chip the frame paints selected).
+2. **Every month has 20 days**, so the sentence cannot become true for *any* value the drawn grid
+   offers. It is plainly a template with its day interpolated, and read as one it is exactly right.
+
+The maintainer decision (2026-08-17) names the fallback rule as part of what to build — *"Monthly
+carries the drawn rule that months without the chosen day fall back to the last day"* — and that
+rule is unreachable at 20 chips. So the grid is **1..31** and the note is
+`SETTINGS.monthEdgeNote(day)`, shown only for **29, 30 and 31**: the three days a month can actually
+lack. `src/schedule.rs` implements the clamp as `min(day, last day of that month)` and pins it for
+February in both a common and a leap year.
+
+The monthly crop maps only its header (§ the two frames disagree about the head row's `gap`, 18px
+against 20px), so none of this is gate-checked there — which is the reason to write the measurement
+down here rather than leave it in a commit message.
+
+### §104c · The sub-line loses its count, and it is G7's gap rather than G4's
+
+The drawn sub-line is *A full check of all 12,480 files as a safety net…*. The only thing that
+counts the sync folder's files is `skip_rule_usage`, a full metadata walk the Folders tab
+deliberately does not run — the same folder-totals gap (#207/G7) that already costs the local
+helper one panel up its first sentence. `SETTINGS.fullScanSubUnknown` drops the clause and keeps the
+rest.
+
+Explicitly **not** "use the count when the Skip tab happens to have loaded it": the sentence would
+then gain and lose a number depending on which tab was visited last, which is worse than a stable
+omission and is precisely the kind of thing no gate would catch.
+
+### §104d · What was deleted rather than exempted
+
+`SETTINGS.timer` / `.timerSub` (the Phase-1 panel's own honest title, *Look for changes on a
+timer*), `.timerUnit`, `.timerSeconds`, `intervalLabel`, `stepInterval`, `MIN_INTERVAL_SECS`,
+`MAX_INTERVAL_SECS` and the `onInterval` handler are all gone. Nothing renders them, and a string no
+screen draws is one the next reader has to establish the status of.
+
+`scan_interval_secs` **is not gone from the config**: it still governs the ordinary pass cadence in
+degraded/snapshot mode. What the design removes is its presence in Settings as a user-facing
+full-sweep dial, which is what it had become for want of anything else to put there.
+
+### §104e · One further stale comment, found on the way
+
+`ui/controls.js`'s `quiet` button kind was documented as *"the `⋯` and the segmented control's
+unselected segments"*. The frame draws that segment at `--text-3` (`#99A2AE`), a step brighter than
+`quiet`'s `--text-label` (`#626B78`) — so the claim was wrong, and could not be wrong *visibly* while
+no screen drew a segmented control. A `segment` kind carries the correct tone; `quiet` keeps the `⋯`.
+
+Two CSS comments in the same file said the day-chip and stepper numbers were "not numbers any gate
+checks", true only while nothing rendered them. Both corrected.

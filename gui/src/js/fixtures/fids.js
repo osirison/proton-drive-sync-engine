@@ -1264,6 +1264,23 @@ const SETTINGS_FOLDERS_FIDS = {
   timerText: "div[2]/div[5]/div[0]/div[0]",
   timerTitle: "div[2]/div[5]/div[0]/div[0]/div[0]",
   timerSub: "div[2]/div[5]/div[0]/div[0]/div[1]",
+  // #193 built the schedule, so the control that was missing from beside the text block is here and
+  // the three `box.w` deviations it caused are retired. Declared for the same reason the head row
+  // is: the reason those rows existed was this node's absence, and an undeclared replacement would
+  // retire the deviations and check nothing in their place.
+  scheduleMode: "div[2]/div[5]/div[0]/div[1]",
+  scheduleWeekly: "div[2]/div[5]/div[0]/div[1]/button[0]",
+  scheduleMonthly: "div[2]/div[5]/div[0]/div[1]/button[1]",
+  scheduleRow: "div[2]/div[5]/div[1]",
+  scheduleEveryLabel: "div[2]/div[5]/div[1]/span[0]",
+  scheduleDays: "div[2]/div[5]/div[1]/div[0]",
+  scheduleDay: (i) => `div[2]/div[5]/div[1]/div[0]/button[${i}]`,
+  scheduleAtLabel: "div[2]/div[5]/div[1]/span[1]",
+  scheduleStepper: "div[2]/div[5]/div[1]/div[1]",
+  scheduleStepDown: "div[2]/div[5]/div[1]/div[1]/button[0]",
+  scheduleTime: "div[2]/div[5]/div[1]/div[1]/span",
+  scheduleStepUp: "div[2]/div[5]/div[1]/div[1]/button[1]",
+  scheduleKey: "div[2]/div[5]/div[1]/span[3]",
 
   runLabel: "div[2]/div[6]",
   runPanel: "div[2]/div[7]",

@@ -203,8 +203,7 @@
   color: var(--text-5);
 }
 
-/* The divided row under a panel's head. The frame's is the schedule's day/time row; Phase 1 puts
-   the `scan_interval_secs` stepper in it (G4 #193). */
+/* The divided row under a panel's head — the schedule's day/time row (#193). */
 .settings-panel-control {
   display: flex;
   align-items: center;
@@ -215,6 +214,15 @@
 }
 .settings-panel-control .settings-key {
   margin-top: 0;
+  /* Last in a flex row after a flexible spacer, so it is what gives first without this — and it is
+     the one node on the panel whose whole job is to be read exactly. */
+  flex-shrink: 0;
+}
+/* The `at` between the day chips and the time stepper. `8a Settings` draws it 4px further from the
+   chips than the row's own 10px gap, and nothing else on the screen has a second label in one row
+   for the difference to have shown up on before. */
+.settings-control-label + .day-chips ~ .settings-control-label {
+  margin-left: 4px;
 }
 .settings-control-label {
   flex: none;

@@ -122,9 +122,16 @@ const SKIP_STATUS = {
  *     Deletions tab draws selected (15px dot, 4px `#F2F4F7` ring). The other two cards are
  *     `remote: false, local: true` (only permanent ones) and `false, false` (never ask).
  *
- * `scan_interval_secs` is drawn by NOTHING — the panel that would show it is the schedule panel G4
- * replaces — but `read_config` always returns it, and a fixture that omitted it would be a reply no
- * daemon could produce. It is here for that reason alone.
+ * `scan_interval_secs` is drawn by NOTHING — the panel that showed it is the one #193 replaced with
+ * the schedule — but `read_config` always returns it, and a fixture that omitted it would be a reply
+ * no daemon could produce. It is here for that reason alone. It is also still a live key: it governs
+ * the ordinary pass cadence in snapshot mode, which is why #193 removed it from the UI rather than
+ * from the config.
+ *
+ * `full_scan_schedule` is `weekly sun 03:00` because that is what `8a Settings` draws — `Sun`
+ * highlighted, `03:00` in the stepper, and the key line spelling it out. Without it the app would
+ * render the unset state under a frame drawn in the set one, which is a fixture disagreeing with
+ * its own frame rather than a bug in the screen.
  */
 const CONFIG = {
   path: "~/.config/proton-sync/proton-sync.toml",
@@ -134,6 +141,7 @@ local_root = "~/ProtonDrive"
 remote_root = "/Drive/RemoteFolder"
 events_driven = true
 scan_interval_secs = 300
+full_scan_schedule = "weekly sun 03:00"
 exclude = ["*.tmp", "video-raw/**", "old-backups/**"]
 
 [delete_approval]
@@ -143,6 +151,7 @@ local = true
   local_root: "~/ProtonDrive",
   remote_root: "/Drive/RemoteFolder",
   scan_interval_secs: 300,
+  full_scan_schedule: "weekly sun 03:00",
   events_driven: true,
   include: [],
   exclude: ["*.tmp", "video-raw/**", "old-backups/**"],

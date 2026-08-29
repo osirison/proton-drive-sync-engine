@@ -538,17 +538,23 @@ export const KNOWN_DEVIATIONS = [
     props: ["box.h"],
     detail: "77 vs 36",
     issue: "#207",
-    why: "`Proton Drive` loses the same count — and its sub-line too, but to a different gap: `next full check in 4m` counts down to a full-scan schedule the daemon does not expose (#193), and deriving it from `scan_interval` would contradict `6a Details`, which draws that interval as its own row",
+    why: "`Proton Drive` loses the same count — and its sub-line too, but to a different gap: `next full check in 4m` is a COUNTDOWN, and while #193 gave the daemon a `full_scan_schedule`, no reply carries the moment it next fires — the schedule exists, the next-due instant is not on any wire. Deriving one from `scan_interval` would still contradict `6a Details`, which draws that interval as its own row",
   },
 
   // ---- S6 · settings ----
   //
-  // ELEVEN ROWS, FOUR CAUSES, AND EVERY ONE OF THEM IS A SENTENCE OR A CONTROL THAT IS NOT DRAWN.
+  // EIGHT ROWS, THREE CAUSES, AND EVERY ONE OF THEM IS A SENTENCE THAT IS NOT DRAWN.
   // Nothing here is a colour or a spacing that came out wrong: the tab bodies, the panels, the rule
   // rows and the three radio cards all match the frames exactly. What is left is the shape the
-  // omissions leave behind — a helper one line shorter, a panel head that reaches the full width
-  // because the schedule control is missing from beside it, and a tail that sits 71px lower because
-  // the block above it was never built.
+  // omissions leave behind — a helper one line shorter, and a tail that sits lower because the
+  // block above it was never built.
+  //
+  // WAS ELEVEN ROWS AND FOUR CAUSES. #193 built the schedule, so the panel head's three `box.w`
+  // rows — the text block, its title and its sub-line all taking the width the missing
+  // Weekly/Monthly control was holding — are retired rather than left to pass silently. The control
+  // that replaces them is DECLARED (`scheduleMode` in `fids.js`), not merely present: a retirement
+  // and a fresh divergence cancel each other out, and an undeclared replacement would take three
+  // checked nodes off the books and put nothing back.
   {
     frame: "8a Settings",
     key: "div[2]/div[2]/div[0]",
@@ -572,30 +578,6 @@ export const KNOWN_DEVIATIONS = [
     detail: "109 vs 91",
     issue: "#207",
     why: "the Proton side is a grid cell, so it stretches to whatever the taller column is — it loses the same 18px its neighbour does, and its own helper is unchanged",
-  },
-  {
-    frame: "8a Settings",
-    key: "div[2]/div[5]/div[0]/div[0]",
-    props: ["box.w"],
-    detail: "762.88 vs 938",
-    issue: "#193",
-    why: "the schedule panel's head row draws a Weekly/Monthly segmented control 155px wide beside its text, and G4 has no `full_scan_schedule` key for it to set — with the control gone the text block takes the width the control and its 20px gap were holding",
-  },
-  {
-    frame: "8a Settings",
-    key: "div[2]/div[5]/div[0]/div[0]/div[0]",
-    props: ["box.w"],
-    detail: "762.88 vs 938",
-    issue: "#193",
-    why: "the panel title inside that block, at the same width for the same reason",
-  },
-  {
-    frame: "8a Settings",
-    key: "div[2]/div[5]/div[0]/div[0]/div[1]",
-    props: ["box.w"],
-    detail: "762.88 vs 938",
-    issue: "#193",
-    why: "and its sub-line. The height is unaffected: both sentences are one line at either width",
   },
   // ---- §63b · the split bar's fills are computed, and the frame's two are not ----
   //

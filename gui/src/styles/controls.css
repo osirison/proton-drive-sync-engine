@@ -307,12 +307,28 @@
   gap: 8px;
 }
 
+/* The Weekly/Monthly track (#193). Measured off `8a Settings`: a `--surface` well inside a
+   `--border` hairline, the selected segment sitting in 3px of padding. `flex-shrink:0` is what
+   keeps the labels off two lines beside a head-row text block that takes the remaining width. */
+.segmented {
+  display: flex;
+  flex-shrink: 0;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-10);
+  background: var(--surface);
+}
+
 /* Measured off `8a Settings`' seven day chips: 42px wide at a 5px gap, not the pill row's 44/8.
-   S6 does not render them — the schedule they belong to is G4 (#193) — so these are the numbers
-   waiting for whoever builds it, not numbers any gate checks. */
+   Rendered since #193 built the schedule, so these ARE numbers the box gate checks now — the
+   comment that said otherwise was true only while nothing drew them. */
 .day-chips {
   display: flex;
-  align-items: center;
+  /* NO `align-items`. The chips are all one height, so centring them changes nothing visible — and
+     `8a Settings` draws the row at the initial `normal`, which the gate compares exactly. A
+     property that makes no difference is still a property the frame either has or does not. */
+  flex-shrink: 0;
   gap: 5px;
 }
 .day-chips .btn {
@@ -322,12 +338,15 @@
 .stepper {
   display: inline-flex;
   align-items: center;
+  /* Beside a flexible spacer in the schedule row, so without this the two buttons and the time
+     between them are the first thing to give when the row runs short. */
+  flex-shrink: 0;
   gap: 6px;
 }
 /* 28×28, both of them. `SIZE.icon` sets radius, padding and font-size and no box, so the two glyphs
    sized themselves off their own metrics — `−` came out 20.91×20 against `＋`'s 27×21, visibly
-   different from each other and 8px short of the drawn square. Nothing could see it: the stepper is
-   not mapped (the schedule it belongs to is G4), so the box gate never looks. */
+   different from each other and 8px short of the drawn square. Nothing could see it while the
+   stepper was unmapped; #193 mapped it, so the box gate looks now. */
 .stepper .btn {
   width: 28px;
   height: 28px;
