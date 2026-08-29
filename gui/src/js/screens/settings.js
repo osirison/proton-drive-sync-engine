@@ -44,7 +44,17 @@
 
 import { el } from "../ui/el.js";
 import { MAIN, NOTIFY, SETTINGS } from "../ui/copy.js";
-import { button, pillTabs, radioCard, setButtonKind, stepper, textInput, toggle } from "../ui/controls.js";
+import {
+  button,
+  dayChips,
+  pillTabs,
+  radioCard,
+  segmentedControl,
+  setButtonKind,
+  stepper,
+  textInput,
+  toggle,
+} from "../ui/controls.js";
 import { eyebrow, splitEmphasis } from "../ui/rows.js";
 import { renderSeam } from "../ui/seam.js";
 import { renderHexagon } from "../ui/hexagon.js";
@@ -273,9 +283,16 @@ export function removalCost(saved, staged, report) {
  * report a change that removing and re-adding the same rule did not make.
  */
 export const ABSENT_DEFAULTS = {
-  // `src/config.rs` resolves this to 300 when the file is silent, and `timerPanel` draws that —
-  // so stepping the timer up and back down to what it already said must not stage a change.
+  // `src/config.rs` resolves this to 300 when the file is silent, and the daemon uses it for the
+  // ordinary pass cadence in snapshot mode — so a config that edits it up and back down to what it
+  // already said must not stage a change. No longer drawn by any control (#193 replaced the panel
+  // that showed it), and still a key the file may hold, so the rule stays.
   scan_interval_secs: 300,
+  // #193: an absent key IS "no scheduled sweep", and `""` is how the screen stages that — so
+  // picking a day and unpicking it must land back on "no change" rather than on a staged edit that
+  // would save nothing. Unlike every other entry here the default is not a value the daemon
+  // resolves to; it is the absence itself, spelled the one way `write_config` accepts.
+  full_scan_schedule: "",
   events_driven: true,
   delete_approval_remote: true,
   delete_approval_local: true,
@@ -322,24 +339,77 @@ export function refusalReason(message) {
     : message;
 }
 
+// --------------------------------------------------------------- the full-sweep schedule (#193) ----
+
+/** The key, spelled once. The engine's `FULL_SCAN_SCHEDULE_KEY`. */
+const SCHEDULE_KEY = "full_scan_schedule";
+
 /**
- * `scan_interval_secs`, in the plain language `IMPLEMENTATION-PLAN.md` §4 asks for.
+ * `Mon`..`Sun` — the chip labels, **Monday first**, which is the order `8a Settings` draws them in.
  *
- * Whole minutes read as minutes; anything else reads in seconds rather than rounding. A config
- * written by hand at 90s must not draw as `2 min` — the stepper would then write 120 for a value
- * nobody touched, which is the same silent rewrite `policyOf` refuses one block up.
+ * The index into this array is NOT a weekday number anyone else uses: the wire tokens are
+ * `sun mon tue wed thu fri sat` and the array starts at Monday, so the two are related only through
+ * [`WEEKDAY_TOKENS`] below. Keeping the drawn order in the drawn array and the wire order in the
+ * wire array is what stops a silent off-by-one between what is highlighted and what is saved.
  */
-export function intervalLabel(secs) {
-  const n = Number(secs);
-  if (!Number.isFinite(n) || n <= 0) return SETTINGS.timerSeconds(0);
-  return n % 60 === 0 ? SETTINGS.timerUnit(n / 60) : SETTINGS.timerSeconds(n);
+const WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+/** The same seven days in the spelling the config file holds, in the same order as the labels. */
+const WEEKDAY_TOKENS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+/** 1..31. The frame's grid stops at 20, which cannot reach the days its own note is about — see
+ * DEVIATIONS §104. */
+const MONTH_DAYS = Array.from({ length: 31 }, (_, i) => String(i + 1));
+/** Where the controls sit before anything is chosen: the time both frames draw. */
+const DEFAULT_SWEEP_TIME = "03:00";
+
+/**
+ * Read `full_scan_schedule` as the file holds it. `null` for absent AND for anything unreadable.
+ *
+ * Strict, and matching `src/schedule.rs`'s parser exactly, because the two have to agree about what
+ * the file says: a value this accepted and the daemon refused would draw a schedule on a screen
+ * belonging to a daemon that will not start.
+ */
+export function parseSchedule(value) {
+  if (typeof value !== "string") return null;
+  const weekly = /^weekly (sun|mon|tue|wed|thu|fri|sat) (\d{2}:\d{2})$/.exec(value.trim());
+  if (weekly && isTimeOfDay(weekly[2])) {
+    return { kind: "weekly", day: WEEKDAY_TOKENS.indexOf(weekly[1]), at: weekly[2] };
+  }
+  const monthly = /^monthly day (\d{1,2}), (\d{2}:\d{2})$/.exec(value.trim());
+  if (monthly && isTimeOfDay(monthly[2])) {
+    const day = Number(monthly[1]);
+    if (day >= 1 && day <= 31) return { kind: "monthly", day, at: monthly[2] };
+  }
+  return null;
 }
 
-/** One minute a step, and never below one: a zero interval is a daemon in a spin loop. */
-export const MIN_INTERVAL_SECS = 60;
-export const MAX_INTERVAL_SECS = 7200;
-export const stepInterval = (secs, delta) =>
-  Math.min(MAX_INTERVAL_SECS, Math.max(MIN_INTERVAL_SECS, Number(secs || 0) + delta * 60));
+/** Back to the one spelling the file holds and the key line shows. */
+export function formatSchedule(schedule) {
+  return schedule.kind === "weekly"
+    ? `weekly ${WEEKDAY_TOKENS[schedule.day]} ${schedule.at}`
+    : `monthly day ${schedule.day}, ${schedule.at}`;
+}
+
+const isTimeOfDay = (text) => {
+  const [h, m] = text.split(":").map(Number);
+  return h >= 0 && h <= 23 && m >= 0 && m <= 59;
+};
+
+/** `03:00` — the value the stepper shows, which is already the stored spelling. */
+export const formatTimeOfDay = (at) => at;
+
+/**
+ * The stepper moves the sweep by 30 minutes and WRAPS at midnight rather than clamping.
+ *
+ * Clamping would make `00:00` a floor a user could reach and not leave downward, and a time of day
+ * is a circle: stepping back from `00:00` to `23:30` is what someone pressing `−` means. The
+ * retired `stepInterval` clamped for the opposite reason — a zero scan interval is a daemon in a
+ * spin loop — which is why a shared helper would have been wrong for both.
+ */
+export function stepTimeOfDay(at, delta) {
+  const [h, m] = at.split(":").map(Number);
+  const total = (h * 60 + m + delta * 30 + 1440) % 1440;
+  return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+}
 
 // ------------------------------------------------------------------------ shared furniture ----
 
@@ -474,58 +544,199 @@ function livePanel(props) {
 }
 
 /**
- * The second cadence panel, on its Phase-1 subject.
+ * The full-sweep schedule (G4, #193) — the second cadence panel, now on the subject the frame draws.
  *
- * WHAT THE FRAME DRAWS HERE IS A SCHEDULE FOR THE FULL SWEEP, and there is no such thing to draw
- * (G4 #193). What the config does carry is `scan_interval_secs` — how often the daemon looks at
- * all, which is a different question with an honest answer, and the one §4 says to present in plain
- * language. So the shell, the head row and the divided control row are the frame's; the subject,
- * the title and what the row holds are Phase 1's.
+ * `full_scan_schedule` is the ONE user-facing full-sweep trigger. It does not replace or arbitrate
+ * with `events_full_scan_every` or `warm_start_full_walk_every`, which are self-heal safety nets
+ * with no UI: all three mean "the next pass is a full one" to the daemon, so they compose through
+ * one idempotent latch. `src/schedule.rs` carries that reasoning.
  *
- * The head row keeps its shape with one child where the frame has two: the Weekly/Monthly control
- * is the schedule's, and there is no schedule.
+ * `scan_interval_secs` has NOT disappeared — it still governs the ordinary pass cadence in
+ * degraded/snapshot mode. What the design removes is its presence here as a user-facing full-sweep
+ * dial, which it never was: the Phase-1 fallback drew it under an honest title of its own because
+ * this panel had nothing to show.
+ *
+ * # The unset state, which no frame draws
+ *
+ * Every config written before this key has no schedule, and that is a real state rather than a
+ * value to fill in. The controls have to sit somewhere, so they sit at the drawn defaults — but the
+ * key line says `not set` and a sentence says so in words. Rendering `full_scan_schedule · weekly
+ * sun 03:00` under untouched controls would claim a value the file does not hold, which is #347's
+ * defect on the screen whose entire job is to report what the file says. DEVIATIONS §104.
  */
-function timerPanel(props) {
+function schedulePanel(props) {
   const { config, handlers } = props;
-  const secs = config.scan_interval_secs ?? 300;
-  return fid(
-    panel("settings-panel-block", [
+  const schedule = parseSchedule(config.full_scan_schedule);
+  // THE DRAFT WINS WHEN THERE IS ONE, and it is `null` until someone clicks a segment.
+  //
+  // Reading the mode off the schedule first made the Weekly/Monthly control INERT whenever one was
+  // configured — and worse than inert: the click was latched and applied later, so clearing the
+  // schedule jumped the panel to a mode chosen several actions ago. Reaching the monthly editor
+  // meant guessing that clicking the already-selected day chip clears the schedule first. Found by
+  // adversarial review, driven headlessly against the `8a Settings` fixture.
+  //
+  // With a weekly schedule set and `Monthly` clicked, the panel shows the monthly editor with no
+  // day selected while the key line still reports `weekly sun 03:00` — which is the honest reading:
+  // the editor is showing you a mode, and the file still says what it says until you pick a day.
+  const monthly = props.scheduleDraftMonthly ?? (schedule ? schedule.kind === "monthly" : false);
+  const at = schedule?.at ?? DEFAULT_SWEEP_TIME;
+
+  const setSchedule = (next) => handlers.onSchedule?.(next);
+  // With no schedule there is nothing to move, so the stepper does nothing rather than inventing
+  // one at whatever time the controls happen to be sitting at. Picking a day is what commits.
+  const stepTime = (delta) => {
+    if (schedule) setSchedule({ ...schedule, at: stepTimeOfDay(at, delta) });
+  };
+  const timeStepper = () => {
+    const node = namedSteps(stepper({ value: at, format: formatTimeOfDay, onStep: stepTime }));
+    fid(node.children[0], "scheduleStepDown");
+    fid(node.children[1], "scheduleTime");
+    fid(node.children[2], "scheduleStepUp");
+    return fid(node, "scheduleStepper");
+  };
+
+  const head = fid(
+    el(
+      "div",
+      { class: "settings-panel-head" },
       fid(
         el(
           "div",
-          { class: "settings-panel-head" },
-          fid(
-            el(
-              "div",
-              { class: "settings-panel-text" },
-              fid(el("div", { class: "settings-panel-title" }, SETTINGS.timer), "timerTitle"),
-              fid(el("div", { class: "settings-panel-sub" }, SETTINGS.timerSub), "timerSub"),
-            ),
-            "timerText",
-          ),
+          { class: "settings-panel-text" },
+          fid(el("div", { class: "settings-panel-title" }, SETTINGS.fullScan), "timerTitle"),
+          fid(el("div", { class: "settings-panel-sub" }, SETTINGS.fullScanSubUnknown), "timerSub"),
         ),
-        "timerHead",
+        "timerText",
       ),
+      stampSegments(
+        segmentedControl({
+          items: [
+            { id: "weekly", label: SETTINGS.weekly },
+            { id: "monthly", label: SETTINGS.monthly },
+          ],
+          active: monthly ? "monthly" : "weekly",
+          // Switching the editor's mode is NOT setting a schedule: with none configured there is
+          // nothing to convert, and switching a live one would silently move the sweep to a day the
+          // user did not choose. Picking a day is what commits, in both directions.
+          onSelect: (id) => handlers.onScheduleMode?.(id === "monthly"),
+        }),
+      ),
+    ),
+    "timerHead",
+  );
+
+  // The key line is a `span` here and a `div` in the live panel above — the two frames draw them as
+  // different tags, so `keyLine`'s div cannot serve both.
+  const key = fid(
+    el(
+      "span",
+      { class: "settings-key" },
+      schedule ? `${SCHEDULE_KEY} · ${formatSchedule(schedule)}` : SETTINGS.scheduleUnsetKey,
+    ),
+    "scheduleKey",
+  );
+  const unset = schedule ? [] : [fid(unsetNote(), "scheduleUnset")];
+
+  if (!monthly) {
+    return fid(
+      panel("settings-panel-block", [
+        head,
+        fid(
+          el(
+            "div",
+            { class: "settings-panel-control" },
+            fid(el("span", { class: "settings-control-label" }, SETTINGS.every), "scheduleEveryLabel"),
+            stampDays(
+              dayChips({
+                days: WEEKDAY_LABELS,
+                selected: schedule?.kind === "weekly" ? [WEEKDAY_LABELS[schedule.day]] : [],
+                // Toggling the selected day OFF clears the schedule, which is the only way to turn
+                // a sweep off: absent IS the "no scheduled sweep" state and there is no off value.
+                onToggle: (label) => {
+                  const day = WEEKDAY_LABELS.indexOf(label);
+                  setSchedule(
+                    schedule?.kind === "weekly" && schedule.day === day ? null : { kind: "weekly", day, at },
+                  );
+                },
+              }),
+            ),
+            fid(el("span", { class: "settings-control-label" }, SETTINGS.at), "scheduleAtLabel"),
+            timeStepper(),
+            el("span", { class: "settings-spacer" }),
+            key,
+          ),
+          "scheduleRow",
+        ),
+        ...unset,
+      ]),
+      "timerPanel",
+    );
+  }
+
+  const day = schedule?.kind === "monthly" ? schedule.day : null;
+  return fid(
+    panel("settings-panel-block", [
+      head,
       el(
         "div",
-        { class: "settings-panel-control" },
-        el("span", { class: "settings-control-label" }, SETTINGS.every),
-        namedSteps(
-          stepper({
-            value: secs,
-            format: intervalLabel,
-            min: MIN_INTERVAL_SECS,
-            max: MAX_INTERVAL_SECS,
-            onStep: (delta) => handlers.onInterval?.(stepInterval(secs, delta)),
-          }),
+        { class: "settings-schedule-monthly" },
+        el(
+          "div",
+          { class: "settings-panel-control" },
+          el("span", { class: "settings-control-label" }, SETTINGS.onDay),
+          stampDays(
+            dayChips({
+              days: MONTH_DAYS,
+              selected: day == null ? [] : [String(day)],
+              className: "month-days",
+              onToggle: (label) => {
+                const picked = Number(label);
+                setSchedule(day === picked ? null : { kind: "monthly", day: picked, at });
+              },
+            }),
+          ),
         ),
-        el("span", { class: "settings-spacer" }),
-        keyLine("scan_interval_secs"),
+        // Key line BEFORE the stepper, which is the order `8a Schedule monthly` draws them in and
+        // the reverse of the weekly row above. Two frames of one panel; each is built as drawn.
+        el("div", { class: "settings-panel-control" }, key, timeStepper()),
+        // Only for a day a month can actually lack. The frame draws this sentence under a selected
+        // `15`, where it is false about its own value — see `SETTINGS.monthEdgeNote`, DEVIATIONS §104.
+        ...(day != null && day > 28 ? [fid(monthEdgeNote(day), "scheduleEdgeNote")] : []),
+        ...unset,
       ),
     ]),
     "timerPanel",
   );
 }
+
+/**
+ * Stamp a shared builder's children from the outside.
+ *
+ * `segmentedControl`, `dayChips` and `stepper` live in `ui/controls.js` and are used by screens that
+ * map different slots, so they cannot carry fid names of their own — the same reason S5 stamps
+ * `pillTabs`' two buttons at its call site.
+ *
+ * The MONTHLY grid goes through `stampDays` too, and its 31 chips overrun the seven `scheduleDay`
+ * slots the window frame declares. That is harmless and deliberate: the monthly crop maps only its
+ * header (the two frames disagree about the head row's gap), so nothing compares those keys — and
+ * stamping them anyway keeps one code path for both variants rather than a branch that exists only
+ * to satisfy a gate.
+ */
+function stampSegments(node) {
+  fid(node.children[0], "scheduleWeekly");
+  fid(node.children[1], "scheduleMonthly");
+  return fid(node, "scheduleMode");
+}
+
+function stampDays(node) {
+  [...node.children].forEach((chip, i) => fid(chip, "scheduleDay", i));
+  return fid(node, "scheduleDays");
+}
+
+/** The `not set` sentence, shared by both variants. */
+const unsetNote = () => el("div", { class: "settings-panel-note" }, SETTINGS.scheduleUnset);
+
+const monthEdgeNote = (day) => el("div", { class: "settings-panel-note" }, SETTINGS.monthEdgeNote(day));
 
 /**
  * `Full sweep now` — `ControlCommand::Resync`, which latches the next pass to a full-tree walk and
@@ -586,7 +797,7 @@ function foldersTab(props) {
     fid(el("div", { class: "settings-pair" }, pairSide(props, 0), pairSide(props, 1)), "pairGrid"),
     fid(sectionLabel(SETTINGS.cadenceTitle, "settings-label-cadence"), "cadenceLabel"),
     livePanel(props),
-    timerPanel(props),
+    schedulePanel(props),
     fid(sectionLabel(SETTINGS.runOne, "settings-label-run"), "runLabel"),
     sweepPanel(props),
   ];

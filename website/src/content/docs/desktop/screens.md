@@ -176,7 +176,7 @@ Edits the daemon's TOML config directly, in five tabs:
 
 | Tab | Holds |
 | --- | --- |
-| **Folders** | The pair (`local_root`, `remote_root`), the `events_driven` toggle, `scan_interval_secs`, and **Sweep now** (a full-tree resync). |
+| **Folders** | The pair (`local_root`, `remote_root`), the `events_driven` toggle, the full-sweep schedule (`full_scan_schedule` — weekly or monthly, a day and a time), and **Sweep now** (a full-tree resync). |
 | **What to skip** | The `exclude` rules, one per row with a live count of what each currently hides. |
 | **Deletions** | Three radio cards writing `deletion_policy` — ask every time, only permanent, never — applying to **both** directions. |
 | **Notifications** | The notify policy. This one is GUI-local: it is written to the app's own `gui.toml` and the daemon never sees it. |

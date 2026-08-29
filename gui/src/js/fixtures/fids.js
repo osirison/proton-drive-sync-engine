@@ -1264,6 +1264,23 @@ const SETTINGS_FOLDERS_FIDS = {
   timerText: "div[2]/div[5]/div[0]/div[0]",
   timerTitle: "div[2]/div[5]/div[0]/div[0]/div[0]",
   timerSub: "div[2]/div[5]/div[0]/div[0]/div[1]",
+  // #193 built the schedule, so the control that was missing from beside the text block is here and
+  // the three `box.w` deviations it caused are retired. Declared for the same reason the head row
+  // is: the reason those rows existed was this node's absence, and an undeclared replacement would
+  // retire the deviations and check nothing in their place.
+  scheduleMode: "div[2]/div[5]/div[0]/div[1]",
+  scheduleWeekly: "div[2]/div[5]/div[0]/div[1]/button[0]",
+  scheduleMonthly: "div[2]/div[5]/div[0]/div[1]/button[1]",
+  scheduleRow: "div[2]/div[5]/div[1]",
+  scheduleEveryLabel: "div[2]/div[5]/div[1]/span[0]",
+  scheduleDays: "div[2]/div[5]/div[1]/div[0]",
+  scheduleDay: (i) => `div[2]/div[5]/div[1]/div[0]/button[${i}]`,
+  scheduleAtLabel: "div[2]/div[5]/div[1]/span[1]",
+  scheduleStepper: "div[2]/div[5]/div[1]/div[1]",
+  scheduleStepDown: "div[2]/div[5]/div[1]/div[1]/button[0]",
+  scheduleTime: "div[2]/div[5]/div[1]/div[1]/span",
+  scheduleStepUp: "div[2]/div[5]/div[1]/div[1]/button[1]",
+  scheduleKey: "div[2]/div[5]/div[1]/span[3]",
 
   runLabel: "div[2]/div[6]",
   runPanel: "div[2]/div[7]",
@@ -1330,13 +1347,18 @@ const SETTINGS_DELETIONS_FIDS = {
 };
 
 /**
- * `8a Schedule monthly` — the schedule panel G4 (#193) does not build.
+ * `8a Schedule monthly` — the monthly variant of the schedule panel, which #193 built.
  *
- * TWO SLOTS, AND BOTH ARE THE PANEL'S HEADER. Everything under it — the Weekly/Monthly control, the
- * twenty day chips, the time stepper, the `full_scan_schedule` key line and the month-edge note —
- * needs a key the engine does not have. What is left is the panel and the title above the fold, and
- * even the sub-line is out: this crop draws it at 18.75px line-height where the same sentence in the
- * window is 18.125px, so the two frames disagree about a node neither of them owns.
+ * TWO SLOTS, AND BOTH ARE THE PANEL'S HEADER, and the reason is now the frames rather than a
+ * missing capability: this crop and `8a Settings` disagree about the panel's own numbers, so a
+ * mapped node would make the app fail whichever of the two it is not. The sub-line is out for
+ * exactly that — the crop draws it at 18.75px line-height where the same sentence in the window is
+ * 18.125px.
+ *
+ * The variant IS rendered now (the fixture's `ui.schedule` selects it and its config carries
+ * `monthly day 15, 03:00`), so the twenty-odd nodes beneath — the day grid, the stepper, the key
+ * line, the month-edge note — are built and drawn here; they are simply not compared against this
+ * crop. `8a Settings` is where the same panel's weekly variant is asserted node by node.
  */
 const SETTINGS_MONTHLY_FIDS = {
   // `div[0]`, the head row, is NOT mapped either: the crop draws it `gap:18px` where the window

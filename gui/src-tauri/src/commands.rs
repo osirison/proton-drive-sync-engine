@@ -276,6 +276,13 @@ pub struct ConfigPayload {
     local_root: Option<String>,
     remote_root: Option<String>,
     scan_interval_secs: Option<i64>,
+    /// The user-facing full-sweep schedule (#193, G4), as the file literally holds it —
+    /// `weekly sun 03:00` / `monthly day 15, 03:00`, or **absent, meaning no scheduled sweep**.
+    ///
+    /// Absent is a real state and not a missing value to fill in: the Settings panel must draw it
+    /// as unset rather than as the defaults its controls happen to sit at, or the key line would
+    /// claim a schedule the file does not hold — #347's defect exactly.
+    full_scan_schedule: Option<String>,
     events_driven: Option<bool>,
     include: Vec<String>,
     exclude: Vec<String>,
@@ -317,6 +324,7 @@ pub fn read_config(state: Paths) -> Result<ConfigPayload, String> {
         local_root: doc.get_str("local_root"),
         remote_root: doc.get_str("remote_root"),
         scan_interval_secs: doc.get_int("scan_interval_secs"),
+        full_scan_schedule: doc.get_str("full_scan_schedule"),
         events_driven: doc.get_bool("events_driven"),
         include: doc.get_string_array("include"),
         exclude: doc.get_string_array("exclude"),
@@ -340,6 +348,9 @@ pub struct ConfigUpdate {
     local_root: Option<String>,
     remote_root: Option<String>,
     scan_interval_secs: Option<i64>,
+    /// An **empty string clears the key**, which is how the schedule is turned off: absent means
+    /// no scheduled sweep, and `full_scan_schedule = ""` is a value the daemon refuses to start on.
+    full_scan_schedule: Option<String>,
     events_driven: Option<bool>,
     include: Option<Vec<String>>,
     exclude: Option<Vec<String>>,
@@ -398,6 +409,9 @@ pub fn write_config(state: Paths, update: ConfigUpdate) -> Result<(), String> {
         ("socket_path", &update.socket_path),
         ("log_level", &update.log_level),
         ("conflict_suffix", &update.conflict_suffix),
+        // Same rule, and here it is the feature rather than a guard: clearing the key is how a
+        // person turns the scheduled sweep off. There is no "off" value to write.
+        ("full_scan_schedule", &update.full_scan_schedule),
     ] {
         match value.as_deref().map(str::trim) {
             Some("") => doc.remove(key),

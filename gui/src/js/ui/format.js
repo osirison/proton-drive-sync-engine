@@ -48,6 +48,22 @@ const CARDINALS = ["zero", "One", "Two", "Three", "Four", "Five", "Six", "Seven"
  */
 export const plural = (n, one, many) => (Number(n) === 1 ? one : many);
 
+/**
+ * `1st`, `2nd`, `3rd`, `4th` … `21st`, `31st` — the day-of-month suffix.
+ *
+ * The teens are the whole reason this is a function: 11, 12 and 13 take `th` despite ending in 1, 2
+ * and 3, which is the rule a naive last-digit lookup gets wrong. Over the 1..31 range this is used
+ * for, that is **three** values — 11, 12 and 13 — not one.
+ */
+export function ordinal(n) {
+  const value = Number(n);
+  if (!Number.isInteger(value)) return String(n);
+  const tens = Math.abs(value) % 100;
+  const suffix =
+    tens >= 11 && tens <= 13 ? "th" : { 1: "st", 2: "nd", 3: "rd" }[Math.abs(value) % 10] || "th";
+  return `${value}${suffix}`;
+}
+
 export function cardinal(n, register = "sentence") {
   if (n == null) return EM_DASH;
   const value = Number(n);

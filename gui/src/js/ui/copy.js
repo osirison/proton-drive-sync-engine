@@ -22,7 +22,7 @@
 //   6. "this computer", never a brand or OS name. "Proton Drive" in full, never "the cloud".
 //   7. "kept" not "preserved", "waiting" not "pending", "brought here" not "downloaded" in prose.
 
-import { count, cardinal, plural, bytes, clock } from "./format.js";
+import { count, cardinal, ordinal, plural, bytes, clock } from "./format.js";
 
 // ------------------------------------------------------------------ product and chrome ----
 
@@ -874,24 +874,55 @@ export const SETTINGS = {
   fullScan: "Compare everything, top to bottom",
   fullScanSub: (files) =>
     `A full check of all ${count(files)} files as a safety net. It's slow, so it runs on a schedule rather than constantly.`,
+  /**
+   * The same sentence without its count, which is what this tab can actually say.
+   *
+   * `12,480 files` is the sync folder's total, and the only thing that counts it is
+   * `skip_rule_usage` — a full metadata walk the Folders tab deliberately does not run (`app.js`:
+   * "the other three would pay for a full metadata pass of the sync folder to draw nothing"). The
+   * count is therefore G7's gap, not G4's, and this is the same treatment the local helper one
+   * panel up already gets.
+   *
+   * Deliberately NOT "use the count when the Skip tab happens to have loaded it": the sentence would
+   * then gain and lose a number depending on which tab you visited last, which is worse than a
+   * stable omission and is the kind of thing no gate would ever catch.
+   */
+  fullScanSubUnknown:
+    "A full check of everything as a safety net. It's slow, so it runs on a schedule rather than constantly.",
   weekly: "Weekly",
   monthly: "Monthly",
   every: "Every",
   at: "at",
   onDay: "On day",
-  monthEdgeNote: "Months without a 15th are skipped to the last day.",
-  // The second panel, as Phase 1 can honestly title it. G4 (#193): there is no `full_scan_schedule`
-  // key, no scheduler and no command — and `events_full_scan_every`, the nearest real thing, counts
-  // PASSES rather than days and defaults to off. So the panel keeps its shell and changes its
-  // subject to the one cadence the config does carry, `scan_interval_secs`.
+  /**
+   * The month-edge rule, as a function of the chosen day rather than the constant the frame draws.
+   *
+   * `8a Schedule monthly` draws `Months without a 15th are skipped to the last day.` beneath a day
+   * grid with `15` selected — and **every month has a 15th**, so the drawn sentence is false about
+   * its own drawn value. It is plainly a template the designer filled in; read as one it is exactly
+   * right, and it is only *true* for 29, 30 and 31. The screen shows it for those three days and
+   * omits it otherwise, rather than stating a rule that cannot apply. DEVIATIONS §104.
+   */
+  monthEdgeNote: (day) => `Months without a ${ordinal(day)} are skipped to the last day.`,
+  /** No schedule in the file — see `SETTINGS.scheduleUnset`. */
+  scheduleUnsetKey: "full_scan_schedule · not set",
+  /**
+   * What the panel says when no schedule is configured, which is the state EVERY config written
+   * before #193 is in and the one no frame draws.
+   *
+   * It must not read as a schedule: the controls sit at the drawn defaults because they have to sit
+   * somewhere, and a key line rendering `full_scan_schedule · weekly sun 03:00` under them would
+   * claim a value the file does not hold — #347's defect, on a screen whose whole job is to say
+   * what the file says.
+   */
+  scheduleUnset: "No full sweep is scheduled. Pick a day to start one.",
+  // The Phase-1 substitutes for this panel — `Look for changes on a timer` over a
+  // `scan_interval_secs` stepper — are GONE, not exempted (#193). The panel draws the schedule the
+  // frame draws now, so a title about a different cadence has nothing to title and a string no
+  // screen renders is one a later reader has to work out the status of.
   //
-  // NOT the drawn title with a different control under it: `Compare everything, top to bottom` over
-  // a timer that (with live updates on) runs an incremental pass would be a false claim about what
-  // the app does with someone's files, which is the one thing this screen may not do.
-  timer: "Look for changes on a timer",
-  timerSub: "A backstop for the live updates above. It runs whether or not Proton reported anything.",
-  timerUnit: (mins) => `${mins} min`,
-  timerSeconds: (secs) => `${secs} s`,
+  // `scan_interval_secs` itself is untouched in the config: it still governs the ordinary pass
+  // cadence in snapshot mode. What went is its presence here as a user-facing full-sweep dial.
 
   runOne: "Run one now",
   fullSweep: "Full sweep now",

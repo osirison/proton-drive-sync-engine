@@ -26,7 +26,10 @@ use crate::proton::{
     RemoteEntity, RemoteListingStatus, is_auth_failure_error, is_cli_busy_error,
     is_node_not_found_error,
 };
+use chrono::{Local, TimeZone};
+
 use crate::reconstruct::{Reconstruction, RemoteChangeResolver, reconstruct_remote};
+use crate::schedule::FullScanSchedule;
 use crate::session::{CliKeyringSession, CurlHttpTransport};
 use crate::sync::{
     ConflictNaming, DeleteDirection, DryRunReport, PlanSummary, PlannedAction, SyncAction,
@@ -83,6 +86,13 @@ const BROWSE_GATE_WAIT: Duration = Duration::from_secs(2);
 /// `events_full_scan_every`, the across-restart `warm_start_full_walk_every`, and the degraded
 /// session above. A warm start instead replays the cursor and scans the local tree only.
 const EVENTS_POLL_INTERVAL: Duration = Duration::from_secs(30);
+
+/// What the scheduled-sweep timer is parked on when there is no schedule, or when one cannot be
+/// resolved to an instant at all. **The arm is disabled in both cases** — it is gated on the
+/// resolved deadline, not on the key being present — so this deadline exists only because a pinned
+/// `sleep` needs one, and is never reached. A day rather than `Duration::MAX`, which overflows
+/// tokio's timer wheel, and rather than something short, which would wake the loop for nothing.
+const NO_SCHEDULE_PARK: Duration = Duration::from_secs(86_400);
 /// Dedicated `tracing` target for the per-file upload/download log lines, so operators can filter
 /// or silence the (potentially high-volume, filename-bearing) transfer trace independently of the
 /// daemon's other info-level lifecycle logs — e.g. `RUST_LOG=proton_drive_sync_engine::transfer=warn`
@@ -158,6 +168,15 @@ pub struct DaemonConfig {
     /// - events on with an unusable session → the snapshot cadence *and* the session-retry
     ///   cadence, because the fast event poll is gated off while degraded (#50).
     pub scan_interval: Duration,
+    /// The one **user-facing** full-sweep trigger (#193, G4): a wall-clock moment at which the next
+    /// pass is a full walk. `None` — the default, and what every config written before this key
+    /// says — means no scheduled sweep at all.
+    ///
+    /// It does not replace, wrap or arbitrate with the two self-heal nets beside it
+    /// (`events_full_scan_every`, `warm_start_full_walk_every`): all three mean the identical thing
+    /// to a pass, so they compose through one idempotent latch and there is no precedence rule.
+    /// See [`crate::schedule`] for that reasoning and for why a missed run is skipped, not caught up.
+    pub full_scan_schedule: Option<FullScanSchedule>,
     pub proton_cli: PathBuf,
     pub proton_timeout: Duration,
     pub proton_list_attempts: usize,
@@ -236,6 +255,7 @@ impl DaemonConfig {
             lockfile_path,
             global_lock_path,
             scan_interval,
+            full_scan_schedule,
             proton_cli: _,
             proton_timeout: _,
             proton_list_attempts: _,
@@ -262,6 +282,7 @@ impl DaemonConfig {
                 db_path,
                 lockfile_path,
                 scan_interval,
+                full_scan_schedule,
                 download_batch_size,
                 include_patterns,
                 exclude_patterns,
@@ -299,6 +320,9 @@ struct PairConfig {
     db_path: PathBuf,
     lockfile_path: PathBuf,
     scan_interval: Duration,
+    /// See [`DaemonConfig::full_scan_schedule`]. Per-pair because it describes a tree, exactly as
+    /// `scan_interval` above it does — phase 4's due queue will arm one timer per pair.
+    full_scan_schedule: Option<FullScanSchedule>,
     download_batch_size: usize,
     include_patterns: Vec<String>,
     exclude_patterns: Vec<String>,
@@ -1794,6 +1818,18 @@ impl<C: ProtonClient> Daemon<C> {
         // reason per cause (see `note_event_scope_declined`), not a second line here saying
         // something adjacent.
 
+        // The scheduled full sweep (#193). Created ONCE and `reset` after each firing rather than
+        // rebuilt in the arm: a `sleep` constructed inside `select!` is a new deadline every time
+        // any other arm wakes the loop, so a busy watcher would push the sweep back for ever and
+        // the bug would only show on a machine with file activity.
+        //
+        // A daemon with no schedule still needs a future to pin, so it gets a far one and the
+        // precondition keeps it from ever being polled. It is deliberately not `Duration::MAX`,
+        // which overflows tokio's timer.
+        let mut sweep_due = self.next_full_sweep_in();
+        let mut full_sweep =
+            std::pin::pin!(tokio::time::sleep(sweep_due.unwrap_or(NO_SCHEDULE_PARK)));
+
         let shutdown = shutdown_signal();
         tokio::pin!(shutdown);
 
@@ -1863,6 +1899,24 @@ impl<C: ProtonClient> Daemon<C> {
                         if self.pair().config.events_driven && self.event_source.is_some() => {
                         self.reconcile_if_needed().await?;
                     }
+                    // #193. Latch first, then reconcile, then re-arm from a fresh clock read — so a
+                    // pass that runs long, or is skipped by a pause, cannot make the next deadline
+                    // drift by however long it took. The latch itself survives a pause for the
+                    // reason `resync` does: it describes the next pass, not this moment.
+                    // GATED ON A RESOLVED DEADLINE, not on the key being set. A schedule that
+                    // parses but resolves to no instant parks on the 24h sentinel, and gating on
+                    // `full_scan_schedule.is_some()` would have let that sentinel fire — a daily
+                    // sweep from a daemon this file documents as inert.
+                    _ = full_sweep.as_mut(), if sweep_due.is_some() => {
+                        self.latch_scheduled_full_sweep();
+                        self.reconcile_if_needed().await?;
+                        // Re-armed from a fresh clock read AFTER the pass, so a long sweep cannot
+                        // make the next deadline drift by however long it took.
+                        sweep_due = self.next_full_sweep_in();
+                        full_sweep.as_mut().reset(
+                            tokio::time::Instant::now() + sweep_due.unwrap_or(NO_SCHEDULE_PARK),
+                        );
+                    }
                     _ = &mut shutdown => {
                         break;
                     }
@@ -1874,6 +1928,68 @@ impl<C: ProtonClient> Daemon<C> {
         remove_control_socket(&self.process.socket_path);
         info!("daemon stopped");
         Ok(())
+    }
+
+    /// How long until the next scheduled full sweep, or `None` when nothing is scheduled.
+    ///
+    /// **The whole run-loop arm is this call plus a latch**, deliberately: the arithmetic is
+    /// [`crate::schedule`]'s and pure, the daylight-saving choice is `resolve_local`'s and pure, and
+    /// what is left here is reading the clock. Nothing about *when* a sweep happens is decided in
+    /// the `select!`, which is what makes it testable without wall clock.
+    ///
+    /// `None` for a schedule whose instant cannot be resolved at all — see `resolve_local`'s bound —
+    /// and for one whose next eight occurrences have all already passed in real time. The run loop
+    /// gates its arm on this answer rather than on the key being set, so `None` really is the same
+    /// inert state a daemon with no schedule is in.
+    fn next_full_sweep_in(&self) -> Option<Duration> {
+        let schedule = self.pair().config.full_scan_schedule?;
+        let now = Local::now();
+        let mut cursor = now.naive_local();
+        // AN OCCURRENCE THAT IS LATER ON THE CLOCK CAN BE EARLIER IN REAL TIME, and this loop is
+        // the whole reason there is no "fire immediately" fallback here.
+        //
+        // `next_due` is strictly after `cursor` in NAIVE time, which is what a schedule is written
+        // in. The map from naive to instant is not monotonic across a daylight-saving fold: during
+        // the repeated hour, `Local::now()` may already be past the earlier mapping of a naive time
+        // that is still in the clock's future. Subtracting then gives a negative duration.
+        //
+        // The obvious fallback — clamp to zero and let it fire — is a **spin**: the timer arm
+        // re-arms by calling this again, the mapping is still non-monotonic, and it recomputes the
+        // same zero for the rest of the window. Each turn latches `force_full_walk` and runs an
+        // O(folders) sweep; with the daemon paused, `reconcile_if_needed` returns at once and it is
+        // a bare 100%-CPU loop. Found by adversarial review, latent rather than live only because
+        // `chrono 0.4.45` orders its ambiguous fields the opposite way to its own documentation —
+        // so a chrono upgrade would have switched it on.
+        //
+        // Instead: if an occurrence has already passed in real time, ask for the one after it. The
+        // bound is a backstop rather than a limit the arithmetic needs — one fold can swallow at
+        // most one occurrence — and answering `None` there is the same "not armed" state as an
+        // unresolvable schedule, which the caller checks rather than assumes.
+        for _ in 0..8 {
+            let due = schedule.next_due(cursor);
+            let instant =
+                crate::schedule::resolve_local(due, |naive| Local.from_local_datetime(&naive))?;
+            if let Ok(delay) = (instant - now).to_std() {
+                return Some(delay);
+            }
+            cursor = due;
+        }
+        None
+    }
+
+    /// A scheduled moment arrived: the next pass is a full sweep.
+    ///
+    /// **It sets the same latch `resync` sets, and that is the whole design** (#193). All three
+    /// full-sweep triggers mean the identical thing to a pass, so a schedule that fires while a
+    /// safety net has already latched one is one sweep — because the latch is a `bool`, not because
+    /// anything arbitrates. That is why the maintainer decision's "does not queue a second, does
+    /// not suppress one either" costs no code: reusing the seam is what delivers it.
+    fn latch_scheduled_full_sweep(&self) {
+        info!("scheduled full sweep is due; the next pass will walk the whole tree");
+        self.shared
+            .pair
+            .force_full_walk
+            .store(true, Ordering::SeqCst);
     }
 
     /// The filesystem watcher failed. On Linux that is usually an inotify queue overflow, which
@@ -8661,6 +8777,7 @@ mod tests {
             lockfile_path: directory.path().join("daemon.lock"),
             global_lock_path: directory.path().join("single-instance.lock"),
             scan_interval: Duration::from_secs(300),
+            full_scan_schedule: None,
             proton_cli: PathBuf::from("proton-drive"),
             proton_timeout: Duration::from_secs(60),
             proton_list_attempts: 2,
@@ -10781,6 +10898,99 @@ mod tests {
         assert!(
             local_root.join("a.txt").exists(),
             "the full walk sees the surviving remote file and downloads it back"
+        );
+    }
+
+    #[test]
+    fn a_due_schedule_makes_the_next_pass_a_full_sweep_and_two_triggers_are_still_one() {
+        // #193. The arm is `latch_scheduled_full_sweep` + `reconcile_if_needed` + a re-arm, so this
+        // drives the latch directly rather than the `select!` — the timing is `schedule.rs`'s and
+        // pure, and a test that waited on wall clock would prove nothing this does not.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+
+        let client = EventFakeClient::new(HashMap::new());
+        let full_walks = Arc::clone(&client.full_walks);
+        let mut daemon = Daemon::with_client_and_event_source(
+            DaemonConfig {
+                full_scan_schedule: Some("weekly sun 03:00".parse().expect("schedule")),
+                ..event_config(directory.path(), &local_root)
+            },
+            client,
+            Some(Box::new(FakeEventSource::with_pages(
+                "cursor-1",
+                vec![one_page("cursor-1", vec![]); 4],
+            ))),
+        )
+        .expect("daemon");
+        store_event_cursor(&daemon.pair().connection, "vol", "cursor-0", 1).expect("seed cursor");
+        daemon.pair_mut().incremental_passes_since_full_scan = 0;
+        daemon.pair_mut().is_first_reconcile = false;
+
+        // Steady state: a pass with no trigger stays incremental. Asserted, or the sweep below
+        // would be indistinguishable from the daemon full-walking anyway.
+        daemon
+            .reconcile_blocking()
+            .expect_clean("steady-state pass");
+        assert_eq!(full_walks.load(Ordering::SeqCst), 0);
+
+        daemon.latch_scheduled_full_sweep();
+        daemon.reconcile_blocking().expect_clean("scheduled sweep");
+        assert_eq!(full_walks.load(Ordering::SeqCst), 1);
+
+        // Consumed exactly once, like every other user of this latch: the pass AFTER a scheduled
+        // sweep is incremental again, or one schedule would turn the daemon into a full-walking one
+        // for ever.
+        daemon
+            .reconcile_blocking()
+            .expect_clean("pass after the sweep");
+        assert_eq!(full_walks.load(Ordering::SeqCst), 1);
+
+        // THE "does not queue a second, does not suppress one either" RULE, and it is structural
+        // rather than arranged: the latch is a `bool`, so a schedule firing while a safety net has
+        // already latched a sweep is one sweep and neither trigger is lost. Nothing arbitrates,
+        // which is why there is no precedence rule to get wrong.
+        daemon
+            .shared
+            .pair
+            .force_full_walk
+            .store(true, Ordering::SeqCst);
+        daemon.latch_scheduled_full_sweep();
+        daemon
+            .reconcile_blocking()
+            .expect_clean("two triggers, one sweep");
+        assert_eq!(full_walks.load(Ordering::SeqCst), 2);
+        daemon
+            .reconcile_blocking()
+            .expect_clean("and nothing left over");
+        assert_eq!(full_walks.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_daemon_with_no_schedule_arms_no_sweep_timer() {
+        // The `None` half, which is what every config written before this key resolves to and must
+        // keep resolving to: no schedule, no deadline, and the run loop's arm never armed.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let (client, _operations) = RecordingProtonClient::new(HashMap::new());
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        assert!(daemon.pair().config.full_scan_schedule.is_none());
+        assert!(daemon.next_full_sweep_in().is_none());
+
+        // With one set, the deadline is real, in the future, and inside the longest a weekly
+        // schedule can be away — the property the run loop depends on, since a negative or absurd
+        // delay is a timer that fires immediately and for ever.
+        daemon.pair_mut().config.full_scan_schedule =
+            Some("weekly sun 03:00".parse().expect("schedule"));
+        let delay = daemon
+            .next_full_sweep_in()
+            .expect("a scheduled sweep has a deadline");
+        assert!(
+            delay <= Duration::from_secs(7 * 24 * 3600 + 3600),
+            "got {delay:?}"
         );
     }
 
@@ -14785,6 +14995,7 @@ mod tests {
             lockfile_path: directory.join("daemon.lock"),
             global_lock_path: directory.join("single-instance.lock"),
             scan_interval: Duration::from_secs(300),
+            full_scan_schedule: None,
             proton_cli: PathBuf::from("proton-drive"),
             proton_timeout: Duration::from_secs(60),
             proton_list_attempts: 2,

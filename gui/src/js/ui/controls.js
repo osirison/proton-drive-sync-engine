@@ -117,11 +117,25 @@ const KIND = {
     bgActive: "var(--border-strong)",
     borderHover: "var(--border-strong)",
   },
-  /** The `⋯` and the segmented control's unselected segments: no border at all. */
+  /** The `⋯`: no border at all, and the label tone.
+   *
+   * NOT the segmented control's unselected segment, which this comment used to claim (#193). That
+   * one is `--text-3` (`#99A2AE`) in `8a Settings`, a step brighter than `--text-label`'s `#626B78`,
+   * and nothing could see the difference while no screen drew a segmented control. See `segment`. */
   quiet: {
     bg: null,
     border: null,
     color: "var(--text-label)",
+    weight: 400,
+    bgHover: "var(--panel-raised)",
+    bgActive: "var(--border)",
+  },
+  /** A segmented control's unselected segment: no border, no background, `--text-3`. The selected
+   * one is plain `primary`, which the frame draws it as exactly. */
+  segment: {
+    bg: null,
+    border: null,
+    color: "var(--text-3)",
     weight: 400,
     bgHover: "var(--panel-raised)",
     bgActive: "var(--border)",
@@ -603,11 +617,41 @@ export function pillTabs({ items, active, onSelect }) {
   );
 }
 
-/** Day chips — `Mon Tue Wed …`, drawn with no horizontal padding and a fixed width. */
-export function dayChips({ days, selected = [], onToggle }) {
+/**
+ * A segmented control — `Weekly` / `Monthly` on the full-sweep schedule (#193).
+ *
+ * A DIFFERENT SHAPE FROM [`pillTabs`], not a variant of it: the pills are a bare flex row of
+ * bordered buttons, this is a bordered *track* the selected segment sits inside. `8a Settings`
+ * draws the track `#0A0B0D` inside a `#23262D` border at `radius:10 padding:3 gap:3`, the selected
+ * segment as `primary` at `radius:7`, and the unselected one with no border and no background.
+ *
+ * `flex-shrink: 0` matters: the track sits beside a text block that takes the rest of the head row,
+ * and without it the segment labels wrap at the width the frame draws.
+ */
+export function segmentedControl({ items, active, onSelect }) {
   return el(
     "div",
-    { class: "day-chips" },
+    { class: "segmented", role: "tablist" },
+    items.map((item) =>
+      button({
+        kind: item.id === active ? "primary" : "segment",
+        label: item.label,
+        onClick: () => onSelect(item.id),
+        padding: "6px 14px",
+        radius: "var(--r-7)",
+        fontSize: "12px",
+        role: "tab",
+        "aria-selected": String(item.id === active),
+      }),
+    ),
+  );
+}
+
+/** Day chips — `Mon Tue Wed …`, drawn with no horizontal padding and a fixed width. */
+export function dayChips({ days, selected = [], onToggle, className = null }) {
+  return el(
+    "div",
+    { class: className ? `day-chips ${className}` : "day-chips" },
     days.map((day) =>
       button({
         kind: selected.includes(day) ? "primaryOutlined" : "secondary",

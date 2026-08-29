@@ -75,6 +75,7 @@ import {
   renderSaveRefused,
   settingsBarShape,
   configUpdate,
+  formatSchedule,
   isDirty,
   removalCost,
   restartEndingOf,
@@ -2641,6 +2642,16 @@ let settingsEdits = {};
  * decide what is backed up at all.
  */
 let settingsDrafts = { exclude: "", include: "" };
+/**
+ * Which full-sweep editor the schedule panel is showing (#193). `null` until someone picks a
+ * segment, and back to `null` whenever a schedule is set or cleared — at which point the schedule
+ * itself says which editor to show.
+ *
+ * Frontend state, deliberately: a mode is not a schedule, so switching it stages nothing and leaves
+ * the screen clean. It has to OUTRANK the configured schedule while it is set, or the
+ * Weekly/Monthly control is inert on every daemon that has one — see `schedulePanel`.
+ */
+let settingsScheduleMonthly = null;
 let settingsSaving = false;
 /**
  * A `Sweep now` in flight.
@@ -2790,6 +2801,10 @@ function settingsProps() {
     // The frame names it; otherwise the staged value, then what is on disk.
     notifyPolicy: ui?.notifyPolicy ?? notifyPolicyEdit ?? notifyPolicy,
     drafts: settingsDrafts,
+    // Which schedule editor is showing. A FRAME NAMES IT (`8a Schedule monthly`), which is what
+    // makes the monthly variant reachable by the fixture harness at all — without this the frame
+    // rendered the weekly panel and every monthly node went unexercised by every gate.
+    scheduleDraftMonthly: ui?.schedule ? ui.schedule === "monthly" : settingsScheduleMonthly,
     saving: settingsSaving,
     // The ending the last save's restart left UNRESOLVED, or null (#320/#335) — the one post-save
     // state with an action attached, which is why the bar reads it rather than reading the sentence
@@ -2854,7 +2869,18 @@ function settingsProps() {
       onRoot: (key, value) => stageSetting(key, value),
       onField: (key, value) => stageSetting(key, value),
       onEvents: (on) => stageSetting("events_driven", on),
-      onInterval: (secs) => stageSetting("scan_interval_secs", secs),
+      // #193. `null` stages the EMPTY STRING, not a missing key: `write_config` clears a key whose
+      // value is empty, and clearing is how a scheduled sweep is turned off — there is no off value
+      // to write. Staging `undefined` would drop the field from the update and leave the old
+      // schedule on disk while the screen showed none.
+      onSchedule: (schedule) => stageSetting("full_scan_schedule", schedule ? formatSchedule(schedule) : ""),
+      // The editor's mode, NOT a setting. With no schedule configured there is nothing to convert,
+      // and switching a live one would move the sweep to a day nobody chose — so this stages
+      // nothing and the screen stays clean until a day is picked.
+      onScheduleMode: (monthly) => {
+        settingsScheduleMonthly = monthly;
+        render();
+      },
       // ONE FIELD, not three. `deletion_policy` is a daemon key now (#194) and `set_deletion_policy`
       // always writes both directions, in whichever spelling the file already uses — so staging the
       // two booleans beside it would briefly put both spellings in one document, which is a config
@@ -3349,7 +3375,18 @@ function onboardingProps() {
     dryRun: onboardingAnswered === onboardingSeq ? onboardingDryRun : null,
     error: onboardingAnswered === onboardingSeq ? onboardingError : null,
     checking: onboardingAnswered !== onboardingSeq,
-    checkedAt: onboardingCheckedAt,
+    // THE FRAME'S OWN TIMING WHEN A FRAME NAMES ONE, and this is a determinism fix rather than a
+    // fidelity one (#193's CI run is what surfaced it). `checkedAt` feeds `since()`, so the drawn
+    // string is whatever the wall clock says at the moment the harness measures: `0 seconds ago`
+    // usually, `1 second ago` if the run happens to land on that second — and the singular drops a
+    // character, taking 6.6px off the span. The recorded deviation was therefore right only for
+    // runs that missed second 1, and a slower CI machine failed the build on a screen nothing had
+    // touched.
+    //
+    // `planTiming.workedOutEpochSecs` was already in the fixture, declared and read by nothing —
+    // the same shape as `ui.schedule` one screen over. Reading it renders `40 seconds ago`, which
+    // is what the frame draws, and a few seconds of drift stays inside that bucket.
+    checkedAt: activeFixture()?.planTiming?.workedOutEpochSecs ?? onboardingCheckedAt,
     freeSpace: onboardingFreeSpace,
     handlers: {
       onRoot: (which, value) => {

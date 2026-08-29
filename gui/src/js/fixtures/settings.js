@@ -122,9 +122,16 @@ const SKIP_STATUS = {
  *     Deletions tab draws selected (15px dot, 4px `#F2F4F7` ring). The other two cards are
  *     `remote: false, local: true` (only permanent ones) and `false, false` (never ask).
  *
- * `scan_interval_secs` is drawn by NOTHING — the panel that would show it is the schedule panel G4
- * replaces — but `read_config` always returns it, and a fixture that omitted it would be a reply no
- * daemon could produce. It is here for that reason alone.
+ * `scan_interval_secs` is drawn by NOTHING — the panel that showed it is the one #193 replaced with
+ * the schedule — but `read_config` always returns it, and a fixture that omitted it would be a reply
+ * no daemon could produce. It is here for that reason alone. It is also still a live key: it governs
+ * the ordinary pass cadence in snapshot mode, which is why #193 removed it from the UI rather than
+ * from the config.
+ *
+ * `full_scan_schedule` is `weekly sun 03:00` because that is what `8a Settings` draws — `Sun`
+ * highlighted, `03:00` in the stepper, and the key line spelling it out. Without it the app would
+ * render the unset state under a frame drawn in the set one, which is a fixture disagreeing with
+ * its own frame rather than a bug in the screen.
  */
 const CONFIG = {
   path: "~/.config/proton-sync/proton-sync.toml",
@@ -134,6 +141,7 @@ local_root = "~/ProtonDrive"
 remote_root = "/Drive/RemoteFolder"
 events_driven = true
 scan_interval_secs = 300
+full_scan_schedule = "weekly sun 03:00"
 exclude = ["*.tmp", "video-raw/**", "old-backups/**"]
 
 [delete_approval]
@@ -143,6 +151,7 @@ local = true
   local_root: "~/ProtonDrive",
   remote_root: "/Drive/RemoteFolder",
   scan_interval_secs: 300,
+  full_scan_schedule: "weekly sun 03:00",
   events_driven: true,
   include: [],
   exclude: ["*.tmp", "video-raw/**", "old-backups/**"],
@@ -350,25 +359,31 @@ export const SETTINGS_FIXTURES = {
   /**
    * The monthly variant of the schedule panel, drawn as a 600px crop of tab 1.
    *
-   * ENGINE GAP G4 (#193). The frame draws a whole schedule — `Monthly` selected, day chips 1…20 with
-   * 15 lit, a `03:00` stepper, and the key line `full_scan_schedule · monthly day 15, 03:00` — and
-   * there is no `full_scan_schedule` key, no daemon scheduler, and no command that returns any of
-   * it. The config this fixture carries is the real one: `scan_interval_secs`, which
-   * IMPLEMENTATION-PLAN.md says Phase 1 presents in plain language inside the same panel shell.
+   * G4 (#193) BUILT IT, and `ui.schedule` is now READ rather than declared: it selects which editor
+   * the panel shows, in the same form as `{ tab: "skip" }`. Until it was read, this frame rendered
+   * the WEEKLY panel — so the whole monthly branch (the day grid, the reordered key-line-then-
+   * stepper row, the month-edge note) was exercised by no fixture, no assertion and no screenshot,
+   * while the fixture declared the variant and the fids map explained why it was thin.
    *
-   * So `ui.schedule` says only WHICH VARIANT is showing — the one word that distinguishes this frame
-   * from `8a Settings`, in the same form as `{ tab: "skip" }`. The day and the time are deliberately
-   * absent: those are the fields G4 will name, and pinning them now would settle its shape from a
-   * fixture. This frame is not fully reproducible until G4 lands, which is the honest position.
+   * The day and time are no longer "deliberately absent": the frame draws
+   * `full_scan_schedule · monthly day 15, 03:00`, so the config carries exactly that. Sharing the
+   * top-level `CONFIG` (a weekly schedule) would render the monthly editor with nothing chosen —
+   * a fixture disagreeing with its own frame.
+   *
+   * The frame's day grid stops at 20 and the app builds 1…31; DEVIATIONS §104b has the measurement
+   * and the reason (the note the frame draws beneath it is unreachable at twenty chips).
    *
    * One copy discrepancy to know about, since it is the same panel in both frames: this crop draws
    * `A full check of all 12,480 files as a safety net.` and stops, where `8a Settings` continues
-   * `… It's slow, so it runs on a schedule rather than constantly.` — the deck's `SETTINGS
-   * .fullScanSub` carries only the longer form.
+   * `… It's slow, so it runs on a schedule rather than constantly.` — and the app draws neither,
+   * because the count has no source on this tab (DEVIATIONS §104c).
    */
   "8a Schedule monthly": {
     status: IDLE_STATUS,
-    config: CONFIG,
+    // ITS OWN CONFIG, because the frame draws `monthly day 15, 03:00` — `15` selected in the day
+    // grid and the key line spelling it out. Sharing `CONFIG` (a weekly schedule) rendered the
+    // monthly editor with nothing chosen, which is a fixture disagreeing with its own frame.
+    config: { ...CONFIG, full_scan_schedule: "monthly day 15, 03:00" },
     localTotals: LOCAL_TOTALS,
     route: "settings",
     ui: { tab: "folders", schedule: "monthly" },

@@ -24,8 +24,9 @@ import {
   configUpdate,
   isDirty,
   refusalReason,
-  intervalLabel,
-  stepInterval,
+  formatSchedule,
+  parseSchedule,
+  stepTimeOfDay,
   barActionOf,
   barNoteOf,
   settingsBarShape,
@@ -33,8 +34,6 @@ import {
   restartUnresolved,
   clearsRestartFailure,
   saveNoteFor,
-  MIN_INTERVAL_SECS,
-  MAX_INTERVAL_SECS,
 } from "../src/js/screens/settings.js";
 import { SETTINGS } from "../src/js/ui/copy.js";
 import { readFileSync } from "node:fs";
@@ -359,23 +358,81 @@ test("any other message is quoted whole — voice rule 4", () => {
   assert.equal(refusalReason(null), null);
 });
 
-// ---- the interval, in plain language ----------------------------------------------------------
+// ---- the full-sweep schedule (#193) -----------------------------------------------------------
 
-test("whole minutes read as minutes and anything else reads in seconds", () => {
-  assert.equal(intervalLabel(300), SETTINGS.timerUnit(5));
-  assert.equal(intervalLabel(60), SETTINGS.timerUnit(1));
-  // A config written by hand at 90s must not draw as `2 min`: the stepper would then write 120 for
-  // a value nobody touched.
-  assert.equal(intervalLabel(90), SETTINGS.timerSeconds(90));
+test("a schedule round-trips through the one spelling the file holds", () => {
+  for (const text of [
+    "weekly sun 03:00",
+    "monthly day 15, 03:00",
+    "weekly mon 00:00",
+    "monthly day 31, 23:30",
+  ]) {
+    assert.equal(formatSchedule(parseSchedule(text)), text, text);
+  }
+  assert.deepEqual(parseSchedule("weekly sun 03:00"), { kind: "weekly", day: 6, at: "03:00" });
+  assert.deepEqual(parseSchedule("monthly day 15, 03:00"), { kind: "monthly", day: 15, at: "03:00" });
 });
 
-test("the stepper moves a minute at a time and clamps at both ends", () => {
-  assert.equal(stepInterval(300, 1), 360);
-  assert.equal(stepInterval(300, -1), 240);
-  assert.equal(stepInterval(MIN_INTERVAL_SECS, -1), MIN_INTERVAL_SECS);
-  assert.equal(stepInterval(MAX_INTERVAL_SECS, 1), MAX_INTERVAL_SECS);
-  // An odd interval keeps its remainder rather than being rounded on the way past.
-  assert.equal(stepInterval(90, 1), 150);
+test("anything the daemon would refuse reads as no schedule at all", () => {
+  // The two parsers have to agree about what the file says: a value this accepted and
+  // `src/schedule.rs` refused would draw a schedule belonging to a daemon that will not start.
+  for (const text of [
+    undefined,
+    null,
+    "",
+    "weekly sunday 03:00",
+    "weekly Sun 03:00",
+    "weekly sun 3:00",
+    "weekly sun 24:00",
+    "weekly sun 03:60",
+    "monthly day 0, 03:00",
+    "monthly day 32, 03:00",
+    "monthly day 15 03:00",
+    "every sunday at 3am",
+  ]) {
+    assert.equal(parseSchedule(text), null, JSON.stringify(text));
+  }
+});
+
+test("the time stepper wraps at midnight rather than clamping", () => {
+  assert.equal(stepTimeOfDay("03:00", 1), "03:30");
+  assert.equal(stepTimeOfDay("03:00", -1), "02:30");
+  // A time of day is a circle: `00:00` has a step below it and `23:30` has one above it. Clamping
+  // would make midnight a floor a user could reach and not leave.
+  assert.equal(stepTimeOfDay("00:00", -1), "23:30");
+  assert.equal(stepTimeOfDay("23:30", 1), "00:00");
+});
+
+test("the month-edge note names the day it is about, and only for a day a month can lack", () => {
+  // PINNED HERE BECAUSE THE COPY GATE CANNOT SEE IT. `monthEdgeNote` is a template, and `walk` in
+  // copy-gate.mjs collects strings only — so turning a checked constant into a template drops it out
+  // of the gate silently (measured: the drawn-string total went 340 → 339 across that change). The
+  // gate's own comments record the same hole for `PLAN.destructiveLocal` and `.destructiveMany` and
+  // the same remedy: pin it in a unit test. Filed as #372 — 47 of the deck's 118 templates are in
+  // neither of that gate's tables.
+  assert.equal(SETTINGS.monthEdgeNote(31), "Months without a 31st are skipped to the last day.");
+  assert.equal(SETTINGS.monthEdgeNote(30), "Months without a 30th are skipped to the last day.");
+  // The teens rule, which is the whole reason the suffix is computed rather than looked up by last
+  // digit — and 13 is inside the 1..31 range this is used over.
+  assert.equal(SETTINGS.monthEdgeNote(13), "Months without a 13th are skipped to the last day.");
+  assert.equal(SETTINGS.monthEdgeNote(1), "Months without a 1st are skipped to the last day.");
+  assert.equal(SETTINGS.monthEdgeNote(22), "Months without a 22nd are skipped to the last day.");
+  // And the shape the frame draws, which is FALSE about its own drawn value — every month has a
+  // 15th. The screen shows this only for 29, 30 and 31; the string still has to render correctly,
+  // because the reason it is not shown is a judgement about truth and not about grammar.
+  assert.equal(SETTINGS.monthEdgeNote(15), "Months without a 15th are skipped to the last day.");
+});
+
+test("an absent schedule and a cleared one are the same staged state", () => {
+  // Picking a day and unpicking it must land back on "no change" rather than on a staged edit that
+  // would save nothing — `""` is how the screen spells the absence `write_config` clears the key on.
+  assert.deepEqual(configUpdate({}, { full_scan_schedule: "" }), {});
+  assert.deepEqual(configUpdate({ full_scan_schedule: "weekly sun 03:00" }, { full_scan_schedule: "" }), {
+    full_scan_schedule: "",
+  });
+  assert.deepEqual(configUpdate({}, { full_scan_schedule: "weekly sun 03:00" }), {
+    full_scan_schedule: "weekly sun 03:00",
+  });
 });
 
 // ---- the footer bar ----------------------------------------------------------------------------

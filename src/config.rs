@@ -190,6 +190,9 @@ pub enum ConfigKey {
     LocalDeleteMode,
     LogLevel,
     ConflictSuffix,
+    /// The user-facing full-sweep schedule (#193). Per-pair: it describes a tree, exactly as
+    /// `scan_interval_secs` beside it does.
+    FullScanSchedule,
 }
 
 impl ConfigKey {
@@ -197,13 +200,14 @@ impl ConfigKey {
     /// which compares these spellings against the keys [`FileConfig`] actually has: a variant
     /// missing from here whose field exists shows up as an unclassified key, and a variant listed
     /// here with no field shows up as a key the parser does not know.
-    pub const ALL: [Self; 23] = [
+    pub const ALL: [Self; 24] = [
         Self::LocalRoot,
         Self::RemoteRoot,
         Self::DbPath,
         Self::SocketPath,
         Self::LockfilePath,
         Self::ScanIntervalSecs,
+        Self::FullScanSchedule,
         Self::ProtonCli,
         Self::ProtonTimeoutSecs,
         Self::ProtonListAttempts,
@@ -234,6 +238,7 @@ impl ConfigKey {
             Self::SocketPath => "socket_path",
             Self::LockfilePath => "lockfile_path",
             Self::ScanIntervalSecs => "scan_interval_secs",
+            Self::FullScanSchedule => crate::schedule::FULL_SCAN_SCHEDULE_KEY,
             Self::ProtonCli => "proton_cli",
             Self::ProtonTimeoutSecs => "proton_timeout_secs",
             Self::ProtonListAttempts => "proton_list_attempts",
@@ -266,6 +271,7 @@ impl ConfigKey {
             | Self::DbPath
             | Self::LockfilePath
             | Self::ScanIntervalSecs
+            | Self::FullScanSchedule
             | Self::DownloadBatchSize
             | Self::IncludePatterns
             | Self::ExcludePatterns
@@ -363,6 +369,11 @@ pub struct FileConfig {
     lockfile_path: Option<PathBuf>,
     #[serde(alias = "scan-interval-secs")]
     scan_interval_secs: Option<u64>,
+    /// The user-facing full-sweep schedule (#193): `weekly sun 03:00` / `monthly day 15, 03:00`,
+    /// parsed by [`crate::schedule::FullScanSchedule`]. Unset means **no scheduled sweep**, which
+    /// is what every config written before this key says and must keep meaning.
+    #[serde(default, alias = "full-scan-schedule")]
+    full_scan_schedule: Option<String>,
     #[serde(alias = "proton-cli")]
     proton_cli: Option<PathBuf>,
     #[serde(alias = "proton-timeout-secs")]
@@ -437,6 +448,7 @@ impl FileConfig {
             ConfigKey::SocketPath => self.socket_path.is_some(),
             ConfigKey::LockfilePath => self.lockfile_path.is_some(),
             ConfigKey::ScanIntervalSecs => self.scan_interval_secs.is_some(),
+            ConfigKey::FullScanSchedule => self.full_scan_schedule.is_some(),
             ConfigKey::ProtonCli => self.proton_cli.is_some(),
             ConfigKey::ProtonTimeoutSecs => self.proton_timeout_secs.is_some(),
             ConfigKey::ProtonListAttempts => self.proton_list_attempts.is_some(),
@@ -489,6 +501,8 @@ struct FilePair {
     lockfile_path: Option<PathBuf>,
     #[serde(default, alias = "scan-interval-secs")]
     scan_interval_secs: Option<u64>,
+    #[serde(default, alias = "full-scan-schedule")]
+    full_scan_schedule: Option<String>,
     #[serde(default, alias = "download-batch-size")]
     download_batch_size: Option<usize>,
     #[serde(default, alias = "include")]
@@ -550,6 +564,7 @@ struct PairFileConfig {
     db_path: Option<PathBuf>,
     lockfile_path: Option<PathBuf>,
     scan_interval_secs: Option<u64>,
+    full_scan_schedule: Option<String>,
     download_batch_size: Option<usize>,
     include_patterns: Option<Vec<String>>,
     exclude_patterns: Option<Vec<String>>,
@@ -576,6 +591,7 @@ impl PairFileConfig {
             db_path: config.db_path.clone(),
             lockfile_path: config.lockfile_path.clone(),
             scan_interval_secs: config.scan_interval_secs,
+            full_scan_schedule: config.full_scan_schedule.clone(),
             download_batch_size: config.download_batch_size,
             include_patterns: config.include_patterns.clone(),
             exclude_patterns: config.exclude_patterns.clone(),
@@ -601,6 +617,7 @@ impl PairFileConfig {
             db_path: pair.db_path.clone(),
             lockfile_path: pair.lockfile_path.clone(),
             scan_interval_secs: pair.scan_interval_secs,
+            full_scan_schedule: pair.full_scan_schedule.clone(),
             download_batch_size: pair.download_batch_size,
             include_patterns: pair.include_patterns.clone(),
             exclude_patterns: pair.exclude_patterns.clone(),
@@ -1370,6 +1387,18 @@ pub fn resolve_runtime_config(input: DaemonConfigInput) -> AppResult<(DaemonConf
                 .unwrap_or(300)
                 .max(1),
         ),
+        // No CLI flag, deliberately: this is a setting a person edits in Settings and a schedule
+        // is not a thing to pass on a one-shot command line. `--full-walk` already covers "sweep
+        // this start", which is the only question a flag would be asked.
+        //
+        // Parsed HERE, on the merge path, so a value the daemon cannot read stops it at startup —
+        // the `log_level` rule (#237), for the same reason: a schedule that silently never fires
+        // is a safety net nobody notices is missing.
+        full_scan_schedule: pair
+            .full_scan_schedule
+            .as_deref()
+            .map(crate::schedule::validate)
+            .transpose()?,
         proton_cli: input
             .proton_cli
             .or(file_config.proton_cli)
@@ -1671,6 +1700,13 @@ fn validate_pair_file_values(pair: &PairFileConfig) -> AppResult<()> {
         ),
     ) {
         require_distinct_state_paths(Some(&pair.name), &db_path, &lockfile_path)?;
+    }
+    // No flag can mask this one — `full_scan_schedule` is file-only (#193) — so the file reader and
+    // the merge path agree by construction. It is still checked HERE rather than in the structural
+    // layer because it is a value rule, and `ConfigDoc::save` must refuse to write a schedule the
+    // daemon would then fail to start on.
+    if let Some(schedule) = pair.full_scan_schedule.as_deref() {
+        crate::schedule::validate(schedule)?;
     }
     resolve_positive_usize(None, pair.download_batch_size, 1, "download_batch_size")?;
     // Compiled against a throwaway root: the root only decides which paths are ignored, and this
@@ -3491,6 +3527,7 @@ download_batch_size = 5
             socket_path: Some(PathBuf::from("/run/user/1000/proton-sync.sock")),
             lockfile_path: Some(PathBuf::from("/local/.sync/proton-sync.lock")),
             scan_interval_secs: Some(300),
+            full_scan_schedule: Some("weekly sun 03:00".to_owned()),
             proton_cli: Some(PathBuf::from("/usr/bin/proton-drive")),
             proton_timeout_secs: Some(300),
             proton_list_attempts: Some(3),
@@ -3524,6 +3561,7 @@ download_batch_size = 5
             db_path: Some(PathBuf::from("/local/.sync/index.db")),
             lockfile_path: Some(PathBuf::from("/local/.sync/proton-sync.lock")),
             scan_interval_secs: Some(300),
+            full_scan_schedule: Some("weekly sun 03:00".to_owned()),
             download_batch_size: Some(25),
             include_patterns: Some(vec!["Documents/**".to_owned()]),
             exclude_patterns: Some(vec!["*.tmp".to_owned()]),
@@ -4745,6 +4783,95 @@ download_batch_size = 5
             !error.to_string().contains("not yet supported"),
             "got {error}"
         );
+    }
+
+    #[test]
+    fn a_full_scan_schedule_is_read_by_both_readers_or_refused_by_both() {
+        // #193. A schedule that does not parse is a full sweep that silently never runs, so it is
+        // fatal at startup like `log_level` — and the FILE reader has to agree, because
+        // `ConfigDoc::save` validates through it alone and must never write a config the daemon
+        // cannot start on.
+        for body in [
+            "local_root = \"/a\"\nremote_root = \"/Drive/a\"\nfull_scan_schedule = \"weekly sun 03:00\"\n",
+            "local_root = \"/a\"\nremote_root = \"/Drive/a\"\nfull_scan_schedule = \"monthly day 15, 03:00\"\n",
+            // The kebab alias, like every other key.
+            "local_root = \"/a\"\nremote_root = \"/Drive/a\"\nfull-scan-schedule = \"weekly sun 03:00\"\n",
+        ] {
+            for text in [body.to_owned(), format!("[[pair]]\nname = \"a\"\n{body}")] {
+                validate_file_config_text(&text).unwrap_or_else(|error| {
+                    panic!("{text:?} is a schedule the daemon can read: {error}")
+                });
+            }
+        }
+        for body in [
+            "local_root = \"/a\"\nremote_root = \"/Drive/a\"\nfull_scan_schedule = \"every sunday\"\n",
+            "local_root = \"/a\"\nremote_root = \"/Drive/a\"\nfull_scan_schedule = \"weekly sun 3:00\"\n",
+            "local_root = \"/a\"\nremote_root = \"/Drive/a\"\nfull_scan_schedule = \"monthly day 32, 03:00\"\n",
+        ] {
+            for text in [body.to_owned(), format!("[[pair]]\nname = \"a\"\n{body}")] {
+                let error = validate_file_config_text(&text)
+                    .expect_err("a schedule the daemon cannot read is refused");
+                assert!(
+                    error.to_string().contains("full_scan_schedule"),
+                    "in {text:?}: got {error}"
+                );
+            }
+        }
+
+        // The merge path resolves it to a typed value, and an unreadable one stops the daemon
+        // there too — the reader that matters most, since it is the one that would otherwise run
+        // for months with a safety net nobody notices is off.
+        let directory = tempdir().expect("tempdir");
+        let resolve = |body: &str| {
+            let path = directory.path().join(format!("{}.toml", body.len()));
+            fs::write(
+                &path,
+                format!("local_root = \"/a\"\nremote_root = \"/Drive/a\"\n{body}"),
+            )
+            .expect("write config");
+            resolve_runtime_config(DaemonConfigInput {
+                config: Some(path),
+                socket_path: Some(PathBuf::from("/run/user/1000/p.sock")),
+                ..Default::default()
+            })
+        };
+
+        let (config, _) = resolve("full_scan_schedule = \"monthly day 31, 04:30\"\n")
+            .expect("a readable schedule resolves");
+        assert_eq!(
+            config.full_scan_schedule.map(|s| s.to_string()).as_deref(),
+            Some("monthly day 31, 04:30")
+        );
+
+        let error = resolve("full_scan_schedule = \"sometimes\"\n")
+            .expect_err("an unreadable schedule stops the daemon");
+        assert!(
+            error.to_string().contains("full_scan_schedule"),
+            "got {error}"
+        );
+
+        // THE `key_present` ARM, which the classification guards do NOT cover: `ConfigKey::scope`
+        // is exhaustive so the compiler demands an arm there, but `key_present` returning the wrong
+        // `bool` is free — measured, the whole 112-test config suite stayed green with this key's
+        // arm hard-wired to `false`. Rule 1 reads that answer, so a `false` would accept a file
+        // that sets the schedule at the top level AND declares `[[pair]]` tables, silently dropping
+        // the top-level one. Found by adversarial review.
+        let error = validate_file_config_text(
+            "full_scan_schedule = \"weekly sun 03:00\"\n\
+             \n[[pair]]\nname = \"a\"\nlocal_root = \"/a\"\nremote_root = \"/Drive/a\"\n",
+        )
+        .expect_err("one setting written two ways has no defensible precedence");
+        assert!(
+            error.to_string().contains("full_scan_schedule"),
+            "the refusal must name the offending key, got {error}"
+        );
+
+        // And unset stays unset: every config written before this key means "no scheduled sweep",
+        // and must keep meaning it.
+        let (config, _) =
+            resolve("scan_interval_secs = 42\n").expect("no schedule is a legal config");
+        assert!(config.full_scan_schedule.is_none());
+        assert_eq!(config.scan_interval, Duration::from_secs(42));
     }
 
     #[test]
