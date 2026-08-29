@@ -1069,7 +1069,25 @@ pub fn read_conflict_pair(
         .unwrap()
         .effective_local_root()
         .ok_or_else(|| "local_root is not configured".to_string())?;
-    conflicts::read_conflict_pair(&local_root, &conflict)
+    // THE ANCESTOR IS READ FROM THE INDEX, AND ITS ABSENCE IS NOT AN ERROR (#217/#347). Everything
+    // here that can fail — no database configured, a database that will not open, a path with no
+    // summary — lands on `None`, and the card then draws one line fewer. A conflict screen that
+    // refused to open because a decoration could not be computed would be a worse bug than the
+    // fabricated sentence this replaces.
+    let ancestor = read_agreed_summary(&state, &conflict.original);
+    conflicts::read_conflict_pair(&local_root, &conflict, ancestor.as_ref())
+}
+
+/// The last agreed version's line summary for `relative`, or `None` for any reason at all.
+fn read_agreed_summary(
+    state: &Paths,
+    relative: &std::path::Path,
+) -> Option<conflicts::LineSummary> {
+    let db_path = state.lock().unwrap().effective_db_path()?;
+    let connection = index_read::open_readonly(&db_path, index_read::DEFAULT_BUSY_TIMEOUT).ok()?;
+    index_read::agreed_summary(&connection, relative)
+        .ok()
+        .flatten()
 }
 
 /// When this engine last moved a path's bytes, and which way (#233).

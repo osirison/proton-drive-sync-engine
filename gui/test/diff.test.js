@@ -445,3 +445,84 @@ test("the meta line asks the comparison, not just the local side", () => {
   assert.equal(compare(sidecarGone.original.text, sidecarGone.sidecar.text), null);
   assert.equal(fileKindOf(content, sidecarGone, null), CONFLICTS.kindBinary);
 });
+
+// ---- the "what happened" sentence (#217/#347) --------------------------------------------------
+//
+// Tested here for the same reason the rest of this file is: the gate renders one dataset per frame,
+// and every case below is a file nobody drew — including the two that used to be the ONLY thing this
+// sentence could say, because it was a pair of constants appended to every card unconditionally.
+
+test("the first line names what the side did to the agreed version, in the drawn shapes", () => {
+  // The two sentences `3a Conflict` draws, reproduced from counts — which is what makes the deck's
+  // `DRAWN` rows in copy-gate.mjs true.
+  assert.equal(CONFLICTS.happened("mine", { added: 1, changed: 0, removed: 0 }), "You added a line");
+  assert.equal(
+    CONFLICTS.happened("theirs", { added: 1, changed: 1, removed: 0 }),
+    "Changed a line and added one",
+  );
+  // And the two the app actually draws on that frame, against the one ancestor that reconciles it
+  // with `3a Conflict diff` (DEVIATIONS §105b).
+  assert.equal(CONFLICTS.happened("mine", { added: 0, changed: 1, removed: 0 }), "You changed a line");
+  assert.equal(CONFLICTS.happened("theirs", { added: 1, changed: 0, removed: 0 }), "Added a line");
+});
+
+test("only the first clause carries the noun, and the subject is the reader's own side", () => {
+  // `Changed a line and added one` — the drawn sentence drops the noun after the first clause, and
+  // a version that repeated it (`added one line`) would be a different sentence from the frame's.
+  assert.equal(
+    CONFLICTS.happened("theirs", { added: 2, changed: 3, removed: 1 }),
+    "Changed three lines, added two and removed one",
+  );
+  assert.equal(CONFLICTS.happened("mine", { added: 0, changed: 0, removed: 3 }), "You removed three lines");
+});
+
+test("nothing to say is null, and a byte-only difference says so rather than nothing", () => {
+  // `null` is the ordinary answer — no ancestor, a binary file, a summary that aged out — and the
+  // card draws one line fewer. It must not be a sentence, because `append(null)` writes the literal
+  // word and this project has shipped that twice.
+  assert.equal(CONFLICTS.happened("mine", null), null);
+  assert.equal(CONFLICTS.happened("mine", undefined), null);
+  assert.equal(CONFLICTS.happenedAt(null, "5 minutes ago"), null);
+
+  // Both files exist and differ — the daemon wrote a sidecar — yet this side's LINES match the
+  // agreed version exactly: a trailing newline, or a line ending. Saying "nothing" would read as
+  // "you can discard this side safely", which is the one answer that is certainly wrong.
+  const unchanged = { added: 0, changed: 0, removed: 0 };
+  assert.match(CONFLICTS.happened("mine", unchanged), /^Your lines are unchanged/);
+  assert.match(CONFLICTS.happened("theirs", unchanged), /^Proton's lines are unchanged/);
+});
+
+test("the relative time is appended, and its absence leaves no dangling comma", () => {
+  assert.equal(CONFLICTS.happenedAt("You added a line", "5 minutes ago"), "You added a line, 5 minutes ago");
+  assert.equal(CONFLICTS.happenedAt("You added a line", null), "You added a line");
+});
+
+// The corpus `src/ancestor.rs` holds its own diff to, byte-identical and asserted to the same
+// numbers. The card's first line comes from the Rust implementation and the panel drawn beneath it
+// from this one, so "they agree" is a property that has to be checked rather than stated — pairing
+// globally instead of per block made the card say `You changed a line` over a panel showing zero
+// changed pairs, and only a shared corpus catches that.
+const AGREEING_CORPUS = [
+  // [ancestor, current, added, changed, removed]
+  ["alpha\nbeta\ngamma\ndelta", "beta\ngamma\ndelta\nepsilon", 1, 0, 1],
+  ["a1\na2\na3\na4\na5\nkeep1\nkeep2", "keep1\nkeep2\nz1\nz2\nz3\nz4\nz5", 5, 0, 5],
+  ["head\nx\ntail", "head\ny\nz\ntail", 1, 1, 0],
+  ["head\nx\ny\ntail", "head\nz\ntail", 0, 1, 1],
+  ["a\nb\nc", "a\nx\ny\nc", 1, 1, 0],
+  ["a\nb\nc", "a\nb\nc", 0, 0, 0],
+  ["a\nb\nc\nd\ne", "a\nc\ne", 0, 0, 2],
+  ["l1\nl2\nl3\nl4\nl5\nl6", "l1\nX\nl3\nl4\nY\nl6", 0, 2, 0],
+  ["a\na\na", "a\na", 0, 0, 1],
+  ["p\nq", "p\nq\nr\ns", 2, 0, 0],
+];
+
+test("this diff and the engine's agree line for line on a shared corpus", () => {
+  for (const [ancestor, current, added, changed, removed] of AGREEING_CORPUS) {
+    const c = compare(ancestor, current);
+    assert.deepEqual(
+      { added: c.onlyTheirs.length, changed: c.changed.length, removed: c.onlyMine.length },
+      { added, changed, removed },
+      `${JSON.stringify(ancestor)} -> ${JSON.stringify(current)}`,
+    );
+  }
+});

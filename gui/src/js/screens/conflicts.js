@@ -24,13 +24,17 @@
 // one, the screen has stopped doing its job.
 //
 // WHAT PHASE 1 CANNOT DRAW, each recorded in DEVIATIONS.md §74 with the issue that closes it:
-// the cards' first line (`You added a line, 5 minutes ago` — #217, no last-agreed version exists),
-// the meta line's `last agreed 3 hours ago` (same gap), the non-text side-by-side preview (no
-// command serves file bytes), and the light theme's assertions (§58b, S10's extractor work).
+// the meta line's `last agreed 3 hours ago` (#217 gave the engine the agreed version's LINES, not
+// the moment it was agreed, and `FileRecord` still has no last-synced field), the non-text
+// side-by-side preview (no command serves file bytes), and the light theme's assertions (§58b,
+// S10's extractor work).
+//
+// The cards' first line came off that list with #217/#347 — it is computed from the agreed version
+// now, and omitted when there is none. DEVIATIONS §105.
 
 import { el } from "../ui/el.js";
 import { CONFLICTS } from "../ui/copy.js";
-import { fileSize } from "../ui/format.js";
+import { fileSize, since } from "../ui/format.js";
 import { renderHexagon } from "../ui/hexagon.js";
 import { renderSeam, seamMask } from "../ui/seam.js";
 import { button } from "../ui/controls.js";
@@ -127,10 +131,16 @@ function pager({ index, total, onPrev, onNext, padBottom = false }) {
  * `side` is `"mine"` or `"theirs"` — the same two words `ui/diff.js` uses, so the sentence and the
  * card can never be built for different halves of the same file.
  *
- * THE FIRST LINE IS A CONSTANT AND IT IS THE ONE PART THAT IS NOT LIVE. `You added a line` is a
- * claim against the last agreed version, whose content exists nowhere on the machine (#217). It is
- * rendered from the deck so the frame matches; a live app draws a sentence it cannot have computed,
- * which is why §74 records it rather than the screen quietly omitting it.
+ * THE FIRST LINE IS COMPUTED SINCE #217, and it is omitted when it cannot be. `You added a line` is
+ * a claim against the last agreed version; the engine now captures a line summary of that version at
+ * the moment it is agreed, and `read_conflict_pair` returns how far each side moved from it. Until
+ * #347 the two sentences were CONSTANTS appended unconditionally — a 4 GB video's card read `You
+ * added a line, 5 minutes ago`, with a timestamp that was not its file's — which is the one thing a
+ * conflict-resolution screen may not do.
+ *
+ * `happened` is `null` for every reason the ancestor is unavailable (a binary file, one past the
+ * engine's caps, a summary that aged out, a diff too far apart). The card then draws one line fewer
+ * and keeps everything that is live: the size, the line count, the edit time and the diff.
  */
 function versionCard({ side, pair, facts }) {
   const source = side === "mine" ? pair?.original : pair?.sidecar;
@@ -146,17 +156,20 @@ function versionCard({ side, pair, facts }) {
   const at = side === "mine" ? 0 : 1;
 
   const card = fid(el("div", { class: "cf-card" }), "card", at);
-  card.append(
-    fid(
-      el(
-        "div",
-        { class: "cf-card-happened" },
-        side === "mine" ? CONFLICTS.mineChange : CONFLICTS.theirsChange,
-      ),
-      "cardHappened",
-      at,
-    ),
-  );
+  const change = side === "mine" ? pair?.happened?.mine : pair?.happened?.theirs;
+  // THE TIME IS APPENDED FOR YOUR SIDE ONLY, and that asymmetry is the honest one. Both frames draw
+  // a relative time on both cards, but the sidecar's mtime is when the DAEMON wrote it — nothing
+  // preserves a remote mtime anywhere in the engine, and `file_index` holds no remote-side
+  // timestamp at all. `Added a line, 2 minutes ago` would read as "someone edited it two minutes
+  // ago", which is a claim about another machine that nothing here can make. The metadata row still
+  // shows the sidecar's own file time, stated as a file property rather than welded to a verb.
+  const ago = side === "mine" && source?.mtime_epoch_secs != null ? since(source.mtime_epoch_secs) : null;
+  const happened = CONFLICTS.happenedAt(CONFLICTS.happened(side, change), ago);
+  // APPENDED ONLY WHEN THERE IS ONE. `append(null)` inserts the literal word `null` — this project
+  // has shipped that twice — so the absent case is a branch rather than a falsy argument.
+  if (happened) {
+    card.append(fid(el("div", { class: "cf-card-happened" }, happened), "cardHappened", at));
+  }
 
   // What differs, in words — and silence rather than a hedge when the grammar does not cover it.
   // `04-conflicts.md`: fall back to the metadata row alone, and never to the raw diff, which is

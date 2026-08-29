@@ -1,3 +1,4 @@
+use crate::ancestor::{LineSummary, MAX_SUMMARY_BYTES};
 use crate::dirconfig::{DirectoryConfigResolver, EffectiveSettings};
 use crate::events::{EventSource, EventsClient, RemoteChange, node_uid, volume_id_from_proton_id};
 use crate::index::{
@@ -8,9 +9,10 @@ use crate::index::{
     last_full_sweep, load_event_cursor, load_existing_index, load_index, load_sole_event_cursor,
     load_unsyncable_items, load_warm_start_count, load_withheld_deletions, local_directory_state,
     local_file_state, mark_modified, matching_delete_approval, open_database, path_for_proton_id,
-    prune_history, purge_record, purge_subtree_records, recent_passes, replace_unsyncable_items,
-    replace_withheld_deletions, reset_index_state, scan_local_tree, store_event_cursor,
-    store_warm_start_count, upsert_delete_approval, upsert_record,
+    prune_agreed_summaries, prune_history, purge_record, purge_subtree_records, recent_passes,
+    replace_unsyncable_items, replace_withheld_deletions, reset_index_state, scan_local_tree,
+    sha1_hex, store_agreed_summary, store_event_cursor, store_warm_start_count,
+    upsert_delete_approval, upsert_record,
 };
 use crate::ipc::{
     ACTIVITY_EVENTS_DEFAULT_LIMIT, ACTIVITY_EVENTS_MAX_LIMIT, ApplyOutcome, AuthState,
@@ -4366,6 +4368,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
                     &mut pending_approval_consumptions,
                     &mut self.pair.pass_log,
                     self.shared,
+                    &self.pair.config.local_root,
                 )?;
             }
             action_number += 1;
@@ -4404,11 +4407,20 @@ impl<C: ProtonClient> PairPass<'_, C> {
         }
 
         self.shared.begin_activity(new_activity(PHASE_COMMITTING));
+        // Read before the transaction opens, exactly as `commit_checkpoint` does — and this second
+        // site is not optional (#217): an ADOPTION is index-only, so a whole first sync of an
+        // already-matching tree accumulates its `Synced` records here and never touches a
+        // checkpoint. Capturing only in `commit_checkpoint` would leave every adopted file without
+        // an ancestor, which is the commonest way a file becomes agreed at all.
+        let summaries = collect_agreed_summaries(&index_mutations, &self.pair.config.local_root);
         let transaction = self.pair.connection.transaction()?;
         // Whatever accumulated since the last checkpoint (trailing index-only mutations, plus any
         // approval consumption not yet flushed) commits here together with the cursor.
         for mutation in &index_mutations {
             mutation.apply(&transaction)?;
+        }
+        for (path, digest, summary) in &summaries {
+            store_agreed_summary(&transaction, path, digest, summary, current_epoch_secs())?;
         }
         // Advance the event cursor ONLY in this final, whole-pass-succeeded transaction — never in
         // a mid-pass checkpoint: the cursor asserts "every remote change up to this event has been
@@ -4775,6 +4787,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
             pending_approval_consumptions,
             &mut self.pair.pass_log,
             self.shared,
+            &self.pair.config.local_root,
         )?;
         // A chunk is many actions; one landed file in it clears the breaker's consecutive run
         // exactly as a successful single action would. A vanished node landed nothing.
@@ -4958,6 +4971,10 @@ impl<C: ProtonClient> PairPass<'_, C> {
             current_epoch_secs(),
             HistoryRetention::default(),
         )?;
+        // The ancestor summaries are bounded here too, on the same "only a pass that wrote rows
+        // pays" rule (#217). Evicting one costs the say-less card and nothing else, which is what
+        // makes any bound defensible on a standing per-file table.
+        prune_agreed_summaries(&self.pair.connection)?;
         Ok(())
     }
 
@@ -6236,12 +6253,76 @@ fn skip_if_node_vanished(result: AppResult<()>, path: &Path) -> AppResult<bool> 
 /// later failure or shutdown. The event cursor is deliberately not part of any checkpoint (it
 /// advances only in the final commit of a fully-successful pass). Approval consumptions ride
 /// in the same transaction as the deletion's own index purge.
+/// The agreed-version summaries an about-to-commit checkpoint should record (#217).
+///
+/// One entry per `Upsert` of a `Synced` **file** record whose content can be summarised at all. A
+/// file that is not valid UTF-8, is past [`crate::ancestor::MAX_SUMMARY_BYTES`] or has more lines
+/// than [`crate::ancestor::MAX_SUMMARY_LINES`] yields nothing, and a conflict on it later draws the
+/// say-less card — which is #347's own headline case, the 4 GB video whose card claimed a line had
+/// been added to it.
+///
+/// **Nothing here returns an error.** Every failure is a file that cannot be read or is not text,
+/// and the cost of each is one sentence the card does not draw. Letting any of it fail a pass would
+/// trade a working sync for a decoration.
+fn collect_agreed_summaries(
+    index_mutations: &[IndexMutation],
+    local_root: &Path,
+) -> Vec<(PathBuf, String, LineSummary)> {
+    let mut summaries = Vec::new();
+    for mutation in index_mutations {
+        let IndexMutation::Upsert(record) = mutation else {
+            continue;
+        };
+        // ONLY `Synced`. A `Conflict` record's digest is the local file's, not the agreed one — so
+        // capturing there would file the diverged version under the ancestor's name and make every
+        // sentence on the card wrong in the confident direction.
+        if record.sync_status != SyncStatus::Synced || record.entity_kind != EntityKind::File {
+            continue;
+        }
+        let Some(digest) = record.sha1_hash.as_deref() else {
+            continue;
+        };
+        let Some(absolute) = safe_local_path(local_root, &record.file_path) else {
+            continue;
+        };
+        // `read_to_string` is the UTF-8 test and the read in one: a binary file fails it, which is
+        // the answer rather than a problem. The size cap is checked first so a huge file is not
+        // read into memory to be discarded.
+        let readable = fs::symlink_metadata(&absolute)
+            .ok()
+            .filter(|metadata| metadata.is_file() && metadata.len() <= MAX_SUMMARY_BYTES as u64)
+            .and_then(|_| fs::read_to_string(&absolute).ok());
+        let Some(text) = readable else {
+            continue;
+        };
+        // THE BYTES MUST HASH TO THE DIGEST THEY ARE FILED UNDER, and this check is not belt and
+        // braces — it closes a window the design opens. An adoption is index-only, so its `Upsert`
+        // accumulates until the FINAL commit: on a full sweep the read happens at the end of a pass
+        // whose scan was taken at the start, and a file edited in between is summarised as the
+        // edited content under the agreed digest. The card would then compare that file against a
+        // summary of itself, find nothing moved, and draw "Your lines are unchanged" about a file
+        // the user had just changed — the one sentence the deck calls certainly wrong.
+        //
+        // Re-hashing is cheap next to the read that just happened, and a mismatch simply drops the
+        // summary: the file is mid-edit, so there is no agreed version to record, and the next pass
+        // that agrees on one will record it.
+        if sha1_hex(text.as_bytes()) != digest {
+            continue;
+        }
+        if let Some(summary) = LineSummary::of(&text) {
+            summaries.push((record.file_path.clone(), digest.to_owned(), summary));
+        }
+    }
+    summaries
+}
+
 fn commit_checkpoint(
     connection: &mut Connection,
     index_mutations: &mut Vec<IndexMutation>,
     pending_approval_consumptions: &mut Vec<(PathBuf, DeleteDirection)>,
     pass_log: &mut PassLog,
     shared: &ControlShared,
+    local_root: &Path,
 ) -> AppResult<()> {
     if index_mutations.is_empty()
         && pending_approval_consumptions.is_empty()
@@ -6249,9 +6330,26 @@ fn commit_checkpoint(
     {
         return Ok(());
     }
+    // THE ANCESTOR CAPTURE, and this is the only moment it can happen (#217). The agreed content
+    // exists on disk between the sync that agreed it and the first edit after; by the time a
+    // conflict is planned the local file has moved and `SyncAction::Conflict`'s own arm has already
+    // replaced the baseline digest with the current one. So a file becoming agreed is the capture
+    // point, which is exactly what an `Upsert` of a `Synced` record is.
+    //
+    // READ BEFORE THE TRANSACTION OPENS, deliberately: a batched download commits up to
+    // `download_batch_size` records at once, and holding a write transaction open across that many
+    // file reads would put the database's busy window in the hands of the disk. Failing to read one
+    // costs the say-less card and nothing else, so nothing here can fail the pass.
+    let summaries = collect_agreed_summaries(index_mutations, local_root);
+
     let transaction = connection.transaction()?;
     for mutation in index_mutations.iter() {
         mutation.apply(&transaction)?;
+    }
+    // In the SAME transaction as the record it describes: a summary that outlived a rolled-back
+    // upsert would answer for a version the index never agreed on.
+    for (path, digest, summary) in &summaries {
+        store_agreed_summary(&transaction, path, digest, summary, current_epoch_secs())?;
     }
     for (path, direction) in pending_approval_consumptions.iter() {
         delete_delete_approval(&transaction, path, *direction)?;
@@ -10820,6 +10918,173 @@ mod tests {
             crate::index::load_delete_approvals(&daemon.pair().connection)
                 .expect("load approvals")
                 .is_empty(),
+        );
+    }
+
+    #[test]
+    fn the_agreed_version_is_captured_when_it_is_agreed_and_answers_the_conflict_later() {
+        // #217/#347. The whole feature in one pass sequence, because the timing IS the feature: the
+        // ancestor exists only between the sync that agreed it and the next edit, and by the time a
+        // conflict is planned the local file has moved AND `SyncAction::Conflict` has replaced the
+        // baseline digest with the current one. A capture at conflict time would file the diverged
+        // version under the ancestor's name.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+
+        let agreed = "# Todo\n- buy oat milk\n- call Alice\n- ship v1\n";
+        let agreed_hash = sha1_bytes(agreed.as_bytes());
+        fs::write(local_root.join("todo.txt"), agreed).expect("write agreed");
+
+        // A remote file with the same digest: the pass adopts it, which is a file becoming agreed.
+        let client = RecordingProtonClient::new(HashMap::from([(
+            PathBuf::from("todo.txt"),
+            RemoteFile {
+                path: PathBuf::from("/Drive/RemoteFolder/todo.txt"),
+                id: "file-todo".to_owned(),
+                name: "todo.txt".to_owned(),
+                sha1_hash: Some(agreed_hash.clone()),
+                downloadable: true,
+            },
+        )]))
+        .0;
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        daemon.reconcile_blocking().expect_clean("adopt");
+
+        let summary = crate::index::load_agreed_summary(
+            &daemon.pair().connection,
+            Path::new("todo.txt"),
+            &agreed_hash,
+        )
+        .expect("load")
+        .expect("the agreed version was summarised when it became agreed");
+        assert_eq!(summary.line_count(), 4);
+
+        // Now both sides move. The local edit changes line 2 back; the summary must still answer
+        // for the version they agreed on, under ITS digest, not the new one.
+        let mine = "# Todo\n- buy milk\n- call Alice\n- ship v1\n";
+        fs::write(local_root.join("todo.txt"), mine).expect("local edit");
+
+        let facts = crate::ancestor::compare_to_ancestor(
+            &summary,
+            &crate::ancestor::LineSummary::of(mine).expect("current"),
+        )
+        .expect("inside the cutoff");
+        assert_eq!(
+            facts,
+            crate::ancestor::VersionFacts {
+                added: 0,
+                changed: 1,
+                removed: 0
+            },
+            "you changed a line — which is only answerable because the ancestor was captured"
+        );
+
+        // And the record the conflict itself writes does NOT become an ancestor: a `Conflict` row
+        // carries the local file's digest, so summarising it would answer the card with the very
+        // version it is asking about.
+        let mine_hash = sha1_bytes(mine.as_bytes());
+        assert!(
+            crate::index::load_agreed_summary(
+                &daemon.pair().connection,
+                Path::new("todo.txt"),
+                &mine_hash,
+            )
+            .expect("load")
+            .is_none(),
+            "the diverged version must not be filed as an ancestor"
+        );
+    }
+
+    #[test]
+    fn a_file_edited_between_the_scan_and_the_commit_is_never_filed_as_the_agreed_version() {
+        // FOUND BY ADVERSARIAL REVIEW, and the design opens the window rather than merely allowing
+        // it: an adoption is index-only, so its `Upsert` accumulates until the FINAL commit — on a
+        // full sweep the read happens at the end of a pass whose scan was taken at the start.
+        //
+        // Without the re-hash, the summary would be of the EDITED content filed under the AGREED
+        // digest. `newest_agreed_summary` reads by path, so that poisoned row is the one the card
+        // uses: it would compare the edited file against a summary of itself, find nothing moved,
+        // and draw "Your lines are unchanged" about a file the user had just changed — which the
+        // copy deck calls the one answer that is certainly wrong.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+
+        let agreed = "one\ntwo\nthree\n";
+        let agreed_hash = sha1_bytes(agreed.as_bytes());
+        // The record says the agreed digest; the file on disk has already moved on, which is
+        // exactly the state a mid-pass edit leaves behind.
+        fs::write(
+            local_root.join("notes.txt"),
+            "one\ntwo\nthree\nfour\nfive\n",
+        )
+        .expect("the edit that lands during the pass");
+
+        let record = FileRecord {
+            file_path: PathBuf::from("notes.txt"),
+            entity_kind: EntityKind::File,
+            file_size: agreed.len() as u64,
+            mtime: 0,
+            sha1_hash: Some(agreed_hash.clone()),
+            proton_id: Some("vol~n1".to_owned()),
+            sync_status: SyncStatus::Synced,
+        };
+        let captured =
+            collect_agreed_summaries(&[IndexMutation::Upsert(record.clone())], &local_root);
+        assert!(
+            captured.is_empty(),
+            "bytes that do not hash to the digest they would be filed under are not an ancestor"
+        );
+
+        // And the ordinary case still captures, so the check is a guard rather than an off switch.
+        fs::write(local_root.join("notes.txt"), agreed).expect("restore the agreed content");
+        let captured = collect_agreed_summaries(&[IndexMutation::Upsert(record)], &local_root);
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].1, agreed_hash);
+        assert_eq!(captured[0].2.line_count(), 3);
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_summarised_costs_a_sentence_and_never_a_pass() {
+        // #347's headline case. A binary file is adopted exactly as a text one is; it simply has no
+        // ancestor summary, and the card then draws only what it can compute. The pass is CLEAN —
+        // nothing about a decoration may fail a sync.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+
+        let bytes = [0u8, 159, 146, 150, b'\n', 0, 1, 2];
+        let hash = sha1_bytes(&bytes);
+        fs::write(local_root.join("clip.bin"), bytes).expect("write binary");
+
+        let client = RecordingProtonClient::new(HashMap::from([(
+            PathBuf::from("clip.bin"),
+            RemoteFile {
+                path: PathBuf::from("/Drive/RemoteFolder/clip.bin"),
+                id: "file-clip".to_owned(),
+                name: "clip.bin".to_owned(),
+                sha1_hash: Some(hash.clone()),
+                downloadable: true,
+            },
+        )]))
+        .0;
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        daemon
+            .reconcile_blocking()
+            .expect_clean("adopt a binary file");
+
+        assert!(
+            crate::index::load_agreed_summary(
+                &daemon.pair().connection,
+                Path::new("clip.bin"),
+                &hash,
+            )
+            .expect("load")
+            .is_none(),
+            "a file that is not text has no line summary, and that is ordinary"
         );
     }
 
@@ -18825,6 +19090,20 @@ mod tests {
             get_record(&daemon.pair().connection, Path::new("local-only.txt"))
                 .expect("lookup")
                 .is_none()
+        );
+        // AND NO ANCESTOR SUMMARY (#217). A rehearsal runs the same local walk as a real pass, so
+        // it sees every file that would become agreed — recording one here would spend a fact the
+        // real pass is supposed to establish. It holds today because a plan pass reaches neither
+        // `commit_checkpoint` nor the final commit, but this guard is where the rule lives, and a
+        // new persisted store outside it is how the next one gets added silently.
+        assert!(
+            crate::index::newest_agreed_summary(
+                &daemon.pair().connection,
+                Path::new("local-only.txt")
+            )
+            .expect("lookup")
+            .is_none(),
+            "a rehearsal records no agreed version"
         );
         // And nothing was transferred: the local tree is exactly as it was.
         assert!(

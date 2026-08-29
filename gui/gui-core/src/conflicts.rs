@@ -219,11 +219,52 @@ pub struct ConflictSide {
     pub binary_or_large: bool,
 }
 
+/// One digest per line of the last agreed version, re-exported so a caller needs no direct engine
+/// dependency for the one type it has to carry between the index read and this reader.
+pub use proton_drive_sync_engine::ancestor::LineSummary;
+
+/// What one side did to the last agreed version (#217) — the three counts the card's first line is
+/// built from, and nothing else. The words are the webview's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct SideChange {
+    pub added: usize,
+    pub changed: usize,
+    pub removed: usize,
+}
+
+impl From<proton_drive_sync_engine::ancestor::VersionFacts> for SideChange {
+    fn from(facts: proton_drive_sync_engine::ancestor::VersionFacts) -> Self {
+        Self {
+            added: facts.added,
+            changed: facts.changed,
+            removed: facts.removed,
+        }
+    }
+}
+
 /// Both sides of a conflict: the user's local `original` and the `sidecar` (Proton's copy).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ConflictPair {
     pub original: ConflictSide,
     pub sidecar: ConflictSide,
+    /// How each side moved from the version they last agreed on.
+    ///
+    /// **`None` is the ordinary answer and the card must draw one line fewer for it** (#347). It
+    /// means there is no ancestor to compare against — the file was never summarised (binary, or
+    /// past the engine's caps), the summary aged out, one side is unreadable, or the diff was too
+    /// far apart. Every one of those is a case where the drawn sentence `You added a line` was
+    /// being invented, which is what this replaces.
+    pub happened: Option<PairChange>,
+}
+
+/// The pair of side changes, present only when both could be computed.
+///
+/// Both or neither, deliberately: one side's verb beside the other side's silence reads as "and
+/// Proton did nothing", which is a claim about Proton's copy that nothing here checked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct PairChange {
+    pub mine: SideChange,
+    pub theirs: SideChange,
 }
 
 /// Files above this size are shown as metadata only (no diff).
@@ -233,10 +274,55 @@ const MAX_DIFF_BYTES: u64 = 512 * 1024;
 /// through the engine's `validate_relative_path` guard (rejecting `..`/absolute/prefix components)
 /// before being joined onto `local_root`. Text is returned only for small, valid-UTF-8, NUL-free
 /// files; everything else comes back as metadata with `binary_or_large = true`.
-pub fn read_conflict_pair(local_root: &Path, conflict: &Conflict) -> Result<ConflictPair, String> {
+pub fn read_conflict_pair(
+    local_root: &Path,
+    conflict: &Conflict,
+    ancestor: Option<&LineSummary>,
+) -> Result<ConflictPair, String> {
+    let original = read_side(local_root, &conflict.original)?;
+    let sidecar = read_side(local_root, &conflict.sidecar)?;
+    let happened = ancestor.and_then(|ancestor| pair_change(ancestor, &original, &sidecar));
     Ok(ConflictPair {
-        original: read_side(local_root, &conflict.original)?,
-        sidecar: read_side(local_root, &conflict.sidecar)?,
+        original,
+        sidecar,
+        happened,
+    })
+}
+
+/// Compare both live sides against the agreed version, or answer `None`.
+///
+/// Reads the text `read_side` already returned rather than the files again: two reads of a file the
+/// user may be editing can disagree, and the sentence has to describe the same bytes the panel
+/// beneath it draws.
+fn pair_change(
+    ancestor: &LineSummary,
+    original: &ConflictSide,
+    sidecar: &ConflictSide,
+) -> Option<PairChange> {
+    use proton_drive_sync_engine::ancestor::compare_to_ancestor;
+    let mine_text = original.text.as_deref()?;
+    let theirs_text = sidecar.text.as_deref()?;
+
+    // A SIDECAR CAN BE A COPY OF THE LOCAL FILE, and then nothing here knows anything about
+    // Proton's copy. `sync.rs` writes one for `(Changed, Missing)` — a local edit whose remote copy
+    // was deleted elsewhere (#46) — because a conflict with no sidecar has no exit. The GUI's disk
+    // walk cannot tell that sidecar from a downloaded one, so comparing it as "Proton's version"
+    // reports the user's OWN edit as something Proton did. Identical bytes are the case this can
+    // see, and it is the state such a conflict is recorded in.
+    //
+    // The residual is honest and filed rather than papered over: if the local file is edited AFTER
+    // such a sidecar is written, the two differ and this test passes, and `theirs` then describes
+    // the user's earlier edit. Telling them apart needs provenance the wire does not carry — the
+    // daemon knows (`PlannedAction::sidecar_from_local_copy`) and nothing records it.
+    if mine_text == theirs_text {
+        return None;
+    }
+
+    let mine = LineSummary::of(mine_text)?;
+    let theirs = LineSummary::of(theirs_text)?;
+    Some(PairChange {
+        mine: compare_to_ancestor(ancestor, &mine)?.into(),
+        theirs: compare_to_ancestor(ancestor, &theirs)?.into(),
     })
 }
 
@@ -569,10 +655,102 @@ mod pair_tests {
         let root = dir.path();
         std::fs::write(root.join("notes.txt"), "mine\nline2\n").unwrap();
         std::fs::write(root.join("notes.proton-cloud.txt"), "theirs\nline2\n").unwrap();
-        let pair = read_conflict_pair(root, &conflict()).unwrap();
+        let pair = read_conflict_pair(root, &conflict(), None).unwrap();
         assert_eq!(pair.original.text.as_deref(), Some("mine\nline2\n"));
         assert_eq!(pair.sidecar.text.as_deref(), Some("theirs\nline2\n"));
         assert!(!pair.original.binary_or_large && pair.original.exists);
+    }
+
+    #[test]
+    fn the_two_verbs_are_computed_against_the_agreed_version() {
+        // #217/#347. THE POINT OF THE WHOLE FEATURE: the sentence is a claim against the version
+        // both sides last agreed on, and against the other live copy alone the very same edit reads
+        // as a removal. These are `3a Conflict diff`'s own drawn lines with the one ancestor that
+        // reconciles the two frames.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(
+            root.join("notes.txt"),
+            "# Todo\n- buy milk\n- call Alice\n- ship v1\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("notes.proton-cloud.txt"),
+            "# Todo\n- buy oat milk\n- call Alice\n- ship v1\n- relax\n",
+        )
+        .unwrap();
+        let ancestor =
+            LineSummary::of("# Todo\n- buy oat milk\n- call Alice\n- ship v1\n").unwrap();
+
+        let pair = read_conflict_pair(root, &conflict(), Some(&ancestor)).unwrap();
+        let happened = pair.happened.expect("both sides compare to the ancestor");
+        assert_eq!(
+            happened.mine,
+            SideChange {
+                added: 0,
+                changed: 1,
+                removed: 0
+            }
+        );
+        assert_eq!(
+            happened.theirs,
+            SideChange {
+                added: 1,
+                changed: 0,
+                removed: 0
+            }
+        );
+    }
+
+    #[test]
+    fn no_ancestor_and_an_unreadable_side_both_say_less_rather_than_guessing() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("notes.txt"), "a\nb\n").unwrap();
+        std::fs::write(root.join("notes.proton-cloud.txt"), "a\nc\n").unwrap();
+
+        // No ancestor at all — a file this daemon never summarised, or one whose summary aged out.
+        assert!(
+            read_conflict_pair(root, &conflict(), None)
+                .unwrap()
+                .happened
+                .is_none()
+        );
+
+        // An ancestor, but one side is binary: BOTH or NEITHER, because one side's verb beside the
+        // other's silence reads as "and Proton did nothing", which is a claim nothing checked.
+        std::fs::write(root.join("notes.proton-cloud.txt"), [0u8, 1, 2, 3, 0]).unwrap();
+        let ancestor = LineSummary::of("a\nb\n").unwrap();
+        assert!(
+            read_conflict_pair(root, &conflict(), Some(&ancestor))
+                .unwrap()
+                .happened
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_sidecar_that_is_a_copy_of_the_local_file_attributes_nothing_to_proton() {
+        // FOUND BY ADVERSARIAL REVIEW. `sync.rs` writes the sidecar as a byte copy of the surviving
+        // local file when the remote node is confirmed gone (#46), and the disk walk cannot tell
+        // that from a downloaded one — so both sides compared against the ancestor reported the
+        // user's own edit twice, once attributed to Proton. Proton's copy was DELETED; the card
+        // said it had been edited, which is an affirmative claim about the other side that nothing
+        // checked.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let edited = "# Todo\n- buy milk\n- call Alice\n";
+        std::fs::write(root.join("notes.txt"), edited).unwrap();
+        std::fs::write(root.join("notes.proton-cloud.txt"), edited).unwrap();
+        let ancestor = LineSummary::of("# Todo\n- buy oat milk\n- call Alice\n").unwrap();
+
+        assert!(
+            read_conflict_pair(root, &conflict(), Some(&ancestor))
+                .unwrap()
+                .happened
+                .is_none(),
+            "identical sides say nothing about what the other side did"
+        );
     }
 
     #[test]
@@ -581,7 +759,7 @@ mod pair_tests {
         let root = dir.path();
         std::fs::write(root.join("notes.txt"), b"ok").unwrap();
         std::fs::write(root.join("notes.proton-cloud.txt"), [0u8, 1, 2, 3, 0]).unwrap(); // NUL bytes
-        let pair = read_conflict_pair(root, &conflict()).unwrap();
+        let pair = read_conflict_pair(root, &conflict(), None).unwrap();
         assert_eq!(pair.sidecar.text, None);
         assert!(pair.sidecar.binary_or_large && pair.sidecar.exists);
         assert_eq!(pair.sidecar.size, 5);
@@ -597,7 +775,7 @@ mod pair_tests {
             vec![b'a'; (MAX_DIFF_BYTES + 1) as usize],
         )
         .unwrap();
-        let pair = read_conflict_pair(root, &conflict()).unwrap();
+        let pair = read_conflict_pair(root, &conflict(), None).unwrap();
         assert!(pair.sidecar.binary_or_large && pair.sidecar.text.is_none());
     }
 
@@ -606,7 +784,7 @@ mod pair_tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         std::fs::write(root.join("notes.txt"), "mine").unwrap();
-        let pair = read_conflict_pair(root, &conflict()).unwrap();
+        let pair = read_conflict_pair(root, &conflict(), None).unwrap();
         assert!(pair.original.exists);
         assert!(!pair.sidecar.exists && pair.sidecar.text.is_none());
     }
@@ -619,6 +797,6 @@ mod pair_tests {
             sidecar: "notes.proton-cloud.txt".into(),
             kind: ConflictKind::Content,
         };
-        assert!(read_conflict_pair(dir.path(), &evil).is_err());
+        assert!(read_conflict_pair(dir.path(), &evil, None).is_err());
     }
 }

@@ -405,6 +405,19 @@ const DRAWN = [
   // Every argument is read off the frame, as ever. Two of them name numbers Phase 1 cannot produce
   // (#208) — that is fine and is the point: this table asserts that the DECK still says what the
   // FRAME draws, which stays true and stays worth checking while the app draws the fallback.
+  // S2's two "what happened" sentences (#217/#347). They were CONSTANTS this table checked and are
+  // templates now, which is how a checked string leaves this gate silently (#372) — so they are
+  // declared here at the arguments that reproduce what the frame draws.
+  //
+  // The APP draws different verbs on this frame, deliberately: solving `3a Conflict diff`'s own
+  // numbers for an ancestor gives `you changed a line, Proton added one`, while the drawn cards say
+  // `You added a line` / `Changed a line and added one`, which together force the ancestor to equal
+  // your copy — a state that is not a conflict at all. DEVIATIONS §105. These rows assert the DECK
+  // can still say what the FRAME draws, which is the same claim `DELETIONS.folderConsequence` makes
+  // while the app draws its fallback.
+  ["CONFLICTS.happened", ["mine", { added: 1, changed: 0, removed: 0 }], "3a Conflict"],
+  ["CONFLICTS.happened", ["theirs", { added: 1, changed: 1, removed: 0 }], "3a Conflict"],
+  ["CONFLICTS.happenedAt", ["You added a line", "5 minutes ago"], "3a Conflict"],
   ["DELETIONS.title", [2], "4a Deletions"],
   ["DELETIONS.folderConsequence", ["1,204 photos, 8.4 GB"], "4a Deletions"],
   ["DELETIONS.deletedOnProton", ["22m ago"], "4a Deletions"],
