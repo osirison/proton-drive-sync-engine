@@ -348,8 +348,9 @@ mod tests {
     /// called on [the main window] for this state." Adversarial review found two escapes in an
     /// earlier version of this guard that only checked "which file calls `set_size`": (a) a
     /// non-recursive `read_dir` never visited a new subdirectory, and (b) the file-only check
-    /// could not tell `panel::resize`'s existing, legitimate call (the tray panel, an always-on-top
-    /// surface with no fixed size of its own) apart from a NEW call added inside that same file but
+    /// could not tell `panel::resize`'s existing, legitimate call (the tray panel, which asks to be
+    /// always-on-top and has no fixed size of its own) apart from a NEW call added inside that same
+    /// file but
     /// targeting the main window instead — the exact shape the reversed first decision proposed,
     /// and the file someone reaching for "add a resize" would most plausibly reach for, since it
     /// already imports the right types.

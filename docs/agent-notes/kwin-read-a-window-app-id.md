@@ -76,8 +76,25 @@ GDK_BACKEND=x11     python3 probe.py x11 &
 sleep 4   # both must be mapped before KWin is asked
 ```
 
-Then the `loadScript`/`run`/`journalctl` sequence above, with the dump filtered to `SKIPPROBE` and
-reporting `skipTaskbar`, `skipPager`, `skipSwitcher`, `keepAbove`. Result on Plasma 6 (#351):
+Then the `loadScript`/`run`/`journalctl` sequence above, with this dump — the earlier one prints
+`skipTaskbar` alone, which is not enough to see the "false on both rows" case below:
+
+```js
+var out = [];
+var ws = workspace.windowList();
+for (var i = 0; i < ws.length; i++) {
+  var w = ws[i];
+  if (String(w.caption).indexOf("SKIPPROBE") === -1) continue;
+  var g = w.frameGeometry;                      // for a positioning probe
+  out.push(w.caption
+    + " skipTaskbar=" + w.skipTaskbar + " skipPager=" + w.skipPager
+    + " skipSwitcher=" + w.skipSwitcher + " keepAbove=" + w.keepAbove
+    + " at=" + g.x + "," + g.y);
+}
+throw new Error("DUMP >>> " + (out.length ? out.join(" || ") : "no probe window found"));
+```
+
+Result on Plasma 6 (#351):
 
 | `GDK_BACKEND` | `skipTaskbar` | `skipPager` | `keepAbove` | `skipSwitcher` |
 | --- | --- | --- | --- | --- |
@@ -89,9 +106,20 @@ consistent with the probe never issuing the call. And a property that is `false`
 (`skipSwitcher` here) is not a Wayland gap at all: it is a call that sets something else, which is
 how a comment ends up claiming an effect the code never had on any platform.
 
-Map the toolkit call to the Tauri builder method through tao's dispatch — `grep WindowRequest::`
-in `tao-*/src/platform_impl/linux/event_loop.rs` — so the probe tests what the app actually issues
-rather than something adjacent.
+**Positioning is the same probe with `w.move(x, y)`** and `frameGeometry` read back. Asking for
+`400,300`: X11 gives `400,300`, Wayland gives whatever KWin's placement policy chose (`840,443` and
+`860,389` on two runs), because a Wayland client cannot position its own toplevel.
+
+Map the toolkit call to the Tauri builder method through tao, and **check which of tao's two paths
+the builder takes** — `platform_impl/linux/window.rs` applies most `attributes.*` directly at
+construction, while `event_loop.rs`'s `WindowRequest::*` arms are the runtime setters. They usually
+call the same GTK function, so the outcome is right either way and the citation is not: `.always_on_top`
+is applied at `window.rs`'s `attributes.always_on_top`, never through `WindowRequest::AlwaysOnTop`.
+
+A third outcome exists and the control is what exposes it: a Tauri builder option with **no Linux
+arm at all** (`.shadow` is `#[cfg(windows)]`/`#[cfg(target_os = "macos")]` only in
+`tauri-runtime-wry`). That is not a Wayland gap — it is a call that never did anything on this
+platform — and it looks identical to one from the Wayland row alone.
 
 ## Why it matters here
 
