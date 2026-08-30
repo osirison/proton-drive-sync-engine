@@ -340,6 +340,11 @@ const NOT_DRAWN = new Map([
  * nothing here is compared against a frame — only enough shapes to show a fragment is the
  * template's own text: these take counts, paths, error strings, an optional flag, and a distro
  * object. A fragment reachable at none of them is rejected above.
+ *
+ * THE GRID CAN BE INCOMPLETE, and the rejection message says so rather than asserting the fragment
+ * is unrenderable: a template needing a shape not listed here would have a genuine fragment refused.
+ * That failure is loud, arrives on the run that adds the entry, and is fixed by adding the shape —
+ * the opposite trade from a silent inert probe, which is what this check exists to prevent.
  */
 const UNGATED_PROBE_ARGS = [
   ["photos/2019", true],
@@ -1012,8 +1017,10 @@ for (const [path, entry] of UNGATED_TEMPLATES) {
   // AND THE FRAGMENT MUST BE THE TEMPLATE'S OWN TEXT. Absence from the frames is only half of what
   // makes a probe work: one that the template can never render — a typo, a hyphen where the deck
   // has an em-dash, a sentence copied from the entry above — is absent for ever, passes the check
-  // above, and NEVER FIRES. That is the one failure the "a present fragment fails immediately"
-  // property does not cover, and it is the failure mode a probe list decays into.
+  // above, and NEVER FIRES. The "a present fragment fails immediately" property does not cover it —
+  // and does not cover everything else either: an entry whose fragment is genuine and whose REASON
+  // is wrong passes both checks, as does one that should have been a DRAWN row all along. Those
+  // stay the reader's job. This check buys the mechanical half.
   //
   // Rendering at a grid rather than at one argument, because these take counts, paths, objects and
   // optional flags; a fragment reachable at ANY of them is the template's own words.
@@ -1030,8 +1037,9 @@ for (const [path, entry] of UNGATED_TEMPLATES) {
     });
   if (!reachable) {
     templateCoverage.push(
-      `${path}'s absent fragment ${JSON.stringify(entry.absent)} is not something the template ` +
-        `renders at any probed argument — it could never fire, so it is not a staleness check`,
+      `${path}'s absent fragment ${JSON.stringify(entry.absent)} is not in anything the template ` +
+        `renders at the arguments probed above — so it would never fire. Fix the fragment, or widen ` +
+        `UNGATED_PROBE_ARGS if this template needs a shape the grid does not have`,
     );
   }
 }
