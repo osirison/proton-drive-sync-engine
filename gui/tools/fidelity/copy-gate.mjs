@@ -338,159 +338,245 @@ const NOT_DRAWN = new Map([
 const UNGATED_TEMPLATES = new Map([
   [
     "ACTIVITY.lookup.capped",
-    "The capped multi-match list, and no frame draws a search that matched more than one file \u2014 " +
-      "`7a File lookup` draws `1 match` and goes straight to the verdict panel. Its three constant " +
-      "siblings on the same sub-screen (`chooseTitle`, `chooseSub`, `backToMatches`) are already " +
-      "exempt for exactly this reason at copy-gate.mjs:168-170; this is the template the same " +
-      "exemption cannot hold.",
+    {
+      why:
+        "The capped multi-match list, and no frame draws a search that matched more than one file \u2014 " +
+        "`7a File lookup` draws `1 match` and goes straight to the verdict panel. Its three constant " +
+        "siblings on the same sub-screen (`chooseTitle`, `chooseSub`, `backToMatches`) are already " +
+        "exempt for exactly this reason at copy-gate.mjs:168-170; this is the template the same " +
+        "exemption cannot hold.",
+      absent: "— narrow the search.",
+    },
   ],
   [
     "CONFLICTS.edited",
-    "It takes an EPOCH, not a formatted time, and renders it through `format.js`'s `clock()`, " +
-      "which uses the machine's own timezone \u2014 so no fixed argument produces the drawn `edited " +
-      "14:38` on every runner. format.js:168's own doc calls it \"the one formatter whose output a " +
-      "fixture may not derive\". Already a recorded decision: copy-gate.mjs's S2 block says `edited " +
-      "14:38` is deliberately absent from DRAWN for this reason.",
+    {
+      why:
+        "It takes an EPOCH, not a formatted time, and renders it through `format.js`'s `clock()`, " +
+        "which uses the machine's own timezone \u2014 so no fixed argument produces the drawn `edited " +
+        "14:38` on every runner. format.js:168's own doc calls it \"the one formatter whose output a " +
+        "fixture may not derive\". Already a recorded decision: copy-gate.mjs's S2 block says `edited " +
+        "14:38` is deliberately absent from DRAWN for this reason.",
+      absent: null,
+    },
   ],
   [
     "DELETIONS.armedBodyFile",
-    "`4a Armed` arms a FOLDER, so its body is `armedBody` \u2014 `Everything in photos/2019 \u2014 8.4 GB \u2014 " +
-      "is removed from disk. \u2026` \u2014 and deletions.js:602 reaches this template only when `entity_kind " +
-      '!== "directory"`. No frame arms a file. The only argument that reproduces frame text is ' +
-      '`"photos/2019 \u2014 8.4 GB \u2014"`, which is not a path, so a passing DRAWN row would assert the ' +
-      "same kind of fiction as `monthEdgeNote`.",
+    {
+      why:
+        "`4a Armed` arms a FOLDER, so its body is `armedBody` \u2014 `Everything in photos/2019 \u2014 8.4 GB \u2014 " +
+        "is removed from disk. \u2026` \u2014 and deletions.js:602 reaches this template only when `entity_kind " +
+        '!== "directory"`. No frame arms a file. The only argument that reproduces frame text is ' +
+        '`"photos/2019 \u2014 8.4 GB \u2014"`, which is not a path, so a passing DRAWN row would assert the ' +
+        "same kind of fiction as `monthEdgeNote`.",
+      absent: null,
+    },
   ],
   [
     "MAIN.andMore",
-    "The transfer-list overflow row, and no frame draws a list long enough to overflow: `2a " +
-      "Syncing` draws three transfer rows and `5a Plan` nine, with no `+n more` node in any of the " +
-      "51 frames. All three call sites are guarded `hidden > 0`, so the app can produce it; nothing " +
-      "drew it.",
+    {
+      why:
+        "The transfer-list overflow row, and no frame draws a list long enough to overflow: `2a " +
+        "Syncing` draws three transfer rows and `5a Plan` nine, with no `+n more` node in any of the " +
+        "51 frames. All three call sites are guarded `hidden > 0`, so the app can produce it; nothing " +
+        "drew it.",
+      absent: null,
+    },
   ],
   [
     "MAIN.batchFiles",
-    "The chip on a batched-download row, and no frame draws one \u2014 `2a Syncing`'s three transfer " +
-      "rows draw `1.2 MB`, `queued` and `2.4 MB`. `batchFiles(12480)` renders `12,480 files`, which " +
-      "ten frames contain in a different slot (the settled sub-line's index total, `2a Compact " +
-      "settled`'s panel total, `5a Checking`'s progress, `8a Settings`' pair note), so a DRAWN row " +
-      "would go green by pointing the deck's chip at another sentence's words \u2014 the " +
-      "`CONFLICTS.kindFolder` near-miss this gate exists to prevent.",
+    {
+      why:
+        "The chip on a batched-download row, and no frame draws one \u2014 `2a Syncing`'s three transfer " +
+        "rows draw `1.2 MB`, `queued` and `2.4 MB`. `batchFiles(12480)` renders `12,480 files`, which " +
+        "ten frames contain in a different slot (the settled sub-line's index total, `2a Compact " +
+        "settled`'s panel total, `5a Checking`'s progress, `8a Settings`' pair note), so a DRAWN row " +
+        "would go green by pointing the deck's chip at another sentence's words \u2014 the " +
+        "`CONFLICTS.kindFolder` near-miss this gate exists to prevent.",
+      absent: null,
+    },
   ],
   [
     "MAIN.failedSub",
-    "No frame draws a failed pass; its headline `MAIN.failed` is already exempt for that reason " +
-      "at copy-gate.mjs:127, and this is the template sibling `NOT_DRAWN` cannot hold. The counted " +
-      "branch matches nothing. DO NOT gate the zero branch: `failedSub(0)` renders the bare " +
-      "`Nothing is lost.`, which is inside `10a Offline` and `3a Conflict`, so a DRAWN row at `[0]` " +
-      "would pass while asserting the failed-pass sub-line against the tray's outage body and the " +
-      "conflict card's keep-both sub.",
+    {
+      why:
+        "No frame draws a failed pass; its headline `MAIN.failed` is already exempt for that reason " +
+        "at copy-gate.mjs:127, and this is the template sibling `NOT_DRAWN` cannot hold. The counted " +
+        "branch matches nothing. DO NOT gate the zero branch: `failedSub(0)` renders the bare " +
+        "`Nothing is lost.`, which is inside `10a Offline` and `3a Conflict`, so a DRAWN row at `[0]` " +
+        "would pass while asserting the failed-pass sub-line against the tray's outage body and the " +
+        "conflict card's keep-both sub.",
+      absent: "waiting and will go on the next try.",
+    },
   ],
   [
     "ONBOARDING.cliMissingBody",
-    "The app renders it, but `9a CLI missing` draws the pre-#218 sentence \u2014 `This app drives the " +
-      "official tool rather than talking to Proton directly. Install it once and setup will carry " +
-      "on. Detected Debian \u2014 other distributions are in the help.` \u2014 and neither branch of the " +
-      "current text appears in any of the 51 frames. #218 settled the drawn install command as true " +
-      "for no distribution, so the deck deliberately no longer holds a string that matches the " +
-      "frame.",
+    {
+      why:
+        "The app renders it, but `9a CLI missing` draws the pre-#218 sentence \u2014 `This app drives the " +
+        "official tool rather than talking to Proton directly. Install it once and setup will carry " +
+        "on. Detected Debian \u2014 other distributions are in the help.` \u2014 and neither branch of the " +
+        "current text appears in any of the 51 frames. #218 settled the drawn install command as true " +
+        "for no distribution, so the deck deliberately no longer holds a string that matches the " +
+        "frame.",
+      absent: "and no Linux distribution packages it",
+    },
   ],
   [
     "PLAN.checkingProgressBare",
-    "`5a Checking` draws the denominator form `8,431 of 12,480 files` \u2014 that is " +
-      "`checkingProgress`, already in DRAWN. This is the line for a run with nothing to count " +
-      "against (plan.js:972-978: `total` absent or 0, e.g. a first run's empty index) and no frame " +
-      "draws that run. A DRAWN row here would go GREEN AND BE FALSE: `checkingProgressBare(12480)` " +
-      "is `12,480 files`, a suffix of that same node and the entire text of an unrelated node in " +
-      "`2a Compact settled` \u2014 two deck entries on one drawn node, the `kindFolder` near-miss above.",
+    {
+      why:
+        "`5a Checking` draws the denominator form `8,431 of 12,480 files` \u2014 that is " +
+        "`checkingProgress`, already in DRAWN. This is the line for a run with nothing to count " +
+        "against (plan.js:972-978: `total` absent or 0, e.g. a first run's empty index) and no frame " +
+        "draws that run. A DRAWN row here would go GREEN AND BE FALSE: `checkingProgressBare(12480)` " +
+        "is `12,480 files`, a suffix of that same node and the entire text of an unrelated node in " +
+        "`2a Compact settled` \u2014 two deck entries on one drawn node, the `kindFolder` near-miss above.",
+      absent: null,
+    },
   ],
   [
     "PLAN.destructiveLocal",
-    "`5a Plan`'s band holds one destructive row and it is a `remote_delete`, so the frame draws " +
-      "`destructiveRemote`; nothing draws the local mirror. NOT dead copy \u2014 plan.js:529-531 picks " +
-      "it as a function REFERENCE in a ternary and calls it at 535, so a `destructiveLocal(` grep " +
-      "finds no call site.",
+    {
+      why:
+        "`5a Plan`'s band holds one destructive row and it is a `remote_delete`, so the frame draws " +
+        "`destructiveRemote`; nothing draws the local mirror. NOT dead copy \u2014 plan.js:529-531 picks " +
+        "it as a function REFERENCE in a ternary and calls it at 535, so a `destructiveLocal(` grep " +
+        "finds no call site.",
+      absent:
+        "is removed from this computer. It's already gone from Proton Drive, so nothing will bring it back.",
+    },
   ],
   [
     "PLAN.destructiveLocalTrash",
-    'The same row under `local_delete_mode = "trash"`, which is the daemon\'s default \u2014 reachable, ' +
-      "and drawn nowhere: the `4a`/`5a` set was captured against permanent deletion, and `moves to " +
-      "this computer's Trash` is in no frame. Selected by reference at plan.js:529-530, so a " +
-      "`destructiveLocalTrash(` grep is empty.",
+    {
+      why:
+        'The same row under `local_delete_mode = "trash"`, which is the daemon\'s default \u2014 reachable, ' +
+        "and drawn nowhere: the `4a`/`5a` set was captured against permanent deletion, and `moves to " +
+        "this computer's Trash` is in no frame. Selected by reference at plan.js:529-530, so a " +
+        "`destructiveLocalTrash(` grep is empty.",
+      absent:
+        "moves to this computer's Trash. It's already gone from Proton Drive, so your file manager is where it comes back from.",
+    },
   ],
   [
     "PLAN.destructiveMany",
-    "The band's note for two or more gated rows (plan.js:505, the branch taken when `one` is " +
-      "null). `5a Plan` draws exactly one \u2014 `One file gets deleted for good` \u2014 so it renders " +
-      "`consequence` instead, and neither `are removed for good` nor the plural title `get deleted " +
-      "for good` appears in any frame.",
+    {
+      why:
+        "The band's note for two or more gated rows (plan.js:505, the branch taken when `one` is " +
+        "null). `5a Plan` draws exactly one \u2014 `One file gets deleted for good` \u2014 so it renders " +
+        "`consequence` instead, and neither `are removed for good` nor the plural title `get deleted " +
+        "for good` appears in any frame.",
+      absent: "are removed for good. Nothing will bring them back.",
+    },
   ],
   [
     "PLAN.plusFolderHere",
-    "The Arriving side's sentence \u2014 plan.js:416 picks it when the new folder is created on this " +
-      "computer. `5a Plan` draws only the mirror, `plusFolder`: `Plus one new folder created on " +
-      "Proton Drive to hold them.` The words `created on this computer to hold them` are in none of " +
-      "the 51 frames.",
+    {
+      why:
+        "The Arriving side's sentence \u2014 plan.js:416 picks it when the new folder is created on this " +
+        "computer. `5a Plan` draws only the mirror, `plusFolder`: `Plus one new folder created on " +
+        "Proton Drive to hold them.` The words `created on this computer to hold them` are in none of " +
+        "the 51 frames.",
+      absent: "created on this computer to hold them.",
+    },
   ],
   [
     "PLAN.plusRenameThere",
-    "The Leaving side's rename sentence \u2014 plan.js:417 picks it when the rename is applied on " +
-      "Proton Drive. `5a Plan` draws only the mirror, `plusRename`: `One file you renamed will be " +
-      "renamed here to match.` `renamed on Proton Drive to match` is in no frame.",
+    {
+      why:
+        "The Leaving side's rename sentence \u2014 plan.js:417 picks it when the rename is applied on " +
+        "Proton Drive. `5a Plan` draws only the mirror, `plusRename`: `One file you renamed will be " +
+        "renamed here to match.` `renamed on Proton Drive to match` is in no frame.",
+      absent: "you renamed will be renamed on Proton Drive to match.",
+    },
   ],
   [
     "SETTINGS.chooseFailed",
-    "The notice for a folder picker that could not OPEN, as distinct from one dismissed " +
-      "(app.js:2966-2972). `8a Settings` draws `Choose\u2026` with no notice line, and `The folder " +
-      "picker didn't open` is in no frame; the reason interpolated is the picker's own error.",
+    {
+      why:
+        "The notice for a folder picker that could not OPEN, as distinct from one dismissed " +
+        "(app.js:2966-2972). `8a Settings` draws `Choose\u2026` with no notice line, and `The folder " +
+        "picker didn't open` is in no frame; the reason interpolated is the picker's own error.",
+      absent: "The folder picker didn't open —",
+    },
   ],
   [
     "SETTINGS.configUnreadable",
-    "Rendered above EVERY tab when `read_config` rejected (settings.js:1444-1449), and all three " +
-      "drawn Settings frames \u2014 `8a Settings`, `8a Skip rules`, `8a Deletions tab` \u2014 draw the screen " +
-      "without it. `These aren't the settings that are running` is in no frame, and what follows " +
-      "the dash is the parser's own message.",
+    {
+      why:
+        "Rendered above EVERY tab when `read_config` rejected (settings.js:1444-1449), and all three " +
+        "drawn Settings frames \u2014 `8a Settings`, `8a Skip rules`, `8a Deletions tab` \u2014 draw the screen " +
+        "without it. `These aren't the settings that are running` is in no frame, and what follows " +
+        "the dash is the parser's own message.",
+      absent: "These aren't the settings that are running —",
+    },
   ],
   [
     "SETTINGS.hidingFloor",
-    "The hedged total, picked at settings.js:246 when `skip_rule_usage` reports an unreadable " +
-      "directory or entry. No frame has one, so `8a Skip rules` draws `hidingTotal` \u2014 `hiding 4 " +
-      "files, 3.1 GB in total`. `hiding at least` and `some folders could not be read` are in no " +
-      "frame.",
+    {
+      why:
+        "The hedged total, picked at settings.js:246 when `skip_rule_usage` reports an unreadable " +
+        "directory or entry. No frame has one, so `8a Skip rules` draws `hidingTotal` \u2014 `hiding 4 " +
+        "files, 3.1 GB in total`. `hiding at least` and `some folders could not be read` are in no " +
+        "frame.",
+      absent: "some folders could not be read",
+    },
   ],
   [
     "SETTINGS.monthEdgeNote",
-    "`8a Schedule monthly` draws `Months without a 15th are skipped to the last day.` and the app " +
-      "can never say it: settings.js:704 shows the note only for `day > 28`, because every month " +
-      "has a 15th (DEVIATIONS \u00a7104b). The three strings it CAN produce \u2014 29th, 30th, 31st \u2014 are in " +
-      "no frame, so neither direction yields a row, and a DRAWN row at 15 would assert a string the " +
-      "built screen cannot render.",
+    {
+      why:
+        "`8a Schedule monthly` draws `Months without a 15th are skipped to the last day.` and the app " +
+        "can never say it: settings.js:704 shows the note only for `day > 28`, because every month " +
+        "has a 15th (DEVIATIONS \u00a7104b). The three strings it CAN produce \u2014 29th, 30th, 31st \u2014 are in " +
+        "no frame, so neither direction yields a row, and a DRAWN row at 15 would assert a string the " +
+        "built screen cannot render.",
+      absent: null,
+    },
   ],
   [
     "SETTINGS.savedNothingRunning",
-    "No frame draws a settled save at all \u2014 `Saved` and `sync service` occur in none of the 51 " +
-      "frames, and `8a Save refused` draws a REFUSED save (`Nothing was saved \u2014 your old settings " +
-      "are still running.`). This is the `not_started` ending, where the stop succeeded and the " +
-      "start did not. Same absence its constant siblings `savedRestarted`/`savedNotRunning` record " +
-      "in NOT_DRAWN.",
+    {
+      why:
+        "No frame draws a settled save at all \u2014 `Saved` and `sync service` occur in none of the 51 " +
+        "frames, and `8a Save refused` draws a REFUSED save (`Nothing was saved \u2014 your old settings " +
+        "are still running.`). This is the `not_started` ending, where the stop succeeded and the " +
+        "start did not. Same absence its constant siblings `savedRestarted`/`savedNotRunning` record " +
+        "in NOT_DRAWN.",
+      absent: "Saved, but the sync service could not be started —",
+    },
   ],
   [
     "SETTINGS.savedOldSettings",
-    "The `never_stopped` ending \u2014 the daemon kept answering past the stop timeout and is still up " +
-      "on the settings it started with. No frame draws a settled save: `Saved` and `sync service` " +
-      "occur in none of the 51 frames, and `8a Save refused` draws a refused save instead.",
+    {
+      why:
+        "The `never_stopped` ending \u2014 the daemon kept answering past the stop timeout and is still up " +
+        "on the settings it started with. No frame draws a settled save: `Saved` and `sync service` " +
+        "occur in none of the 51 frames, and `8a Save refused` draws a refused save instead.",
+      absent: "Saved, but the sync service did not restart —",
+    },
   ],
   [
     "SETTINGS.savedUnknownState",
-    "The `undetermined` ending \u2014 nobody could tell whether the service is running, so nothing was " +
-      "restarted. No frame draws a settled save: `Saved` and `sync service` occur in none of the 51 " +
-      "frames.",
+    {
+      why:
+        "The `undetermined` ending \u2014 nobody could tell whether the service is running, so nothing was " +
+        "restarted. No frame draws a settled save: `Saved` and `sync service` occur in none of the 51 " +
+        "frames.",
+      absent: "Saved, but the app couldn't tell whether the sync service is running —",
+    },
   ],
   [
     "SETTINGS.sweepFailed",
-    "The Settings notice for a `Sweep now` that did not start \u2014 `resync` answering with an error " +
-      "inside its payload, or the call rejecting (app.js:2987/2989). `8a Settings` draws the sweep " +
-      "panel with no notice line, `The full sweep didn't start` is in no frame, and the clause " +
-      "after the dash is the daemon's own words, so there is nothing fixed to match.",
+    {
+      why:
+        "The Settings notice for a `Sweep now` that did not start \u2014 `resync` answering with an error " +
+        "inside its payload, or the call rejecting (app.js:2987/2989). `8a Settings` draws the sweep " +
+        "panel with no notice line, `The full sweep didn't start` is in no frame, and the clause " +
+        "after the dash is the daemon's own words, so there is nothing fixed to match.",
+      absent: "The full sweep didn't start —",
+    },
   ],
 ]);
 
@@ -836,14 +922,28 @@ for (const path of NOT_DRAWN.keys()) {
  * two tables disagreeing about the same path, which is how a suppression outlives the thing it
  * suppresses.
  *
- * WHAT THIS LIST CAN AND CANNOT SELF-INVALIDATE, stated because every other suppression in this
- * subsystem does invalidate and it would be easy to assume this one matches. It fails when an entry
- * stops being a template (renamed, deleted, or turned back into a constant — which puts it under the
- * string checks, where it belongs) and when an entry is also in `DRAWN`. It CANNOT fail when a frame
- * starts drawing an entry: knowing that needs the arguments, and not having them is the entry's
- * whole reason for existing. So this is the one list here whose staleness is not mechanically
- * detectable, and the reasons carry that weight instead — which is why each one names a call site or
- * a frame rather than asserting a category.
+ * WHAT THIS LIST SELF-INVALIDATES ON. It fails when an entry stops being a template (renamed,
+ * deleted, or turned back into a constant — which puts it under the string checks, where it belongs)
+ * and when an entry is also in `DRAWN`.
+ *
+ * IT ALSO FAILS WHEN A FRAME STARTS DRAWING THE ENTRY, which the first version of this comment
+ * declared impossible — "knowing that needs the arguments, and not having them is the entry's whole
+ * reason for existing". That was false for most of them, and #372's acceptance criteria asked for
+ * the check outright ("or is no longer undrawn, **fails the build**"). Most of these templates have
+ * a fixed skeleton no frame contains at ANY argument — `The full sweep didn't start —`,
+ * `created on this computer to hold them.` — so `absent` names one such fragment and the gate fails
+ * if a frame ever contains it. 15 of the 21 carry one.
+ *
+ * THE MECHANISM CHECKS ITSELF, which is what keeps a bad fragment from being worse than none: "the
+ * fragment is present" IS the failure condition, so a fragment that was never absent fails on the
+ * run that introduces it rather than sitting there never firing.
+ *
+ * `absent: null` is REQUIRED rather than omitted, so a new entry has to answer the question. The six
+ * that declare it are the ones whose fixed words the frames legitimately contain — `MAIN.batchFiles`
+ * and `PLAN.checkingProgressBare` both render `N files`; `SETTINGS.monthEdgeNote` and
+ * `DELETIONS.armedBodyFile` are drawn in full, at an argument the app cannot produce; `MAIN.andMore`
+ * and `CONFLICTS.edited` have no fixed run longer than a word. For those six the reason carries the
+ * weight alone, which is why each names a call site or a frame rather than asserting a category.
  */
 const templateCoverage = [];
 const drawnPaths = new Set(DRAWN.map(([path]) => path));
@@ -858,6 +958,25 @@ for (const path of templates) {
     );
   }
 }
+// A DECLARED `absent` FRAGMENT THAT A FRAME NOW CONTAINS means the entry has gone stale: the screen
+// this template belongs to got drawn, and the entry still says nobody draws it. This is the
+// direction #372 asked for and the first version of this file declared impossible.
+//
+// It doubles as the fragment's own validation. "The fragment is present" IS the failure condition,
+// so a fragment that was never absent fails on the run that introduces it — this list cannot
+// accumulate probes that quietly never fire, which is the only way a check like this is worth less
+// than no check at all.
+for (const [path, entry] of UNGATED_TEMPLATES) {
+  if (entry.absent == null) continue;
+  const drawnIn = [...frameText].find(([, text]) => text.includes(entry.absent));
+  if (drawnIn) {
+    templateCoverage.push(
+      `${path} is recorded as ungatable, but ${drawnIn[0]} now draws ` +
+        `${JSON.stringify(entry.absent)} — give it a DRAWN row, or correct the reason`,
+    );
+  }
+}
+
 // The other direction: an entry excusing something that is no longer a template.
 const templatePaths = new Set(templates);
 for (const path of UNGATED_TEMPLATES.keys()) {
