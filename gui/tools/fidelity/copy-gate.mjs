@@ -989,6 +989,18 @@ for (const path of templates) {
 // accumulate probes that quietly never fire, which is the only way a check like this is worth less
 // than no check at all.
 for (const [path, entry] of UNGATED_TEMPLATES) {
+  // `absent` is REQUIRED, not defaulted — and this is the line that makes that true. The docblock
+  // claimed it while the code read `entry.absent == null`, under which a missing field and a
+  // declared `null` are the same thing, so an entry written `{ why }` would have answered the
+  // question by not being asked it. Presence is the whole point: declaring `null` is a claim that
+  // no fragment is possible, and six entries make it for a reason.
+  if (!("absent" in entry)) {
+    templateCoverage.push(
+      `${path} has no \`absent\` field — declare a fragment no frame contains, or \`absent: null\`` +
+        ` with the reason saying why none is possible`,
+    );
+    continue;
+  }
   if (entry.absent == null) continue;
   const drawnIn = [...frameText].find(([, text]) => text.includes(entry.absent));
   if (drawnIn) {
