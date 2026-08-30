@@ -335,6 +335,28 @@ const NOT_DRAWN = new Map([
  * sorted twice by reasoning about files instead of looking, and roughly half its reasons were false
  * (DEVIATIONS §106a). Every reason below names a call site or a frame.
  */
+/**
+ * Arguments the `absent` fragments are proved reachable at. Not a rendering the gate asserts —
+ * nothing here is compared against a frame — only enough shapes to show a fragment is the
+ * template's own text: these take counts, paths, error strings, an optional flag, and a distro
+ * object. A fragment reachable at none of them is rejected above.
+ */
+const UNGATED_PROBE_ARGS = [
+  ["photos/2019", true],
+  ["photos/2019", false],
+  [1, "file"],
+  [2, "folder"],
+  [1],
+  [2],
+  [0],
+  ["a reason"],
+  [{ name: "Debian" }],
+  [undefined],
+  [1, 1],
+  ["a", "b"],
+  [],
+];
+
 const UNGATED_TEMPLATES = new Map([
   [
     "ACTIVITY.lookup.capped",
@@ -973,6 +995,31 @@ for (const [path, entry] of UNGATED_TEMPLATES) {
     templateCoverage.push(
       `${path} is recorded as ungatable, but ${drawnIn[0]} now draws ` +
         `${JSON.stringify(entry.absent)} — give it a DRAWN row, or correct the reason`,
+    );
+  }
+  // AND THE FRAGMENT MUST BE THE TEMPLATE'S OWN TEXT. Absence from the frames is only half of what
+  // makes a probe work: one that the template can never render — a typo, a hyphen where the deck
+  // has an em-dash, a sentence copied from the entry above — is absent for ever, passes the check
+  // above, and NEVER FIRES. That is the one failure the "a present fragment fails immediately"
+  // property does not cover, and it is the failure mode a probe list decays into.
+  //
+  // Rendering at a grid rather than at one argument, because these take counts, paths, objects and
+  // optional flags; a fragment reachable at ANY of them is the template's own words.
+  const fn = at(path);
+  const reachable =
+    typeof fn === "function" &&
+    UNGATED_PROBE_ARGS.some((args) => {
+      try {
+        const rendered = fn(...args);
+        return typeof rendered === "string" && rendered.includes(entry.absent);
+      } catch {
+        return false;
+      }
+    });
+  if (!reachable) {
+    templateCoverage.push(
+      `${path}'s absent fragment ${JSON.stringify(entry.absent)} is not something the template ` +
+        `renders at any probed argument — it could never fire, so it is not a staleness check`,
     );
   }
 }
