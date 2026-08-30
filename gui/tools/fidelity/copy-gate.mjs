@@ -319,6 +319,295 @@ const NOT_DRAWN = new Map([
 ]);
 
 /**
+ * Templates NO `DRAWN` ROW CAN COVER, with the reason (#372).
+ *
+ * The sibling of `NOT_DRAWN`, for the other half of the deck. An entry here is a claim that this
+ * template exists and cannot be rendered against a frame — because nothing calls it, because no
+ * frame draws the state it belongs to, or because the app cannot produce the string the frame
+ * contains even though the words are there.
+ *
+ * THAT LAST ONE IS WHY "the frame contains the words" IS NOT THE TEST. `SETTINGS.monthEdgeNote`
+ * renders exactly what `8a Schedule monthly` draws when passed 15 — and the app shows that note only
+ * for 29, 30 and 31, because every month has a 15th (§104b). A `DRAWN` row would assert a string the
+ * built screen can never produce, which is a gate enforcing a fiction rather than a gap.
+ *
+ * Populated from a per-template investigation rather than from reading the deck: #250's census was
+ * sorted twice by reasoning about files instead of looking, and roughly half its reasons were false
+ * (DEVIATIONS §106a). Every reason below names a call site or a frame.
+ */
+/**
+ * Arguments the `absent` fragments are proved reachable at. Not a rendering the gate asserts —
+ * nothing here is compared against a frame — only enough shapes to show a fragment is the
+ * template's own text: these take counts, paths, error strings, an optional flag, and a distro
+ * object. A fragment reachable at none of them is rejected above.
+ *
+ * THE GRID CAN BE INCOMPLETE, and the rejection message says so rather than asserting the fragment
+ * is unrenderable: a template needing a shape not listed here would have a genuine fragment refused.
+ * That failure is loud, arrives on the run that adds the entry, and is fixed by adding the shape —
+ * the opposite trade from a silent inert probe, which is what this check exists to prevent.
+ */
+const UNGATED_PROBE_ARGS = [
+  ["photos/2019", true],
+  ["photos/2019", false],
+  [1, "file"],
+  [2, "folder"],
+  [1],
+  [2],
+  [0],
+  ["a reason"],
+  [{ name: "Debian" }],
+  [undefined],
+  [1, 1],
+  ["a", "b"],
+  [],
+];
+
+const UNGATED_TEMPLATES = new Map([
+  [
+    "ACTIVITY.lookup.capped",
+    {
+      why:
+        "The capped multi-match list, and no frame draws a search that matched more than one file \u2014 " +
+        "`7a File lookup` draws `1 match` and goes straight to the verdict panel. Its three constant " +
+        "siblings on the same sub-screen (`chooseTitle`, `chooseSub`, `backToMatches`) are already " +
+        "exempt for exactly this reason at copy-gate.mjs:168-170; this is the template the same " +
+        "exemption cannot hold.",
+      absent: "— narrow the search.",
+    },
+  ],
+  [
+    "CONFLICTS.edited",
+    {
+      why:
+        "It takes an EPOCH, not a formatted time, and renders it through `format.js`'s `clock()`, " +
+        "which uses the machine's own timezone \u2014 so no fixed argument produces the drawn `edited " +
+        "14:38` on every runner. format.js:168's own doc calls it \"the one formatter whose output a " +
+        "fixture may not derive\". Already a recorded decision: copy-gate.mjs's S2 block says `edited " +
+        "14:38` is deliberately absent from DRAWN for this reason.",
+      absent: null,
+    },
+  ],
+  [
+    "DELETIONS.armedBodyFile",
+    {
+      why:
+        "`4a Armed` arms a FOLDER, so its body is `armedBody` \u2014 `Everything in photos/2019 \u2014 8.4 GB \u2014 " +
+        "is removed from disk. \u2026` \u2014 and deletions.js:602 reaches this template only when `entity_kind " +
+        '!== "directory"`. No frame arms a file. The only argument that reproduces frame text is ' +
+        '`"photos/2019 \u2014 8.4 GB \u2014"`, which is not a path, so a passing DRAWN row would assert the ' +
+        "same kind of fiction as `monthEdgeNote`.",
+      absent: null,
+    },
+  ],
+  [
+    "MAIN.andMore",
+    {
+      why:
+        "The transfer-list overflow row, and no frame draws a list long enough to overflow: `2a " +
+        "Syncing` draws three transfer rows and `5a Plan` nine, with no `+n more` node in any of the " +
+        "51 frames. All three call sites are guarded `hidden > 0`, so the app can produce it; nothing " +
+        "drew it.",
+      absent: null,
+    },
+  ],
+  [
+    "MAIN.batchFiles",
+    {
+      why:
+        "The chip on a batched-download row, and no frame draws one \u2014 `2a Syncing`'s three transfer " +
+        "rows draw `1.2 MB`, `queued` and `2.4 MB`. `batchFiles(12480)` renders `12,480 files`, which " +
+        "ten frames contain in a different slot (the settled sub-line's index total, `2a Compact " +
+        "settled`'s panel total, `5a Checking`'s progress, `8a Settings`' pair note), so a DRAWN row " +
+        "would go green by pointing the deck's chip at another sentence's words \u2014 the " +
+        "`CONFLICTS.kindFolder` near-miss this gate exists to prevent.",
+      absent: null,
+    },
+  ],
+  [
+    "MAIN.failedSub",
+    {
+      why:
+        "No frame draws a failed pass; its headline `MAIN.failed` is already exempt for that reason " +
+        "at copy-gate.mjs:127, and this is the template sibling `NOT_DRAWN` cannot hold. The counted " +
+        "branch matches nothing. DO NOT gate the zero branch: `failedSub(0)` renders the bare " +
+        "`Nothing is lost.`, which is inside `10a Offline` and `3a Conflict`, so a DRAWN row at `[0]` " +
+        "would pass while asserting the failed-pass sub-line against the tray's outage body and the " +
+        "conflict card's keep-both sub.",
+      absent: "waiting and will go on the next try.",
+    },
+  ],
+  [
+    "ONBOARDING.cliMissingBody",
+    {
+      why:
+        "The app renders it, but `9a CLI missing` draws the pre-#218 sentence \u2014 `This app drives the " +
+        "official tool rather than talking to Proton directly. Install it once and setup will carry " +
+        "on. Detected Debian \u2014 other distributions are in the help.` \u2014 and neither branch of the " +
+        "current text appears in any of the 51 frames. #218 settled the drawn install command as true " +
+        "for no distribution, so the deck deliberately no longer holds a string that matches the " +
+        "frame.",
+      absent: "and no Linux distribution packages it",
+    },
+  ],
+  [
+    "PLAN.checkingProgressBare",
+    {
+      why:
+        "`5a Checking` draws the denominator form `8,431 of 12,480 files` \u2014 that is " +
+        "`checkingProgress`, already in DRAWN. This is the line for a run with nothing to count " +
+        "against (plan.js:972-978: `total` absent or 0, e.g. a first run's empty index) and no frame " +
+        "draws that run. A DRAWN row here would go GREEN AND BE FALSE: `checkingProgressBare(12480)` " +
+        "is `12,480 files`, a suffix of that same node and the entire text of an unrelated node in " +
+        "`2a Compact settled` \u2014 two deck entries on one drawn node, the `kindFolder` near-miss above.",
+      absent: null,
+    },
+  ],
+  [
+    "PLAN.destructiveLocal",
+    {
+      why:
+        "`5a Plan`'s band holds one destructive row and it is a `remote_delete`, so the frame draws " +
+        "`destructiveRemote`; nothing draws the local mirror. NOT dead copy \u2014 plan.js:529-531 picks " +
+        "it as a function REFERENCE in a ternary and calls it at 535, so a `destructiveLocal(` grep " +
+        "finds no call site.",
+      absent:
+        "is removed from this computer. It's already gone from Proton Drive, so nothing will bring it back.",
+    },
+  ],
+  [
+    "PLAN.destructiveLocalTrash",
+    {
+      why:
+        'The same row under `local_delete_mode = "trash"`, which is the daemon\'s default \u2014 reachable, ' +
+        "and drawn nowhere: the `4a`/`5a` set was captured against permanent deletion, and `moves to " +
+        "this computer's Trash` is in no frame. Selected by reference at plan.js:529-530, so a " +
+        "`destructiveLocalTrash(` grep is empty.",
+      absent:
+        "moves to this computer's Trash. It's already gone from Proton Drive, so your file manager is where it comes back from.",
+    },
+  ],
+  [
+    "PLAN.destructiveMany",
+    {
+      why:
+        "The band's note for two or more gated rows (plan.js:505, the branch taken when `one` is " +
+        "null). `5a Plan` draws exactly one \u2014 `One file gets deleted for good` \u2014 so it renders " +
+        "`consequence` instead, and neither `are removed for good` nor the plural title `get deleted " +
+        "for good` appears in any frame.",
+      absent: "are removed for good. Nothing will bring them back.",
+    },
+  ],
+  [
+    "PLAN.plusFolderHere",
+    {
+      why:
+        "The Arriving side's sentence \u2014 plan.js:416 picks it when the new folder is created on this " +
+        "computer. `5a Plan` draws only the mirror, `plusFolder`: `Plus one new folder created on " +
+        "Proton Drive to hold them.` The words `created on this computer to hold them` are in none of " +
+        "the 51 frames.",
+      absent: "created on this computer to hold them.",
+    },
+  ],
+  [
+    "PLAN.plusRenameThere",
+    {
+      why:
+        "The Leaving side's rename sentence \u2014 plan.js:417 picks it when the rename is applied on " +
+        "Proton Drive. `5a Plan` draws only the mirror, `plusRename`: `One file you renamed will be " +
+        "renamed here to match.` `renamed on Proton Drive to match` is in no frame.",
+      absent: "you renamed will be renamed on Proton Drive to match.",
+    },
+  ],
+  [
+    "SETTINGS.chooseFailed",
+    {
+      why:
+        "The notice for a folder picker that could not OPEN, as distinct from one dismissed " +
+        "(app.js:2966-2972). `8a Settings` draws `Choose\u2026` with no notice line, and `The folder " +
+        "picker didn't open` is in no frame; the reason interpolated is the picker's own error.",
+      absent: "The folder picker didn't open —",
+    },
+  ],
+  [
+    "SETTINGS.configUnreadable",
+    {
+      why:
+        "Rendered above EVERY tab when `read_config` rejected (settings.js:1444-1449), and all three " +
+        "drawn Settings frames \u2014 `8a Settings`, `8a Skip rules`, `8a Deletions tab` \u2014 draw the screen " +
+        "without it. `These aren't the settings that are running` is in no frame, and what follows " +
+        "the dash is the parser's own message.",
+      absent: "These aren't the settings that are running —",
+    },
+  ],
+  [
+    "SETTINGS.hidingFloor",
+    {
+      why:
+        "The hedged total, picked at settings.js:246 when `skip_rule_usage` reports an unreadable " +
+        "directory or entry. No frame has one, so `8a Skip rules` draws `hidingTotal` \u2014 `hiding 4 " +
+        "files, 3.1 GB in total`. `hiding at least` and `some folders could not be read` are in no " +
+        "frame.",
+      absent: "some folders could not be read",
+    },
+  ],
+  [
+    "SETTINGS.monthEdgeNote",
+    {
+      why:
+        "`8a Schedule monthly` draws `Months without a 15th are skipped to the last day.` and the app " +
+        "can never say it: settings.js:704 shows the note only for `day > 28`, because every month " +
+        "has a 15th (DEVIATIONS \u00a7104b). The three strings it CAN produce \u2014 29th, 30th, 31st \u2014 are in " +
+        "no frame, so neither direction yields a row, and a DRAWN row at 15 would assert a string the " +
+        "built screen cannot render.",
+      absent: null,
+    },
+  ],
+  [
+    "SETTINGS.savedNothingRunning",
+    {
+      why:
+        "No frame draws a settled save at all \u2014 `Saved` and `sync service` occur in none of the 51 " +
+        "frames, and `8a Save refused` draws a REFUSED save (`Nothing was saved \u2014 your old settings " +
+        "are still running.`). This is the `not_started` ending, where the stop succeeded and the " +
+        "start did not. Same absence its constant siblings `savedRestarted`/`savedNotRunning` record " +
+        "in NOT_DRAWN.",
+      absent: "Saved, but the sync service could not be started —",
+    },
+  ],
+  [
+    "SETTINGS.savedOldSettings",
+    {
+      why:
+        "The `never_stopped` ending \u2014 the daemon kept answering past the stop timeout and is still up " +
+        "on the settings it started with. No frame draws a settled save: `Saved` and `sync service` " +
+        "occur in none of the 51 frames, and `8a Save refused` draws a refused save instead.",
+      absent: "Saved, but the sync service did not restart —",
+    },
+  ],
+  [
+    "SETTINGS.savedUnknownState",
+    {
+      why:
+        "The `undetermined` ending \u2014 nobody could tell whether the service is running, so nothing was " +
+        "restarted. No frame draws a settled save: `Saved` and `sync service` occur in none of the 51 " +
+        "frames.",
+      absent: "Saved, but the app couldn't tell whether the sync service is running —",
+    },
+  ],
+  [
+    "SETTINGS.sweepFailed",
+    {
+      why:
+        "The Settings notice for a `Sweep now` that did not start \u2014 `resync` answering with an error " +
+        "inside its payload, or the call rejecting (app.js:2987/2989). `8a Settings` draws the sweep " +
+        "panel with no notice line, `The full sweep didn't start` is in no frame, and the clause " +
+        "after the dash is the daemon's own words, so there is nothing fixed to match.",
+      absent: "The full sweep didn't start —",
+    },
+  ],
+]);
+
+/**
  * Templates, WITH the arguments the frame draws them at.
  *
  * The header's rule — "a template cannot be compared verbatim without inventing the number" — is
@@ -512,6 +801,37 @@ const DRAWN = [
   ["NOTIFY.groupedTitle", [5], "11a Grouped"],
   ["NOTIFY.groupedBody", [10], "11a Grouped"],
   ["NOTIFY.outageBody", [61], "11a Outage"],
+
+  // #372: 25 templates that were in neither table. Each row's arguments are read off the frame
+  // named beside it, and each was verified to land on the node that draws that sentence rather
+  // than on a coincidence — six match as a CLAUSE of a longer node (`MAIN.settledSubTime` is the
+  // opening of `2a Settled`'s sub-line, whose full form is `MAIN.settledSub` two rows up), which
+  // is the app drawing a shorter version of the drawn sentence, not a near-miss.
+  ["CONFLICTS.position", [1, 3], "3a Conflict"],
+  ["MAIN.footerPair", ["~/ProtonDrive", "/Drive/RemoteFolder"], "2a Settled"],
+  ["MAIN.footerTotals", [386000000, 1100000000], "2a Syncing"],
+  ["MAIN.pausedSub", [7, "13:20"], "10a Paused"],
+  ["MAIN.settledSub", ["2 minutes ago", 12480, 41200000000], "2a Settled"],
+  ["MAIN.settledSubTime", ["2 minutes ago"], "2a Settled"],
+  ["MAIN.syncingSub", ["14 seconds ago", 2, 1], "2a Syncing"],
+  ["ONBOARDING.alreadyMatch", [11798], "9a Review"],
+  ["ONBOARDING.conflictsKept", [2], "9a First sync"],
+  ["ONBOARDING.differ", [2], "9a Review"],
+  ["ONBOARDING.doneSub", [12480, 41_200_000_000], "9a Consent"],
+  ["ONBOARDING.doneSubPhase1", [2], "9a Consent"],
+  ["ONBOARDING.freeSpace", [38_400_000_000, 214_000_000_000], "9a Review"],
+  ["ONBOARDING.freeSpaceHave", [214_000_000_000], "9a Review"],
+  ["ONBOARDING.progressDone", [159, 471], "9a First sync"],
+  ["ONBOARDING.progressSub", [159, 471, "about 17 minutes left"], "9a First sync"],
+  ["ONBOARDING.receivedCount", [115], "9a First sync"],
+  ["ONBOARDING.seeAllActions", [471], "9a Review"],
+  ["ONBOARDING.sentCount", [44], "9a First sync"],
+  ["ONBOARDING.sideUnit", [128, 1_400_000_000], "9a Review"],
+  ["ONBOARDING.signedIn", ["you@proton.me", 39_100_000_000, 500_000_000_000], "9a Folders"],
+  ["ONBOARDING.workedOut", ["40 seconds ago", "about 25 minutes"], "9a Review"],
+  ["ONBOARDING.workedOutPlain", ["40 seconds ago"], "9a Review"],
+  ["TRAY.retrying", ["40s", "13:58"], "10a Offline"],
+  ["TRAY.unreachableBody", [4], "10a Offline"],
 ];
 
 /** Every own-text string in every frame, and which frames said it. */
@@ -548,14 +868,25 @@ for (const file of readdirSync(FRAMES)) {
   );
 }
 
-/** Walk the exported constants, collecting `PATH -> string` for every fixed string. */
+/**
+ * Walk the exported constants, collecting `PATH -> string` for every fixed string AND the path of
+ * every template.
+ *
+ * COLLECTING TEMPLATES IS #372, AND IT CLOSES A HOLE THE HEADER ABOVE OPENED. Only strings were
+ * collected, so turning a checked constant into a template removed it from this gate silently, with
+ * no failure anywhere: measured on the #193 branch, `340/340 matched` became `339/339 matched`, both
+ * green, and the lower number was quoted as verification. Neither existing guard could see it —
+ * `DRAWN` fails on a path that stops being a function, `NOT_DRAWN` fails on one that starts being
+ * one, and a string that becomes a template is in neither table.
+ */
 const strings = [];
+const templates = [];
 const walk = (value, path) => {
   if (typeof value === "string") strings.push([path, value]);
+  else if (typeof value === "function") templates.push(path);
   else if (value && typeof value === "object") {
     for (const [k, v] of Object.entries(value)) walk(v, `${path}.${k}`);
   }
-  // functions are templates — see the header
 };
 for (const [group, value] of Object.entries(COPY)) walk(value, group);
 
@@ -604,8 +935,127 @@ for (const path of NOT_DRAWN.keys()) {
       value === undefined
         ? "not in the deck"
         : typeof value === "function"
-          ? "a template — templates are not gated, so it needs no exemption"
+          ? "a template — NOT_DRAWN exempts strings; a template belongs in DRAWN or UNGATED_TEMPLATES"
           : `a ${typeof value}, not a string`
+    }`,
+  );
+}
+
+/**
+ * EVERY TEMPLATE IS IN EXACTLY ONE TABLE (#372).
+ *
+ * `DRAWN` says "a frame draws this, at these arguments". `UNGATED_TEMPLATES` says "no `DRAWN` row is
+ * possible, and here is why". A template in neither is the hole this closes; a template in both is
+ * two tables disagreeing about the same path, which is how a suppression outlives the thing it
+ * suppresses.
+ *
+ * WHAT THIS LIST SELF-INVALIDATES ON. It fails when an entry stops being a template (renamed,
+ * deleted, or turned back into a constant — which puts it under the string checks, where it belongs)
+ * and when an entry is also in `DRAWN`.
+ *
+ * IT ALSO FAILS WHEN A FRAME STARTS DRAWING THE ENTRY, which the first version of this comment
+ * declared impossible — "knowing that needs the arguments, and not having them is the entry's whole
+ * reason for existing". That was false for most of them, and #372's acceptance criteria asked for
+ * the check outright ("or is no longer undrawn, **fails the build**"). Most of these templates have
+ * a fixed skeleton no frame contains at ANY argument — `The full sweep didn't start —`,
+ * `created on this computer to hold them.` — so `absent` names one such fragment and the gate fails
+ * if a frame ever contains it. 15 of the 21 carry one.
+ *
+ * THE MECHANISM CHECKS ITSELF, which is what keeps a bad fragment from being worse than none: "the
+ * fragment is present" IS the failure condition, so a fragment that was never absent fails on the
+ * run that introduces it rather than sitting there never firing.
+ *
+ * `absent: null` is REQUIRED rather than omitted, so a new entry has to answer the question. The six
+ * that declare it are the ones whose fixed words the frames legitimately contain — `MAIN.batchFiles`
+ * and `PLAN.checkingProgressBare` both render `N files`; `SETTINGS.monthEdgeNote` and
+ * `DELETIONS.armedBodyFile` are drawn in full, at an argument the app cannot produce; `MAIN.andMore`
+ * and `CONFLICTS.edited` have no fixed run longer than a word. For those six the reason carries the
+ * weight alone, which is why each names a call site or a frame rather than asserting a category.
+ */
+const templateCoverage = [];
+const drawnPaths = new Set(DRAWN.map(([path]) => path));
+for (const path of templates) {
+  const inDrawn = drawnPaths.has(path);
+  const inUngated = UNGATED_TEMPLATES.has(path);
+  if (inDrawn && inUngated) {
+    templateCoverage.push(`${path} is in BOTH tables — DRAWN renders it, UNGATED_TEMPLATES excuses it`);
+  } else if (!inDrawn && !inUngated) {
+    templateCoverage.push(
+      `${path} is a template in neither table — add a DRAWN row, or an UNGATED_TEMPLATES reason`,
+    );
+  }
+}
+// A DECLARED `absent` FRAGMENT THAT A FRAME NOW CONTAINS means the entry has gone stale: the screen
+// this template belongs to got drawn, and the entry still says nobody draws it. This is the
+// direction #372 asked for and the first version of this file declared impossible.
+//
+// It doubles as the fragment's own validation. "The fragment is present" IS the failure condition,
+// so a fragment that was never absent fails on the run that introduces it — this list cannot
+// accumulate probes that quietly never fire, which is the only way a check like this is worth less
+// than no check at all.
+for (const [path, entry] of UNGATED_TEMPLATES) {
+  // `absent` is REQUIRED, not defaulted — and this is the line that makes that true. The docblock
+  // claimed it while the code read `entry.absent == null`, under which a missing field and a
+  // declared `null` are the same thing, so an entry written `{ why }` would have answered the
+  // question by not being asked it. Presence is the whole point: declaring `null` is a claim that
+  // no fragment is possible, and six entries make it for a reason.
+  if (!("absent" in entry)) {
+    templateCoverage.push(
+      `${path} has no \`absent\` field — declare a fragment no frame contains, or \`absent: null\`` +
+        ` with the reason saying why none is possible`,
+    );
+    continue;
+  }
+  if (entry.absent == null) continue;
+  const drawnIn = [...frameText].find(([, text]) => text.includes(entry.absent));
+  if (drawnIn) {
+    templateCoverage.push(
+      `${path} is recorded as ungatable, but ${drawnIn[0]} now draws ` +
+        `${JSON.stringify(entry.absent)} — give it a DRAWN row, or correct the reason`,
+    );
+  }
+  // AND THE FRAGMENT MUST BE THE TEMPLATE'S OWN TEXT. Absence from the frames is only half of what
+  // makes a probe work: one that the template can never render — a typo, a hyphen where the deck
+  // has an em-dash, a sentence copied from the entry above — is absent for ever, passes the check
+  // above, and NEVER FIRES. The "a present fragment fails immediately" property does not cover it —
+  // and does not cover everything else either: an entry whose fragment is genuine and whose REASON
+  // is wrong passes both checks, as does one that should have been a DRAWN row all along. Those
+  // stay the reader's job. This check buys the mechanical half.
+  //
+  // Rendering at a grid rather than at one argument, because these take counts, paths, objects and
+  // optional flags; a fragment reachable at ANY of them is the template's own words.
+  const fn = at(path);
+  const reachable =
+    typeof fn === "function" &&
+    UNGATED_PROBE_ARGS.some((args) => {
+      try {
+        const rendered = fn(...args);
+        return typeof rendered === "string" && rendered.includes(entry.absent);
+      } catch {
+        return false;
+      }
+    });
+  if (!reachable) {
+    templateCoverage.push(
+      `${path}'s absent fragment ${JSON.stringify(entry.absent)} is not in anything the template ` +
+        `renders at the arguments probed above — so it would never fire. Fix the fragment, or widen ` +
+        `UNGATED_PROBE_ARGS if this template needs a shape the grid does not have`,
+    );
+  }
+}
+
+// The other direction: an entry excusing something that is no longer a template.
+const templatePaths = new Set(templates);
+for (const path of UNGATED_TEMPLATES.keys()) {
+  if (templatePaths.has(path)) continue;
+  const value = at(path);
+  templateCoverage.push(
+    `${path} is ${
+      value === undefined
+        ? "not in the deck"
+        : typeof value === "string"
+          ? "a string now, not a template — it belongs in the string checks, or in NOT_DRAWN"
+          : `a ${typeof value}, not a template`
     }`,
   );
 }
@@ -636,6 +1086,19 @@ console.log(
   `fidelity:copy — ${found.length}/${strings.length - NOT_DRAWN.size + drawnChecks.length} drawn strings matched ` +
     `(${drawnChecks.length} of them templates rendered at the arguments their own frame draws), ` +
     `${NOT_DRAWN.size} exempt (no frame draws them), ${missing.length} missing`,
+);
+// PRINTED EVERY RUN, because #372's defect was a total that dropped by one in silence. The template
+// figures are the denominator that makes the drawn count mean something: "72 of 120" says what
+// "340/340 matched" cannot.
+//
+// COUNTED IN PATHS, and the line above counts ROWS — they differ by design, so both are named. A
+// path may be drawn on two frames and earns a `DRAWN` row for each (`CONFLICTS.versionDiff` and
+// `CONFLICTS.happened` are, which is why 74 rows cover 72 paths). Printing 74 here would say 74 of
+// the deck's 120 templates are covered, and 72 are.
+console.log(
+  `fidelity:copy — ${templates.length} templates: ${drawnPaths.size} covered by a DRAWN row ` +
+    `(${DRAWN.length} rows), ${UNGATED_TEMPLATES.size} recorded as ungatable, ` +
+    `${templateCoverage.length} unaccounted for`,
 );
 
 if (templateErrors.length) {
@@ -668,4 +1131,14 @@ if (missing.length) {
   console.error(`\nfidelity:copy: ${missing.length} string(s) do not match the frames.`);
 }
 
-if (missing.length || templateErrors.length || staleExemptions.length) process.exit(1);
+if (templateCoverage.length) {
+  console.error("\nTemplates in neither table, or excused by an entry that no longer fits:\n");
+  for (const problem of templateCoverage) console.error(`  ${problem}`);
+  console.error(
+    "\nA template checked by nothing is how a string leaves this gate silently (#372). Give it a" +
+      " DRAWN row if a frame draws it, or an UNGATED_TEMPLATES reason if none can.",
+  );
+}
+
+if (missing.length || templateErrors.length || staleExemptions.length || templateCoverage.length)
+  process.exit(1);

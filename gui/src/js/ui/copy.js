@@ -1251,8 +1251,10 @@ export const ONBOARDING = {
 
   progressTitle: "Bringing everything together",
   progressSub: (done, total, left) => `${count(done)} of ${count(total)} done · ${left}`,
-  sent: (n) => `${count(n)} sent`,
-  received: (n) => `${count(n)} received`,
+  // `sent`/`received` lived here and were byte-identical duplicates of `sentCount`/`receivedCount`
+  // below, which #243 introduced for the split bar with a doc comment. Nothing called these two, so
+  // the deck carried one sentence twice under two names and #372's new check would have needed an
+  // entry saying so — a suppression recording a redundancy is worse than not having the redundancy.
   canClose: "You can close this window — it keeps going in the background.",
   progressFooter: "nothing deleted · 2 conflicts kept as copies",
 
