@@ -2,6 +2,9 @@ Source: proton-drive-sync-engine
 Section: net
 Priority: optional
 Maintainer: osirison <mina.swe@gmail.com>
+# libgtk-layer-shell-dev is #351/#370: the tray panel is a layer surface rather than a toplevel,
+# because skip_taskbar and set_position are X11 hints a Wayland compositor discards. Build-time
+# only - the runtime library lands in ${shlibs:Depends} via dh_shlibdeps, like the rest.
 Build-Depends: debhelper-compat (= 13),
                dh-sequence-python3,
                cargo (>= 1.85~),
@@ -10,7 +13,8 @@ Build-Depends: debhelper-compat (= 13),
                libwebkit2gtk-4.1-dev,
                libsoup-3.0-dev,
                libgtk-3-dev,
-               libglib2.0-dev
+               libglib2.0-dev,
+               libgtk-layer-shell-dev
 Standards-Version: 4.6.2
 Homepage: https://github.com/osirison/proton-drive-sync-engine
 Vcs-Browser: https://github.com/osirison/proton-drive-sync-engine

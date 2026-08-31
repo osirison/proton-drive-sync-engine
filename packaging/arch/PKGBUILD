@@ -37,6 +37,10 @@ depends=(
   'webkit2gtk-4.1'
   'libsoup3'
   'gtk3'
+  # #351/#370: the tray panel is a gtk-layer-shell surface rather than a toplevel, because
+  # `skip_taskbar` and `set_position` are X11 hints Wayland discards. Arch ships the headers in
+  # the same package, so it is in both lists — the same shape as gtk3 above.
+  'gtk-layer-shell'
   'libsecret'
   'libayatana-appindicator'
   'hicolor-icon-theme'
@@ -46,6 +50,7 @@ makedepends=(
   'webkit2gtk-4.1'
   'libsoup3'
   'gtk3'
+  'gtk-layer-shell'
   'glib2'
   'pkgconf'
   'git'

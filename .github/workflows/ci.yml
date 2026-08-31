@@ -19,11 +19,40 @@ jobs:
       - name: Install Tauri Linux build deps
         # Required by the gui/src-tauri workspace member (webkit2gtk-4.1 + libsoup-3.0 link at build
         # time). Kept here so the whole workspace builds/lints/tests on the runner.
+        #
+        # `libgtk-layer-shell-dev` is #351/#370's: the tray panel is a layer surface rather than a
+        # toplevel, because `skip_taskbar` and `set_position` are X11 hints Wayland discards. It
+        # links at build time like the rest, so a missing one here fails `cargo check`, not runtime.
+        # This apt list is one of thirteen that have to agree, and all thirteen carry the package
+        # today. Nine are machine-read: `setup.sh`'s pkg-config probe and its dnf/apt/pacman
+        # install commands (4), `packaging/arch/PKGBUILD`'s depends and makedepends (2),
+        # `packaging/debian/control`'s Build-Depends, the rpm spec's BuildRequires, and this one —
+        # each of those five files names the issue beside its list, as this one does. Four more are
+        # prose a person installs from by hand: `README.md`'s dnf line,
+        # `packaging/debian/README.md`'s Build-Depends bullet, and the doc site's
+        # start/installation and distribution/packages pages.
+        #
+        # THE COUNT DELIBERATELY EXCLUDES every other place that names these libraries, and the test
+        # is "an independent list somebody has to keep in agreement", not "a mention". Two kinds fall
+        # outside it. First, the sandbox-validation notes in `packaging/rpm/README.md`,
+        # `packaging/debian/README.md` and `packaging/arch/README.md`: each records what one past box
+        # had, or would have needed, at the time — so a new dependency is appended to it as a dated
+        # note while its own list stays frozen, which is the opposite of agreeing. Second,
+        # BACK-REFERENCES that defer to a list already counted here rather than standing as a list of
+        # their own — `packaging/rpm/proton-drive-sync-engine.spec`'s `%build` and `%check` comments
+        # both name webkit2gtk4.1/libsoup3/gtk3/glib2 -devel while pointing at that same file's
+        # `BuildRequires` ("above", "already required"), which is the entry the nine already contain.
+        # That is also why this second exclusion is load-bearing rather than tidy-mindedness: neither
+        # comment names gtk-layer-shell — correct for a pointer at a list, wrong for a list — so
+        # counting them would break "all thirteen carry the package" with nothing actually out of
+        # step. Counting either kind would leave the number to taste besides: several other sentences
+        # in those files name build-deps with an equal claim.
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev libsoup-3.0-dev libgtk-3-dev \
-            libayatana-appindicator3-dev librsvg2-dev
+            libayatana-appindicator3-dev librsvg2-dev \
+            libgtk-layer-shell-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy

@@ -210,7 +210,11 @@ ensure_gui_build_deps() {
   require_command pkg-config "needed to detect the desktop app's system build dependencies"
   local missing=()
   local pkg
-  for pkg in webkit2gtk-4.1 libsoup-3.0 gtk+-3.0 glib-2.0; do
+  # `gtk-layer-shell-0` is #351/#370's dependency: the tray panel is a layer surface, not a
+  # toplevel, because `skip_taskbar` and `set_position` are X11 hints a Wayland compositor
+  # discards. Probed like the rest — the build links against it, so a missing one is a link
+  # error rather than a runtime surprise.
+  for pkg in webkit2gtk-4.1 libsoup-3.0 gtk+-3.0 glib-2.0 gtk-layer-shell-0; do
     if ! pkg-config --exists "${pkg}" 2>/dev/null; then
       missing+=("${pkg}")
     fi
@@ -223,13 +227,13 @@ ensure_gui_build_deps() {
   local manager install_cmd
   if command -v dnf >/dev/null 2>&1; then
     manager=dnf
-    install_cmd="sudo dnf install webkit2gtk4.1-devel libsoup3-devel gtk3-devel libappindicator-gtk3-devel librsvg2-devel"
+    install_cmd="sudo dnf install webkit2gtk4.1-devel libsoup3-devel gtk3-devel libappindicator-gtk3-devel librsvg2-devel gtk-layer-shell-devel"
   elif command -v apt-get >/dev/null 2>&1; then
     manager=apt
-    install_cmd="sudo apt-get install libwebkit2gtk-4.1-dev libsoup-3.0-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev"
+    install_cmd="sudo apt-get install libwebkit2gtk-4.1-dev libsoup-3.0-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libgtk-layer-shell-dev"
   elif command -v pacman >/dev/null 2>&1; then
     manager=pacman
-    install_cmd="sudo pacman -S --needed webkit2gtk-4.1 libsoup3 gtk3 libayatana-appindicator librsvg"
+    install_cmd="sudo pacman -S --needed webkit2gtk-4.1 libsoup3 gtk3 libayatana-appindicator librsvg gtk-layer-shell"
   else
     manager=unknown
     install_cmd=""

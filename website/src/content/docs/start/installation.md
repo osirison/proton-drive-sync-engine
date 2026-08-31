@@ -14,8 +14,8 @@ sidebar:
 - A **Rust toolchain with edition 2024 support** (Rust 1.85 or newer) to build from source.
 - The **`proton-drive` CLI**, installed, authenticated, and on your `PATH` (see below).
 - For the desktop app: the usual **Tauri Linux build deps** — `webkit2gtk-4.1`,
-  `libsoup-3.0`, `gtk3`, and `glib2` development packages, plus `libappindicator`
-  for the system tray.
+  `libsoup-3.0`, `gtk3`, and `glib2` development packages, plus `gtk-layer-shell`
+  (the tray panel is a layer surface) and `libappindicator` for the system tray.
 
 ## Prerequisite: the proton-drive CLI
 

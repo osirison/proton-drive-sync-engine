@@ -35,10 +35,11 @@ the linters, which is where a gate that can finish in the fifteen-second job bel
 Every gate above opens its frame at **1040×764**, which is the window — and a 362×365 compact panel
 has 399px of slack there, so nothing can compress it. The tray window has no slack at all: it is
 exactly as tall as the panel measured itself to be, because `reportTrayHeight` reads the panel and
-`panel.rs` sizes the window to the answer. A container that shrinks the panel therefore caps the
-measurement at the window it just set, and the panel can never grow again — the shipped settled panel
-came up 302px where it draws 365, losing `Close window · keeps syncing` and `Quit · stops syncing`
-off the bottom, and no state change or poll could recover it (DEVIATIONS §92a).
+`panel.rs` sizes the window to the answer — late, not absent, where the panel is a layer surface: a
+mapped one ignores the resize, so the height lands at the next open. A container that shrinks the
+panel therefore caps the measurement at the window it just set, and the panel can never grow again —
+the shipped settled panel came up 302px where it draws 365, losing `Close window · keeps syncing` and
+`Quit · stops syncing` off the bottom, and no state change or poll could recover it (DEVIATIONS §92a).
 
 So this one re-opens all 11 compact frames in a **200px** window and demands the drawn height back.
 It is the same assertion the style gate makes, in the only condition under which it can fail.
