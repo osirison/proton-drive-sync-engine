@@ -79,6 +79,14 @@ sleep 4   # both must be mapped before KWin is asked
 Then the `loadScript`/`run`/`journalctl` sequence above, with this dump — the earlier one prints
 `skipTaskbar` alone, which is not enough to see the "false on both rows" case below:
 
+**Before you copy it: the caption filter below silently drops a layer surface.** It is correct for
+this probe, whose windows are captioned toplevels. But wlr-layer-shell has no title request, so a
+layer surface's caption is empty and `indexOf("SKIPPROBE")` can never match it — which is exactly
+how the #351 re-measurement came to read "no window" for a surface KWin was listing, managed, with
+geometry. A dump that throws `no probe window found` should suspect its own filter before concluding
+the window is absent; for a layer surface, filter on `resourceClass` instead or drop the filter and
+dump everything. See `measuring-a-gtk-layer-shell-surface.md`.
+
 ```js
 var out = [];
 var ws = workspace.windowList();

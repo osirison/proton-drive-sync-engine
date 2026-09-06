@@ -85,6 +85,12 @@ updpkgsums            # from pacman-contrib; rewrites sha256sums=('SKIP') with t
   available/appropriate in this non-Arch sandbox. Not faked; see "Building" above for the real
   command and prerequisites.
 
+  That parenthesis is the record of what the attempt needed then, and it is no longer the
+  whole list: `gtk-layer-shell` was added to `depends` and `makedepends` afterwards
+  (#351/#370 — the tray panel is a layer surface), so a real `makepkg -si` on Arch needs it
+  too. Arch ships the headers in the same package, so there is no separate `-devel` to add
+  alongside it.
+
 ## Post-install
 
 ```sh

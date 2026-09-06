@@ -2707,12 +2707,23 @@ pub async fn tray_action(app: tauri::AppHandle, id: String) -> StatusPayload {
 /// The panel measures itself once it knows its state and asks the window to match. The states differ
 /// by 120px between the tallest and the shortest, and Phase 1 omits lines the frames draw, so a
 /// fixed height is either clipped content or a band of empty panel below the menu.
+///
+/// The ask is currently inert on the layer-surface path: a mapped layer surface does not resize, so
+/// the corrected height lands at the next open rather than on this call. See `panel::resize`.
 #[tauri::command]
 pub fn resize_tray_panel(app: tauri::AppHandle, height: f64) {
     crate::panel::resize(&app, height);
 }
 
-/// Esc, and a click on a row. The blur path is handled in `lib.rs`, on the window event.
+/// Esc, and a click on a row. The row half does not come through HERE — the panel's own rows hide it
+/// from inside `tray_action`, which is a command but not this one, and a native menu row never needs
+/// to, `dbusmenu::about_to_show` having taken the panel down before the host drew that menu — so
+/// this is the Esc one, and the blur path is handled in `lib.rs`, on the window event.
+///
+/// Neither of those two is unscoped. Blur is live only where the panel is an ordinary toplevel; on
+/// the layer-surface path that arm is dead in both directions. Whether Esc still reaches the webview
+/// there is open, and is to stay written as open until it is measured. `lib.rs` carries the
+/// measurement behind the first and what would settle the second.
 #[tauri::command]
 pub fn hide_tray_panel(app: tauri::AppHandle) {
     crate::panel::hide(&app);

@@ -21,6 +21,7 @@ tokio = { version = "1", features = ["sync", "time", "rt"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri-plugin-dialog = "2.7.2"
+gtk-layer-shell = { version = "0.8.2", features = ["v0_6"] }
 
 # The tray (S8). `tray-icon`'s Linux backend is libappindicator, which is menu-only: its GTK
 # platform_impl contains no `TrayIconEvent` at all, so a left click produces no event a program can

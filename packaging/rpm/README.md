@@ -93,13 +93,17 @@ plus a working debugsource layout) is a reasonable follow-up but out of scope he
 
 ## Validation done in this environment
 
-This sandbox turned out to already have every build-time devel package installed
-(`webkit2gtk4.1-devel`, `libsoup3-devel`, `gtk3-devel`, `glib2-devel`,
+This sandbox turned out to already have every devel package the spec required **at the time**
+installed (`webkit2gtk4.1-devel`, `libsoup3-devel`, `gtk3-devel`, `glib2-devel`,
 `libappindicator-gtk3-devel`, `dbus-devel`) plus a working `cargo`/`rustc` 1.97.1 toolchain
 (via rustup, not the `rust`/`cargo` RPMs) and network access, so beyond spec-syntax checks a real
 end-to-end build was run against a local source tarball built from this branch (working around the
 not-yet-existing `v0.1.0` git tag) — see the PR description for the exact pass/fail results,
 including `rpmlint`.
+
+That parenthesis is the record of what this sandbox had then, and it is no longer the whole
+`BuildRequires` list: `gtk-layer-shell-devel` was added afterwards (#351/#370 — the tray panel
+is a layer surface), so repeating the build below on a fresh box needs that package as well.
 
 Commands used:
 ```sh

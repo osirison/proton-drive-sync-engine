@@ -70,8 +70,9 @@ rm debian   # remove the symlink afterward; don't commit it
 
 Build-deps include `debhelper-compat (= 13)`, a Rust ≥ 1.85 toolchain, `pkg-config`, and the
 Tauri dev libraries (`libwebkit2gtk-4.1-dev`, `libsoup-3.0-dev`, `libgtk-3-dev`,
-`libglib2.0-dev`). The emblem extensions are split into their own `proton-sync-nautilus` /
-`proton-sync-nemo` packages and wired as `Enhances:`/`Suggests:`, not hard dependencies.
+`libglib2.0-dev`, `libgtk-layer-shell-dev`). The emblem extensions are split into their
+own `proton-sync-nautilus` / `proton-sync-nemo` packages and wired as
+`Enhances:`/`Suggests:`, not hard dependencies.
 
 ## Arch / AUR (PKGBUILD)
 

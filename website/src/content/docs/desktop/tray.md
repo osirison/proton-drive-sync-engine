@@ -65,13 +65,17 @@ the only way out of the tray, and Settings and conflicts are reached from inside
 it opens.
 
 Interactions: **left-clicking the icon opens a small floating panel** next to it — the same
-hexagon, sentence and menu rows as the window, small enough to read at a glance, and
-dismissed the moment you click away or press Esc. It is a separate window from the main
-one; **Open Drive Sync** on the menu is what raises the full app window instead. Sync now /
-Pause / Resume / Try again now all run on a background thread so the blocking socket never
-freezes the UI, and **Start the sync service** asks systemd first (`systemctl --user start
-proton-syncd`) and, when there is no unit to ask, falls back to launching `proton-syncd`
-directly against the saved config.
+hexagon, sentence and menu rows as the window, small enough to read at a glance. Clicking
+the icon a second time closes it, and so does picking any row on it, and so does Esc. On
+most desktops it also goes away the moment you click away from it. Where the desktop lets an
+app anchor a panel beside the tray — KDE Plasma on Wayland does, GNOME does not — clicking
+away from it does not close it: an anchored panel is never told that your click landed on
+something else, so it stays up until you close it yourself. It is a separate window from the
+main one; **Open Drive Sync** on the menu is what raises the full app window instead. Sync
+now / Pause / Resume / Try again now all run on a background thread so the blocking socket
+never freezes the UI, and **Start the sync service** asks systemd first (`systemctl --user
+start proton-syncd`) and, when there is no unit to ask, falls back to launching
+`proton-syncd` directly against the saved config.
 
 ## Desktop notifications
 
