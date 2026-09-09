@@ -668,14 +668,11 @@ fn place(window: &tauri::WebviewWindow, at: Option<(i32, i32)>) {
     //     physical — so this divides by the scale factor. The same conversion, in the same
     //     direction, that the comment above records getting wrong the first time.
     #[cfg(target_os = "linux")]
-    if window
-        .gtk_window()
-        .is_ok_and(|w| gtk_layer_shell::LayerShell::is_layer_window(&w))
-    {
+    if let Ok(gtk_window) = window.gtk_window() {
         // Asking the window rather than remembering a flag: `promote_to_layer_surface` can decline
         // (X11, or Mutter), and a second source of truth about which kind of surface this is would
         // disagree with the compositor on exactly the desktops the decline exists for.
-        if let Ok(gtk_window) = window.gtk_window() {
+        if gtk_layer_shell::LayerShell::is_layer_window(&gtk_window) {
             let left = ((x - origin.x) / scale).round() as i32;
             let top = ((y - origin.y) / scale).round() as i32;
             // `set_layer_shell_margin`, not `set_margin`: the latter is GTK's own widget margin,
