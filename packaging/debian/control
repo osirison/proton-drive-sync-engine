@@ -2,9 +2,11 @@ Source: proton-drive-sync-engine
 Section: net
 Priority: optional
 Maintainer: osirison <mina.swe@gmail.com>
-# libgtk-layer-shell-dev is #351/#370: the tray panel is a layer surface rather than a toplevel,
-# because skip_taskbar and set_position are X11 hints a Wayland compositor discards. Build-time
-# only - the runtime library lands in ${shlibs:Depends} via dh_shlibdeps, like the rest.
+# libgtk-layer-shell-dev is #351/#370: the tray panel becomes a layer surface where the
+# compositor supports one (KDE Plasma on Wayland, wlroots) and stays an ordinary toplevel
+# elsewhere (X11, GNOME), because skip_taskbar and set_position are X11 hints a Wayland
+# compositor discards. Build-time only - the runtime library lands in ${shlibs:Depends}
+# via dh_shlibdeps, like the rest.
 Build-Depends: debhelper-compat (= 13),
                dh-sequence-python3,
                cargo (>= 1.85~),

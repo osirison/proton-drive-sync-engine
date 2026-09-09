@@ -210,10 +210,11 @@ ensure_gui_build_deps() {
   require_command pkg-config "needed to detect the desktop app's system build dependencies"
   local missing=()
   local pkg
-  # `gtk-layer-shell-0` is #351/#370's dependency: the tray panel is a layer surface, not a
-  # toplevel, because `skip_taskbar` and `set_position` are X11 hints a Wayland compositor
-  # discards. Probed like the rest — the build links against it, so a missing one is a link
-  # error rather than a runtime surprise.
+  # `gtk-layer-shell-0` is #351/#370's dependency: the tray panel becomes a layer surface
+  # where the compositor supports one (KDE Plasma on Wayland, wlroots) and stays an ordinary
+  # toplevel elsewhere (X11, GNOME), because `skip_taskbar` and `set_position` are X11 hints
+  # a Wayland compositor discards. Probed like the rest — the build links against it either
+  # way, so a missing one is a link error rather than a runtime surprise.
   for pkg in webkit2gtk-4.1 libsoup-3.0 gtk+-3.0 glib-2.0 gtk-layer-shell-0; do
     if ! pkg-config --exists "${pkg}" 2>/dev/null; then
       missing+=("${pkg}")

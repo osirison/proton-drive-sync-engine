@@ -15,7 +15,8 @@ sidebar:
 - The **`proton-drive` CLI**, installed, authenticated, and on your `PATH` (see below).
 - For the desktop app: the usual **Tauri Linux build deps** — `webkit2gtk-4.1`,
   `libsoup-3.0`, `gtk3`, and `glib2` development packages, plus `gtk-layer-shell`
-  (the tray panel is a layer surface) and `libappindicator` for the system tray.
+  (the tray panel becomes a layer surface where the compositor supports one) and
+  `libappindicator` for the system tray.
 
 ## Prerequisite: the proton-drive CLI
 

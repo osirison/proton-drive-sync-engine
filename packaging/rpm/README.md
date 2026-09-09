@@ -102,8 +102,9 @@ not-yet-existing `v0.1.0` git tag) — see the PR description for the exact pass
 including `rpmlint`.
 
 That parenthesis is the record of what this sandbox had then, and it is no longer the whole
-`BuildRequires` list: `gtk-layer-shell-devel` was added afterwards (#351/#370 — the tray panel
-is a layer surface), so repeating the build below on a fresh box needs that package as well.
+`BuildRequires` list: `gtk-layer-shell-devel` was added afterwards (#351/#370 — the tray
+panel becomes a layer surface where the compositor supports one), so repeating the build
+below on a fresh box needs that package as well.
 
 Commands used:
 ```sh

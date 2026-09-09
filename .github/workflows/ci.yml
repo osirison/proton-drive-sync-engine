@@ -20,9 +20,11 @@ jobs:
         # Required by the gui/src-tauri workspace member (webkit2gtk-4.1 + libsoup-3.0 link at build
         # time). Kept here so the whole workspace builds/lints/tests on the runner.
         #
-        # `libgtk-layer-shell-dev` is #351/#370's: the tray panel is a layer surface rather than a
-        # toplevel, because `skip_taskbar` and `set_position` are X11 hints Wayland discards. It
-        # links at build time like the rest, so a missing one here fails `cargo check`, not runtime.
+        # `libgtk-layer-shell-dev` is #351/#370's: the tray panel becomes a layer surface
+        # where the compositor supports one (KDE Plasma on Wayland, wlroots) and stays an
+        # ordinary toplevel elsewhere (X11, GNOME), because `skip_taskbar` and `set_position`
+        # are X11 hints Wayland discards. It links at build time like the rest regardless of
+        # compositor, so a missing one here fails `cargo check`, not runtime.
         # This apt list is one of thirteen that have to agree, and all thirteen carry the package
         # today. Nine are machine-read: `setup.sh`'s pkg-config probe and its dnf/apt/pacman
         # install commands (4), `packaging/arch/PKGBUILD`'s depends and makedepends (2),
