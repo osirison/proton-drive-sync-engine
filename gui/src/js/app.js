@@ -369,8 +369,13 @@ function onKeydown(e) {
 
   if (e.key === "Escape") {
     // The tray panel is a popover and Esc dismisses it — before anything else, because none of the
-    // shell's other Esc targets exist in that window. Blur hides it too (`lib.rs`), but a keyboard
-    // user who never leaves the panel would otherwise have no way out of it at all.
+    // shell's other Esc targets exist in that window. Blur hides it too where the panel is an
+    // ordinary window (`lib.rs`), but a keyboard user who never leaves the panel would otherwise
+    // have no way out of it without picking a row — and where the panel is a layer surface, that
+    // blur never arrives: no focus event is delivered there, so the blur arm is dead in both
+    // directions and this is the only way out from inside the panel that does not also fire a row.
+    // Whether the keypress reaches it on that path is open — `lib.rs` has the measurement and what
+    // would settle it.
     if (isTraySurface()) {
       api.hideTrayPanel();
       e.preventDefault();
@@ -692,7 +697,10 @@ function mountTrayPanel(root) {
  * THIS MEASUREMENT SETS THE WINDOW IT IS MEASURED IN, so nothing may cap the measured node at the
  * window's own size or the loop latches at its first wrong answer and no later poll can undo it.
  * `panelSurface` is what holds that open; a rule that shrinks `.compact-panel` to its container
- * re-arms it.
+ * re-arms it. Where the panel is a layer surface the window follows late rather than not at all — a
+ * mapped layer surface ignores the resize, so the height lands at the next open (`panel.rs`) — which
+ * changes when the measurement takes effect and nothing else: a cap would still latch the wrong
+ * answer, and would then carry it across the reopen too, so the rule stands unchanged on every path.
  */
 function reportTrayHeight() {
   requestAnimationFrame(() => {

@@ -219,7 +219,7 @@ onboarding wizard for you. To build and run it by hand from a checkout instead:
 **1. Install system dependencies** (Linux/Fedora; adjust for your distro):
 
 ```bash
-sudo dnf install webkit2gtk4.1-devel libsoup3-devel gtk3-devel libappindicator-gtk3-devel librsvg2-devel
+sudo dnf install webkit2gtk4.1-devel libsoup3-devel gtk3-devel libappindicator-gtk3-devel librsvg2-devel gtk-layer-shell-devel
 ```
 
 **2. Start the daemon** (from the project root):

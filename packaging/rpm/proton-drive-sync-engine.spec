@@ -68,6 +68,11 @@ BuildRequires:  pkgconfig
 BuildRequires:  webkit2gtk4.1-devel
 BuildRequires:  libsoup3-devel
 BuildRequires:  gtk3-devel
+# #351/#370: the tray panel becomes a layer surface where the compositor supports one
+# (KDE Plasma on Wayland, wlroots), because `skip_taskbar` and `set_position` are X11 hints
+# a Wayland compositor discards. BuildRequires only — the runtime Requires is
+# auto-generated from the ELF NEEDED list, per the header above.
+BuildRequires:  gtk-layer-shell-devel
 BuildRequires:  glib2-devel
 BuildRequires:  dbus-devel
 BuildRequires:  systemd-rpm-macros

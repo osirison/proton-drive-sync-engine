@@ -75,7 +75,9 @@ rm debian   # remove the symlink again afterward; do not commit it
   Debian/Ubuntu-packaged `rustc` (e.g. Debian 12 bookworm's) is too old; use
   `rustup`/backports/a recent Ubuntu release if the archive `rustc` doesn't qualify.
 - `pkg-config`
-- `libwebkit2gtk-4.1-dev`, `libsoup-3.0-dev`, `libgtk-3-dev`, `libglib2.0-dev` (Tauri GUI)
+- `libwebkit2gtk-4.1-dev`, `libsoup-3.0-dev`, `libgtk-3-dev`, `libglib2.0-dev`,
+  `libgtk-layer-shell-dev` (Tauri GUI; the last one is #351/#370's tray panel, promoted to a
+  layer surface where the compositor supports one)
 
 `debian/rules` drives `cargo build` directly (`override_dh_auto_build`) rather than
 relying on debhelper's Rust/cargo buildsystem auto-detection, since a `dh-cargo`-style
@@ -115,6 +117,11 @@ Not run / not available, and why:
   `>= 1.85` (this sandbox's `rustc`/`cargo` happen to be new enough at the time of
   writing, but the *system* packages this depends on for the GUI are not installed) and
   network egress to crates.io. Not attempted; see the exact command above.
+
+  That list is the record of what the attempt would have needed then, and it is no longer
+  the whole one: `libgtk-layer-shell-dev` was added afterwards (#351/#370 — the tray panel
+  becomes a layer surface where the compositor supports one). The Build-Depends bullet
+  above carries the current list.
 
 ### A known, accepted lintian note
 

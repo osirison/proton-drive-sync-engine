@@ -175,8 +175,20 @@ pub fn run() {
                     api.prevent_close();
                     let _ = window.hide();
                 }
-                // THE PANEL GOES AWAY WHEN YOU LOOK AWAY, and this is the half of that which cannot
-                // live in the webview: a click on another window never reaches our DOM.
+                // THE PANEL GOES AWAY WHEN YOU LOOK AWAY — ON THE PATHS WHERE IT IS AN ORDINARY
+                // TOPLEVEL (X11, and Wayland without `zwlr_layer_shell_v1`, so GNOME). There this is
+                // the half of that contract which cannot live in the webview: a click on another
+                // window never reaches our DOM.
+                //
+                // ON THE LAYER-SURFACE PATH THIS ARM IS DEAD IN BOTH DIRECTIONS. A layer surface is
+                // delivered no `focus-in-event` and no `focus-out-event` — not even at map — and
+                // those are the two GTK signals tao turns into `WindowEvent::Focused`. So nothing
+                // sets the flag and nothing would deliver the blur that reads it: the panel does not
+                // dismiss by being looked away from there. Measured; see
+                // `panel::promote_to_layer_surface` and
+                // `docs/agent-notes/measuring-a-gtk-layer-shell-surface.md`. Recorded, not fixed —
+                // the arm stays because it is the working contract on the two fallback paths, and
+                // everything below is the record of those.
                 //
                 // It is also why the panel TAKES focus when the indicator is clicked. The plan's two
                 // sub-risks — "must not steal focus" and "must not linger after blur" — are the same
@@ -194,8 +206,19 @@ pub fn run() {
                 // looking exactly like a panel that had never opened.
                 //
                 // So `hide` waits for a blur that follows a focus. When the compositor never grants
-                // focus at all the panel stays up, which is the right way round to be wrong: Esc,
-                // any menu row, and a second click on the indicator all still dismiss it.
+                // focus at all the panel stays up, which is the right way round to be wrong: any
+                // menu row and a second click on the indicator both still dismiss it, and neither
+                // reads a focus event to do it — `tray_action` calls `panel::hide` outright for the
+                // panel's own rows, while a NATIVE menu row never reaches it at all: `dbusmenu`
+                // dispatches those to `tray::handle_menu_event`, and the panel is already down by
+                // then because `dbusmenu::about_to_show` hides it before the host draws that menu.
+                // Same outcome, two mechanisms, and neither reads focus. A second click arrives as
+                // `Activate` and is answered by `toggle`'s `is_visible` check. What Esc
+                // does when focus is never granted is OPEN, and must not be written down either way
+                // until it is measured: `panel.rs` asks for `KeyboardMode::OnDemand`, which is meant
+                // to hand the surface the keyboard on a CLICK into it, and the probe that saw no
+                // focus events never clicked. A probe that clicks the surface and then presses a key
+                // is what would settle it.
                 tauri::WindowEvent::Focused(focused) if window.label() == panel::LABEL => {
                     if *focused {
                         panel::mark_focused();
