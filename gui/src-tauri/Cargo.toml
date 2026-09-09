@@ -46,9 +46,11 @@ futures-util = { version = "0.3", default-features = false }
 # are two different types with one name. Pinned to the same 0.18 line for that reason.
 gtk = "0.18"
 gdkx11 = "0.18"
-# `panel.rs`, every call site `#[cfg(target_os = "linux")]`. Its build script is a `system-deps`
-# pkg-config probe for `gtk-layer-shell-0`; left unconditional, a missing `.pc` file fails the
-# build on every target for a crate nothing off Linux ever calls.
+# `panel.rs`, every call site `#[cfg(target_os = "linux")]`. HERE rather than in the shared
+# `[dependencies]` because its build script is a `system-deps` pkg-config probe for
+# `gtk-layer-shell-0`: unscoped, that probe runs on every target and a missing `.pc` fails a build
+# that never calls the crate. Scoped as it is, a missing one is a Linux compile-time failure, which
+# is the same shape as the rest of this section.
 gtk-layer-shell = { version = "0.8.2", features = ["v0_6"] }
 
 [dev-dependencies]
