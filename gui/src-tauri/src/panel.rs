@@ -607,6 +607,34 @@ fn resolve_click_space(cx: f64, cy: f64, area: (f64, f64), scale: f64) -> (Click
     }
 }
 
+/// The panel's physical size for the placement arithmetic, or the built-time fallback when the
+/// window cannot answer yet.
+///
+/// **`outer_size()` IS NOT A SIZE UNTIL THE COMPOSITOR HAS CONFIGURED THE SURFACE**, and it reports
+/// the non-answer as `Ok`, so an `unwrap_or(fallback)` never fires on it. tao 0.35.3 keeps the value
+/// in an atomic pair whose only writer is inside `connect_configure_event`, and seeds that pair —
+/// in the line `let o_size = window.window().map(|w| w.root_origin()).unwrap_or(w_pos);` — from the
+/// window's ORIGIN. A position, not a size, with a position for its own fallback. On an unrealized
+/// window `window()` is `None`, so the seed is that fallback, which for a window nothing has placed
+/// yet is `(0, 0)`.
+///
+/// **#395's fix is what made this reachable.** Before it, `place` returned on "no monitor" before
+/// ever reading a size, so no first open got this far and a zero here cost nothing. MEASURED once it
+/// did: a click promoted to physical `(3080, 2120)` put the panel at logical `1540,1052` — left edge
+/// exactly the click, top eight pixels above it — which is this arithmetic with both panel
+/// dimensions zero. It looks like a placement bug and is a size bug, the same shape as the two
+/// conversions above.
+///
+/// Either dimension being non-positive condemns the pair: a panel 724 wide and 0 tall is not a
+/// partially usable answer, and half-trusting it would centre the width correctly while stacking the
+/// height on the click.
+fn usable_panel_size(reported: Option<(f64, f64)>, fallback: (f64, f64)) -> (f64, f64) {
+    match reported {
+        Some((width, height)) if width > 0.0 && height > 0.0 => (width, height),
+        _ => fallback,
+    }
+}
+
 /// Is a (physical, already-disambiguated) click in the bottom half of the monitor? Answering this
 /// is the same thing as asking whether the panel is at the top or the bottom of the desktop,
 /// without having to know that — a click low on the screen has no room for the panel below it, so
@@ -774,10 +802,13 @@ fn place(window: &tauri::WebviewWindow, at: Option<(i32, i32)>) {
     let origin = monitor.position();
     let scale = monitor.scale_factor();
     let fallback = LogicalSize::new(WIDTH, HEIGHT).to_physical::<f64>(scale);
-    let size = window
-        .outer_size()
-        .map(|s| tauri::PhysicalSize::new(s.width as f64, s.height as f64))
-        .unwrap_or(fallback);
+    let size = usable_panel_size(
+        window
+            .outer_size()
+            .ok()
+            .map(|s| (s.width as f64, s.height as f64)),
+        (fallback.width, fallback.height),
+    );
     let (area, origin) = (
         tauri::PhysicalSize::new(area.width as f64, area.height as f64),
         tauri::PhysicalPosition::new(origin.x as f64, origin.y as f64),
@@ -788,7 +819,7 @@ fn place(window: &tauri::WebviewWindow, at: Option<(i32, i32)>) {
         (origin.x, origin.y),
         (area.width, area.height),
         scale,
-        (size.width, size.height),
+        size,
     );
 
     // A LAYER SURFACE IS POSITIONED BY MARGIN, NOT BY `set_position` (#370). Same arithmetic above,
@@ -899,6 +930,52 @@ mod tests {
         let (space, x, y) = resolve_click_space(2500.0, 500.0, area, scale);
         assert_eq!(space, ClickSpace::Physical);
         assert_eq!((x, y), (2500.0, 500.0));
+    }
+
+    #[test]
+    fn an_unmapped_windows_zero_size_is_refused_in_favour_of_the_built_time_fallback() {
+        // #395's fix made this path reachable: `outer_size()` answers `Ok((0, 0))` for a window the
+        // compositor has not configured, because tao seeds that cache from the window's origin.
+        let fallback = (724.0, 884.0);
+        assert_eq!(usable_panel_size(Some((0.0, 0.0)), fallback), fallback);
+        assert_eq!(usable_panel_size(None, fallback), fallback);
+        // One zero condemns the pair — a width without a height is not a partial answer.
+        assert_eq!(usable_panel_size(Some((724.0, 0.0)), fallback), fallback);
+        assert_eq!(usable_panel_size(Some((0.0, 884.0)), fallback), fallback);
+        // A real reading is used as given.
+        assert_eq!(
+            usable_panel_size(Some((724.0, 634.0)), fallback),
+            (724.0, 634.0)
+        );
+    }
+
+    #[test]
+    fn regression_395_a_zero_size_would_place_the_panel_on_the_click_instead_of_above_it() {
+        // MEASURED with the guard absent, on the fixed build: a logical click at (1540, 1060)
+        // promoted to physical (3080, 2120) placed the panel at logical 1540,1052 — its left edge
+        // exactly the click and its top 8px above it, the arithmetic with a zero-sized panel. That
+        // is what this asserts against, so the guard cannot be dropped silently.
+        let fallback = LogicalSize::new(WIDTH, HEIGHT).to_physical::<f64>(MONITOR_SCALE);
+        let zeroed = panel_origin(
+            Some((1540, 1060)),
+            MONITOR_ORIGIN,
+            MONITOR_AREA,
+            MONITOR_SCALE,
+            (0.0, 0.0),
+        );
+        let guarded = panel_origin(
+            Some((1540, 1060)),
+            MONITOR_ORIGIN,
+            MONITOR_AREA,
+            MONITOR_SCALE,
+            usable_panel_size(Some((0.0, 0.0)), (fallback.width, fallback.height)),
+        );
+        assert_ne!(zeroed, guarded);
+        // The zero-sized answer is the measured bug, in logical pixels: 3080/2 = 1540, 2104/2 = 1052.
+        assert_eq!(zeroed, (3080.0, 2104.0));
+        // The guarded answer leaves the panel's full height above the click.
+        let (_, _, promoted_y) = resolve_click_space(1540.0, 1060.0, MONITOR_AREA, MONITOR_SCALE);
+        assert!(guarded.1 + fallback.height <= promoted_y);
     }
 
     #[test]
