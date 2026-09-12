@@ -74,12 +74,20 @@
 //!
 //! # Position
 //!
-//! `Activate(x, y)` carries the click in screen coordinates — verified on a live session, where a
-//! click on the indicator arrived as `Activate(3192, 2112)`. So the spec's `top:40px; right:16px`
-//! fallback is only that: a fallback, for a host that sends `(0, 0)` because it does not track the
-//! pointer. The panel is placed against the click and then clamped into the work area, which is what
-//! makes it open UPWARD on a bottom panel — the ordinary case on KDE, and the one a fixed
-//! top-right rule gets wrong on every Plasma desktop.
+//! `Activate(x, y)` carries the click in screen coordinates, but not consistently in which SPACE
+//! (#394). A hand-made `gdbus ... Activate 3192 2112` — a caller that chose its own units, not the
+//! real path — arrived PHYSICAL, on a 3840×2160 output at scale 2. A real click on the tray icon,
+//! measured on the same output, arrived `Activate(1540, 1060)` — LOGICAL. Treating the second as
+//! physical is the bug: every derived value halves, and the top/bottom split (below) compares the
+//! unscaled click against half the PHYSICAL screen height, so a bottom-corner click reads as the
+//! top half and the panel opens downward instead of up. [`place`] cannot trust either reading and
+//! disambiguates by BOUNDS instead (`resolve_click_space`): a pair that fits inside the monitor's
+//! logical rectangle is logical and gets promoted to physical; one that does not was already
+//! physical. At scale 1 the two spaces coincide and the branch is a no-op. So the spec's
+//! `top:40px; right:16px` fallback is only that: a fallback, for a host that sends `(0, 0)` because
+//! it does not track the pointer. The panel is placed against the (now-physical) click and then
+//! clamped into the work area, which is what makes it open UPWARD on a bottom panel — the ordinary
+//! case on KDE, and the one a fixed top-right rule gets wrong on every Plasma desktop.
 //!
 //! **[`place`]'s last step is X11's, and the arithmetic before it is not.** A Wayland client
 //! cannot position its own toplevel: there is no xdg-shell request for it, so `gtk_window_move` is
@@ -553,6 +561,167 @@ fn build(app: &AppHandle) -> tauri::Result<tauri::WebviewWindow> {
     .build()
 }
 
+/// `(0, 0)` is how a host says it does not know where the pointer was — GNOME's extension is the
+/// documented case. It is also a legitimate corner click, and treating a real corner click as
+/// "unknown" costs nothing (the fallback corner is a few pixels away); treating "unknown" as a real
+/// corner click puts the panel in the opposite corner of the screen. One definition, used by both
+/// `resolve_monitor` (needs to know there is no click to resolve a monitor from) and `panel_origin`
+/// (needs to know there is no click to place against) — two callers reading two different raw
+/// options and disagreeing on which counts as "none" is exactly the two-places-computing-the-same-
+/// thing shape this codebase has been bitten by before.
+fn real_click(at: Option<(i32, i32)>) -> Option<(i32, i32)> {
+    at.filter(|&(x, y)| x != 0 || y != 0)
+}
+
+/// Which coordinate space a click turned out to be in, once [`resolve_click_space`] has decided.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClickSpace {
+    Logical,
+    Physical,
+}
+
+/// Disambiguate a click's coordinate space against a monitor's PHYSICAL size and scale, and return
+/// it promoted to physical (#394).
+///
+/// MEASURED on Plasma 6 Wayland, one 3840×2160 output at scale 2: a real tray-icon click delivers
+/// `Activate(1540, 1060)` — the icon's position in LOGICAL pixels — while a hand-made
+/// `gdbus ... Activate 3192 2112` delivers PHYSICAL. So the space is a property of the CALLER, not
+/// of the protocol, and cannot be assumed either way.
+///
+/// The rule is bounds, not a flag: a pair that fits inside the monitor's LOGICAL rectangle
+/// (`area / scale`) is read as logical and promoted; one that exceeds it must already be physical,
+/// because a logical click can never exceed the logical screen it was clicked on. At scale 1 the
+/// two spaces coincide and every click satisfies the logical bound, so the multiply-by-1 promotion
+/// is a no-op — this is what makes the branch harmless on every desktop that was already correct.
+///
+/// `area` is the monitor's physical `(width, height)` — deliberately not the monitor's position:
+/// the bound only asks "how big is this screen", and `place` already handles the origin offset
+/// separately when it decides above/below.
+fn resolve_click_space(cx: f64, cy: f64, area: (f64, f64), scale: f64) -> (ClickSpace, f64, f64) {
+    let logical_area = (area.0 / scale, area.1 / scale);
+    let click_is_logical = cx <= logical_area.0 && cy <= logical_area.1;
+    if click_is_logical {
+        (ClickSpace::Logical, cx * scale, cy * scale)
+    } else {
+        (ClickSpace::Physical, cx, cy)
+    }
+}
+
+/// Is a (physical, already-disambiguated) click in the bottom half of the monitor? Answering this
+/// is the same thing as asking whether the panel is at the top or the bottom of the desktop,
+/// without having to know that — a click low on the screen has no room for the panel below it, so
+/// the panel opens upward instead.
+fn click_is_below(cy: f64, monitor_origin_y: f64, monitor_height: f64) -> bool {
+    cy - monitor_origin_y < monitor_height / 2.0
+}
+
+/// The panel's clamped, PHYSICAL top-left corner for a click — the pure arithmetic `place` applies
+/// once it has a monitor to place against.
+///
+/// `at` is the raw click exactly as `toggle`/`show_at` received it: the `(0, 0)` "unknown pointer"
+/// sentinel is filtered HERE (`real_click`), not by the caller, so the fallback-corner decision is
+/// covered by a direct test rather than by trusting every call site to filter first.
+/// `monitor_origin`/`monitor_area` are the chosen monitor's `position()`/`size()` and `scale` its
+/// `scale_factor()` — all three physical by construction (tao's own `Monitor` converts a logical
+/// GDK rect to physical before Tauri ever sees it) — and `panel_size` is the window's `outer_size()`
+/// or the built-time fallback. The click alone is not physical by construction, which is what
+/// [`resolve_click_space`] exists to fix before the rest of this function treats it as such.
+fn panel_origin(
+    at: Option<(i32, i32)>,
+    monitor_origin: (f64, f64),
+    monitor_area: (f64, f64),
+    scale: f64,
+    panel_size: (f64, f64),
+) -> (f64, f64) {
+    let margin = 8.0 * scale;
+    let (x, y) = match real_click(at) {
+        Some((cx, cy)) => {
+            let (_, cx, cy) = resolve_click_space(cx as f64, cy as f64, monitor_area, scale);
+            // Centred on the click horizontally, and above or below it depending on which half of
+            // the screen the indicator is in.
+            let below = click_is_below(cy, monitor_origin.1, monitor_area.1);
+            (
+                cx - panel_size.0 / 2.0,
+                if below {
+                    cy + margin
+                } else {
+                    cy - panel_size.1 - margin
+                },
+            )
+        }
+        None => (
+            monitor_origin.0 + monitor_area.0 - panel_size.0 - FALLBACK_INSET.0,
+            monitor_origin.1 + FALLBACK_INSET.1,
+        ),
+    };
+
+    // `max` before `clamp`: on a display shorter than the panel the upper bound goes below the
+    // lower one and `clamp` panics. Not hypothetical at the tallest state on a 768px laptop screen
+    // once the panel is 442 physical at scale 2.
+    let max_x =
+        (monitor_origin.0 + monitor_area.0 - panel_size.0 - margin).max(monitor_origin.0 + margin);
+    let max_y =
+        (monitor_origin.1 + monitor_area.1 - panel_size.1 - margin).max(monitor_origin.1 + margin);
+    (
+        x.clamp(monitor_origin.0 + margin, max_x),
+        y.clamp(monitor_origin.1 + margin, max_y),
+    )
+}
+
+/// Find the monitor to place the panel against, on the FIRST open of a process, before the window
+/// has ever been mapped (#395).
+///
+/// MEASURED: `place`'s old ladder — `current_monitor()`, else `primary_monitor()` — logged "no
+/// monitor to place the panel against" TWICE on every first open, because it was never really a
+/// ladder. Reading tao 0.35.3's `platform_impl/linux/window.rs` shows `current_monitor()` ALREADY
+/// falls back to `display.primary_monitor()` internally when the window has no mapped `GdkWindow`,
+/// so the two-arm match collapsed to one call — and what that one call reaches,
+/// `gdk_display_get_primary_monitor`, has no meaning on Wayland and returns `None` there. Nothing
+/// could answer until the webview's first paint called `resize` → `place` a third time, by which
+/// point the window was mapped and `current_monitor()` could finally see it.
+///
+/// `available_monitors()` and `monitor_from_point()` do not have that problem: neither consults the
+/// window, only the display, so both work before anything is realized. The order below is chosen to
+/// avoid a dependency loop — `monitor_from_point` wants a LOGICAL point (GDK's `monitor_at_point`;
+/// confirmed by the same source, `Monitor::size()`/`position()` build a logical rect and only then
+/// convert it to physical) — but a click's own space is exactly what #394 says cannot be assumed,
+/// so it cannot be converted without a scale, and there is no monitor to take a scale from until
+/// this function returns one:
+///
+///   1. `available_monitors()` first — no window, no click needed, just a scale and a size.
+///   2. Disambiguate the click against the FIRST reported monitor's bounds ([`resolve_click_space`],
+///      #394). A stand-in only: on a mixed-DPI, multi-monitor desktop the click could belong to a
+///      different output with a different scale, and this cannot know that yet. Exact for the
+///      single-output desktop everything here is measured against, which is also the common case.
+///   3. `monitor_from_point` on the now-logical click — the call that actually ties the answer to
+///      the right output when there is more than one, correcting whatever step 2 approximated.
+///   4. Only then the old ladder, for the no-click case `monitor_from_point` cannot serve, and the
+///      same eprintln-and-leave-it when even that answers nothing.
+fn resolve_monitor(
+    window: &tauri::WebviewWindow,
+    click: Option<(i32, i32)>,
+) -> Option<tauri::Monitor> {
+    if let Some((cx, cy)) = click {
+        if let Ok(monitors) = window.available_monitors() {
+            if let Some(reference) = monitors.first() {
+                let scale = reference.scale_factor();
+                let area = (
+                    reference.size().width as f64,
+                    reference.size().height as f64,
+                );
+                let (_, px, py) = resolve_click_space(cx as f64, cy as f64, area, scale);
+                if let Ok(Some(monitor)) = window.monitor_from_point(px / scale, py / scale) {
+                    return Some(monitor);
+                }
+            }
+        }
+    }
+    match window.current_monitor() {
+        Ok(Some(monitor)) => Some(monitor),
+        _ => window.primary_monitor().ok().flatten(),
+    }
+}
+
 /// Put the panel under the click, inside the screen — **by `set_position` on X11, by anchor margins
 /// on a layer surface, and by neither on a Wayland compositor that has no layer shell.**
 ///
@@ -580,34 +749,27 @@ fn build(app: &AppHandle) -> tauri::Result<tauri::WebviewWindow> {
 /// no room for a 442px panel below it, so the panel goes above the click instead. That is the
 /// ordinary KDE case, and the spec's fixed `top:40px` would have put it at the wrong end of the
 /// screen on every one of them.
+///
+/// **Two conversions happen before any of that, and both were measured wrong once.** Which monitor
+/// to place against cannot be answered by the window on the FIRST open of a process (#395,
+/// `resolve_monitor`), and the click handed to this function is not reliably in either coordinate
+/// space (#394, `resolve_click_space`/`panel_origin`). Everything past that point stays physical, as
+/// it always was.
 fn place(window: &tauri::WebviewWindow, at: Option<(i32, i32)>) {
-    // A WINDOW THAT HAS NEVER BEEN SHOWN HAS NO CURRENT MONITOR, and the first version returned
-    // early on that — silently, so the panel kept whatever position the window manager had given it.
-    // On this desktop that was dead centre, at exactly `(3840 − 724) / 2`, which is the tell: a
-    // centred popover is not a positioning bug, it is the absence of positioning.
-    //
     // The panel is built hidden on purpose (showing it first would paint it at the default position
-    // and then jump), so this is the ordinary path rather than an edge case: it is what happens
-    // every time the panel opens for the first time in a session.
-    let monitor = match window.current_monitor() {
-        Ok(Some(monitor)) => Some(monitor),
-        _ => window.primary_monitor().ok().flatten(),
-    };
-    let Some(monitor) = monitor else {
+    // and then jump), so resolving the monitor without a mapped window is the ordinary path rather
+    // than an edge case: it is what happens every time the panel opens for the first time in a
+    // session. See `resolve_monitor` for why the old `current_monitor()`/`primary_monitor()` ladder
+    // answered nothing here (#395).
+    let click = real_click(at);
+    let Some(monitor) = resolve_monitor(window, click) else {
         eprintln!("tray: no monitor to place the panel against; leaving it where it is");
         return;
     };
-    // EVERYTHING HERE IS IN PHYSICAL PIXELS, because that is what the host sends.
-    //
-    // Measured, and it is not what the first version assumed. On this 3840×2160 display at scale 2,
-    // a click on the indicator arrived as `Activate(3192, 2112)` — physical coordinates, not the
-    // 1920×1080 logical space Tauri's `LogicalPosition` works in. Treating them as logical put the
-    // panel in the middle of the screen: the arithmetic was right and the units were not, which is
-    // the failure that looks like a positioning bug and is a conversion bug.
-    //
-    // `monitor.position()`, `monitor.size()` and `outer_size()` are all physical already, so working
-    // in that space means the click needs no conversion at all — and a conversion that is not
-    // performed cannot be performed in the wrong direction.
+    // EVERYTHING FROM HERE ON IS PHYSICAL PIXELS: `monitor.position()`, `monitor.size()` and
+    // `outer_size()` all are already (tao's own `Monitor` converts a logical GDK rect to physical
+    // before Tauri ever sees it) — the one exception being the click itself, which `panel_origin`
+    // disambiguates before using (#394; see [`resolve_click_space`]).
     let area = monitor.size();
     let origin = monitor.position();
     let scale = monitor.scale_factor();
@@ -620,43 +782,14 @@ fn place(window: &tauri::WebviewWindow, at: Option<(i32, i32)>) {
         tauri::PhysicalSize::new(area.width as f64, area.height as f64),
         tauri::PhysicalPosition::new(origin.x as f64, origin.y as f64),
     );
-    let margin = 8.0 * scale;
 
-    // `(0, 0)` is how a host says it does not know where the pointer was — GNOME's extension is the
-    // documented case. It is also a legitimate corner click, and treating a real corner click as
-    // "unknown" costs nothing (the fallback corner is a few pixels away); treating "unknown" as a
-    // real corner click puts the panel in the opposite corner of the screen.
-    let click = at.filter(|&(x, y)| x != 0 || y != 0);
-    let (x, y) = match click {
-        Some((cx, cy)) => {
-            let cx = cx as f64;
-            let cy = cy as f64;
-            // Centred on the click horizontally, and above or below it depending on which half of
-            // the screen the indicator is in — which is the same thing as asking whether the panel
-            // is at the top or the bottom of the desktop, without having to know that.
-            let below = cy - origin.y < area.height / 2.0;
-            (
-                cx - size.width / 2.0,
-                if below {
-                    cy + margin
-                } else {
-                    cy - size.height - margin
-                },
-            )
-        }
-        None => (
-            origin.x + area.width - size.width - FALLBACK_INSET.0,
-            origin.y + FALLBACK_INSET.1,
-        ),
-    };
-
-    // `max` before `clamp`: on a display shorter than the panel the upper bound goes below the
-    // lower one and `clamp` panics. Not hypothetical at the tallest state on a 768px laptop screen
-    // once the panel is 442 physical at scale 2.
-    let max_x = (origin.x + area.width - size.width - margin).max(origin.x + margin);
-    let max_y = (origin.y + area.height - size.height - margin).max(origin.y + margin);
-    let x = x.clamp(origin.x + margin, max_x);
-    let y = y.clamp(origin.y + margin, max_y);
+    let (x, y) = panel_origin(
+        click,
+        (origin.x, origin.y),
+        (area.width, area.height),
+        scale,
+        (size.width, size.height),
+    );
 
     // A LAYER SURFACE IS POSITIONED BY MARGIN, NOT BY `set_position` (#370). Same arithmetic above,
     // two conversions on the way out, and both are the kind that look like a positioning bug:
@@ -664,9 +797,11 @@ fn place(window: &tauri::WebviewWindow, at: Option<(i32, i32)>) {
     //   * MARGINS ARE PER-OUTPUT. `x`/`y` are global coordinates across all monitors; the anchor is
     //     this surface's own output, so the monitor origin comes back off. On a single display that
     //     is a no-op, which is exactly why it would ship broken and only fail on a second monitor.
-    //   * MARGINS ARE LOGICAL PIXELS. Everything above is physical on purpose — the click arrives
-    //     physical — so this divides by the scale factor. The same conversion, in the same
-    //     direction, that the comment above records getting wrong the first time.
+    //   * MARGINS ARE LOGICAL PIXELS. Everything above is physical on purpose — `x`/`y` are
+    //     `panel_origin`'s result, and the click it started from has already been promoted to
+    //     physical by then regardless of which space it arrived in (#394, `resolve_click_space`) —
+    //     so this divides by the scale factor. The same conversion, in the same direction, that the
+    //     module doc's "Position" section records getting wrong the first time.
     #[cfg(target_os = "linux")]
     if let Ok(gtk_window) = window.gtk_window() {
         // Asking the window rather than remembering a flag: `promote_to_layer_surface` can decline
@@ -685,4 +820,136 @@ fn place(window: &tauri::WebviewWindow, at: Option<(i32, i32)>) {
     }
 
     let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The one monitor every #394 measurement below is against: Plasma 6 Wayland, one 3840×2160
+    // physical output at scale 2 (1920×1080 logical), positioned at the desktop origin.
+    const MONITOR_ORIGIN: (f64, f64) = (0.0, 0.0);
+    const MONITOR_AREA: (f64, f64) = (3840.0, 2160.0);
+    const MONITOR_SCALE: f64 = 2.0;
+    // The panel mid-resize: 362×317 logical, i.e. 724×634 physical at scale 2.
+    const PANEL_SIZE: (f64, f64) = (724.0, 634.0);
+
+    #[test]
+    fn a_real_tray_click_is_recognised_as_logical_and_promoted_to_physical() {
+        let (space, x, y) = resolve_click_space(1540.0, 1060.0, MONITOR_AREA, MONITOR_SCALE);
+        assert_eq!(space, ClickSpace::Logical);
+        assert_eq!((x, y), (3080.0, 2120.0));
+
+        // The promoted click is in the BOTTOM half of a 2160-tall screen, not the top — the second
+        // half of #394: an unpromoted click compares against half the physical height and gets this
+        // backwards.
+        assert!(!click_is_below(y, MONITOR_ORIGIN.1, MONITOR_AREA.1));
+
+        let origin = panel_origin(
+            Some((1540, 1060)),
+            MONITOR_ORIGIN,
+            MONITOR_AREA,
+            MONITOR_SCALE,
+            PANEL_SIZE,
+        );
+        assert_eq!(origin, (2718.0, 1470.0));
+        // = logical (1359, 735).
+        assert_eq!(
+            (origin.0 / MONITOR_SCALE, origin.1 / MONITOR_SCALE),
+            (1359.0, 735.0)
+        );
+    }
+
+    #[test]
+    fn a_hand_made_physical_click_is_recognised_as_physical_and_not_rescaled() {
+        // `gdbus ... Activate 3192 2112` — a caller that already sends physical units. Today's
+        // behaviour for it must be unchanged.
+        let (space, x, y) = resolve_click_space(3192.0, 2112.0, MONITOR_AREA, MONITOR_SCALE);
+        assert_eq!(space, ClickSpace::Physical);
+        assert_eq!((x, y), (3192.0, 2112.0));
+
+        let origin = panel_origin(
+            Some((3192, 2112)),
+            MONITOR_ORIGIN,
+            MONITOR_AREA,
+            MONITOR_SCALE,
+            PANEL_SIZE,
+        );
+        assert_eq!(origin, (2830.0, 1462.0));
+        // = logical (1415, 731).
+        assert_eq!(
+            (origin.0 / MONITOR_SCALE, origin.1 / MONITOR_SCALE),
+            (1415.0, 731.0)
+        );
+    }
+
+    #[test]
+    fn at_scale_one_the_disambiguation_is_a_no_op() {
+        let area = (1920.0, 1080.0);
+        let scale = 1.0;
+
+        // Inside the screen either way: classified logical, but at scale 1 "promoted to physical"
+        // multiplies by 1 — the same numbers the physical branch would have produced unscaled.
+        let (space, x, y) = resolve_click_space(1540.0, 1060.0, area, scale);
+        assert_eq!(space, ClickSpace::Logical);
+        assert_eq!((x, y), (1540.0, 1060.0));
+
+        // Outside the screen either way: classified physical, and at scale 1 that is also a no-op —
+        // covering both branches is the point, not just the one a typical click takes.
+        let (space, x, y) = resolve_click_space(2500.0, 500.0, area, scale);
+        assert_eq!(space, ClickSpace::Physical);
+        assert_eq!((x, y), (2500.0, 500.0));
+    }
+
+    #[test]
+    fn an_unknown_pointer_sentinel_still_takes_the_fallback_corner_and_is_not_scaled() {
+        let with_sentinel = panel_origin(
+            Some((0, 0)),
+            MONITOR_ORIGIN,
+            MONITOR_AREA,
+            MONITOR_SCALE,
+            PANEL_SIZE,
+        );
+        let with_none = panel_origin(
+            None,
+            MONITOR_ORIGIN,
+            MONITOR_AREA,
+            MONITOR_SCALE,
+            PANEL_SIZE,
+        );
+        assert_eq!(with_sentinel, with_none);
+        // The fallback corner, unaffected by scale or disambiguation.
+        assert_eq!(
+            with_none,
+            (
+                MONITOR_AREA.0 - PANEL_SIZE.0 - FALLBACK_INSET.0,
+                FALLBACK_INSET.1
+            )
+        );
+    }
+
+    #[test]
+    fn regression_394_a_bottom_corner_click_places_the_panel_just_above_it_not_below() {
+        // What the user actually reported: the panel landed mid-screen instead of beside the tray,
+        // and opened downward instead of up. Under the OLD "always physical" reading this same click
+        // (1540, 1060) would compare against half the 2160-tall screen UNSCALED — 1060 < 1080 reads
+        // as the top half — and the panel would open BELOW the click, at physical y = 1060 + 16 =
+        // 1076 (logical ~538, ~mid-screen). The fix must place it ABOVE the click instead, hugging
+        // its bottom edge.
+        let (x, y) = panel_origin(
+            Some((1540, 1060)),
+            MONITOR_ORIGIN,
+            MONITOR_AREA,
+            MONITOR_SCALE,
+            PANEL_SIZE,
+        );
+        let margin = 8.0 * MONITOR_SCALE;
+        let (_, _, promoted_click_y) =
+            resolve_click_space(1540.0, 1060.0, MONITOR_AREA, MONITOR_SCALE);
+
+        // The panel's bottom edge sits `margin` above the (promoted) click, not ~1000px below it.
+        assert_eq!(y + PANEL_SIZE.1, promoted_click_y - margin);
+        assert!(y + PANEL_SIZE.1 < promoted_click_y);
+        assert_eq!((x, y), (2718.0, 1470.0));
+    }
 }
