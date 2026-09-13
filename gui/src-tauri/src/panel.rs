@@ -652,12 +652,14 @@ fn rect_contains(rect: ((f64, f64), (f64, f64)), x: f64, y: f64) -> bool {
 /// better — a disambiguation that holds on one backend only is a second definition of the same
 /// answer, and the two would disagree on exactly the clicks this function exists for.
 ///
-/// The order settles an asymmetry too: logical rectangles TILE, being GDK's own layout, while two
-/// physical rectangles can OVERLAP when two outputs both have scale > 1 and differ — a
-/// 1920×1080-logical output at scale 3 beside a 1920×1080-logical one at scale 2 placed at logical
-/// x=1920 puts physical `(4000, 1500)` inside both physical rectangles and inside neither logical
-/// one. The physical pass therefore takes the first containing output, deterministically, rather
-/// than pretending there is a right answer to pick.
+/// The order settles an asymmetry too: logical rectangles are GDK's own layout, so outputs showing
+/// DIFFERENT content do not overlap in them — a MIRRORED pair does, reporting one rectangle twice,
+/// and the rule below covers it. Two PHYSICAL rectangles overlap for outputs showing different
+/// content whenever both have scale > 1 and those scales differ: a 1920×1080-logical output at
+/// scale 3 beside a 1920×1080-logical one at scale 2 placed at logical x=1920 puts physical
+/// `(4000, 1500)` inside both physical rectangles and inside neither logical one. Either pass
+/// therefore takes the FIRST containing output, deterministically, rather than pretending there is
+/// a right answer to pick.
 ///
 /// At scale 1 the two rectangles coincide, every on-screen click satisfies the logical bound, and
 /// the promotion is a multiply by one — which is what makes all of this harmless on every desktop
@@ -1156,6 +1158,27 @@ mod tests {
         let (index, space, x, y) = resolve_click(4000.0, 1500.0, &outputs);
         assert_eq!((index, space), (Some(0), ClickSpace::Physical));
         assert_eq!((x, y), (4000.0, 1500.0));
+    }
+
+    #[test]
+    fn mirrored_outputs_report_one_logical_rectangle_twice_and_the_first_one_wins() {
+        // The exception to "outputs showing different content do not overlap in logical space".
+        // A mirrored pair occupies the same logical rectangle from both outputs, so containment
+        // names two — and with different scales they promote differently, which is what makes
+        // "first containing" a decision here rather than a tie between identical answers.
+        let outputs = [
+            measured_output(),
+            MonitorGeometry {
+                origin: (0.0, 0.0),
+                size: (1920.0, 1080.0),
+                scale: 1.0,
+            },
+        ];
+        let (index, space, x, y) = resolve_click(1540.0, 1060.0, &outputs);
+        assert_eq!((index, space), (Some(0), ClickSpace::Logical));
+        assert_eq!((x, y), (3080.0, 2120.0));
+        // The second output would have left it alone. Same rectangle, different answer.
+        assert_ne!((x, y), (1540.0, 1060.0));
     }
 
     #[test]
