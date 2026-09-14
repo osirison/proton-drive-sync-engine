@@ -71,6 +71,32 @@ gh api repos/<owner>/<repo>/pulls/<N>/reviews \
 They have been real every time in this repo. There is no thread to reply to either —
 answer in a normal PR comment (`gh pr comment --body-file`) quoting the file and line.
 
+**A request can also silently NOT take, and the empty response looks identical.** The paragraph
+above says to ignore an empty `requested_reviewers`/`reviewRequests` because the review runs anyway.
+That is true when it runs. On 2026-09-12, PR #396: the GraphQL `requestReviews` mutation returned
+success with `reviewRequests: []`, the REST form with the `[bot]` suffix returned 200 with the full
+PR object, and **no review ever arrived** — 45 minutes, no inline comments, no review object. Three
+days earlier the identical GraphQL call on PR #383 returned the bot login and a review landed within
+about four minutes, four rounds running.
+
+So the API response distinguishes nothing in either direction, and **the workflow run is the only
+signal that does**:
+
+```bash
+gh run list --branch <branch> --limit 8 --json workflowName,status,createdAt \
+  --jq '.[] | select(.workflowName|test("Copilot";"i"))'
+```
+
+A `Copilot` run at the current head within ~1 minute means the request took. **Nothing there after a
+couple of minutes means it did not**, whatever the mutation said, and no amount of waiting will
+produce a review. Re-request or escalate rather than polling — and do not record the PR as reviewed,
+which is the same trap as [the quota refusal] in a quieter form: there, a review object arrived
+saying nothing; here, no object arrives at all and an unwary check reads "no findings".
+
+The cause was not established. A review quota is the obvious candidate, since this repo has hit one
+before (the refusal text is in the grep above), but nothing was observed that names it — the request
+simply produced no run.
+
 **Replied-to is not resolved.** "No unresolved comments" is a mechanical gate that a reply
 does not satisfy; resolve the threads:
 
