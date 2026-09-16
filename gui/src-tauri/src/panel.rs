@@ -314,12 +314,20 @@ pub fn resize(app: &AppHandle, height: f64) {
             let height = height.max(1.0);
             remember_height(height);
             let _ = window.set_size(LogicalSize::new(WIDTH, height));
-            // A LAYER SURFACE RESIZES FROM `set_size` — see `resize_layer_surface` for the
-            // measurement (this comment used to claim a mapped surface does not resize; refuted by
-            // #385, refutation measured 2026-09-16): `set_size` reaches the wire ~250ms after the
-            // panel maps and again on every later state change, and KWin honours it. So this call
-            // and `resize_layer_surface` below both take effect on the layer path, the same as on
-            // X11 and on Wayland without `zwlr_layer_shell_v1`.
+            // A MAPPED LAYER SURFACE DOES RESIZE, BUT NOT FROM THE CALL ABOVE — two facts that a
+            // name collision makes easy to run together, and the first version of this comment ran
+            // them together and was wrong. `WebviewWindow::set_size` is the TOPLEVEL call, and it
+            // still reaches no layer surface: measured, `gtk_window_resize` on its own puts nothing
+            // on the wire. The request that lands is the PROTOCOL's `zwlr_layer_surface_v1.set_size`,
+            // which gtk-layer-shell derives from the GTK size REQUEST — `resize_layer_surface`
+            // below. Same two words, different calls.
+            //
+            // What is refuted (#385, refutation measured 2026-09-16) is only that a mapped surface
+            // ignores the size request: it reaches the wire ~250ms after the panel maps and again on
+            // every later state change, and KWin honours it. See `resize_layer_surface`.
+            //
+            // The call above stays because it is the one that works everywhere else — X11, and
+            // Wayland without `zwlr_layer_shell_v1` — where `resize_layer_surface` is not reached.
             #[cfg(target_os = "linux")]
             if let Ok(gtk_window) = window.gtk_window() {
                 if gtk_layer_shell::LayerShell::is_layer_window(&gtk_window) {

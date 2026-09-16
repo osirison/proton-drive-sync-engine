@@ -123,7 +123,13 @@ t=...679763  1415,746 362x302   <- corrected, ~365 ms after Activate
 [19:10:51.924571]     zwlr_layer_surface_v1#53.configure(12760, 362, 302)
 ```
 
-So `set_size` does reach the wire after the map and KWin does honour it. The correction lands
+So the PROTOCOL's `zwlr_layer_surface_v1.set_size` does reach the wire after the map and KWin does
+honour it. **Read which `set_size` that is.** It is the request gtk-layer-shell derives from the GTK
+size REQUEST, not tao's `set_size`/`gtk_window_resize` — those are toplevel calls and section 5's
+claim that they never reach a layer surface is UNAFFECTED, re-measured here: `gtk_window_resize` on
+its own still puts nothing on the wire and moves nothing. The two share a name and nothing else, and
+running them together is how a comment in `panel.rs::resize` was written wrong and caught in review.
+The correction lands
 250-500ms after the panel appears, on the FIRST open — no reopen needed — and again on every later
 state change: the same run's two mid-life changes measured landing correctly on the wire but showing
 up 63px, then 48px, out of position — a *different* fault (#401: the re-place read the panel's
@@ -260,7 +266,14 @@ identifier rather than by line:
     — `resize_layer_surface`'s doc comment, the `HEIGHT` constant, the `ANCHOR` static, and
     `resize`'s body. Same four places as before the correction, not moved: each is a place a reader
     could otherwise still conclude, from the wording this note used to carry, that the correction
-    lands only after a close and a reopen.
+    lands only after a close and a reopen. **AND FOUR THIS LIST DID NOT NAME**, which is how they
+    kept the refuted claim after the rest was corrected and why they are named now:
+    `commands::resize_tray_panel`'s doc, `app.js`'s `reportTrayHeight` doc, and — found only by a
+    reviewer, not by the sweep — `gui/tools/fidelity/README.md`'s squeeze-gate section and the same
+    comment above `SQUEEZE_VIEWPORT` in `assert.mjs`. The sweep missed those two because it grepped
+    the phrasings the note itself used, and they had worded the same claim differently ("a mapped
+    one ignores the resize, so the height lands at the next open"). Sweep by the CLAIM, not by this
+    note's words for it.
   * **4** (no focus events at all) — `promote_to_layer_surface`'s body at
     `KeyboardMode::OnDemand`, in full, which every other mention in that file points at; plus the
     module doc's dismissal bullets and `mark_focused`.
