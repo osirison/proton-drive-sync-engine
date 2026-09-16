@@ -2708,8 +2708,11 @@ pub async fn tray_action(app: tauri::AppHandle, id: String) -> StatusPayload {
 /// by 120px between the tallest and the shortest, and Phase 1 omits lines the frames draw, so a
 /// fixed height is either clipped content or a band of empty panel below the menu.
 ///
-/// The ask is currently inert on the layer-surface path: a mapped layer surface does not resize, so
-/// the corrected height lands at the next open rather than on this call. See `panel::resize`.
+/// The ask lands on the layer-surface path too — MEASURED (#385, refutation measured 2026-09-16,
+/// corrects this doc's earlier claim that a mapped surface does not resize): the correction
+/// reaches the wire ~250-500ms after the panel opens and again on every later state change, and
+/// KWin honours it. See
+/// `panel::resize`.
 #[tauri::command]
 pub fn resize_tray_panel(app: tauri::AppHandle, height: f64) {
     crate::panel::resize(&app, height);
