@@ -697,10 +697,13 @@ function mountTrayPanel(root) {
  * THIS MEASUREMENT SETS THE WINDOW IT IS MEASURED IN, so nothing may cap the measured node at the
  * window's own size or the loop latches at its first wrong answer and no later poll can undo it.
  * `panelSurface` is what holds that open; a rule that shrinks `.compact-panel` to its container
- * re-arms it. Where the panel is a layer surface the window follows late rather than not at all — a
- * mapped layer surface ignores the resize, so the height lands at the next open (`panel.rs`) — which
- * changes when the measurement takes effect and nothing else: a cap would still latch the wrong
- * answer, and would then carry it across the reopen too, so the rule stands unchanged on every path.
+ * re-arms it. Where the panel is a layer surface the correction lands live, the same as everywhere
+ * else — MEASURED (#385, refutation measured 2026-09-16, corrects this file's earlier claim that it
+ * did not): the wire shows the new size reaching the surface within half a second of this call, and
+ * again on every later state change, with `panel.rs` re-placing the panel for the height it just set
+ * rather than a stale one (#401). A cap would still be wrong here: it would latch the first
+ * measurement and then fight every one of those later live corrections, not merely survive a reopen
+ * — so the rule stands unchanged on every path.
  */
 function reportTrayHeight() {
   requestAnimationFrame(() => {

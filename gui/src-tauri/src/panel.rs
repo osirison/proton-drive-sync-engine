@@ -107,7 +107,7 @@
 //! computed everywhere, consumed as margins on the layer path and as `set_position` on X11, and
 //! discarded only on a Wayland compositor without `zwlr_layer_shell_v1`. See [`place`].
 
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 
 use tauri::{AppHandle, LogicalSize, Manager, WebviewUrl, WebviewWindowBuilder};
 
@@ -129,11 +129,14 @@ static HAD_FOCUS: AtomicBool = AtomicBool::new(false);
 /// supposed to be hanging from. Re-placing against the original click closes it. Two `i32`s rather
 /// than a mutex because both writers are the event loop.
 ///
-/// On the layer path the height correction does not land while the panel is up — the measurement is
-/// on `resize_layer_surface` — so there is currently no gap to close there: the re-place still runs
-/// and, the height being unchanged, recomputes the same margins it last set. What margins are
-/// measured to do is position the surface AT OPEN; whether changing one moves an already-mapped
-/// surface was not part of that measurement.
+/// On the layer path the height correction lands while the panel is up too — MEASURED (#385,
+/// refutation measured 2026-09-16, corrects this static's earlier claim that it did not):
+/// `set_size` reaches the wire ~250ms after the panel maps and again on every later state change,
+/// and KWin honours it. So the same gap this static exists to close is real on that path as well,
+/// and closing it used to be one status poll late regardless of path (#401: the re-place read the
+/// height back from `outer_size()`, a cache the compositor had not caught up on yet). Fixed by
+/// threading the intended height straight into `place` instead of reading it back — see
+/// `INTENDED_HEIGHT`.
 static ANCHOR: (AtomicI32, AtomicI32) = (AtomicI32::new(0), AtomicI32::new(0));
 
 fn remember(at: Option<(i32, i32)>) {
@@ -149,6 +152,27 @@ fn anchor() -> Option<(i32, i32)> {
     );
     // `(0, 0)` is the same "no usable coordinates" sentinel `place` reads it as.
     (at != (0, 0)).then_some(at)
+}
+
+/// The height this process last asked the panel to be, in LOGICAL pixels.
+///
+/// The panel's size is a value THIS PROCESS sets and nothing else changes — fixed width, never
+/// resizable, height driven only by the webview's own report (`resize` is its one writer at
+/// runtime). So this is the one place the panel's intended height lives: reading it back from the
+/// window (`outer_size()`) is a second copy of a number the caller already holds, and the two
+/// disagree for exactly as long as it takes the compositor to catch up (#401) — see the comment on
+/// the size line in `place`. Stored as `f64` bits rather than truncated to `i32` like `ANCHOR`,
+/// because a reported height is not always a whole number (the frames draw heights like 441.5).
+/// Seeded to `HEIGHT`, the height the panel opens at before any `resize` has run. Written only from
+/// the event loop, the same idiom as `ANCHOR`.
+static INTENDED_HEIGHT: AtomicU64 = AtomicU64::new(HEIGHT.to_bits());
+
+fn remember_height(height: f64) {
+    INTENDED_HEIGHT.store(height.to_bits(), Ordering::Relaxed);
+}
+
+fn intended_height() -> f64 {
+    f64::from_bits(INTENDED_HEIGHT.load(Ordering::Relaxed))
 }
 
 /// The panel took focus. Called from the `Focused(true)` event — which a layer surface never
@@ -173,10 +197,11 @@ const WIDTH: f64 = 362.0;
 /// because Phase 1 omits lines the frames draw — the offline panel has no `retrying in 40s` — and a
 /// window sized to the drawing would carry that much empty space below the menu.
 ///
-/// **On the layer path the correction does not land while the panel is up** — measured, see
-/// `resize_layer_surface` — so the panel is this tall for as long as it is visible and the
-/// corrected height only appears after a close and a reopen. On X11, and on a Wayland compositor
-/// without `zwlr_layer_shell_v1`, the correction works as written.
+/// **The correction lands on the layer path too** — MEASURED, see `resize_layer_surface` (this
+/// doc used to claim the opposite; refuted by #385, refutation measured 2026-09-16). The wire
+/// shows `set_size` reaching the surface ~250ms after it maps, KWin answering it, and the same
+/// happening again on every later state change. So the panel is this tall only until the webview's
+/// first paint, on every path, not for as long as it is visible.
 const HEIGHT: f64 = 442.0;
 
 /// The spec's fallback corner, for a host that sends no usable coordinates: `right:16px; top:40px`.
@@ -255,9 +280,10 @@ fn show_at(window: &tauri::WebviewWindow, at: Option<(i32, i32)>) {
     // `current_monitor()` cannot help it; the second runs mapped. Reporting per attempt said it
     // twice for one open — #395's reported symptom — and said it at all for an open that the second
     // attempt went on to place.
-    let placed_unmapped = place(window, at);
+    let height = intended_height();
+    let placed_unmapped = place(window, at, height);
     let _ = window.show();
-    let placed_mapped = place(window, at);
+    let placed_mapped = place(window, at, height);
     if !placed_unmapped && !placed_mapped {
         report_unplaced();
     }
@@ -286,28 +312,33 @@ pub fn resize(app: &AppHandle, height: f64) {
     let _ = app.clone().run_on_main_thread(move || {
         if let Some(window) = app.get_webview_window(LABEL) {
             let height = height.max(1.0);
+            remember_height(height);
             let _ = window.set_size(LogicalSize::new(WIDTH, height));
-            // A LAYER SURFACE DOES NOT RESIZE FROM `set_size` — see `resize_layer_surface`, which
-            // also carries the measurement showing that NEITHER call resizes a panel that is
-            // already mapped. So on the layer path both size calls — the `set_size` above and the
-            // `resize_layer_surface` below — are currently inert: the panel stays at `HEIGHT` until
-            // it is closed and reopened. The `place` at the end of this function still runs, and
-            // with the height unchanged it recomputes the same margins it last set, so nothing is
-            // riding on the separate question of whether a margin change moves an ALREADY-MAPPED
-            // surface — measured is that margins position it at open, and the resize probe did not
-            // cover the other. On X11, and on Wayland without `zwlr_layer_shell_v1`, the `set_size`
-            // is the call that works and this branch is not taken. Kept as the path the size has to
-            // travel if the mapped-resize gap is closed.
+            // A MAPPED LAYER SURFACE DOES RESIZE, BUT NOT FROM THE CALL ABOVE — two facts that a
+            // name collision makes easy to run together, and the first version of this comment ran
+            // them together and was wrong. `WebviewWindow::set_size` is the TOPLEVEL call, and it
+            // still reaches no layer surface: measured, `gtk_window_resize` on its own puts nothing
+            // on the wire. The request that lands is the PROTOCOL's `zwlr_layer_surface_v1.set_size`,
+            // which gtk-layer-shell derives from the GTK size REQUEST — `resize_layer_surface`
+            // below. Same two words, different calls.
+            //
+            // What is refuted (#385, refutation measured 2026-09-16) is only that a mapped surface
+            // ignores the size request: it reaches the wire ~250ms after the panel maps and again on
+            // every later state change, and KWin honours it. See `resize_layer_surface`.
+            //
+            // The call above stays because it is the one that works everywhere else — X11, and
+            // Wayland without `zwlr_layer_shell_v1` — where `resize_layer_surface` is not reached.
             #[cfg(target_os = "linux")]
             if let Ok(gtk_window) = window.gtk_window() {
                 if gtk_layer_shell::LayerShell::is_layer_window(&gtk_window) {
                     resize_layer_surface(&gtk_window, height);
                 }
             }
-            // The window shrank around a fixed top-left; put it back against the click it opened
-            // from, or it hangs in space above the tray. One attempt, on a window that is up by
-            // definition, so its failure is reported directly.
-            if !place(&window, anchor()) {
+            // The window shrank or grew around a fixed top-left; put it back against the click it
+            // opened from, or it hangs in space above the tray. `height` is the one just requested
+            // above, not a value read back from the window (#401) — one attempt, on a window that is
+            // up by definition, so its failure is reported directly.
+            if !place(&window, anchor(), height) {
                 report_unplaced();
             }
         }
@@ -463,9 +494,14 @@ fn promote_to_layer_surface(window: &tauri::WebviewWindow) -> bool {
 /// beside the promotion so the two cannot drift: the size the surface is built with and the size
 /// that changes later have to travel the same path.
 ///
-/// **MEASURED: NEITHER CALL RESIZES A PANEL THAT IS ALREADY MAPPED.** Plasma 6 Wayland, a clean
-/// probe replicating `resize` exactly — tao's `set_size` (GTK `resize`), then this
-/// `set_size_request`:
+/// **THIS DOC USED TO SAY NEITHER CALL RESIZES A PANEL THAT IS ALREADY MAPPED, AND THAT IS
+/// REFUTED** (#385, refutation measured 2026-09-16, against the shipped binary). On the layer path
+/// the correction lands on the wire ~250-500ms after the panel appears, on the FIRST open with no
+/// reopen needed, and again on every later state change — KWin honours it every time.
+///
+/// The probe that produced the old reading (`RZ2`) is kept below because it did reproduce, on a
+/// *different* construction, and the three readings of it are worth keeping apart rather than
+/// resolved into one:
 ///
 /// ```text
 /// RZ2 issued resize -> 362x250
@@ -473,11 +509,26 @@ fn promote_to_layer_surface(window: &tauri::WebviewWindow) -> bool {
 /// KWin  geom=400,300 362x442     <- compositor unchanged
 /// ```
 ///
-/// `queue_resize()` does not help either. So on the layer path the panel opens at `HEIGHT` and the
-/// webview's first-paint correction never lands while the panel is visible; the corrected height
-/// arrives only after a close and a reopen. Nothing is worked around here, because nothing measured
-/// says which call would land — and it is why the paragraph above no longer calls this the size that
-/// gets the panel on screen at all.
+///   * **MEASURED** — a widget UNDER the window carrying its own size request ≥ the old height
+///     reproduces both lines above exactly. That this was RZ2's actual construction is
+///     **UNDETERMINED**: that probe's own source no longer exists to check.
+///   * **INFERRED** — RZ2 may instead have blocked the GTK main loop after its two calls, so GTK
+///     never processed the resize and nothing reached the wire. Not measured either way.
+///   * **Reading `outer_size()`/GTK's allocation too early is not sufficient on its own.** It
+///     explains RZ2's GTK line — every construction reproduces that synchronously, GTK re-allocates
+///     a few ms later regardless — but not its KWin line, since a KWin dump costs about 0.6s and
+///     every dump taken since has read the new size.
+///
+/// This measurement cannot distinguish "the old reading was wrong when it was written" from "the
+/// stack changed since" — versions, so a future divergence can be dated: `main` @ `04d615f`,
+/// Plasma 6 / KWin 6.7.5, tao 0.35.3, gtk-layer-shell 0.8.2, wry 0.55.1, tauri-runtime-wry 2.11.4.
+/// `docs/agent-notes/measuring-a-gtk-layer-shell-surface.md` §3 has the full measurement.
+///
+/// `queue_resize()` does not help either construction. Nothing here is worked around: THIS call is
+/// what resizes a mapped layer surface, and the toplevel `set_size` in `resize` still is not —
+/// measured, `gtk_window_resize` on its own puts nothing on the wire. An earlier version of this
+/// paragraph said both calls take effect, which contradicted this doc's own second paragraph; the
+/// two requests share the name `set_size` and nothing else, and that collision is the trap.
 #[cfg(target_os = "linux")]
 fn resize_layer_surface(gtk_window: &gtk::ApplicationWindow, height: f64) {
     use gtk::prelude::WidgetExt;
@@ -723,34 +774,6 @@ fn resolve_click(
     (None, ClickSpace::Physical, cx, cy)
 }
 
-/// The panel's physical size for the placement arithmetic, or the built-time fallback when the
-/// window cannot answer yet.
-///
-/// **`outer_size()` IS NOT A SIZE UNTIL THE COMPOSITOR HAS CONFIGURED THE SURFACE**, and it reports
-/// the non-answer as `Ok`, so an `unwrap_or(fallback)` never fires on it. tao 0.35.3 keeps the value
-/// in an atomic pair whose only writer is inside `connect_configure_event`, and seeds that pair —
-/// in the line `let o_size = window.window().map(|w| w.root_origin()).unwrap_or(w_pos);` — from the
-/// window's ORIGIN. A position, not a size, with a position for its own fallback. On an unrealized
-/// window `window()` is `None`, so the seed is that fallback, which for a window nothing has placed
-/// yet is `(0, 0)`.
-///
-/// **#395's fix is what made this reachable.** Before it, `place` returned on "no monitor" before
-/// ever reading a size, so no first open got this far and a zero here cost nothing. MEASURED once it
-/// did: a click promoted to physical `(3080, 2120)` put the panel at logical `1540,1052` — left edge
-/// exactly the click, top eight pixels above it — which is this arithmetic with both panel
-/// dimensions zero. It looks like a placement bug and is a size bug, the same shape as the two
-/// conversions above.
-///
-/// Either dimension being non-positive condemns the pair: a panel 724 wide and 0 tall is not a
-/// partially usable answer, and half-trusting it would centre the width correctly while stacking the
-/// height on the click.
-fn usable_panel_size(reported: Option<(f64, f64)>, fallback: (f64, f64)) -> (f64, f64) {
-    match reported {
-        Some((width, height)) if width > 0.0 && height > 0.0 => (width, height),
-        _ => fallback,
-    }
-}
-
 /// Is there room for the panel BELOW the click — the same question as "is the click in the top half
 /// of this monitor", and the same question again as "is the tray at the top of the desktop" without
 /// having to know where the tray is. A click low on the screen has no room beneath it, so the panel
@@ -771,15 +794,39 @@ fn panel_opens_below(cy: f64, monitor_origin_y: f64, monitor_height: f64) -> boo
 /// layout there, this one monitor's size here — which agree only while there is a single output.
 /// `monitor_origin`/`monitor_area` are the chosen monitor's `position()`/`size()` and `scale` its
 /// `scale_factor()`, all three physical by construction (tao's own `Monitor` converts a logical GDK
-/// rect to physical before Tauri ever sees it), and `panel_size` is the window's `outer_size()` or
-/// the built-time fallback.
+/// rect to physical before Tauri ever sees it).
+///
+/// `height` is the panel's intended LOGICAL height — [`place`]'s own `height` parameter, ultimately
+/// `INTENDED_HEIGHT` — and THIS FUNCTION converts it to the physical size the arithmetic below needs,
+/// from `WIDTH` (a compile-time constant, always positive) and `height` alone. That is deliberate,
+/// not incidental: this function is pure and holds no window, so it structurally cannot read a size
+/// back from one. Putting the conversion in [`place`] instead leaves a window in scope there for the
+/// read to move back into; putting it here removes the window from that call entirely, which is what
+/// makes the fix structural rather than merely current.
+///
+/// The disagreement a window read would reintroduce is MEASURED twice, and the two measurements
+/// compound (#395, #401). `outer_size()` is not a size until the compositor has configured the
+/// surface AT ALL: tao 0.35.3 keeps it in an atomic pair whose only writer is inside
+/// `connect_configure_event`, seeded — in the line
+/// `let o_size = window.window().map(|w| w.root_origin()).unwrap_or(w_pos);` — from the window's
+/// ORIGIN. A position, not a size, with a position for its own fallback. On an unrealized window
+/// that seed is `(0, 0)`, and MEASURED once #395's fix made this reachable: a click promoted to
+/// physical `(3080, 2120)` placed the panel at logical `1540,1052` — left edge exactly the click,
+/// top 8px above it, which is this arithmetic with both panel dimensions zero. It is ALSO not a size
+/// after a RESIZE, until the next configure or allocation (#401) — which is exactly the moment
+/// `place` runs from `resize`, so a stale-but-nonzero reading was just as reachable as a zero one,
+/// one status poll after every mid-life height change.
 fn panel_origin(
     click: Option<(f64, f64)>,
     monitor_origin: (f64, f64),
     monitor_area: (f64, f64),
     scale: f64,
-    panel_size: (f64, f64),
+    height: f64,
 ) -> (f64, f64) {
+    let panel_size = {
+        let physical = LogicalSize::new(WIDTH, height).to_physical::<f64>(scale);
+        (physical.width, physical.height)
+    };
     let margin = 8.0 * scale;
     let (x, y) = match click {
         Some((cx, cy)) => {
@@ -934,7 +981,11 @@ fn resolve_monitor_and_click<R: tauri::Runtime>(
 /// now says nothing at all, where a message from in here reported a failure for an open that ended
 /// placed.
 #[must_use]
-fn place<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>, at: Option<(i32, i32)>) -> bool {
+fn place<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    at: Option<(i32, i32)>,
+    height: f64,
+) -> bool {
     // The panel is built hidden on purpose (showing it first would paint it at the default position
     // and then jump), so resolving the monitor without a mapped window is the ordinary path rather
     // than an edge case: it is what happens every time the panel opens for the first time in a
@@ -943,32 +994,28 @@ fn place<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>, at: Option<(i32, i
     let Some((monitor, click)) = resolve_monitor_and_click(window, real_click(at)) else {
         return false;
     };
-    // EVERYTHING FROM HERE ON IS PHYSICAL PIXELS: `monitor.position()`, `monitor.size()` and
-    // `outer_size()` all are already (tao's own `Monitor` converts a logical GDK rect to physical
-    // before Tauri ever sees it), and so is the click — `resolve_monitor_and_click` promoted it
-    // against this very monitor on the way out (#394; see [`resolve_click`]).
+    // EVERYTHING FROM HERE ON IS PHYSICAL PIXELS: `monitor.position()` and `monitor.size()` are
+    // already (tao's own `Monitor` converts a logical GDK rect to physical before Tauri ever sees
+    // it), and so is the click — `resolve_monitor_and_click` promoted it against this very monitor
+    // on the way out (#394; see [`resolve_click`]).
     let area = monitor.size();
     let origin = monitor.position();
     let scale = monitor.scale_factor();
-    let fallback = LogicalSize::new(WIDTH, HEIGHT).to_physical::<f64>(scale);
-    let size = usable_panel_size(
-        window
-            .outer_size()
-            .ok()
-            .map(|s| (s.width as f64, s.height as f64)),
-        (fallback.width, fallback.height),
-    );
     let (area, origin) = (
         tauri::PhysicalSize::new(area.width as f64, area.height as f64),
         tauri::PhysicalPosition::new(origin.x as f64, origin.y as f64),
     );
 
+    // `height` PASSES STRAIGHT THROUGH, and `place` computes no size of its own — see
+    // [`panel_origin`]'s doc for why the conversion lives there rather than here: it is the caller's
+    // intended LOGICAL height (what `resize` just requested, or `show_at`'s `INTENDED_HEIGHT`),
+    // never a value read back from the window (#401).
     let (x, y) = panel_origin(
         click,
         (origin.x, origin.y),
         (area.width, area.height),
         scale,
-        size,
+        height,
     );
 
     // A LAYER SURFACE IS POSITIONED BY MARGIN, NOT BY `set_position` (#370). Same arithmetic above,
@@ -1018,8 +1065,10 @@ mod tests {
     const MONITOR_ORIGIN: (f64, f64) = (0.0, 0.0);
     const MONITOR_AREA: (f64, f64) = (3840.0, 2160.0);
     const MONITOR_SCALE: f64 = 2.0;
-    // The panel mid-resize: 362×317 logical, i.e. 724×634 physical at scale 2.
-    const PANEL_SIZE: (f64, f64) = (724.0, 634.0);
+    // The panel mid-resize: 317 logical, the height `panel_origin` now takes directly. WIDTH is
+    // the module const (362) it derives the other physical dimension from — 362×317 logical is
+    // 724×634 physical at scale 2, the numbers these tests used to pass as a size pair.
+    const PANEL_HEIGHT: f64 = 317.0;
 
     fn measured_output() -> MonitorGeometry {
         MonitorGeometry {
@@ -1059,7 +1108,7 @@ mod tests {
             MONITOR_ORIGIN,
             MONITOR_AREA,
             MONITOR_SCALE,
-            PANEL_SIZE,
+            PANEL_HEIGHT,
         );
         assert_eq!(origin, (2718.0, 1470.0));
         // = logical (1359, 735).
@@ -1085,7 +1134,7 @@ mod tests {
             MONITOR_ORIGIN,
             MONITOR_AREA,
             MONITOR_SCALE,
-            PANEL_SIZE,
+            PANEL_HEIGHT,
         );
         assert_eq!(origin, (2830.0, 1462.0));
         // = logical (1415, 731).
@@ -1134,7 +1183,7 @@ mod tests {
             second.origin,
             second.size,
             second.scale,
-            PANEL_SIZE,
+            PANEL_HEIGHT,
         );
         assert_eq!(origin, (4638.0, 1016.0));
         // The whole point: the panel lands on the second output, not the first.
@@ -1342,54 +1391,108 @@ mod tests {
 
         // And `place` reports that as a return value, which is what lets `show_at` say it once per
         // open instead of once per attempt.
-        assert!(!place(&window, Some((1540, 1060))));
-        assert!(!place(&window, None));
+        assert!(!place(&window, Some((1540, 1060)), HEIGHT));
+        assert!(!place(&window, None, HEIGHT));
     }
 
     #[test]
-    fn an_unmapped_windows_zero_size_is_refused_in_favour_of_the_built_time_fallback() {
-        // #395's fix made this path reachable: `outer_size()` answers `Ok((0, 0))` for a window the
-        // compositor has not configured, because tao seeds that cache from the window's origin.
-        let fallback = (724.0, 884.0);
-        assert_eq!(usable_panel_size(Some((0.0, 0.0)), fallback), fallback);
-        assert_eq!(usable_panel_size(None, fallback), fallback);
-        // One zero condemns the pair — a width without a height is not a partial answer.
-        assert_eq!(usable_panel_size(Some((724.0, 0.0)), fallback), fallback);
-        assert_eq!(usable_panel_size(Some((0.0, 884.0)), fallback), fallback);
-        // A real reading is used as given.
-        assert_eq!(
-            usable_panel_size(Some((724.0, 634.0)), fallback),
-            (724.0, 634.0)
-        );
-    }
-
-    #[test]
-    fn regression_395_a_zero_size_would_place_the_panel_on_the_click_instead_of_above_it() {
-        // MEASURED with the guard absent, on the fixed build: a logical click at (1540, 1060)
-        // promoted to physical (3080, 2120) placed the panel at logical 1540,1052 — its left edge
-        // exactly the click and its top 8px above it, the arithmetic with a zero-sized panel. That
-        // is what this asserts against, so the guard cannot be dropped silently.
-        let fallback = LogicalSize::new(WIDTH, HEIGHT).to_physical::<f64>(MONITOR_SCALE);
+    fn regression_395_a_zero_height_would_place_the_panel_on_the_click_instead_of_above_it() {
+        // MEASURED with the guard absent, on the build before #401's fix: a logical click at
+        // (1540, 1060) promoted to physical (3080, 2120) placed the panel at logical 1540,1052 —
+        // its left edge exactly the click and its top 8px above it, the arithmetic with a
+        // zero-sized panel (`usable_panel_size` read `outer_size()`'s `(0, 0)` and had a WIDTH of
+        // zero to work with, same as the height).
+        //
+        // `panel_origin` cannot reproduce the WIDTH half of that any more, structurally: it derives
+        // the physical width from `WIDTH`, a compile-time constant that is never zero, so the only
+        // degenerate input left to construct is a zero HEIGHT — passed directly now, not smuggled
+        // in as a size pair. That is what this test constructs, and why its `x` no longer matches
+        // the click the way the original bug's did: `x` does not depend on `height` at all any
+        // more, so it is identical whether the panel is well-formed or zero-height. Only `y` still
+        // exhibits the old bug's shape, which is what stays worth pinning as what the design now
+        // structurally excludes.
         let (_, _, cx, cy) = resolve_click(1540.0, 1060.0, &[measured_output()]);
         let zeroed = panel_origin(
             Some((cx, cy)),
             MONITOR_ORIGIN,
             MONITOR_AREA,
             MONITOR_SCALE,
-            (0.0, 0.0),
+            0.0,
         );
-        let guarded = panel_origin(
+        let placed = panel_origin(
             Some((cx, cy)),
             MONITOR_ORIGIN,
             MONITOR_AREA,
             MONITOR_SCALE,
-            usable_panel_size(Some((0.0, 0.0)), (fallback.width, fallback.height)),
+            HEIGHT,
         );
-        assert_ne!(zeroed, guarded);
-        // The zero-sized answer is the measured bug, in logical pixels: 3080/2 = 1540, 2104/2 = 1052.
-        assert_eq!(zeroed, (3080.0, 2104.0));
-        // The guarded answer leaves the panel's full height above the click.
-        assert!(guarded.1 + fallback.height <= cy);
+        assert_ne!(zeroed, placed);
+        // `x` is identical either way — the structural guarantee the move buys.
+        assert_eq!(zeroed.0, placed.0);
+        // The zero-height answer is the measured bug's surviving half, in logical pixels:
+        // 2718/2 = 1359 (not the click's 1540 any more), 2104/2 = 1052 (still 8px above the click).
+        assert_eq!(zeroed, (2718.0, 2104.0));
+        // The real height leaves the panel's full height above the click.
+        let real_height_physical = HEIGHT * MONITOR_SCALE;
+        assert!(placed.1 + real_height_physical <= cy);
+    }
+
+    #[test]
+    fn regression_401_panel_origin_derives_its_size_from_the_height_it_is_given() {
+        // The move that fixes #401: `panel_origin` computes the panel's physical size from the
+        // `height` it is given, not from a size handed in by a caller that might be reading one
+        // back from a window — so the SAME click, placed for two different heights, lands at two
+        // different origins, and `place` (which holds the window) has no size expression left to
+        // put a stale read back into.
+        //
+        // MEASURED, Plasma 6 / KWin 6.7.5, `main` @ 04d615f (#401): the panel opened at HEIGHT
+        // (442), corrected to 302 on first paint, then the webview reported two more states while
+        // the panel stayed open — 365, then 317. `place` used to read the panel's height back from
+        // `outer_size()`, a cache the compositor had not caught up on yet, so each of those two
+        // mid-life changes placed the panel for the height it had just LEFT rather than the one it
+        // had just SET — 63px off, then 48px off, matching the issue's measured deltas exactly.
+        //
+        // The panel keeps its BOTTOM edge fixed against the click when it opens upward
+        // (`y = cy - panel_size.1 - margin`, and `panel_size.1` now comes from `height` alone), so
+        // placing for height `h` instead of the correct `h'` moves the top by exactly `h' - h` —
+        // which is why the two offsets equal the two height deltas exactly, not approximately.
+        let click = Some((1415.0, 1200.0)); // opens upward: in the bottom half of the monitor.
+        let y_for = |height: f64| {
+            panel_origin(
+                click,
+                MONITOR_ORIGIN,
+                MONITOR_AREA,
+                1.0, // scale 1: these deltas are LOGICAL, matching the issue's `frameGeometry` rows.
+                height,
+            )
+            .1
+        };
+
+        // The structural property the move buys: the same click placed for two different heights
+        // lands at two different origins, because `panel_origin` derives the size itself.
+        assert_ne!(y_for(302.0), y_for(365.0));
+        assert_ne!(y_for(365.0), y_for(317.0));
+
+        // 302 -> 365: placing for the height just left (302) instead of the height just set (365)
+        // — the #401 bug — offsets the panel by 63px, the issue's first measured delta.
+        assert_eq!((y_for(302.0) - y_for(365.0)).abs(), 63.0);
+        // 365 -> 317: the second mid-life change, offset by 48px, the issue's second measured delta.
+        assert_eq!((y_for(365.0) - y_for(317.0)).abs(), 48.0);
+    }
+
+    #[test]
+    fn the_intended_height_round_trips_and_is_seeded_to_height() {
+        // `INTENDED_HEIGHT` is the one place the panel's intended height lives — `show_at` reads it
+        // for both of its `place` calls, and `resize` is its only writer. Seeded to `HEIGHT`, the
+        // height the panel opens at before any `resize` has run.
+        assert_eq!(intended_height(), HEIGHT);
+        remember_height(302.0);
+        assert_eq!(intended_height(), 302.0);
+        remember_height(441.5);
+        assert_eq!(intended_height(), 441.5);
+        // Restore the seed: this static is process-global, and other tests assume it.
+        remember_height(HEIGHT);
+        assert_eq!(intended_height(), HEIGHT);
     }
 
     #[test]
@@ -1402,14 +1505,14 @@ mod tests {
             MONITOR_ORIGIN,
             MONITOR_AREA,
             MONITOR_SCALE,
-            PANEL_SIZE,
+            PANEL_HEIGHT,
         );
         let with_none = panel_origin(
             None,
             MONITOR_ORIGIN,
             MONITOR_AREA,
             MONITOR_SCALE,
-            PANEL_SIZE,
+            PANEL_HEIGHT,
         );
         assert_eq!(with_sentinel, with_none);
         // A real corner click is not the sentinel and is placed against, not fallen back from.
@@ -1422,7 +1525,7 @@ mod tests {
         assert_eq!(
             with_none,
             (
-                MONITOR_AREA.0 - PANEL_SIZE.0 - FALLBACK_INSET.0 * MONITOR_SCALE,
+                MONITOR_AREA.0 - WIDTH * MONITOR_SCALE - FALLBACK_INSET.0 * MONITOR_SCALE,
                 FALLBACK_INSET.1 * MONITOR_SCALE
             )
         );
@@ -1431,7 +1534,7 @@ mod tests {
         let logical = (with_none.0 / MONITOR_SCALE, with_none.1 / MONITOR_SCALE);
         assert_eq!(logical, (1542.0, 40.0));
         let logical_screen_width = MONITOR_AREA.0 / MONITOR_SCALE;
-        let panel_right_edge = logical.0 + PANEL_SIZE.0 / MONITOR_SCALE;
+        let panel_right_edge = logical.0 + WIDTH;
         assert_eq!(logical_screen_width - panel_right_edge, FALLBACK_INSET.0);
         assert_eq!(logical.1, FALLBACK_INSET.1);
     }
@@ -1450,13 +1553,13 @@ mod tests {
             MONITOR_ORIGIN,
             MONITOR_AREA,
             MONITOR_SCALE,
-            PANEL_SIZE,
+            PANEL_HEIGHT,
         );
         let margin = 8.0 * MONITOR_SCALE;
 
         // The panel's bottom edge sits `margin` above the (promoted) click, not ~1000px below it.
-        assert_eq!(y + PANEL_SIZE.1, cy - margin);
-        assert!(y + PANEL_SIZE.1 < cy);
+        assert_eq!(y + PANEL_HEIGHT * MONITOR_SCALE, cy - margin);
+        assert!(y + PANEL_HEIGHT * MONITOR_SCALE < cy);
         assert_eq!((x, y), (2718.0, 1470.0));
     }
 }

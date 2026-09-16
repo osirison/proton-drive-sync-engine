@@ -657,9 +657,11 @@ for (const entry of index) {
 // THE LOOP ABOVE CANNOT SEE THIS, and that is a property of the harness rather than an oversight: it
 // opens every frame at 1040×764, so a 362×365 panel has 399px of slack and nothing can compress it.
 // The tray window has no slack at all — it is 362 wide and exactly as tall as the panel said it was,
-// because `reportTrayHeight` measures the panel and `panel.rs` sizes the window to the answer — late,
-// not absent, where the panel is a layer surface: a mapped one ignores the resize, so the height
-// lands at the next open (`panel.rs`). A container that shrinks the panel therefore caps the
+// because `reportTrayHeight` measures the panel and `panel.rs` sizes the window to the answer — on
+// every path, a layer surface included, where the window follows within about 250ms. (This used to
+// say a mapped layer surface ignores the resize so the height lands only at the next open; refuted
+// by #385, measured 2026-09-16. It never mattered to this gate, whose subject is a container capping
+// the measurement, not the window following it.) A container that shrinks the panel therefore caps the
 // measurement at the window it just set, and the panel can never grow again: the shipped settled panel
 // came up 302 tall where it draws 365, losing `Close window · keeps syncing` and
 // `Quit · stops syncing` off the bottom, and no state change or poll could recover it. `panelSurface`
