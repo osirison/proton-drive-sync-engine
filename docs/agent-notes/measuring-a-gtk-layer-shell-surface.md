@@ -222,7 +222,10 @@ the screen minus the panel's exclusive zone), and gtk-layer-shell turns the GTK 
 not re-established**: that anchored to one CORNER nothing derives a size, so the client must send
 one. That half predicts precisely the blank screen which did not reproduce, and how the reviewer's
 probe got a size without the explicit request was not determined — so do not repeat it as a fact
-either. What the size request does not buy in any case is a resize while mapped: section 3.
+either. This paragraph used to end *"What the size request does not buy in any case is a resize while
+mapped: section 3"* — **refuted along with section 3** (#385, measured 2026-09-16): the size request
+is exactly what buys a resize while mapped. The half that stands is the one above it, and it is
+narrower than it looks: the TOPLEVEL calls still reach nothing.
 
 **Whether a CLICK grants keyboard focus under `KeyboardMode::OnDemand` — and so whether Esc still
 dismisses the panel — is not established by this measurement.** `panel.rs` sets `OnDemand`, whose

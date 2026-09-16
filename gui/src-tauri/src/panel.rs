@@ -524,9 +524,11 @@ fn promote_to_layer_surface(window: &tauri::WebviewWindow) -> bool {
 /// Plasma 6 / KWin 6.7.5, tao 0.35.3, gtk-layer-shell 0.8.2, wry 0.55.1, tauri-runtime-wry 2.11.4.
 /// `docs/agent-notes/measuring-a-gtk-layer-shell-surface.md` §3 has the full measurement.
 ///
-/// `queue_resize()` does not help either construction. Nothing here is worked around: both calls
-/// take effect on the shipped stack, which is why the paragraph above calls this the size that
-/// reaches the surface, same as `set_size` above it.
+/// `queue_resize()` does not help either construction. Nothing here is worked around: THIS call is
+/// what resizes a mapped layer surface, and the toplevel `set_size` in `resize` still is not —
+/// measured, `gtk_window_resize` on its own puts nothing on the wire. An earlier version of this
+/// paragraph said both calls take effect, which contradicted this doc's own second paragraph; the
+/// two requests share the name `set_size` and nothing else, and that collision is the trap.
 #[cfg(target_os = "linux")]
 fn resize_layer_surface(gtk_window: &gtk::ApplicationWindow, height: f64) {
     use gtk::prelude::WidgetExt;
