@@ -59,8 +59,10 @@ Read [How sync works](/concepts/how-sync-works/) for the full model.
 
 - **Unix-only.** Control-plane IPC uses Unix domain sockets, so Windows is out of scope
   for now. Linux is the primary target (Fedora, Ubuntu, Arch).
-- **One folder pair** per daemon. The config and UI are shaped for many, but today it's
-  one local root ↔ one remote root.
+- **One folder pair** per daemon. The config file can name several (`[[pair]]` tables) and
+  the control CLI can already address one by name with `--pair`, but the daemon itself still
+  refuses to start on more than one — today it's still one local root ↔ one remote root
+  actually running.
 - **No symlink sync.** Symlinks under the local root are skipped in both directions — along
   with sockets, named pipes and device nodes. All of them are *reported* by name under
   `proton-sync status`'s `can't sync`, so nothing is skipped in silence.

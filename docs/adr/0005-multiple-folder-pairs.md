@@ -811,6 +811,58 @@ today. `tests/ipc_cli.rs`'s `wait_for_reconcile_seq` helper needs a per-pair for
 every later multi-pair integration test is written against, so it is worth getting right here rather
 than in phase 4. Closes: the wire. Leaves broken: nothing — `--all` over one pair is a loop of one.
 
+> **Shipped, with departures — recorded here because both phase 4 and phase 5 (the GUI) will find
+> them.**
+>
+> (1) **The client flag is `--all-pairs`, not `--all`.** `approve`/`deny`/`keep` already have a
+> per-command `--all` (every currently pending deletion, on the one pair they address); a *global*
+> `--all` with the same long name panics `clap`'s `Command::build` in debug the moment a subcommand
+> defines its own arg of that name. The paragraph above named `--all` because the ADR was written
+> before this collision was found; `--all-pairs` is the corrected name everywhere it appears,
+> including in a future GUI's copy deck.
+>
+> (2) **`ControlShared.pair: PairShared` did not become `pairs: Vec<PairShared>` with the ~30
+> methods threaded a `pair: &PairShared` parameter — most of them moved onto `impl PairShared`
+> instead**, unchanged in body but for `self.pair.FIELD` becoming `self.FIELD`. Only the handful
+> that also read `ControlShared::auth` (`response`, `metrics`, `response_with_sampled_activity`)
+> stay on `ControlShared` and take `pair: &PairShared` explicitly. This is "one mechanism, not
+> thirty ad-hoc lookups" read literally: a method that only ever touches one pair's own state has
+> no business asking `ControlShared` which pair that is. `ControlShared::pair()` (index 0) is the
+> one daemon-core-wide default; `resolve_pair_index` is the one wire-selector resolver, used by
+> `handle_control_connection` alone.
+>
+> (3) **The progress-sink routing question (not in the ADR) resolved to "the pair whose
+> `PairShared.syncing` is true," with no new state.** Passes are serialized (§5), so at most one
+> pair is ever syncing; `ControlShared::active_pair` finds it, and `SharedProgressSink` drops a
+> callback when none is active rather than guessing. The "browse must not pollute another pair's
+> activity" risk named in the brief turned out to be **structurally absent today**, not merely
+> guarded against: `list_one_directory` (what `list`'s `browse_directory` calls) reports through
+> neither `ProgressSink` method — verified by reading `proton.rs`, not assumed — so a browse cannot
+> reach `active_pair` at all. The routing is index-based anyway, on the day either changes.
+>
+> (4) **`--all-pairs` does not watch each pair's pass to completion; it schedules and reports each
+> pair's immediate reply.** `syncnow`/`apply`/`plan`'s watch loops (spinner, poll-until-sealed) are
+> written for one command watching one pass; N interleaved on one terminal is unreadable, and a
+> JSON array element cannot also carry a live progress stream. `--pair NAME` still watches to
+> completion exactly as an unselected invocation does — `--all-pairs` is the fan-out-and-report
+> tool, `--pair` is the one-pair-to-completion tool. Recorded as a scope decision, not a gap: phase
+> 4 is free to revisit it once a real second pair exists to watch.
+>
+> (5) **`--all-pairs --json`'s per-pair wrapper is `{"pair": name, "result": <the same value a
+> single-pair `--json` invocation prints for that verb>}`, uniformly** — not "a name plus the
+> verb's fields spread at the top level," which the ADR's `{"pair": name, …}` sketch left open and
+> which cannot be made uniform across verbs whose non-`--all-pairs` JSON output is sometimes an
+> object (`status`), sometimes an array (`pending`) and sometimes absent (`pause`, a plain-message
+> reply printed only under `--json` as the whole envelope). Nesting under `result` is one shape for
+> every verb.
+>
+> (6) **An unresolved `--pair` now fails every verb's exit code, not just the ones that were
+> already typed non-zero.** The wire's `pair: None` was always the structural signal (§4's
+> `unknown pair` rule), but `status`/`pause`/… previously exited 0 unconditionally on the CLI side.
+> `run_for_pair` checks `response.pair.is_none()` once, right after the request lands, before any
+> per-verb rendering runs — the same "exit non-zero on a non-success outcome" rule `list`/`plan`/
+> `apply` already followed, extended to every verb rather than duplicated per arm.
+
 **Phase 4 — Scheduler, and lift the `N > 1` refusal (the hard one).** The due queue, the multi-root
 watcher and its routing, per-pair boot ordering, per-pair pause, the missing-root case. This is
 where the fairness policy, the boot sequence and the shutdown behaviour are decided in code, and

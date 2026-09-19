@@ -35,6 +35,18 @@ struct Cli {
     /// Print the daemon's raw JSON response instead of the human-readable output.
     #[arg(long, global = true)]
     json: bool,
+    /// Address one folder pair by name (#102 phase 3), rather than the default pair every
+    /// pre-multi-pair invocation addresses. Requires a daemon that supports multiple folder
+    /// pairs; an older one is refused with a message to upgrade `proton-syncd` rather than
+    /// silently running against its one pair under the wrong name.
+    #[arg(long, global = true, conflicts_with = "all_pairs")]
+    pair: Option<String>,
+    /// Run the command once per configured folder pair, in the order `status` lists them
+    /// (`--pair` names one pair; this is every pair). Not named `--all`: `approve`/`deny`/`keep`
+    /// already use that flag for "every pending deletion" on the one pair they address, and one
+    /// flag cannot mean two different fan-outs. Same capability gate as `--pair`.
+    #[arg(long, global = true, conflicts_with = "pair")]
+    all_pairs: bool,
     #[command(subcommand)]
     command: Commands,
 }
@@ -166,7 +178,56 @@ async fn main() -> ExitCode {
         };
     let style = Style::for_stdout();
 
-    let request = match build_request(&cli.command) {
+    // The client capability gate (#102 phase 3, ADR 0005 §4): an explicit `--pair`/`--all-pairs`
+    // first reads `status` and refuses if the reply carries neither `pair` nor `pairs` — a daemon
+    // that predates multi-pair. No `--pair`, no gate: the omitted selector means the default pair,
+    // and an old daemon's only pair *is* the default pair, so it is correct without asking. The
+    // residual race (the daemon is downgraded between this check and the real request) is accepted
+    // rather than solved — see the ADR.
+    if cli.all_pairs {
+        return run_all_pairs(&cli, &socket_path, &style).await;
+    }
+    if cli.pair.is_some()
+        && let Err(code) = capability_gate(&socket_path).await
+    {
+        return code;
+    }
+    run_for_pair(&cli, &socket_path, &style, cli.pair.as_deref()).await
+}
+
+/// Refuses with a non-zero exit when `socket_path` answers a `status` request with neither `pair`
+/// nor `pairs` — the shape only a daemon that predates multi-pair produces (every real reply
+/// carries both; see `ipc::PairSummary`'s doc for why `pairs` is never empty on one that
+/// understands the field at all).
+async fn capability_gate(socket_path: &Path) -> Result<(), ExitCode> {
+    let probe = ControlRequest::new(ControlCommand::Status);
+    let response = match request_with_timeout(socket_path, probe).await {
+        Ok(response) => response,
+        Err(message) => {
+            eprintln!("{message}");
+            return Err(ExitCode::FAILURE);
+        }
+    };
+    if response.pair.is_none() && response.pairs.is_empty() {
+        eprintln!(
+            "this daemon does not support multiple folder pairs; upgrade proton-syncd to use \
+             --pair/--all-pairs"
+        );
+        return Err(ExitCode::FAILURE);
+    }
+    Ok(())
+}
+
+/// One command against one pair (or the default, when `pair` is `None`) — everything `main` did
+/// before #102 phase 3, unchanged for that case. `--all-pairs` calls this once per configured
+/// pair with a header line ahead of each (see `run_all_pairs`); `--pair NAME` calls it once.
+async fn run_for_pair(
+    cli: &Cli,
+    socket_path: &Path,
+    style: &Style,
+    pair: Option<&str>,
+) -> ExitCode {
+    let request = match build_request(&cli.command, pair) {
         Ok(request) => request,
         Err(message) => {
             eprintln!("{message}");
@@ -174,20 +235,32 @@ async fn main() -> ExitCode {
         }
     };
 
-    let response = match request_with_timeout(&socket_path, request).await {
+    let response = match request_with_timeout(socket_path, request).await {
         Ok(response) => response,
         Err(message) => {
             eprintln!("{message}");
             return ExitCode::FAILURE;
         }
     };
+    // An explicit selector that did not resolve authorises nothing (ADR 0005 §4): the reply's
+    // `pair` is structurally `None`, never inferred from `message`, and every verb reports it the
+    // same way `list`/`plan`/`apply` already report a non-success outcome — exit non-zero rather
+    // than rendering the verb's ordinary success path over a request that did nothing.
+    if pair.is_some() && response.pair.is_none() {
+        if cli.json {
+            print_pretty_json(&response);
+        } else {
+            eprintln!("{}", response.message);
+        }
+        return ExitCode::FAILURE;
+    }
 
     match &cli.command {
         Commands::Status => {
             if cli.json {
                 print_pretty_json(&response);
             } else {
-                print_status(&response, &style);
+                print_status(&response, style);
             }
             ExitCode::SUCCESS
         }
@@ -199,7 +272,7 @@ async fn main() -> ExitCode {
                         .expect("serialize pass history")
                 );
             } else {
-                print_history(&response, &style);
+                print_history(&response, style);
             }
             ExitCode::SUCCESS
         }
@@ -211,7 +284,7 @@ async fn main() -> ExitCode {
                         .expect("serialize file history")
                 );
             } else {
-                print_activity(&response, &style);
+                print_activity(&response, style);
             }
             ExitCode::SUCCESS
         }
@@ -232,7 +305,7 @@ async fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Commands::Syncnow { no_wait } => {
-            watch_syncnow(&socket_path, response, *no_wait, cli.json, &style).await
+            watch_syncnow(socket_path, response, *no_wait, cli.json, style, pair).await
         }
         Commands::Resync | Commands::ResetIndex { .. } => {
             if cli.json {
@@ -271,10 +344,10 @@ async fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Commands::Plan { limit } => {
-            watch_plan(&socket_path, response, *limit, cli.json, &style).await
+            watch_plan(socket_path, response, *limit, cli.json, style, pair).await
         }
         Commands::Apply { no_wait, .. } => {
-            watch_apply(&socket_path, response, *no_wait, cli.json, &style).await
+            watch_apply(socket_path, response, *no_wait, cli.json, style, pair).await
         }
         Commands::List { .. } => {
             if cli.json {
@@ -287,13 +360,114 @@ async fn main() -> ExitCode {
             // A listing that did not happen exits non-zero even under `--json`, so a script can
             // branch on the exit code rather than parsing `state` out of the payload — and so
             // `busy` is never mistaken for an empty folder.
-            print_listing(&response, cli.json, &style)
+            print_listing(&response, cli.json, style)
         }
     }
 }
 
+/// `--all-pairs`: the capability gate, then every configured pair in the order `status` lists
+/// them.
+///
+/// **Deliberately does not run `run_for_pair`'s wait loops (`syncnow`/`apply`/`plan`) per pair.**
+/// A wait loop's spinner and its final report are written for a single command watching a single
+/// pass; N of them interleaved on one terminal would be unreadable, and a JSON array of "the
+/// final response" per pair cannot also carry N independent progress streams. So under
+/// `--all-pairs` every command answers with its **immediate reply** (the same ack a `--no-wait`
+/// `syncnow`/`apply` gets, or the plain reply for anything else) — scheduled, not watched. This is
+/// a scope decision, recorded in the ADR 0005 phase-3 note: `--pair NAME` is how a script or a
+/// person watches one pair's pass to completion; `--all-pairs` is how they fire the same command
+/// at every pair and see what each one said.
+async fn run_all_pairs(cli: &Cli, socket_path: &Path, style: &Style) -> ExitCode {
+    let probe = ControlRequest::new(ControlCommand::Status);
+    let gate = match request_with_timeout(socket_path, probe).await {
+        Ok(response) => response,
+        Err(message) => {
+            eprintln!("{message}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if gate.pair.is_none() && gate.pairs.is_empty() {
+        eprintln!(
+            "this daemon does not support multiple folder pairs; upgrade proton-syncd to use \
+             --pair/--all-pairs"
+        );
+        return ExitCode::FAILURE;
+    }
+
+    let mut worst = ExitCode::SUCCESS;
+    let mut json_results = Vec::new();
+    for pair in &gate.pairs {
+        let request = match build_request(&cli.command, Some(pair.name.as_str())) {
+            Ok(request) => request,
+            Err(message) => {
+                eprintln!("{}: {message}", pair.name);
+                worst = ExitCode::FAILURE;
+                continue;
+            }
+        };
+        let response = match request_with_timeout(socket_path, request).await {
+            Ok(response) => response,
+            Err(message) => {
+                eprintln!("{}: {message}", pair.name);
+                worst = ExitCode::FAILURE;
+                continue;
+            }
+        };
+        if response.pair.is_none() {
+            worst = ExitCode::FAILURE;
+        }
+        if cli.json {
+            json_results.push(serde_json::json!({
+                "pair": pair.name,
+                "result": response,
+            }));
+        } else {
+            println!("{}", style.dim(&format!("== {} ==", pair.name)));
+            print_pair_reply(&cli.command, &response, style);
+        }
+    }
+    if cli.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json_results).expect("serialize --all-pairs results")
+        );
+    }
+    worst
+}
+
+/// The human-readable rendering of one pair's immediate reply under `--all-pairs` — the same
+/// per-verb rule `run_for_pair`'s non-json branches follow (`response.message` for a plain ack,
+/// the dedicated printer for `status`/`history`/`activity`/`pending`, a plan/apply summary for
+/// their *ack* rather than their watched outcome, since `--all-pairs` does not wait).
+fn print_pair_reply(command: &Commands, response: &ControlResponse, style: &Style) {
+    match command {
+        Commands::Status => print_status(response, style),
+        Commands::History => print_history(response, style),
+        Commands::Activity { .. } => print_activity(response, style),
+        Commands::Pending => print_pending(&response.pending_deletions),
+        Commands::List { .. } => {
+            print_listing(response, false, style);
+        }
+        Commands::Plan { .. } => {
+            report_plan(response, false, style);
+        }
+        Commands::Apply { .. } => {
+            report_apply(response, false, style);
+        }
+        Commands::Pause
+        | Commands::Resume
+        | Commands::Syncnow { .. }
+        | Commands::Resync
+        | Commands::ResetIndex { .. }
+        | Commands::Stop
+        | Commands::Approve { .. }
+        | Commands::Deny { .. }
+        | Commands::Keep { .. } => println!("{}", response.message),
+    }
+}
+
 /// Maps a subcommand to the control request to send, validating the `approve`/`deny` selector.
-fn build_request(command: &Commands) -> Result<ControlRequest, String> {
+fn build_request(command: &Commands, pair: Option<&str>) -> Result<ControlRequest, String> {
     let (control_command, argument) = match command {
         // `history` reads the pass log, which rides on every status reply — no second verb.
         Commands::Status | Commands::History | Commands::Pending => (ControlCommand::Status, None),
@@ -393,6 +567,7 @@ fn build_request(command: &Commands) -> Result<ControlRequest, String> {
         limit,
         direction,
         skip_destructive,
+        pair: pair.map(str::to_owned),
         ..ControlRequest::new(control_command)
     })
 }
@@ -1255,6 +1430,7 @@ async fn watch_syncnow(
     no_wait: bool,
     json: bool,
     style: &Style,
+    pair: Option<&str>,
 ) -> ExitCode {
     let scheduled = ack.message == "sync scheduled" || ack.message.contains("already in progress");
     if !scheduled || no_wait {
@@ -1282,7 +1458,10 @@ async fn watch_syncnow(
     let mut consecutive_errors = 0u32;
     let outcome = loop {
         tokio::time::sleep(WAIT_POLL_INTERVAL).await;
-        let request = ControlRequest::new(ControlCommand::Status);
+        let request = ControlRequest {
+            pair: pair.map(str::to_owned),
+            ..ControlRequest::new(ControlCommand::Status)
+        };
         match request_with_timeout(socket_path, request).await {
             Ok(status) => {
                 consecutive_errors = 0;
@@ -1377,6 +1556,7 @@ async fn watch_plan(
     limit: Option<usize>,
     json: bool,
     style: &Style,
+    pair: Option<&str>,
 ) -> ExitCode {
     let target = match &ack.plan {
         Some(PlanOutcome::Scheduled { plan_seq }) => *plan_seq,
@@ -1388,6 +1568,7 @@ async fn watch_plan(
         socket_path,
         || ControlRequest {
             limit,
+            pair: pair.map(str::to_owned),
             ..ControlRequest::new(ControlCommand::PlanResult)
         },
         // The generation, not merely "no longer computing": a second client's `plan` while ours is
@@ -1443,6 +1624,7 @@ async fn watch_apply(
     no_wait: bool,
     json: bool,
     style: &Style,
+    pair: Option<&str>,
 ) -> ExitCode {
     let target = match &ack.apply {
         Some(ApplyOutcome::Scheduled { apply_seq }) => *apply_seq,
@@ -1461,6 +1643,7 @@ async fn watch_apply(
         // bounds the ordinary rows only — destructive rows are never truncated at any limit.
         || ControlRequest {
             limit: Some(1),
+            pair: pair.map(str::to_owned),
             ..ControlRequest::new(ControlCommand::PlanResult)
         },
         |response| apply_generation(response.apply.as_ref()).is_some_and(|seq| seq >= target),
@@ -1995,14 +2178,14 @@ mod tests {
         // The gate is client-side because the wire carries no confirmation field: a daemon cannot
         // tell a confirmed request from an unconfirmed one. Refusing before the socket is opened is
         // what makes "nothing was sent" literally true.
-        let error = build_request(&Commands::ResetIndex { yes: false })
+        let error = build_request(&Commands::ResetIndex { yes: false }, None)
             .expect_err("an unconfirmed reset must not be sent");
         assert!(
             error.contains("--yes"),
             "the refusal must say how to confirm: {error}"
         );
 
-        let request = build_request(&Commands::ResetIndex { yes: true }).expect("confirmed");
+        let request = build_request(&Commands::ResetIndex { yes: true }, None).expect("confirmed");
         assert_eq!(request.command, ControlCommand::ResetIndex);
         assert_eq!(request.argument, None);
         assert!(
@@ -2115,6 +2298,8 @@ mod tests {
             plan: None,
             apply: None,
             auth: AuthState::Unknown,
+            pair: Some("default".to_owned()),
+            pairs: Vec::new(),
         }
     }
 
@@ -2487,7 +2672,14 @@ mod tests {
                 ));
                 let code = tokio::time::timeout(
                     Duration::from_secs(10),
-                    watch_apply(&socket_path, ack, false, false, &Style { enabled: false }),
+                    watch_apply(
+                        &socket_path,
+                        ack,
+                        false,
+                        false,
+                        &Style { enabled: false },
+                        None,
+                    ),
                 )
                 .await
                 .expect("the wait must finish well inside the timeout");
