@@ -419,11 +419,13 @@ async fn run_all_pairs(cli: &Cli, socket_path: &Path, style: &Style) -> ExitCode
         if cli.json {
             json_results.push(serde_json::json!({
                 "pair": pair.name,
-                "result": response,
+                "result": json_result_value(&cli.command, &response),
             }));
         } else {
             println!("{}", style.dim(&format!("== {} ==", pair.name)));
-            print_pair_reply(&cli.command, &response, style);
+            if print_pair_reply(&cli.command, &response, style) != ExitCode::SUCCESS {
+                worst = ExitCode::FAILURE;
+            }
         }
     }
     if cli.json {
@@ -438,22 +440,32 @@ async fn run_all_pairs(cli: &Cli, socket_path: &Path, style: &Style) -> ExitCode
 /// The human-readable rendering of one pair's immediate reply under `--all-pairs` — the same
 /// per-verb rule `run_for_pair`'s non-json branches follow (`response.message` for a plain ack,
 /// the dedicated printer for `status`/`history`/`activity`/`pending`, a plan/apply summary for
-/// their *ack* rather than their watched outcome, since `--all-pairs` does not wait).
-fn print_pair_reply(command: &Commands, response: &ControlResponse, style: &Style) {
+/// their *ack* rather than their watched outcome, since `--all-pairs` does not wait). Returns the
+/// verb's own exit code (`list`/`plan`/`apply` can fail; everything else is a plain report that
+/// always succeeds, same as `run_for_pair`'s non-json arms), so `run_all_pairs` folds it into
+/// `worst` instead of discarding it — a busy `list`, a paused `plan`, a failed `apply` under
+/// `--all-pairs` must exit non-zero, not just print an error line and return 0.
+fn print_pair_reply(command: &Commands, response: &ControlResponse, style: &Style) -> ExitCode {
     match command {
-        Commands::Status => print_status(response, style),
-        Commands::History => print_history(response, style),
-        Commands::Activity { .. } => print_activity(response, style),
-        Commands::Pending => print_pending(&response.pending_deletions),
-        Commands::List { .. } => {
-            print_listing(response, false, style);
+        Commands::Status => {
+            print_status(response, style);
+            ExitCode::SUCCESS
         }
-        Commands::Plan { .. } => {
-            report_plan(response, false, style);
+        Commands::History => {
+            print_history(response, style);
+            ExitCode::SUCCESS
         }
-        Commands::Apply { .. } => {
-            report_apply(response, false, style);
+        Commands::Activity { .. } => {
+            print_activity(response, style);
+            ExitCode::SUCCESS
         }
+        Commands::Pending => {
+            print_pending(&response.pending_deletions);
+            ExitCode::SUCCESS
+        }
+        Commands::List { .. } => print_listing(response, false, style),
+        Commands::Plan { .. } => report_plan(response, false, style),
+        Commands::Apply { .. } => report_apply(response, false, style),
         Commands::Pause
         | Commands::Resume
         | Commands::Syncnow { .. }
@@ -462,7 +474,47 @@ fn print_pair_reply(command: &Commands, response: &ControlResponse, style: &Styl
         | Commands::Stop
         | Commands::Approve { .. }
         | Commands::Deny { .. }
-        | Commands::Keep { .. } => println!("{}", response.message),
+        | Commands::Keep { .. } => {
+            println!("{}", response.message);
+            ExitCode::SUCCESS
+        }
+    }
+}
+
+/// The JSON value a single-pair `--json` invocation of `command` would print for `response` — what
+/// `--all-pairs --json`'s per-pair `result` field must match exactly (decision #10, ADR 0005 §4
+/// departure 5: "the same value a single-pair `--json` invocation prints for that verb," nested
+/// under `result` rather than spread, uniformly across verbs). `history`/`activity`/`pending`/
+/// `list`/`plan`/`apply` each print one projected field in `run_for_pair`, never the whole
+/// envelope; every other verb prints the whole `ControlResponse` there too, so this matches that.
+fn json_result_value(command: &Commands, response: &ControlResponse) -> serde_json::Value {
+    match command {
+        Commands::History => {
+            serde_json::to_value(&response.history).expect("serialize pass history")
+        }
+        Commands::Activity { .. } => {
+            serde_json::to_value(&response.file_history).expect("serialize file history")
+        }
+        Commands::Pending => {
+            serde_json::to_value(&response.pending_deletions).expect("serialize pending deletions")
+        }
+        Commands::List { .. } => {
+            serde_json::to_value(&response.listing).expect("serialize the remote listing")
+        }
+        Commands::Plan { .. } => serde_json::to_value(&response.plan).expect("serialize the plan"),
+        Commands::Apply { .. } => {
+            serde_json::to_value(&response.apply).expect("serialize the apply outcome")
+        }
+        Commands::Status
+        | Commands::Pause
+        | Commands::Resume
+        | Commands::Syncnow { .. }
+        | Commands::Resync
+        | Commands::ResetIndex { .. }
+        | Commands::Stop
+        | Commands::Approve { .. }
+        | Commands::Deny { .. }
+        | Commands::Keep { .. } => serde_json::to_value(response).expect("serialize response"),
     }
 }
 
@@ -665,8 +717,7 @@ fn print_pretty_json(response: &ControlResponse) {
 ///   deletions  1 awaiting approval — review with `proton-sync pending`
 /// ```
 fn print_status(response: &ControlResponse, style: &Style) {
-    let (dot, state, detail) = headline(response, style);
-    println!("{dot} {} — {detail}", style.bold(state));
+    println!("{}", status_headline_line(response, style));
 
     let mut rows: Vec<(&str, String)> = Vec::new();
     if let Some(config) = &response.config {
@@ -940,6 +991,24 @@ fn headline(response: &ControlResponse, style: &Style) -> (String, &'static str,
         "idle",
         "everything is up to date".to_owned(),
     )
+}
+
+/// The headline's printed line (decision #14, ADR 0005 §4): the pair is named only when more than
+/// one is configured, so a single-pair daemon's headline is byte-identical to before #102 phase 3 —
+/// "everything is up to date" silently meaning one of three folders is #246's lie read the other
+/// way round. Separate from [`headline`] itself because its `state` word is asserted on verbatim
+/// by tests (`"idle"`, `"error"`, …) and must stay a bare machine-comparable token, not a
+/// pair-prefixed string.
+fn status_headline_line(response: &ControlResponse, style: &Style) -> String {
+    let (dot, state, detail) = headline(response, style);
+    match (response.pairs.len() > 1, &response.pair) {
+        (true, Some(name)) => format!(
+            "{dot} {} {} — {detail}",
+            style.bold(name),
+            style.bold(state)
+        ),
+        _ => format!("{dot} {} — {detail}", style.bold(state)),
+    }
 }
 
 /// `proton-sync history` — one line per recorded pass, newest first.
@@ -1842,9 +1911,18 @@ fn report_plan(response: &ControlResponse, json: bool, style: &Style) -> ExitCod
             eprintln!("The daemon has not worked out a plan yet.");
             ExitCode::FAILURE
         }
+        // The immediate ack `--all-pairs` reports instead of waiting (it never calls `watch_plan`,
+        // so this is the only caller that can see this arm): scheduled, not computed, and that is
+        // success, the same reading `ApplyOutcome::Scheduled` already gets below.
+        Some(PlanOutcome::Scheduled { .. }) => {
+            if !json {
+                println!("Plan scheduled; watch it with `proton-sync status`.");
+            }
+            ExitCode::SUCCESS
+        }
         // A state this client does not know, and the `None` an older daemon sends. Neither is an
         // empty plan.
-        Some(PlanOutcome::Scheduled { .. } | PlanOutcome::Unknown) | None => {
+        Some(PlanOutcome::Unknown) | None => {
             eprintln!("The daemon did not return a plan.");
             ExitCode::FAILURE
         }
@@ -2070,7 +2148,7 @@ fn print_pending(pending: &[PendingDeletion]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proton_drive_sync_engine::ipc::TransferActivity;
+    use proton_drive_sync_engine::ipc::{PairSummary, TransferActivity};
     use proton_drive_sync_engine::sync::UnsyncableReason;
     use std::sync::{Arc, Mutex};
 
@@ -2191,6 +2269,116 @@ mod tests {
         assert!(
             !request.literal_path,
             "reset-index carries no path selector"
+        );
+    }
+
+    #[test]
+    fn report_plan_treats_the_all_pairs_scheduled_ack_as_success() {
+        // `--all-pairs` never waits (`watch_plan` alone extracts `plan_seq` and polls), so
+        // `report_plan` is the only caller that can see `PlanOutcome::Scheduled` — and before this
+        // it fell into the catch-all "the daemon did not return a plan" arm and exited non-zero on
+        // every successful `proton-sync --all-pairs plan`.
+        let mut response = blank_response();
+        response.plan = Some(PlanOutcome::Scheduled { plan_seq: 3 });
+        assert_eq!(
+            report_plan(&response, false, &plain_style()),
+            ExitCode::SUCCESS
+        );
+    }
+
+    #[test]
+    fn json_result_value_matches_the_single_pair_projection_for_every_projected_verb() {
+        // Decision #10 / ADR 0005 §4 departure (5): `--all-pairs --json`'s per-pair `result` must
+        // be the SAME value a single-pair `--json` invocation prints for that verb, not the whole
+        // envelope. `history`/`activity`/`pending`/`list`/`plan`/`apply` each print one projected
+        // field in `run_for_pair`; before this fix `run_all_pairs` always nested the whole
+        // `ControlResponse`, so these six carried a second, redundant `pairs` array under `result`.
+        let mut response = blank_response();
+        response.history = None;
+        assert_eq!(
+            json_result_value(&Commands::History, &response),
+            serde_json::to_value(&response.history).unwrap()
+        );
+
+        response.pending_deletions = vec![];
+        assert_eq!(
+            json_result_value(&Commands::Pending, &response),
+            serde_json::to_value(&response.pending_deletions).unwrap()
+        );
+
+        response.plan = Some(PlanOutcome::Scheduled { plan_seq: 7 });
+        let projected = json_result_value(&Commands::Plan { limit: None }, &response);
+        assert_eq!(projected, serde_json::to_value(&response.plan).unwrap());
+        // The whole-response shape would also carry `pairs` — the bug this pins against.
+        assert!(
+            projected.get("pairs").is_none(),
+            "plan's projection must not carry the envelope: {projected}"
+        );
+
+        response.apply = Some(ApplyOutcome::Stale);
+        assert_eq!(
+            json_result_value(
+                &Commands::Apply {
+                    token: "tok".to_owned(),
+                    skip_destructive: false,
+                    no_wait: true,
+                },
+                &response
+            ),
+            serde_json::to_value(&response.apply).unwrap()
+        );
+
+        response.listing = None;
+        assert_eq!(
+            json_result_value(
+                &Commands::List {
+                    path: None,
+                    limit: None
+                },
+                &response
+            ),
+            serde_json::to_value(&response.listing).unwrap()
+        );
+
+        // Everything else prints the whole envelope in `run_for_pair` too, so the projection stays
+        // the whole response — `status` is the representative case.
+        assert_eq!(
+            json_result_value(&Commands::Status, &response),
+            serde_json::to_value(&response).unwrap()
+        );
+    }
+
+    #[test]
+    fn print_pair_reply_returns_the_verbs_own_exit_code() {
+        // `run_all_pairs` used to discard this return value entirely (`{ ...; }` blocks), so a
+        // busy `list`, a paused `plan` or a failed `apply` under `--all-pairs` printed an error
+        // line but the process still exited 0.
+        let style = plain_style();
+        let mut failing_list = blank_response();
+        failing_list.listing = Some(ListingOutcome::Busy);
+        assert_eq!(
+            print_pair_reply(
+                &Commands::List {
+                    path: None,
+                    limit: None
+                },
+                &failing_list,
+                &style
+            ),
+            ExitCode::FAILURE
+        );
+
+        let mut failing_plan = blank_response();
+        failing_plan.plan = Some(PlanOutcome::Paused);
+        assert_eq!(
+            print_pair_reply(&Commands::Plan { limit: None }, &failing_plan, &style),
+            ExitCode::FAILURE
+        );
+
+        let ok = blank_response();
+        assert_eq!(
+            print_pair_reply(&Commands::Status, &ok, &style),
+            ExitCode::SUCCESS
         );
     }
 
@@ -2398,6 +2586,53 @@ mod tests {
         assert_eq!(headline(&failed, &style).1, "error");
         // ...and a clean one is not dragged into either.
         assert_eq!(headline(&blank_response(), &style).1, "idle");
+    }
+
+    fn pair_summary(name: &str) -> PairSummary {
+        PairSummary {
+            name: name.to_owned(),
+            local_root: PathBuf::from("/local"),
+            remote_root: PathBuf::from("/Drive/Remote"),
+            db_path: PathBuf::from("/local/.sync/index.db"),
+            paused: false,
+            syncing: false,
+            reconcile_seq: 1,
+            last_sync_epoch_secs: None,
+            last_error: None,
+            pending_changes: 0,
+            pending_deletions: 0,
+        }
+    }
+
+    #[test]
+    fn the_headline_names_the_pair_only_when_more_than_one_is_configured() {
+        // Decision #14 (ADR 0005 §4): "everything is up to date" silently meaning one of three
+        // folders is #246's lie read the other way round — but a one-pair daemon (today's only
+        // shape) must print exactly what it prints before #102 phase 3.
+        let style = Style { enabled: false };
+        let single = blank_response();
+        let line = status_headline_line(&single, &style);
+        assert!(
+            !line.contains("default"),
+            "single configured pair must not be named: {line}"
+        );
+
+        let mut multi = blank_response();
+        multi.pairs = vec![pair_summary("default"), pair_summary("second")];
+        let line = status_headline_line(&multi, &style);
+        assert!(
+            line.contains("default"),
+            "multi-pair headline must name the selected pair: {line}"
+        );
+
+        // An unresolved selector (`pair: None`) names nothing — there is no pair to name.
+        let mut unresolved = multi;
+        unresolved.pair = None;
+        let line = status_headline_line(&unresolved, &style);
+        assert!(
+            !line.contains("default") && !line.contains("second"),
+            "an unresolved selector must not name a pair: {line}"
+        );
     }
 
     #[test]

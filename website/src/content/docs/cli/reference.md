@@ -61,6 +61,8 @@ meant.
   objects; over one configured pair that array has exactly one element.
 - Naming a pair that does not exist does nothing at all — no sync is scheduled, no approval is
   recorded, no index is reset — and the command exits non-zero.
+- The human-readable `status` headline names the pair only when more than one is configured — a
+  one-pair daemon's headline is unchanged from before this feature existed.
 - `--pair`/`--all-pairs` need a daemon new enough to understand them. `proton-sync` checks first
   and refuses with a message to upgrade `proton-syncd` rather than silently running the command
   against an older daemon's one pair under the wrong name. Leaving both off needs no such check:
