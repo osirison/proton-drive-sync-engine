@@ -12,8 +12,8 @@
 
 use proton_drive_sync_engine::index::EntityKind;
 use proton_drive_sync_engine::ipc::{
-    ApplyOutcome, ControlRequest, ControlResponse, LocalDisposal, PairSummary, PendingDeletion,
-    PlanOutcome, ReviewedPlan,
+    ApplyOutcome, ControlRequest, ControlResponse, ListingOutcome, LocalDisposal, PairSummary,
+    PendingDeletion, PlanOutcome, ReviewedPlan,
 };
 use proton_drive_sync_engine::sync::{DeleteDirection, PlanSummary};
 use std::io::{BufRead, BufReader, Write};
@@ -458,5 +458,23 @@ fn an_unresolved_selector_fails_by_the_response_shape_not_by_matching_message_te
             .contains("arbitrary daemon text unrelated to pairs"),
         "the daemon's own message must still reach the user verbatim: {}",
         run.stderr
+    );
+}
+
+/// `--all-pairs --json`'s JSON twin of the bug `9a8d304` fixed for the human branch (#409's
+/// Copilot finding, validated): before this, the JSON branch folded only the resolved-selector
+/// case, never the verb's own outcome, so a busy `list` printed its payload on stdout and still
+/// exited 0. Drives the real binary so the assertion is on the process's own exit status.
+#[test]
+fn all_pairs_json_list_exits_nonzero_when_the_listing_is_busy() {
+    let mut probe = blank();
+    probe.pairs = vec![summary("default")];
+    let mut busy = blank();
+    busy.listing = Some(ListingOutcome::Busy);
+    let run = drive(&["--all-pairs", "--json", "list"], vec![probe, busy]);
+    assert!(
+        !run.success,
+        "a busy listing under --all-pairs --json must exit non-zero: stdout={} stderr={}",
+        run.stdout, run.stderr
     );
 }

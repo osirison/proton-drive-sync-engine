@@ -854,7 +854,7 @@ than in phase 4. Closes: the wire. Leaves broken: nothing — `--all` over one p
 > which cannot be made uniform across verbs whose non-`--all-pairs` JSON output is sometimes an
 > object (`status`), sometimes an array (`pending`) and sometimes absent (`pause`, a plain-message
 > reply printed only under `--json` as the whole envelope). Nesting under `result` is one shape for
-> every verb.
+> every verb — `stop` excepted, see (7).
 >
 > (6) **An unresolved `--pair` now fails every verb's exit code, not just the ones that were
 > already typed non-zero.** The wire's `pair: None` was always the structural signal (§4's
@@ -862,6 +862,14 @@ than in phase 4. Closes: the wire. Leaves broken: nothing — `--all` over one p
 > `run_for_pair` checks `response.pair.is_none()` once, right after the request lands, before any
 > per-verb rendering runs — the same "exit non-zero on a non-success outcome" rule `list`/`plan`/
 > `apply` already followed, extended to every verb rather than duplicated per arm.
+>
+> (7) **`stop` does not print (5)'s `[{"pair", "result"}, …]` array under `--all-pairs --json` —
+> it prints the bare `ControlResponse` envelope, once.** `fca4ab2` made `stop` daemon-wide (§4's
+> verb table), so `run_all_pairs` special-cases it to one `run_for_pair(cli, socket_path, style,
+> None)` call before the per-pair loop that builds (5)'s array even starts — the same early return
+> that stops it sending N shutdown requests. A script branching on `--all-pairs --json stop`'s
+> shape by verb, not by "every verb under `--all-pairs --json` is an array," gets this right;
+> nothing else in the CLI has a second daemon-wide verb to generalize the exception to yet.
 
 **Phase 4 — Scheduler, and lift the `N > 1` refusal (the hard one).** The due queue, the multi-root
 watcher and its routing, per-pair boot ordering, per-pair pause, the missing-root case. This is

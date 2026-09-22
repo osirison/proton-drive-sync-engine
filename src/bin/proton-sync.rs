@@ -427,6 +427,12 @@ async fn run_all_pairs(cli: &Cli, socket_path: &Path, style: &Style) -> ExitCode
         if response.pair.is_none() {
             worst = ExitCode::FAILURE;
         }
+        // The one fold both branches share (`reply_exit_code`'s doc) — a busy `list`, a paused
+        // `plan`, a failed `apply` must fail `--all-pairs` whether it is rendered or reported as
+        // JSON.
+        if reply_exit_code(&cli.command, &response) != ExitCode::SUCCESS {
+            worst = ExitCode::FAILURE;
+        }
         if cli.json {
             json_results.push(serde_json::json!({
                 "pair": pair.name,
@@ -434,9 +440,7 @@ async fn run_all_pairs(cli: &Cli, socket_path: &Path, style: &Style) -> ExitCode
             }));
         } else {
             println!("{}", style.dim(&format!("== {} ==", pair.name)));
-            if print_pair_reply(&cli.command, &response, style, &pair.name) != ExitCode::SUCCESS {
-                worst = ExitCode::FAILURE;
-            }
+            print_pair_reply(&cli.command, &response, style, &pair.name);
         }
     }
     if cli.json {
@@ -448,41 +452,60 @@ async fn run_all_pairs(cli: &Cli, socket_path: &Path, style: &Style) -> ExitCode
     worst
 }
 
+/// The exit code a `--all-pairs` reply for `command` earns — the **one** decision both of
+/// `run_all_pairs`'s branches fold into `worst`. Before this, the JSON branch folded only
+/// `response.pair` and never the verb's own outcome, so a busy `list`, a paused `plan`, or a
+/// failed `apply` under `--all-pairs --json` printed the payload and exited 0 (the JSON twin of
+/// the human-branch bug 9a8d304 fixed). `list_exit_code`/`plan_exit_code`/`apply_exit_code` are
+/// the same functions `print_listing`/`report_plan`/`report_apply` compute their return from, so
+/// the two branches cannot answer differently for the same reply.
+fn reply_exit_code(command: &Commands, response: &ControlResponse) -> ExitCode {
+    match command {
+        Commands::List { .. } => list_exit_code(response.listing.as_ref()),
+        Commands::Plan { .. } => plan_exit_code(response.plan.as_ref()),
+        Commands::Apply { .. } => apply_exit_code(response.apply.as_ref()),
+        Commands::Status
+        | Commands::History
+        | Commands::Activity { .. }
+        | Commands::Pending
+        | Commands::Pause
+        | Commands::Resume
+        | Commands::Syncnow { .. }
+        | Commands::Resync
+        | Commands::ResetIndex { .. }
+        | Commands::Stop
+        | Commands::Approve { .. }
+        | Commands::Deny { .. }
+        | Commands::Keep { .. } => ExitCode::SUCCESS,
+    }
+}
+
 /// The human-readable rendering of one pair's immediate reply under `--all-pairs` — the same
 /// per-verb rule `run_for_pair`'s non-json branches follow (`response.message` for a plain ack,
 /// the dedicated printer for `status`/`history`/`activity`/`pending`, a plan/apply summary for
-/// their *ack* rather than their watched outcome, since `--all-pairs` does not wait). Returns the
-/// verb's own exit code (`list`/`plan`/`apply` can fail; everything else is a plain report that
-/// always succeeds, same as `run_for_pair`'s non-json arms), so `run_all_pairs` folds it into
-/// `worst` instead of discarding it — a busy `list`, a paused `plan`, a failed `apply` under
-/// `--all-pairs` must exit non-zero, not just print an error line and return 0.
+/// their *ack* rather than their watched outcome, since `--all-pairs` does not wait). Print-only:
+/// `run_all_pairs` gets this reply's exit code from `reply_exit_code`, not from here.
 fn print_pair_reply(
     command: &Commands,
     response: &ControlResponse,
     style: &Style,
     pair_name: &str,
-) -> ExitCode {
+) {
     let pair = Some(pair_name);
     match command {
-        Commands::Status => {
-            print_status(response, style, pair);
-            ExitCode::SUCCESS
+        Commands::Status => print_status(response, style, pair),
+        Commands::History => print_history(response, style),
+        Commands::Activity { .. } => print_activity(response, style),
+        Commands::Pending => print_pending(&response.pending_deletions, pair),
+        Commands::List { .. } => {
+            print_listing(response, false, style);
         }
-        Commands::History => {
-            print_history(response, style);
-            ExitCode::SUCCESS
+        Commands::Plan { .. } => {
+            report_plan(response, false, style, pair);
         }
-        Commands::Activity { .. } => {
-            print_activity(response, style);
-            ExitCode::SUCCESS
+        Commands::Apply { .. } => {
+            report_apply(response, false, style, pair);
         }
-        Commands::Pending => {
-            print_pending(&response.pending_deletions, pair);
-            ExitCode::SUCCESS
-        }
-        Commands::List { .. } => print_listing(response, false, style),
-        Commands::Plan { .. } => report_plan(response, false, style, pair),
-        Commands::Apply { .. } => report_apply(response, false, style, pair),
         Commands::Pause
         | Commands::Resume
         | Commands::Syncnow { .. }
@@ -491,10 +514,7 @@ fn print_pair_reply(
         | Commands::Stop
         | Commands::Approve { .. }
         | Commands::Deny { .. }
-        | Commands::Keep { .. } => {
-            println!("{}", response.message);
-            ExitCode::SUCCESS
-        }
+        | Commands::Keep { .. } => println!("{}", response.message),
     }
 }
 
@@ -826,9 +846,20 @@ fn print_status(response: &ControlResponse, style: &Style, pair: Option<&str>) {
     print_unsyncable(&response.unsyncable, style);
 }
 
-/// Renders a `list` reply, and returns the exit code with it: the three outcomes are three
-/// different things to a script, and folding `busy` into `0` would make "the CLI was busy" look
-/// like "the folder is empty".
+/// The exit code a `list` reply's outcome earns, computed with no printing so `reply_exit_code`
+/// (the `--all-pairs --json` fold) and [`print_listing`] can never disagree about the same reply.
+/// Only [`ListingOutcome::Listed`] succeeds: `busy`, `failed`, and an outcome this build does not
+/// know are three different things to a script, but none of them is "the folder is empty".
+fn list_exit_code(listing: Option<&ListingOutcome>) -> ExitCode {
+    match listing {
+        Some(ListingOutcome::Listed { .. }) => ExitCode::SUCCESS,
+        Some(ListingOutcome::Busy) => ExitCode::FAILURE,
+        Some(ListingOutcome::Failed { .. }) => ExitCode::FAILURE,
+        Some(ListingOutcome::Unknown) | None => ExitCode::FAILURE,
+    }
+}
+
+/// Renders a `list` reply. Prints only; the exit code is [`list_exit_code`]'s alone.
 fn print_listing(response: &ControlResponse, json: bool, style: &Style) -> ExitCode {
     match &response.listing {
         Some(ListingOutcome::Listed {
@@ -878,25 +909,22 @@ fn print_listing(response: &ControlResponse, json: bool, style: &Style) -> ExitC
                     }
                 }
             }
-            ExitCode::SUCCESS
         }
         Some(ListingOutcome::Busy) => {
             eprintln!(
                 "The proton-drive CLI is busy with a sync operation; nothing was listed. Try again."
             );
-            ExitCode::FAILURE
         }
         Some(ListingOutcome::Failed { error }) => {
             eprintln!("Could not list that folder: {error}");
-            ExitCode::FAILURE
         }
         // A state this client does not know, and the `None` an older daemon sends. Both mean the
         // same thing to a user — no listing — and neither is an empty folder.
         Some(ListingOutcome::Unknown) | None => {
             eprintln!("The daemon did not return a listing for that folder.");
-            ExitCode::FAILURE
         }
     }
+    list_exit_code(response.listing.as_ref())
 }
 
 /// The entities the daemon cannot sync, by name and cause. A count alone is unactionable: the
@@ -1871,8 +1899,24 @@ fn run_it_line(total: usize, token: &str, pair: Option<&str>, style: &Style) -> 
     })
 }
 
-/// Renders a plan reply, and returns the exit code with it — the same rule `list` follows: a plan
-/// that did not happen exits non-zero so a script never mistakes it for "nothing to do".
+/// The exit code a `plan` reply's outcome earns — [`list_exit_code`]'s sibling, read by both
+/// [`report_plan`] and `reply_exit_code`. [`PlanOutcome::Scheduled`] is the `--all-pairs` immediate
+/// ack (`report_plan`'s doc on that arm) and succeeds like [`PlanOutcome::Computed`]; a plan that
+/// did not happen — paused, failed, still computing, absent, or an outcome this build does not
+/// know — fails, so a script never mistakes it for "nothing to do".
+fn plan_exit_code(plan: Option<&PlanOutcome>) -> ExitCode {
+    match plan {
+        Some(PlanOutcome::Computed(_)) => ExitCode::SUCCESS,
+        Some(PlanOutcome::Scheduled { .. }) => ExitCode::SUCCESS,
+        Some(PlanOutcome::Paused) => ExitCode::FAILURE,
+        Some(PlanOutcome::Failed { .. }) => ExitCode::FAILURE,
+        Some(PlanOutcome::Computing { .. }) => ExitCode::FAILURE,
+        Some(PlanOutcome::Absent) => ExitCode::FAILURE,
+        Some(PlanOutcome::Unknown) | None => ExitCode::FAILURE,
+    }
+}
+
+/// Renders a plan reply. Prints only; the exit code is [`plan_exit_code`]'s alone.
 ///
 /// `pair` is the selector this command was run with (not `response.pair`, which is `Some(name)`
 /// on every successful reply and would print `--pair <name>` even for a single-pair user who
@@ -1943,26 +1987,21 @@ fn report_plan(
                     println!("\n{line}");
                 }
             }
-            ExitCode::SUCCESS
         }
         Some(PlanOutcome::Paused) => {
             eprintln!(
                 "Syncing is paused, so nothing was planned. Resume with `{}`.",
                 cli_hint(pair, "resume")
             );
-            ExitCode::FAILURE
         }
         Some(PlanOutcome::Failed { error, .. }) => {
             eprintln!("Could not work out a plan: {error}");
-            ExitCode::FAILURE
         }
         Some(PlanOutcome::Computing { .. }) => {
             eprintln!("The daemon is still working out the plan.");
-            ExitCode::FAILURE
         }
         Some(PlanOutcome::Absent) => {
             eprintln!("The daemon has not worked out a plan yet.");
-            ExitCode::FAILURE
         }
         // The immediate ack `--all-pairs` reports instead of waiting (it never calls `watch_plan`,
         // so this is the only caller that can see this arm): scheduled, not computed, and that is
@@ -1974,19 +2013,42 @@ fn report_plan(
                     cli_hint(pair, "status")
                 );
             }
-            ExitCode::SUCCESS
         }
         // A state this client does not know, and the `None` an older daemon sends. Neither is an
         // empty plan.
         Some(PlanOutcome::Unknown) | None => {
             eprintln!("The daemon did not return a plan.");
-            ExitCode::FAILURE
         }
+    }
+    plan_exit_code(response.plan.as_ref())
+}
+
+/// The exit code an `apply` reply's outcome earns — [`list_exit_code`]'s sibling, read by both
+/// [`report_apply`] and `reply_exit_code`. [`ApplyOutcome::Applied`] fails only when it landed
+/// items that themselves failed (#136's partial outcome); [`ApplyOutcome::Scheduled`] is the
+/// `--all-pairs` immediate ack and succeeds like `Computed`/`Scheduled` do for a plan; a
+/// divergence, a stale token, a pause, an outright failure, and an outcome this build does not
+/// know all fail — nothing ran, or nothing is known to have.
+fn apply_exit_code(apply: Option<&ApplyOutcome>) -> ExitCode {
+    match apply {
+        Some(ApplyOutcome::Applied { failed, .. }) => {
+            if *failed > 0 {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            }
+        }
+        Some(ApplyOutcome::Scheduled { .. }) => ExitCode::SUCCESS,
+        Some(ApplyOutcome::Diverged { .. }) => ExitCode::FAILURE,
+        Some(ApplyOutcome::Stale) => ExitCode::FAILURE,
+        Some(ApplyOutcome::Paused) => ExitCode::FAILURE,
+        Some(ApplyOutcome::Failed { .. }) => ExitCode::FAILURE,
+        Some(ApplyOutcome::Unknown) | None => ExitCode::FAILURE,
     }
 }
 
-/// Renders an apply reply. A divergence exits non-zero and prints the new plan: nothing ran, and
-/// the user has something to review.
+/// Renders an apply reply. Prints only; the exit code is [`apply_exit_code`]'s alone. A divergence
+/// prints the new plan: nothing ran, and the user has something to review.
 ///
 /// `pair` is the selector this command was run with — see [`report_plan`]'s doc for why it is not
 /// re-derived from `response.pair`.
@@ -2024,12 +2086,6 @@ fn report_apply(
                     println!("{} {line}", style.green("✓"));
                 }
             }
-            // A partial apply is not a success (#136's third outcome, reported as itself).
-            if *failed > 0 {
-                ExitCode::FAILURE
-            } else {
-                ExitCode::SUCCESS
-            }
         }
         Some(ApplyOutcome::Diverged { .. }) => {
             if !json {
@@ -2054,7 +2110,6 @@ fn report_apply(
                     );
                 }
             }
-            ExitCode::FAILURE
         }
         Some(ApplyOutcome::Stale) => {
             eprintln!(
@@ -2062,18 +2117,15 @@ fn report_apply(
                  prints.",
                 cli_hint(pair, "plan")
             );
-            ExitCode::FAILURE
         }
         Some(ApplyOutcome::Paused) => {
             eprintln!(
                 "Syncing is paused, so nothing was applied. Resume with `{}`.",
                 cli_hint(pair, "resume")
             );
-            ExitCode::FAILURE
         }
         Some(ApplyOutcome::Failed { error, .. }) => {
             eprintln!("The apply failed: {error}");
-            ExitCode::FAILURE
         }
         Some(ApplyOutcome::Scheduled { .. }) => {
             if !json {
@@ -2082,13 +2134,12 @@ fn report_apply(
                     cli_hint(pair, "status")
                 );
             }
-            ExitCode::SUCCESS
         }
         Some(ApplyOutcome::Unknown) | None => {
             eprintln!("The daemon did not say what happened to the apply.");
-            ExitCode::FAILURE
         }
     }
+    apply_exit_code(response.apply.as_ref())
 }
 
 /// A single-line stderr spinner for the `syncnow` wait, shown only on a terminal.
@@ -2426,22 +2477,21 @@ mod tests {
     }
 
     #[test]
-    fn print_pair_reply_returns_the_verbs_own_exit_code() {
-        // `run_all_pairs` used to discard this return value entirely (`{ ...; }` blocks), so a
-        // busy `list`, a paused `plan` or a failed `apply` under `--all-pairs` printed an error
-        // line but the process still exited 0.
-        let style = plain_style();
+    fn reply_exit_code_matches_the_verbs_own_outcome() {
+        // `run_all_pairs`'s human branch used to discard `print_pair_reply`'s return value
+        // entirely (`{ ...; }` blocks), so a busy `list`, a paused `plan` or a failed `apply`
+        // under `--all-pairs` printed an error line but the process still exited 0. Both branches
+        // now fold `reply_exit_code` instead — see `all_pairs_json_list_exits_by_its_own_outcome`
+        // and its plan/apply siblings for the JSON twin of that bug (#409's Copilot finding).
         let mut failing_list = blank_response();
         failing_list.listing = Some(ListingOutcome::Busy);
         assert_eq!(
-            print_pair_reply(
+            reply_exit_code(
                 &Commands::List {
                     path: None,
                     limit: None
                 },
-                &failing_list,
-                &style,
-                "work"
+                &failing_list
             ),
             ExitCode::FAILURE
         );
@@ -2449,20 +2499,336 @@ mod tests {
         let mut failing_plan = blank_response();
         failing_plan.plan = Some(PlanOutcome::Paused);
         assert_eq!(
-            print_pair_reply(
-                &Commands::Plan { limit: None },
-                &failing_plan,
-                &style,
-                "work"
-            ),
+            reply_exit_code(&Commands::Plan { limit: None }, &failing_plan),
             ExitCode::FAILURE
         );
 
         let ok = blank_response();
+        assert_eq!(reply_exit_code(&Commands::Status, &ok), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn list_exit_code_covers_every_listing_outcome() {
         assert_eq!(
-            print_pair_reply(&Commands::Status, &ok, &style, "work"),
+            list_exit_code(Some(&ListingOutcome::Listed {
+                path: PathBuf::new(),
+                entries: Vec::new(),
+                total: 0,
+                truncated: false,
+            })),
             ExitCode::SUCCESS
         );
+        assert_eq!(
+            list_exit_code(Some(&ListingOutcome::Busy)),
+            ExitCode::FAILURE
+        );
+        assert_eq!(
+            list_exit_code(Some(&ListingOutcome::Failed {
+                error: "x".to_owned()
+            })),
+            ExitCode::FAILURE
+        );
+        assert_eq!(
+            list_exit_code(Some(&ListingOutcome::Unknown)),
+            ExitCode::FAILURE
+        );
+        assert_eq!(list_exit_code(None), ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn plan_exit_code_covers_every_plan_outcome() {
+        assert_eq!(plan_exit_code(Some(&reviewed("tok"))), ExitCode::SUCCESS);
+        // The `--all-pairs` immediate ack — decision #9a8d304 pinned for `report_plan`, restated
+        // here because `plan_exit_code` is now the one place that decision lives.
+        assert_eq!(
+            plan_exit_code(Some(&PlanOutcome::Scheduled { plan_seq: 1 })),
+            ExitCode::SUCCESS
+        );
+        assert_eq!(
+            plan_exit_code(Some(&PlanOutcome::Paused)),
+            ExitCode::FAILURE
+        );
+        assert_eq!(
+            plan_exit_code(Some(&PlanOutcome::Failed {
+                plan_seq: 1,
+                error: "x".to_owned()
+            })),
+            ExitCode::FAILURE
+        );
+        assert_eq!(
+            plan_exit_code(Some(&PlanOutcome::Computing { plan_seq: 1 })),
+            ExitCode::FAILURE
+        );
+        assert_eq!(
+            plan_exit_code(Some(&PlanOutcome::Absent)),
+            ExitCode::FAILURE
+        );
+        assert_eq!(
+            plan_exit_code(Some(&PlanOutcome::Unknown)),
+            ExitCode::FAILURE
+        );
+        assert_eq!(plan_exit_code(None), ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn apply_exit_code_covers_every_apply_outcome() {
+        assert_eq!(
+            apply_exit_code(Some(&ApplyOutcome::Applied {
+                apply_seq: 1,
+                executed: 1,
+                skipped_destructive: 0,
+                failed: 0,
+            })),
+            ExitCode::SUCCESS
+        );
+        // The data-dependent arm: `Applied` only fails when it landed items that themselves
+        // failed (#136). This is the case a `matches!` one-liner over the variant alone would
+        // get wrong.
+        assert_eq!(
+            apply_exit_code(Some(&ApplyOutcome::Applied {
+                apply_seq: 1,
+                executed: 1,
+                skipped_destructive: 0,
+                failed: 1,
+            })),
+            ExitCode::FAILURE
+        );
+        // The `--all-pairs` immediate ack, success like `PlanOutcome::Scheduled`.
+        assert_eq!(
+            apply_exit_code(Some(&ApplyOutcome::Scheduled { apply_seq: 1 })),
+            ExitCode::SUCCESS
+        );
+        assert_eq!(
+            apply_exit_code(Some(&ApplyOutcome::Diverged { apply_seq: 1 })),
+            ExitCode::FAILURE
+        );
+        assert_eq!(
+            apply_exit_code(Some(&ApplyOutcome::Stale)),
+            ExitCode::FAILURE
+        );
+        assert_eq!(
+            apply_exit_code(Some(&ApplyOutcome::Paused)),
+            ExitCode::FAILURE
+        );
+        assert_eq!(
+            apply_exit_code(Some(&ApplyOutcome::Failed {
+                apply_seq: 1,
+                error: "x".to_owned()
+            })),
+            ExitCode::FAILURE
+        );
+        assert_eq!(
+            apply_exit_code(Some(&ApplyOutcome::Unknown)),
+            ExitCode::FAILURE
+        );
+        assert_eq!(apply_exit_code(None), ExitCode::FAILURE);
+    }
+
+    /// One `--all-pairs` run against a single configured pair: the capability probe, then this
+    /// one verb reply. Returns the process's own exit code, exactly what `main` would return.
+    fn run_all_pairs_with(json: bool, command: Commands, verb_reply: ControlResponse) -> ExitCode {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let socket_path = directory.path().join("control.sock");
+        let probe_reply = ControlResponse {
+            pairs: vec![pair_summary("default")],
+            ..blank_response()
+        };
+        let cli = Cli {
+            config: None,
+            socket_path: None,
+            json,
+            pair: None,
+            all_pairs: true,
+            command,
+        };
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                let server = tokio::spawn(serve_scripted(
+                    socket_path.clone(),
+                    vec![probe_reply, verb_reply],
+                ));
+                tokio::task::yield_now().await;
+                let code = run_all_pairs(&cli, &socket_path, &Style { enabled: false }).await;
+                server.abort();
+                code
+            })
+    }
+
+    /// The JSON twin of the bug 9a8d304 fixed for the human branch: `--all-pairs --json`'s fold
+    /// used to check only `response.pair`, never the verb's own outcome, so a busy `list` printed
+    /// its payload and exited 0.
+    #[test]
+    fn all_pairs_json_list_exits_by_its_own_outcome() {
+        let busy = ControlResponse {
+            listing: Some(ListingOutcome::Busy),
+            ..blank_response()
+        };
+        assert_eq!(
+            run_all_pairs_with(
+                true,
+                Commands::List {
+                    path: None,
+                    limit: None
+                },
+                busy
+            ),
+            ExitCode::FAILURE,
+            "a busy listing must fail --all-pairs --json"
+        );
+
+        let listed = ControlResponse {
+            listing: Some(ListingOutcome::Listed {
+                path: PathBuf::new(),
+                entries: Vec::new(),
+                total: 0,
+                truncated: false,
+            }),
+            ..blank_response()
+        };
+        assert_eq!(
+            run_all_pairs_with(
+                true,
+                Commands::List {
+                    path: None,
+                    limit: None
+                },
+                listed
+            ),
+            ExitCode::SUCCESS
+        );
+    }
+
+    #[test]
+    fn all_pairs_json_plan_exits_by_its_own_outcome() {
+        let paused = ControlResponse {
+            plan: Some(PlanOutcome::Paused),
+            ..blank_response()
+        };
+        assert_eq!(
+            run_all_pairs_with(true, Commands::Plan { limit: None }, paused),
+            ExitCode::FAILURE,
+            "a paused plan must fail --all-pairs --json"
+        );
+
+        // `Scheduled` is the immediate ack every `--all-pairs plan` reply actually carries (it
+        // never watches), and it is a success — the case #409's finding calls out by name.
+        let scheduled = ControlResponse {
+            plan: Some(PlanOutcome::Scheduled { plan_seq: 3 }),
+            ..blank_response()
+        };
+        assert_eq!(
+            run_all_pairs_with(true, Commands::Plan { limit: None }, scheduled),
+            ExitCode::SUCCESS
+        );
+    }
+
+    #[test]
+    fn all_pairs_json_apply_exits_by_its_own_outcome() {
+        fn apply_command() -> Commands {
+            Commands::Apply {
+                token: "tok".to_owned(),
+                skip_destructive: false,
+                no_wait: true,
+            }
+        }
+
+        let diverged = ControlResponse {
+            apply: Some(ApplyOutcome::Diverged { apply_seq: 1 }),
+            ..blank_response()
+        };
+        assert_eq!(
+            run_all_pairs_with(true, apply_command(), diverged),
+            ExitCode::FAILURE,
+            "a diverged apply must fail --all-pairs --json"
+        );
+
+        // The data-dependent arm: applied, but with a failed item (#136's partial outcome).
+        let partial = ControlResponse {
+            apply: Some(ApplyOutcome::Applied {
+                apply_seq: 1,
+                executed: 1,
+                skipped_destructive: 0,
+                failed: 1,
+            }),
+            ..blank_response()
+        };
+        assert_eq!(
+            run_all_pairs_with(true, apply_command(), partial),
+            ExitCode::FAILURE,
+            "a partial apply must fail --all-pairs --json"
+        );
+
+        let scheduled = ControlResponse {
+            apply: Some(ApplyOutcome::Scheduled { apply_seq: 7 }),
+            ..blank_response()
+        };
+        assert_eq!(
+            run_all_pairs_with(true, apply_command(), scheduled),
+            ExitCode::SUCCESS
+        );
+    }
+
+    /// The property that stops the two branches drifting again: for the same reply, the JSON
+    /// branch and the human branch must exit with the same code. Each is driven through the real
+    /// `run_all_pairs` (not the two `xxx_exit_code` functions directly), so a regression that
+    /// reintroduces a second, divergent decision inside either branch is caught here even if it
+    /// leaves both `xxx_exit_code` functions themselves untouched.
+    #[test]
+    fn all_pairs_json_and_human_branches_exit_alike() {
+        let busy_list = ControlResponse {
+            listing: Some(ListingOutcome::Busy),
+            ..blank_response()
+        };
+        let json_code = run_all_pairs_with(
+            true,
+            Commands::List {
+                path: None,
+                limit: None,
+            },
+            busy_list.clone(),
+        );
+        let human_code = run_all_pairs_with(
+            false,
+            Commands::List {
+                path: None,
+                limit: None,
+            },
+            busy_list,
+        );
+        assert_eq!(json_code, human_code);
+        assert_eq!(json_code, ExitCode::FAILURE);
+
+        let scheduled_plan = ControlResponse {
+            plan: Some(PlanOutcome::Scheduled { plan_seq: 3 }),
+            ..blank_response()
+        };
+        let json_code =
+            run_all_pairs_with(true, Commands::Plan { limit: None }, scheduled_plan.clone());
+        let human_code = run_all_pairs_with(false, Commands::Plan { limit: None }, scheduled_plan);
+        assert_eq!(json_code, human_code);
+        assert_eq!(json_code, ExitCode::SUCCESS);
+
+        let partial_apply = ControlResponse {
+            apply: Some(ApplyOutcome::Applied {
+                apply_seq: 1,
+                executed: 1,
+                skipped_destructive: 0,
+                failed: 1,
+            }),
+            ..blank_response()
+        };
+        let apply_command = || Commands::Apply {
+            token: "tok".to_owned(),
+            skip_destructive: false,
+            no_wait: true,
+        };
+        let json_code = run_all_pairs_with(true, apply_command(), partial_apply.clone());
+        let human_code = run_all_pairs_with(false, apply_command(), partial_apply);
+        assert_eq!(json_code, human_code);
+        assert_eq!(json_code, ExitCode::FAILURE);
     }
 
     #[test]
