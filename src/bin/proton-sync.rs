@@ -369,7 +369,7 @@ async fn run_for_pair(
 }
 
 /// `--all-pairs`: the capability gate, then every configured pair in the order `status` lists
-/// them.
+/// them — except `stop`, which is daemon-wide and runs once, not per pair (see below).
 ///
 /// **Deliberately does not run `run_for_pair`'s wait loops (`syncnow`/`apply`/`plan`) per pair.**
 /// A wait loop's spinner and its final report are written for a single command watching a single
@@ -395,6 +395,14 @@ async fn run_all_pairs(cli: &Cli, socket_path: &Path, style: &Style) -> ExitCode
              --pair/--all-pairs"
         );
         return ExitCode::FAILURE;
+    }
+
+    // `shutdown` is daemon-wide and ignores the selector (ADR 0005 §4's verb table), so it is not
+    // a per-pair loop: with N pairs the loop below would fire N shutdowns, the first killing the
+    // daemon and every later iteration failing to connect — a successful stop reported as a
+    // failure. One request, same print path as an unqualified `stop`.
+    if matches!(cli.command, Commands::Stop) {
+        return run_for_pair(cli, socket_path, style, None).await;
     }
 
     let mut worst = ExitCode::SUCCESS;
@@ -2876,6 +2884,66 @@ mod tests {
             stream.write_all(&body).await.expect("write response");
             stream.flush().await.expect("flush");
         }
+    }
+
+    /// `--all-pairs stop` used to loop like every other verb, sending one shutdown request per
+    /// configured pair (ADR 0005 §4's verb table settles `shutdown` as daemon-wide, selector
+    /// ignored). With N pairs the first shutdown kills the daemon and every later iteration fails
+    /// to connect, reporting a clean stop as a failure. A third reply is scripted so a regression
+    /// that still loops is caught by the request COUNT, not by a starved connection that would
+    /// otherwise only show up as a wrong exit code.
+    #[test]
+    fn all_pairs_stop_sends_exactly_one_shutdown_request() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let socket_path = directory.path().join("control.sock");
+        let seen = Arc::new(Mutex::new(Vec::new()));
+
+        let probe_reply = ControlResponse {
+            pairs: vec![pair_summary("default"), pair_summary("second")],
+            ..blank_response()
+        };
+        let shutdown_reply = ControlResponse {
+            message: "shutting down".to_owned(),
+            ..blank_response()
+        };
+
+        let cli = Cli {
+            config: None,
+            socket_path: None,
+            json: false,
+            pair: None,
+            all_pairs: true,
+            command: Commands::Stop,
+        };
+
+        let code = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                let server = tokio::spawn(serve_recording(
+                    socket_path.clone(),
+                    vec![probe_reply, shutdown_reply.clone(), shutdown_reply],
+                    Arc::clone(&seen),
+                ));
+                // `run_all_pairs`'s first request has no retry (unlike `poll_until`'s callers),
+                // so the listener must exist before it connects — one yield is enough for the
+                // spawned task to reach its own first pending await (`accept`).
+                tokio::task::yield_now().await;
+                let code = run_all_pairs(&cli, &socket_path, &Style { enabled: false }).await;
+                server.abort();
+                code
+            });
+
+        assert_eq!(code, ExitCode::SUCCESS);
+        let requests = seen.lock().expect("seen lock").clone();
+        assert_eq!(
+            requests.len(),
+            2,
+            "one capability probe, then exactly one shutdown — never one per pair: {requests:?}"
+        );
+        assert_eq!(requests[0].command, ControlCommand::Status);
+        assert_eq!(requests[1].command, ControlCommand::Shutdown);
     }
 
     /// A pause **does not** end a `plan`/`apply` wait, and must not be "made consistent" with

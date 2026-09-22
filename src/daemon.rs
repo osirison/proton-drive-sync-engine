@@ -2157,6 +2157,7 @@ impl<C: ProtonClient> Daemon<C> {
             false,
             approve,
             None,
+            None,
         )
     }
 
@@ -2168,6 +2169,7 @@ impl<C: ProtonClient> Daemon<C> {
             &self.pair().pending_deletions,
             selector,
             true,
+            None,
         )
     }
 
@@ -5202,6 +5204,23 @@ impl<C: ProtonClient> PairPass<'_, C> {
     }
 }
 
+/// A copy-pasteable `proton-sync` invocation, carrying the same `--pair` selector the *request*
+/// that is building this message arrived with (`ControlRequest.pair`) — the daemon-side twin of
+/// `proton-sync`'s own `cli_hint`, which cannot be shared across the bin/lib boundary. `tail` is
+/// everything after the binary name, e.g. `"syncnow"` or `"pending"`.
+///
+/// **Never key this on `PairShared.name`.** That is `Some("default")` for a single-pair user who
+/// never typed `--pair` at all, so using it here would print `--pair default` in every one of
+/// these messages for every existing user. Callers must pass the selector `handle_control_connection`
+/// read off the wire (`request.pair.as_deref()`), which is `None` on an omitted selector even
+/// though the pair it resolved to always has a name.
+fn cli_hint(pair: Option<&str>, tail: &str) -> String {
+    match pair {
+        Some(name) => format!("proton-sync --pair {name} {tail}"),
+        None => format!("proton-sync {tail}"),
+    }
+}
+
 /// Applies an `approve`/`deny` control command against the currently-pending deletions. The
 /// `selector` must be an explicit relative path, or the literal `"all"` for every pending item.
 /// A missing selector is rejected as a no-op: acting on "all" must be a deliberate choice, so an
@@ -5220,6 +5239,7 @@ fn apply_approval_command(
     literal_path: bool,
     approve: bool,
     direction: Option<DeleteDirection>,
+    pair: Option<&str>,
 ) -> AppResult<String> {
     let Some(selector) = selector else {
         return Ok(
@@ -5245,7 +5265,8 @@ fn apply_approval_command(
         });
     }
     // Fail closed on the destructive side only: a `deny` over-revoking is the safe direction.
-    if approve && let Some(message) = ambiguous_selector_message(&matches, target, "approve") {
+    if approve && let Some(message) = ambiguous_selector_message(&matches, target, "approve", pair)
+    {
         return Ok(message);
     }
 
@@ -5266,8 +5287,9 @@ fn apply_approval_command(
 
     let verb = if approve { "approved" } else { "denied" };
     Ok(format!(
-        "{verb} {} pending deletion(s); run `proton-sync syncnow` to apply now",
-        matches.len()
+        "{verb} {} pending deletion(s); run `{}` to apply now",
+        matches.len(),
+        cli_hint(pair, "syncnow")
     ))
 }
 
@@ -5356,6 +5378,7 @@ fn apply_keep_command(
     pending_deletions: &[PendingDeletion],
     selector: Option<&str>,
     literal_path: bool,
+    pair: Option<&str>,
 ) -> AppResult<(String, bool)> {
     let Some(selector) = selector else {
         return Ok((
@@ -5377,7 +5400,7 @@ fn apply_keep_command(
     // revokes — its effect is that nothing happens — while keeping MUTATES the index and puts
     // content back on a side the user may have deliberately cleared, on rows they provably cannot
     // tell apart.
-    if let Some(message) = ambiguous_selector_message(&matches, target, "keep") {
+    if let Some(message) = ambiguous_selector_message(&matches, target, "keep", pair) {
         return Ok((message, false));
     }
 
@@ -5419,7 +5442,8 @@ fn apply_keep_command(
         return Ok((
             format!(
                 "nothing was kept: {stale} pending deletion(s) no longer match what was shown; \
-                 check `proton-sync pending` and try again"
+                 check `{}` and try again",
+                cli_hint(pair, "pending")
             ),
             false,
         ));
@@ -5490,6 +5514,7 @@ fn ambiguous_selector_message(
     matches: &[&PendingDeletion],
     target: Option<&str>,
     command: &str,
+    pair: Option<&str>,
 ) -> Option<String> {
     let target = target?;
     if matches.len() < 2 {
@@ -5507,8 +5532,9 @@ fn ambiguous_selector_message(
     Some(format!(
         "{} pending deletions render as '{target}' and cannot be told apart on the wire (their \
          paths are not valid UTF-8); nothing was {past_tense} — {command} every pending deletion \
-         instead with `proton-sync {command} --all`",
+         instead with `{}`",
         matches.len(),
+        cli_hint(pair, &format!("{command} --all")),
     ))
 }
 
@@ -5741,6 +5767,9 @@ async fn handle_control_connection<C: ProtonClient + 'static>(
                 request.literal_path,
                 approve,
                 request.direction,
+                // The wire selector, not `pair.name`: the latter resolves even on an omitted
+                // selector and would print `--pair default` for a user who never typed it.
+                request.pair.as_deref(),
             )?;
             drop(connection);
             if approve {
@@ -5785,6 +5814,8 @@ async fn handle_control_connection<C: ProtonClient + 'static>(
                 &pending,
                 request.argument.as_deref(),
                 request.literal_path,
+                // Same rule as `Approve`/`Deny` above: the wire selector, not `pair.name`.
+                request.pair.as_deref(),
             )?;
             drop(connection);
             // Nothing purged (no match, an ambiguous selector, a stale fingerprint) means nothing
@@ -10045,6 +10076,7 @@ mod tests {
             true,
             true,
             None,
+            None,
         )
         .expect("literal-path approve");
         assert!(
@@ -10064,6 +10096,7 @@ mod tests {
             Some("All"),
             false,
             true,
+            None,
             None,
         )
         .expect("legacy approve");
@@ -10121,6 +10154,7 @@ mod tests {
             true,
             true,
             None,
+            None,
         )
         .expect("approve by wire form");
 
@@ -10177,6 +10211,7 @@ mod tests {
             true,
             true,
             None,
+            None,
         )
         .expect("ambiguous approve");
 
@@ -10206,6 +10241,7 @@ mod tests {
             false,
             true,
             None,
+            None,
         )
         .expect("approve all");
         assert_eq!(
@@ -10220,6 +10256,7 @@ mod tests {
             Some(&selector),
             true,
             false,
+            None,
             None,
         )
         .expect("ambiguous deny");
@@ -10266,11 +10303,12 @@ mod tests {
                 true,
                 false,
                 None,
+                None,
             )
             .expect("deny with no match"),
         );
         bounded(
-            &apply_keep_command(&daemon.pair().connection, &[], Some(&huge), true)
+            &apply_keep_command(&daemon.pair().connection, &[], Some(&huge), true, None)
                 .expect("keep with no match")
                 .0,
         );
@@ -10283,6 +10321,7 @@ mod tests {
                 true,
                 true,
                 None,
+                None,
             )
             .expect("pre-approve without a direction"),
         );
@@ -10294,6 +10333,7 @@ mod tests {
                 true,
                 true,
                 Some(DeleteDirection::Remote),
+                None,
             )
             .expect("pre-approve with no index record"),
         );
@@ -10330,6 +10370,7 @@ mod tests {
             true,
             true,
             None,
+            None,
         )
         .expect("ambiguous approve");
         assert!(message.contains("cannot be told apart"), "{message}");
@@ -10363,6 +10404,7 @@ mod tests {
             Some(&selector),
             true,
             true,
+            None,
             None,
         )
         .expect("approve a long path");
@@ -10412,6 +10454,7 @@ mod tests {
             Some("nested/folder/"),
             true,
             true,
+            None,
             None,
         )
         .expect("approve by completed path");
@@ -11025,14 +11068,164 @@ mod tests {
         let selector = crate::ipc::wire_path(&pending[0].path).into_owned();
         assert_eq!(selector, crate::ipc::wire_path(&pending[1].path));
 
-        let (message, changed) =
-            apply_keep_command(&daemon.pair().connection, &pending, Some(&selector), true)
-                .expect("ambiguous keep");
+        let (message, changed) = apply_keep_command(
+            &daemon.pair().connection,
+            &pending,
+            Some(&selector),
+            true,
+            None,
+        )
+        .expect("ambiguous keep");
 
         assert!(!changed);
         assert!(
             message.contains("nothing was kept") && message.contains("proton-sync keep --all"),
             "an ambiguous selector must keep nothing and name the deliberate form: {message}"
+        );
+    }
+
+    /// #409. `ambiguous_selector_message` builds one of the three daemon-side hints directly, so
+    /// pin its own echo rule without the rest of `apply_approval_command`/`apply_keep_command`
+    /// around it: bare on `None`, `--pair <name>` on `Some`.
+    #[test]
+    fn ambiguous_selector_message_echoes_the_pair_selector() {
+        let a = PendingDeletion {
+            path: PathBuf::from("a"),
+            direction: DeleteDirection::Local,
+            entity_kind: EntityKind::File,
+            fingerprint: "fp-a".to_owned(),
+            detected_epoch_secs: 1,
+            first_seen_epoch_secs: 1,
+            subtree_files: None,
+            subtree_bytes: None,
+            disposal: LocalDisposal::Permanent,
+        };
+        let b = PendingDeletion {
+            path: PathBuf::from("b"),
+            fingerprint: "fp-b".to_owned(),
+            ..a.clone()
+        };
+        let matches = [&a, &b];
+
+        let message = ambiguous_selector_message(&matches, Some("x"), "approve", None)
+            .expect("two matches are ambiguous");
+        assert!(
+            message.contains("proton-sync approve --all") && !message.contains("--pair"),
+            "an omitted selector must stay bare: {message}"
+        );
+
+        let message = ambiguous_selector_message(&matches, Some("x"), "approve", Some("work"))
+            .expect("two matches are ambiguous");
+        assert!(
+            message.contains("proton-sync --pair work approve --all"),
+            "a named selector must be echoed verbatim: {message}"
+        );
+    }
+
+    /// #409. The syncnow hint `apply_approval_command` prints on success must carry the SAME
+    /// selector `handle_control_connection` was asked to resolve — never the resolved pair's own
+    /// name (see `cli_hint`'s doc: that would print `--pair default` for every existing user).
+    #[test]
+    fn apply_approval_command_hint_echoes_the_pair_selector() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let (client, _operations) = RecordingProtonClient::new(HashMap::new());
+        let daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        let pending = vec![PendingDeletion {
+            path: PathBuf::from("a.txt"),
+            direction: DeleteDirection::Remote,
+            entity_kind: EntityKind::File,
+            fingerprint: "fp".to_owned(),
+            detected_epoch_secs: 1,
+            first_seen_epoch_secs: 1,
+            subtree_files: None,
+            subtree_bytes: None,
+            disposal: LocalDisposal::Permanent,
+        }];
+
+        let message = apply_approval_command(
+            &daemon.pair().connection,
+            &pending,
+            Some("a.txt"),
+            true,
+            true,
+            None,
+            None,
+        )
+        .expect("approve");
+        assert!(
+            message.contains("run `proton-sync syncnow` to apply now")
+                && !message.contains("--pair"),
+            "an omitted selector must stay bare: {message}"
+        );
+
+        let message = apply_approval_command(
+            &daemon.pair().connection,
+            &pending,
+            Some("a.txt"),
+            true,
+            false,
+            None,
+            Some("work"),
+        )
+        .expect("deny");
+        assert!(
+            message.contains("run `proton-sync --pair work syncnow` to apply now"),
+            "a named selector must be echoed verbatim: {message}"
+        );
+    }
+
+    /// #409, the keep side. No baseline record exists for the path, so every attempt below takes
+    /// the "nothing was kept" arm (a stale-fingerprint refusal) — the one that names
+    /// `proton-sync pending`.
+    #[test]
+    fn apply_keep_command_hint_echoes_the_pair_selector() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let (client, _operations) = RecordingProtonClient::new(HashMap::new());
+        let daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        let pending = vec![PendingDeletion {
+            path: PathBuf::from("a.txt"),
+            direction: DeleteDirection::Remote,
+            entity_kind: EntityKind::File,
+            fingerprint: "fp".to_owned(),
+            detected_epoch_secs: 1,
+            first_seen_epoch_secs: 1,
+            subtree_files: None,
+            subtree_bytes: None,
+            disposal: LocalDisposal::Permanent,
+        }];
+
+        let (message, changed) = apply_keep_command(
+            &daemon.pair().connection,
+            &pending,
+            Some("a.txt"),
+            true,
+            None,
+        )
+        .expect("keep");
+        assert!(!changed);
+        assert!(
+            message.contains("check `proton-sync pending` and try again")
+                && !message.contains("--pair"),
+            "an omitted selector must stay bare: {message}"
+        );
+
+        let (message, _changed) = apply_keep_command(
+            &daemon.pair().connection,
+            &pending,
+            Some("a.txt"),
+            true,
+            Some("work"),
+        )
+        .expect("keep");
+        assert!(
+            message.contains("check `proton-sync --pair work pending` and try again"),
+            "a named selector must be echoed verbatim: {message}"
         );
     }
 
@@ -11064,6 +11257,7 @@ mod tests {
             true,
             true,
             Some(DeleteDirection::Local),
+            None,
         )
         .expect("pre-approve");
         assert!(message.contains("approved 1"), "{message}");
@@ -11102,6 +11296,7 @@ mod tests {
             true,
             true,
             None,
+            None,
         )
         .expect("pre-approve without a direction");
 
@@ -11137,6 +11332,7 @@ mod tests {
                 true,
                 true,
                 Some(DeleteDirection::Local),
+                None,
             )
             .expect("pre-approve");
             assert!(
@@ -15029,6 +15225,90 @@ mod tests {
         request.pair = Some("beta".to_owned());
         let response = roundtrip(&plane, request).await;
         assert_eq!(response.pair.as_deref(), Some("beta"));
+    }
+
+    /// #409, driven through `handle_control_connection` itself — the keying trap the fix names
+    /// explicitly. `alpha` is this plane's DEFAULT pair (index 0, what an omitted selector
+    /// resolves to): if `Approve`/`Keep` echoed the *resolved* `PairShared.name` instead of the
+    /// wire's `request.pair`, an omitted selector would still print `--pair alpha` here, exactly
+    /// as it would print `--pair default` for a single-pair user in production.
+    #[tokio::test]
+    async fn approve_and_keep_hints_key_on_the_wire_selector_not_the_resolved_pair_name() {
+        let directory = tempdir().expect("tempdir");
+        let (plane, _loop_rx) = two_pair_control_plane(directory.path());
+
+        let seed_pending = |index: usize| {
+            plane.shared.pairs[index]
+                .snapshot
+                .lock()
+                .expect("snapshot lock")
+                .pending_deletions = vec![PendingDeletion {
+                path: PathBuf::from("a.txt"),
+                direction: DeleteDirection::Remote,
+                entity_kind: EntityKind::File,
+                fingerprint: "fp".to_owned(),
+                detected_epoch_secs: 1,
+                first_seen_epoch_secs: 1,
+                subtree_files: None,
+                subtree_bytes: None,
+                disposal: LocalDisposal::Permanent,
+            }];
+        };
+
+        // Approve, selector omitted: resolves to alpha, but the hint must stay bare.
+        seed_pending(0);
+        let mut request = ControlRequest::new(ControlCommand::Approve);
+        request.argument = Some("a.txt".to_owned());
+        request.literal_path = true;
+        let response = roundtrip(&plane, request).await;
+        assert_eq!(response.pair.as_deref(), Some("alpha"));
+        assert!(
+            response.message.contains("proton-sync syncnow")
+                && !response.message.contains("--pair"),
+            "an omitted selector resolved to alpha must not echo alpha's name: {}",
+            response.message
+        );
+
+        // Approve, selector names beta: the hint must echo it verbatim.
+        seed_pending(1);
+        let mut request = ControlRequest::new(ControlCommand::Approve);
+        request.pair = Some("beta".to_owned());
+        request.argument = Some("a.txt".to_owned());
+        request.literal_path = true;
+        let response = roundtrip(&plane, request).await;
+        assert_eq!(response.pair.as_deref(), Some("beta"));
+        assert!(
+            response.message.contains("proton-sync --pair beta syncnow"),
+            "{}",
+            response.message
+        );
+
+        // Keep, selector omitted: same rule. No baseline record exists for "a.txt" so this takes
+        // the "nothing was kept" arm — still the message under test.
+        seed_pending(0);
+        let mut request = ControlRequest::new(ControlCommand::Keep);
+        request.argument = Some("a.txt".to_owned());
+        request.literal_path = true;
+        let response = roundtrip(&plane, request).await;
+        assert!(
+            response.message.contains("proton-sync pending")
+                && !response.message.contains("--pair"),
+            "{}",
+            response.message
+        );
+
+        // Keep, selector names beta: echoed verbatim.
+        seed_pending(1);
+        let mut request = ControlRequest::new(ControlCommand::Keep);
+        request.pair = Some("beta".to_owned());
+        request.argument = Some("a.txt".to_owned());
+        request.literal_path = true;
+        let response = roundtrip(&plane, request).await;
+        assert!(
+            response.message.contains("proton-sync --pair beta pending"),
+            "{}",
+            response.message
+        );
     }
 
     /// #102 phase 3, ADR 0005 §4: an unknown pair authorises **nothing** — every verb that would

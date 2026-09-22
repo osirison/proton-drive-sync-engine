@@ -46,21 +46,30 @@ would resolve against each process's own working directory.
 
 A daemon config may name more than one folder pair (each a `[[pair]]` table), though today's
 daemon still refuses to *start* on more than one — that limit lifts in a later release. Every
-command above addresses one pair. With neither `--pair` nor `--all-pairs`, that is the **default
-pair** — the first `[[pair]]` table, or the whole file's top-level keys when it has no `[[pair]]`
-at all — which is exactly what every `proton-sync` invocation predating this feature already
-meant.
+command above addresses one pair, **except `stop`**, which is daemon-wide (see below). With
+neither `--pair` nor `--all-pairs`, the addressed pair is the **default pair** — the first
+`[[pair]]` table, or the whole file's top-level keys when it has no `[[pair]]` at all — which is
+exactly what every `proton-sync` invocation predating this feature already meant.
 
-- `--pair <NAME>` addresses one pair by its configured `name`, matched exactly (a pair named
-  `Photos` and one named `photos` are different pairs). The command runs and waits for
-  completion on that pair alone, same as an unqualified invocation.
+- `--pair <NAME>` addresses one pair by its configured `name`, matched **case-sensitively**. Pair
+  names are already unique case-insensitively — no daemon can hold both `Photos` and `photos` —
+  but the selector still compares byte-exact: `--pair photos` against a pair configured as
+  `Photos` does not resolve. The command runs and waits for completion on that pair alone, same as
+  an unqualified invocation.
 - `--all-pairs` runs the command once per configured pair, in the order `status` lists them, and
   reports each pair's immediate reply rather than waiting for each pass to finish — use `--pair`
   on one pair when you want to watch it through to completion. Under `--json`, the output is a
   JSON array of `{"pair": "<name>", "result": <the same value --json prints for one pair>}`
   objects; over one configured pair that array has exactly one element.
-- Naming a pair that does not exist does nothing at all — no sync is scheduled, no approval is
-  recorded, no index is reset — and the command exits non-zero.
+- `stop` has no per-pair meaning, so the *selector* is ignored on it: `--pair <NAME>` and
+  `--all-pairs` each send exactly one shutdown request and the daemon exits exactly as an
+  unqualified `stop` would — under `--json` too, which prints the same single response object
+  rather than the `--all-pairs` array. A `--pair` naming no configured pair still shuts the daemon
+  down. The capability check below still runs first, though: on a daemon too old to understand
+  `--pair`/`--all-pairs` at all, `stop` is refused with the same upgrade message as every other
+  command.
+- Naming a pair that does not exist does nothing at all for every other command — no sync is
+  scheduled, no approval is recorded, no index is reset — and the command exits non-zero.
 - The human-readable `status` headline names the pair only when more than one is configured — a
   one-pair daemon's headline is unchanged from before this feature existed.
 - `--pair`/`--all-pairs` need a daemon new enough to understand them. `proton-sync` checks first
