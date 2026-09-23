@@ -186,6 +186,8 @@ mod tests {
             plan: None,
             apply: None,
             auth: Default::default(),
+            pair: Some("default".to_owned()),
+            pairs: vec![],
         }
     }
 

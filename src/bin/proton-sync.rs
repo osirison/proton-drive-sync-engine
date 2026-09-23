@@ -35,6 +35,18 @@ struct Cli {
     /// Print the daemon's raw JSON response instead of the human-readable output.
     #[arg(long, global = true)]
     json: bool,
+    /// Address one folder pair by name (#102 phase 3), rather than the default pair every
+    /// pre-multi-pair invocation addresses. Requires a daemon that supports multiple folder
+    /// pairs; an older one is refused with a message to upgrade `proton-syncd` rather than
+    /// silently running against its one pair under the wrong name.
+    #[arg(long, global = true, conflicts_with = "all_pairs")]
+    pair: Option<String>,
+    /// Run the command once per configured folder pair, in the order `status` lists them
+    /// (`--pair` names one pair; this is every pair). Not named `--all`: `approve`/`deny`/`keep`
+    /// already use that flag for "every pending deletion" on the one pair they address, and one
+    /// flag cannot mean two different fan-outs. Same capability gate as `--pair`.
+    #[arg(long, global = true, conflicts_with = "pair")]
+    all_pairs: bool,
     #[command(subcommand)]
     command: Commands,
 }
@@ -166,7 +178,56 @@ async fn main() -> ExitCode {
         };
     let style = Style::for_stdout();
 
-    let request = match build_request(&cli.command) {
+    // The client capability gate (#102 phase 3, ADR 0005 §4): an explicit `--pair`/`--all-pairs`
+    // first reads `status` and refuses if the reply carries neither `pair` nor `pairs` — a daemon
+    // that predates multi-pair. No `--pair`, no gate: the omitted selector means the default pair,
+    // and an old daemon's only pair *is* the default pair, so it is correct without asking. The
+    // residual race (the daemon is downgraded between this check and the real request) is accepted
+    // rather than solved — see the ADR.
+    if cli.all_pairs {
+        return run_all_pairs(&cli, &socket_path, &style).await;
+    }
+    if cli.pair.is_some()
+        && let Err(code) = capability_gate(&socket_path).await
+    {
+        return code;
+    }
+    run_for_pair(&cli, &socket_path, &style, cli.pair.as_deref()).await
+}
+
+/// Refuses with a non-zero exit when `socket_path` answers a `status` request with neither `pair`
+/// nor `pairs` — the shape only a daemon that predates multi-pair produces (every real reply
+/// carries both; see `ipc::PairSummary`'s doc for why `pairs` is never empty on one that
+/// understands the field at all).
+async fn capability_gate(socket_path: &Path) -> Result<(), ExitCode> {
+    let probe = ControlRequest::new(ControlCommand::Status);
+    let response = match request_with_timeout(socket_path, probe).await {
+        Ok(response) => response,
+        Err(message) => {
+            eprintln!("{message}");
+            return Err(ExitCode::FAILURE);
+        }
+    };
+    if response.pair.is_none() && response.pairs.is_empty() {
+        eprintln!(
+            "this daemon does not support multiple folder pairs; upgrade proton-syncd to use \
+             --pair/--all-pairs"
+        );
+        return Err(ExitCode::FAILURE);
+    }
+    Ok(())
+}
+
+/// One command against one pair (or the default, when `pair` is `None`) — everything `main` did
+/// before #102 phase 3, unchanged for that case. `--all-pairs` calls this once per configured
+/// pair with a header line ahead of each (see `run_all_pairs`); `--pair NAME` calls it once.
+async fn run_for_pair(
+    cli: &Cli,
+    socket_path: &Path,
+    style: &Style,
+    pair: Option<&str>,
+) -> ExitCode {
+    let request = match build_request(&cli.command, pair) {
         Ok(request) => request,
         Err(message) => {
             eprintln!("{message}");
@@ -174,20 +235,32 @@ async fn main() -> ExitCode {
         }
     };
 
-    let response = match request_with_timeout(&socket_path, request).await {
+    let response = match request_with_timeout(socket_path, request).await {
         Ok(response) => response,
         Err(message) => {
             eprintln!("{message}");
             return ExitCode::FAILURE;
         }
     };
+    // An explicit selector that did not resolve authorises nothing (ADR 0005 §4): the reply's
+    // `pair` is structurally `None`, never inferred from `message`, and every verb reports it the
+    // same way `list`/`plan`/`apply` already report a non-success outcome — exit non-zero rather
+    // than rendering the verb's ordinary success path over a request that did nothing.
+    if pair.is_some() && response.pair.is_none() {
+        if cli.json {
+            print_pretty_json(&response);
+        } else {
+            eprintln!("{}", response.message);
+        }
+        return ExitCode::FAILURE;
+    }
 
     match &cli.command {
         Commands::Status => {
             if cli.json {
                 print_pretty_json(&response);
             } else {
-                print_status(&response, &style);
+                print_status(&response, style, pair);
             }
             ExitCode::SUCCESS
         }
@@ -199,7 +272,7 @@ async fn main() -> ExitCode {
                         .expect("serialize pass history")
                 );
             } else {
-                print_history(&response, &style);
+                print_history(&response, style);
             }
             ExitCode::SUCCESS
         }
@@ -211,7 +284,7 @@ async fn main() -> ExitCode {
                         .expect("serialize file history")
                 );
             } else {
-                print_activity(&response, &style);
+                print_activity(&response, style);
             }
             ExitCode::SUCCESS
         }
@@ -219,7 +292,10 @@ async fn main() -> ExitCode {
             if cli.json {
                 print_pretty_json(&response);
             } else {
-                println!("Sync paused. Edits are still tracked; resume with `proton-sync resume`.");
+                println!(
+                    "Sync paused. Edits are still tracked; resume with `{}`.",
+                    cli_hint(pair, "resume")
+                );
             }
             ExitCode::SUCCESS
         }
@@ -232,7 +308,7 @@ async fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Commands::Syncnow { no_wait } => {
-            watch_syncnow(&socket_path, response, *no_wait, cli.json, &style).await
+            watch_syncnow(socket_path, response, *no_wait, cli.json, style, pair).await
         }
         Commands::Resync | Commands::ResetIndex { .. } => {
             if cli.json {
@@ -258,7 +334,7 @@ async fn main() -> ExitCode {
                         .expect("serialize pending deletions")
                 );
             } else {
-                print_pending(&response.pending_deletions);
+                print_pending(&response.pending_deletions, pair);
             }
             ExitCode::SUCCESS
         }
@@ -271,10 +347,10 @@ async fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Commands::Plan { limit } => {
-            watch_plan(&socket_path, response, *limit, cli.json, &style).await
+            watch_plan(socket_path, response, *limit, cli.json, style, pair).await
         }
         Commands::Apply { no_wait, .. } => {
-            watch_apply(&socket_path, response, *no_wait, cli.json, &style).await
+            watch_apply(socket_path, response, *no_wait, cli.json, style, pair).await
         }
         Commands::List { .. } => {
             if cli.json {
@@ -287,13 +363,200 @@ async fn main() -> ExitCode {
             // A listing that did not happen exits non-zero even under `--json`, so a script can
             // branch on the exit code rather than parsing `state` out of the payload — and so
             // `busy` is never mistaken for an empty folder.
-            print_listing(&response, cli.json, &style)
+            print_listing(&response, cli.json, style)
         }
     }
 }
 
+/// `--all-pairs`: the capability gate, then every configured pair in the order `status` lists
+/// them — except `stop`, which is daemon-wide and runs once, not per pair (see below).
+///
+/// **Deliberately does not run `run_for_pair`'s wait loops (`syncnow`/`apply`/`plan`) per pair.**
+/// A wait loop's spinner and its final report are written for a single command watching a single
+/// pass; N of them interleaved on one terminal would be unreadable, and a JSON array of "the
+/// final response" per pair cannot also carry N independent progress streams. So under
+/// `--all-pairs` every command answers with its **immediate reply** (the same ack a `--no-wait`
+/// `syncnow`/`apply` gets, or the plain reply for anything else) — scheduled, not watched. This is
+/// a scope decision, recorded in the ADR 0005 phase-3 note: `--pair NAME` is how a script or a
+/// person watches one pair's pass to completion; `--all-pairs` is how they fire the same command
+/// at every pair and see what each one said.
+async fn run_all_pairs(cli: &Cli, socket_path: &Path, style: &Style) -> ExitCode {
+    let probe = ControlRequest::new(ControlCommand::Status);
+    let gate = match request_with_timeout(socket_path, probe).await {
+        Ok(response) => response,
+        Err(message) => {
+            eprintln!("{message}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if gate.pair.is_none() && gate.pairs.is_empty() {
+        eprintln!(
+            "this daemon does not support multiple folder pairs; upgrade proton-syncd to use \
+             --pair/--all-pairs"
+        );
+        return ExitCode::FAILURE;
+    }
+
+    // `shutdown` is daemon-wide and ignores the selector (ADR 0005 §4's verb table), so it is not
+    // a per-pair loop: with N pairs the loop below would fire N shutdowns, the first killing the
+    // daemon and every later iteration failing to connect — a successful stop reported as a
+    // failure. One request, same print path as an unqualified `stop`.
+    if matches!(cli.command, Commands::Stop) {
+        return run_for_pair(cli, socket_path, style, None).await;
+    }
+
+    let mut worst = ExitCode::SUCCESS;
+    let mut json_results = Vec::new();
+    for pair in &gate.pairs {
+        let request = match build_request(&cli.command, Some(pair.name.as_str())) {
+            Ok(request) => request,
+            Err(message) => {
+                eprintln!("{}: {message}", pair.name);
+                worst = ExitCode::FAILURE;
+                continue;
+            }
+        };
+        let response = match request_with_timeout(socket_path, request).await {
+            Ok(response) => response,
+            Err(message) => {
+                eprintln!("{}: {message}", pair.name);
+                worst = ExitCode::FAILURE;
+                continue;
+            }
+        };
+        if response.pair.is_none() {
+            worst = ExitCode::FAILURE;
+        }
+        // The one fold both branches share (`reply_exit_code`'s doc) — a busy `list`, a paused
+        // `plan`, a failed `apply` must fail `--all-pairs` whether it is rendered or reported as
+        // JSON.
+        if reply_exit_code(&cli.command, &response) != ExitCode::SUCCESS {
+            worst = ExitCode::FAILURE;
+        }
+        if cli.json {
+            json_results.push(serde_json::json!({
+                "pair": pair.name,
+                "result": json_result_value(&cli.command, &response),
+            }));
+        } else {
+            println!("{}", style.dim(&format!("== {} ==", pair.name)));
+            print_pair_reply(&cli.command, &response, style, &pair.name);
+        }
+    }
+    if cli.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json_results).expect("serialize --all-pairs results")
+        );
+    }
+    worst
+}
+
+/// The exit code a `--all-pairs` reply for `command` earns — the **one** decision both of
+/// `run_all_pairs`'s branches fold into `worst`. Before this, the JSON branch folded only
+/// `response.pair` and never the verb's own outcome, so a busy `list`, a paused `plan`, or a
+/// failed `apply` under `--all-pairs --json` printed the payload and exited 0 (the JSON twin of
+/// the human-branch bug 9a8d304 fixed). `list_exit_code`/`plan_exit_code`/`apply_exit_code` are
+/// the same functions `print_listing`/`report_plan`/`report_apply` compute their return from, so
+/// the two branches cannot answer differently for the same reply.
+fn reply_exit_code(command: &Commands, response: &ControlResponse) -> ExitCode {
+    match command {
+        Commands::List { .. } => list_exit_code(response.listing.as_ref()),
+        Commands::Plan { .. } => plan_exit_code(response.plan.as_ref()),
+        Commands::Apply { .. } => apply_exit_code(response.apply.as_ref()),
+        Commands::Status
+        | Commands::History
+        | Commands::Activity { .. }
+        | Commands::Pending
+        | Commands::Pause
+        | Commands::Resume
+        | Commands::Syncnow { .. }
+        | Commands::Resync
+        | Commands::ResetIndex { .. }
+        | Commands::Stop
+        | Commands::Approve { .. }
+        | Commands::Deny { .. }
+        | Commands::Keep { .. } => ExitCode::SUCCESS,
+    }
+}
+
+/// The human-readable rendering of one pair's immediate reply under `--all-pairs` — the same
+/// per-verb rule `run_for_pair`'s non-json branches follow (`response.message` for a plain ack,
+/// the dedicated printer for `status`/`history`/`activity`/`pending`, a plan/apply summary for
+/// their *ack* rather than their watched outcome, since `--all-pairs` does not wait). Print-only:
+/// `run_all_pairs` gets this reply's exit code from `reply_exit_code`, not from here.
+fn print_pair_reply(
+    command: &Commands,
+    response: &ControlResponse,
+    style: &Style,
+    pair_name: &str,
+) {
+    let pair = Some(pair_name);
+    match command {
+        Commands::Status => print_status(response, style, pair),
+        Commands::History => print_history(response, style),
+        Commands::Activity { .. } => print_activity(response, style),
+        Commands::Pending => print_pending(&response.pending_deletions, pair),
+        Commands::List { .. } => {
+            print_listing(response, false, style);
+        }
+        Commands::Plan { .. } => {
+            report_plan(response, false, style, pair);
+        }
+        Commands::Apply { .. } => {
+            report_apply(response, false, style, pair);
+        }
+        Commands::Pause
+        | Commands::Resume
+        | Commands::Syncnow { .. }
+        | Commands::Resync
+        | Commands::ResetIndex { .. }
+        | Commands::Stop
+        | Commands::Approve { .. }
+        | Commands::Deny { .. }
+        | Commands::Keep { .. } => println!("{}", response.message),
+    }
+}
+
+/// The JSON value a single-pair `--json` invocation of `command` would print for `response` — what
+/// `--all-pairs --json`'s per-pair `result` field must match exactly (decision #10, ADR 0005 §4
+/// departure 5: "the same value a single-pair `--json` invocation prints for that verb," nested
+/// under `result` rather than spread, uniformly across verbs). `history`/`activity`/`pending`/
+/// `list`/`plan`/`apply` each print one projected field in `run_for_pair`, never the whole
+/// envelope; every other verb prints the whole `ControlResponse` there too, so this matches that.
+fn json_result_value(command: &Commands, response: &ControlResponse) -> serde_json::Value {
+    match command {
+        Commands::History => {
+            serde_json::to_value(&response.history).expect("serialize pass history")
+        }
+        Commands::Activity { .. } => {
+            serde_json::to_value(&response.file_history).expect("serialize file history")
+        }
+        Commands::Pending => {
+            serde_json::to_value(&response.pending_deletions).expect("serialize pending deletions")
+        }
+        Commands::List { .. } => {
+            serde_json::to_value(&response.listing).expect("serialize the remote listing")
+        }
+        Commands::Plan { .. } => serde_json::to_value(&response.plan).expect("serialize the plan"),
+        Commands::Apply { .. } => {
+            serde_json::to_value(&response.apply).expect("serialize the apply outcome")
+        }
+        Commands::Status
+        | Commands::Pause
+        | Commands::Resume
+        | Commands::Syncnow { .. }
+        | Commands::Resync
+        | Commands::ResetIndex { .. }
+        | Commands::Stop
+        | Commands::Approve { .. }
+        | Commands::Deny { .. }
+        | Commands::Keep { .. } => serde_json::to_value(response).expect("serialize response"),
+    }
+}
+
 /// Maps a subcommand to the control request to send, validating the `approve`/`deny` selector.
-fn build_request(command: &Commands) -> Result<ControlRequest, String> {
+fn build_request(command: &Commands, pair: Option<&str>) -> Result<ControlRequest, String> {
     let (control_command, argument) = match command {
         // `history` reads the pass log, which rides on every status reply — no second verb.
         Commands::Status | Commands::History | Commands::Pending => (ControlCommand::Status, None),
@@ -393,6 +656,7 @@ fn build_request(command: &Commands) -> Result<ControlRequest, String> {
         limit,
         direction,
         skip_destructive,
+        pair: pair.map(str::to_owned),
         ..ControlRequest::new(control_command)
     })
 }
@@ -489,9 +753,8 @@ fn print_pretty_json(response: &ControlResponse) {
 ///   changes    3 queued locally
 ///   deletions  1 awaiting approval — review with `proton-sync pending`
 /// ```
-fn print_status(response: &ControlResponse, style: &Style) {
-    let (dot, state, detail) = headline(response, style);
-    println!("{dot} {} — {detail}", style.bold(state));
+fn print_status(response: &ControlResponse, style: &Style, pair: Option<&str>) {
+    println!("{}", status_headline_line(response, style));
 
     let mut rows: Vec<(&str, String)> = Vec::new();
     if let Some(config) = &response.config {
@@ -532,8 +795,9 @@ fn print_status(response: &ControlResponse, style: &Style) {
         rows.push((
             "deletions",
             format!(
-                "{} awaiting approval — review with `proton-sync pending`",
-                response.pending_deletions.len()
+                "{} awaiting approval — review with `{}`",
+                response.pending_deletions.len(),
+                cli_hint(pair, "pending")
             ),
         ));
     }
@@ -582,9 +846,20 @@ fn print_status(response: &ControlResponse, style: &Style) {
     print_unsyncable(&response.unsyncable, style);
 }
 
-/// Renders a `list` reply, and returns the exit code with it: the three outcomes are three
-/// different things to a script, and folding `busy` into `0` would make "the CLI was busy" look
-/// like "the folder is empty".
+/// The exit code a `list` reply's outcome earns, computed with no printing so `reply_exit_code`
+/// (the `--all-pairs --json` fold) and [`print_listing`] can never disagree about the same reply.
+/// Only [`ListingOutcome::Listed`] succeeds: `busy`, `failed`, and an outcome this build does not
+/// know are three different things to a script, but none of them is "the folder is empty".
+fn list_exit_code(listing: Option<&ListingOutcome>) -> ExitCode {
+    match listing {
+        Some(ListingOutcome::Listed { .. }) => ExitCode::SUCCESS,
+        Some(ListingOutcome::Busy) => ExitCode::FAILURE,
+        Some(ListingOutcome::Failed { .. }) => ExitCode::FAILURE,
+        Some(ListingOutcome::Unknown) | None => ExitCode::FAILURE,
+    }
+}
+
+/// Renders a `list` reply. Prints only; the exit code is [`list_exit_code`]'s alone.
 fn print_listing(response: &ControlResponse, json: bool, style: &Style) -> ExitCode {
     match &response.listing {
         Some(ListingOutcome::Listed {
@@ -634,25 +909,22 @@ fn print_listing(response: &ControlResponse, json: bool, style: &Style) -> ExitC
                     }
                 }
             }
-            ExitCode::SUCCESS
         }
         Some(ListingOutcome::Busy) => {
             eprintln!(
                 "The proton-drive CLI is busy with a sync operation; nothing was listed. Try again."
             );
-            ExitCode::FAILURE
         }
         Some(ListingOutcome::Failed { error }) => {
             eprintln!("Could not list that folder: {error}");
-            ExitCode::FAILURE
         }
         // A state this client does not know, and the `None` an older daemon sends. Both mean the
         // same thing to a user — no listing — and neither is an empty folder.
         Some(ListingOutcome::Unknown) | None => {
             eprintln!("The daemon did not return a listing for that folder.");
-            ExitCode::FAILURE
         }
     }
+    list_exit_code(response.listing.as_ref())
 }
 
 /// The entities the daemon cannot sync, by name and cause. A count alone is unactionable: the
@@ -765,6 +1037,24 @@ fn headline(response: &ControlResponse, style: &Style) -> (String, &'static str,
         "idle",
         "everything is up to date".to_owned(),
     )
+}
+
+/// The headline's printed line (decision #14, ADR 0005 §4): the pair is named only when more than
+/// one is configured, so a single-pair daemon's headline is byte-identical to before #102 phase 3 —
+/// "everything is up to date" silently meaning one of three folders is #246's lie read the other
+/// way round. Separate from [`headline`] itself because its `state` word is asserted on verbatim
+/// by tests (`"idle"`, `"error"`, …) and must stay a bare machine-comparable token, not a
+/// pair-prefixed string.
+fn status_headline_line(response: &ControlResponse, style: &Style) -> String {
+    let (dot, state, detail) = headline(response, style);
+    match (response.pairs.len() > 1, &response.pair) {
+        (true, Some(name)) => format!(
+            "{dot} {} {} — {detail}",
+            style.bold(name),
+            style.bold(state)
+        ),
+        _ => format!("{dot} {} — {detail}", style.bold(state)),
+    }
 }
 
 /// `proton-sync history` — one line per recorded pass, newest first.
@@ -1255,6 +1545,7 @@ async fn watch_syncnow(
     no_wait: bool,
     json: bool,
     style: &Style,
+    pair: Option<&str>,
 ) -> ExitCode {
     let scheduled = ack.message == "sync scheduled" || ack.message.contains("already in progress");
     if !scheduled || no_wait {
@@ -1282,7 +1573,10 @@ async fn watch_syncnow(
     let mut consecutive_errors = 0u32;
     let outcome = loop {
         tokio::time::sleep(WAIT_POLL_INTERVAL).await;
-        let request = ControlRequest::new(ControlCommand::Status);
+        let request = ControlRequest {
+            pair: pair.map(str::to_owned),
+            ..ControlRequest::new(ControlCommand::Status)
+        };
         match request_with_timeout(socket_path, request).await {
             Ok(status) => {
                 consecutive_errors = 0;
@@ -1377,17 +1671,19 @@ async fn watch_plan(
     limit: Option<usize>,
     json: bool,
     style: &Style,
+    pair: Option<&str>,
 ) -> ExitCode {
     let target = match &ack.plan {
         Some(PlanOutcome::Scheduled { plan_seq }) => *plan_seq,
         // Paused, shutting down, or a daemon too old to know the verb: nothing to watch. Reported
         // from the typed outcome, never by matching the message (#103).
-        _ => return report_plan(&ack, json, style),
+        _ => return report_plan(&ack, json, style, pair),
     };
     let outcome = poll_until(
         socket_path,
         || ControlRequest {
             limit,
+            pair: pair.map(str::to_owned),
             ..ControlRequest::new(ControlCommand::PlanResult)
         },
         // The generation, not merely "no longer computing": a second client's `plan` while ours is
@@ -1397,7 +1693,7 @@ async fn watch_plan(
     )
     .await;
     match outcome {
-        Ok(response) => report_plan(&response, json, style),
+        Ok(response) => report_plan(&response, json, style, pair),
         Err(message) => {
             eprintln!("lost contact with the daemon while waiting: {message}");
             ExitCode::FAILURE
@@ -1443,13 +1739,14 @@ async fn watch_apply(
     no_wait: bool,
     json: bool,
     style: &Style,
+    pair: Option<&str>,
 ) -> ExitCode {
     let target = match &ack.apply {
         Some(ApplyOutcome::Scheduled { apply_seq }) => *apply_seq,
-        _ => return report_apply(&ack, json, style),
+        _ => return report_apply(&ack, json, style, pair),
     };
     if no_wait {
-        return report_apply(&ack, json, style);
+        return report_apply(&ack, json, style, pair);
     }
     let outcome = poll_until(
         socket_path,
@@ -1461,6 +1758,7 @@ async fn watch_apply(
         // bounds the ordinary rows only — destructive rows are never truncated at any limit.
         || ControlRequest {
             limit: Some(1),
+            pair: pair.map(str::to_owned),
             ..ControlRequest::new(ControlCommand::PlanResult)
         },
         |response| apply_generation(response.apply.as_ref()).is_some_and(|seq| seq >= target),
@@ -1468,8 +1766,8 @@ async fn watch_apply(
     .await;
     match outcome {
         Ok(response) => {
-            let response = refetch_plan_if_diverged(socket_path, response, target).await;
-            report_apply(&response, json, style)
+            let response = refetch_plan_if_diverged(socket_path, response, target, pair).await;
+            report_apply(&response, json, style, pair)
         }
         Err(message) => {
             eprintln!("lost contact with the daemon while waiting: {message}");
@@ -1489,17 +1787,25 @@ async fn watch_apply(
 /// A failed re-request degrades to the divergence **without** the plan rather than failing the
 /// command: nothing was applied either way, and that is the fact the user needs. `report_apply`
 /// prints `proton-sync plan` as the way to see the new one.
+///
+/// `pair` must be the same selector `watch_apply` was called with — this refetch was missed
+/// once, and it addressed the default pair no matter which pair the apply was for.
 async fn refetch_plan_if_diverged(
     socket_path: &Path,
     waited: ControlResponse,
     target: u64,
+    pair: Option<&str>,
 ) -> ControlResponse {
     if !matches!(waited.apply, Some(ApplyOutcome::Diverged { apply_seq }) if apply_seq >= target) {
         return waited;
     }
     // The daemon's default window (`PLAN_ACTIONS_DEFAULT_LIMIT`), which is what this wait shipped on
     // every poll before #321 — `apply` has no `--limit` of its own to raise it with.
-    match request_with_timeout(socket_path, ControlRequest::new(ControlCommand::PlanResult)).await {
+    let request = ControlRequest {
+        pair: pair.map(str::to_owned),
+        ..ControlRequest::new(ControlCommand::PlanResult)
+    };
+    match request_with_timeout(socket_path, request).await {
         Ok(fresh) => ControlResponse {
             plan: fresh.plan,
             ..waited
@@ -1560,6 +1866,23 @@ async fn poll_until(
     result
 }
 
+/// A copy-pasteable `proton-sync` invocation, carrying the same `--pair` selector the command
+/// that is printing the hint was run with (ADR 0005 §4: a wire selector is never inferred, only
+/// echoed byte-exact). `tail` is everything after the binary name, e.g. `"plan"` or `"resume"`.
+///
+/// Without this, a hint printed after `proton-sync --pair work ...` reads `proton-sync plan` —
+/// which a user pastes verbatim, and which then addresses the *default* pair (`--pair` omitted
+/// resolves to index 0, `ipc.rs` §"pair selector"), not `work`. Some of those omissions fail
+/// loud (`apply`'s token no longer matches the default pair's stored plan, so it answers `Stale`
+/// rather than running); others do not — `plan`/`resume`/`pending`/`approve`/`keep` all accept an
+/// unrelated pair's selector and act on it with no signal that it was the wrong one.
+fn cli_hint(pair: Option<&str>, tail: &str) -> String {
+    match pair {
+        Some(name) => format!("proton-sync --pair {name} {tail}"),
+        None => format!("proton-sync {tail}"),
+    }
+}
+
 /// The `Run it with:` footer, or `None` when there is nothing to run.
 ///
 /// The token is the whole point of printing it: `apply` names it, and nothing else can authorise
@@ -1567,18 +1890,43 @@ async fn poll_until(
 /// no-op (the daemon re-plans, compares, and executes nothing) — so offering the command under
 /// "Nothing would change" both contradicts that sentence and invites a pointless pass. Keyed on
 /// `total`, the untruncated plan length, never on `actions`, which is a window over it.
-fn run_it_line(total: usize, token: &str, style: &Style) -> Option<String> {
+fn run_it_line(total: usize, token: &str, pair: Option<&str>, style: &Style) -> Option<String> {
     (total > 0).then(|| {
         format!(
             "Run it with: {}",
-            style.dim(&format!("proton-sync apply {token}"))
+            style.dim(&cli_hint(pair, &format!("apply {token}")))
         )
     })
 }
 
-/// Renders a plan reply, and returns the exit code with it — the same rule `list` follows: a plan
-/// that did not happen exits non-zero so a script never mistakes it for "nothing to do".
-fn report_plan(response: &ControlResponse, json: bool, style: &Style) -> ExitCode {
+/// The exit code a `plan` reply's outcome earns — [`list_exit_code`]'s sibling, read by both
+/// [`report_plan`] and `reply_exit_code`. [`PlanOutcome::Scheduled`] is the `--all-pairs` immediate
+/// ack (`report_plan`'s doc on that arm) and succeeds like [`PlanOutcome::Computed`]; a plan that
+/// did not happen — paused, failed, still computing, absent, or an outcome this build does not
+/// know — fails, so a script never mistakes it for "nothing to do".
+fn plan_exit_code(plan: Option<&PlanOutcome>) -> ExitCode {
+    match plan {
+        Some(PlanOutcome::Computed(_)) => ExitCode::SUCCESS,
+        Some(PlanOutcome::Scheduled { .. }) => ExitCode::SUCCESS,
+        Some(PlanOutcome::Paused) => ExitCode::FAILURE,
+        Some(PlanOutcome::Failed { .. }) => ExitCode::FAILURE,
+        Some(PlanOutcome::Computing { .. }) => ExitCode::FAILURE,
+        Some(PlanOutcome::Absent) => ExitCode::FAILURE,
+        Some(PlanOutcome::Unknown) | None => ExitCode::FAILURE,
+    }
+}
+
+/// Renders a plan reply. Prints only; the exit code is [`plan_exit_code`]'s alone.
+///
+/// `pair` is the selector this command was run with (not `response.pair`, which is `Some(name)`
+/// on every successful reply and would print `--pair <name>` even for a single-pair user who
+/// never typed `--pair` at all) — threaded through so every hint this prints echoes it (`cli_hint`).
+fn report_plan(
+    response: &ControlResponse,
+    json: bool,
+    style: &Style,
+    pair: Option<&str>,
+) -> ExitCode {
     if json {
         println!(
             "{}",
@@ -1635,42 +1983,81 @@ fn report_plan(response: &ControlResponse, json: bool, style: &Style) -> ExitCod
                         );
                     }
                 }
-                if let Some(line) = run_it_line(*total, token, style) {
+                if let Some(line) = run_it_line(*total, token, pair, style) {
                     println!("\n{line}");
                 }
             }
-            ExitCode::SUCCESS
         }
         Some(PlanOutcome::Paused) => {
             eprintln!(
-                "Syncing is paused, so nothing was planned. Resume with `proton-sync resume`."
+                "Syncing is paused, so nothing was planned. Resume with `{}`.",
+                cli_hint(pair, "resume")
             );
-            ExitCode::FAILURE
         }
         Some(PlanOutcome::Failed { error, .. }) => {
             eprintln!("Could not work out a plan: {error}");
-            ExitCode::FAILURE
         }
         Some(PlanOutcome::Computing { .. }) => {
             eprintln!("The daemon is still working out the plan.");
-            ExitCode::FAILURE
         }
         Some(PlanOutcome::Absent) => {
             eprintln!("The daemon has not worked out a plan yet.");
-            ExitCode::FAILURE
+        }
+        // The immediate ack `--all-pairs` reports instead of waiting (it never calls `watch_plan`,
+        // so this is the only caller that can see this arm): scheduled, not computed, and that is
+        // success, the same reading `ApplyOutcome::Scheduled` already gets below.
+        Some(PlanOutcome::Scheduled { .. }) => {
+            if !json {
+                println!(
+                    "Plan scheduled; watch it with `{}`.",
+                    cli_hint(pair, "status")
+                );
+            }
         }
         // A state this client does not know, and the `None` an older daemon sends. Neither is an
         // empty plan.
-        Some(PlanOutcome::Scheduled { .. } | PlanOutcome::Unknown) | None => {
+        Some(PlanOutcome::Unknown) | None => {
             eprintln!("The daemon did not return a plan.");
-            ExitCode::FAILURE
         }
+    }
+    plan_exit_code(response.plan.as_ref())
+}
+
+/// The exit code an `apply` reply's outcome earns — [`list_exit_code`]'s sibling, read by both
+/// [`report_apply`] and `reply_exit_code`. [`ApplyOutcome::Applied`] fails only when it landed
+/// items that themselves failed (#136's partial outcome); [`ApplyOutcome::Scheduled`] is the
+/// `--all-pairs` immediate ack and succeeds like `Computed`/`Scheduled` do for a plan; a
+/// divergence, a stale token, a pause, an outright failure, and an outcome this build does not
+/// know all fail — nothing ran, or nothing is known to have.
+fn apply_exit_code(apply: Option<&ApplyOutcome>) -> ExitCode {
+    match apply {
+        Some(ApplyOutcome::Applied { failed, .. }) => {
+            if *failed > 0 {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            }
+        }
+        Some(ApplyOutcome::Scheduled { .. }) => ExitCode::SUCCESS,
+        Some(ApplyOutcome::Diverged { .. }) => ExitCode::FAILURE,
+        Some(ApplyOutcome::Stale) => ExitCode::FAILURE,
+        Some(ApplyOutcome::Paused) => ExitCode::FAILURE,
+        Some(ApplyOutcome::Failed { .. }) => ExitCode::FAILURE,
+        Some(ApplyOutcome::Unknown) | None => ExitCode::FAILURE,
     }
 }
 
-/// Renders an apply reply. A divergence exits non-zero and prints the new plan: nothing ran, and
-/// the user has something to review.
-fn report_apply(response: &ControlResponse, json: bool, style: &Style) -> ExitCode {
+/// Renders an apply reply. Prints only; the exit code is [`apply_exit_code`]'s alone. A divergence
+/// prints the new plan: nothing ran, and the user has something to review.
+///
+/// `pair` is the selector this command was run with — see [`report_plan`]'s doc for why it is not
+/// re-derived from `response.pair`.
+fn report_apply(
+    response: &ControlResponse,
+    json: bool,
+    style: &Style,
+    pair: Option<&str>,
+) -> ExitCode {
     if json {
         println!(
             "{}",
@@ -1699,12 +2086,6 @@ fn report_apply(response: &ControlResponse, json: bool, style: &Style) -> ExitCo
                     println!("{} {line}", style.green("✓"));
                 }
             }
-            // A partial apply is not a success (#136's third outcome, reported as itself).
-            if *failed > 0 {
-                ExitCode::FAILURE
-            } else {
-                ExitCode::SUCCESS
-            }
         }
         Some(ApplyOutcome::Diverged { .. }) => {
             if !json {
@@ -1718,45 +2099,47 @@ fn report_apply(response: &ControlResponse, json: bool, style: &Style) -> ExitCo
                          plan:"
                     );
                     // Not a second rendering: the reply carries the fresh plan under the same field
-                    // `plan` prints from.
-                    report_plan(response, false, style);
+                    // `plan` prints from. Same `pair` this apply was run with, so `run_it_line`
+                    // inside it echoes it too.
+                    report_plan(response, false, style, pair);
                 } else {
                     eprintln!(
                         "The plan changed since you reviewed it, so nothing was applied. Run \
-                         `proton-sync plan` to see the new one."
+                         `{}` to see the new one.",
+                        cli_hint(pair, "plan")
                     );
                 }
             }
-            ExitCode::FAILURE
         }
         Some(ApplyOutcome::Stale) => {
             eprintln!(
-                "That plan is no longer the current one. Run `proton-sync plan` again and apply \
-                 the token it prints."
+                "That plan is no longer the current one. Run `{}` again and apply the token it \
+                 prints.",
+                cli_hint(pair, "plan")
             );
-            ExitCode::FAILURE
         }
         Some(ApplyOutcome::Paused) => {
             eprintln!(
-                "Syncing is paused, so nothing was applied. Resume with `proton-sync resume`."
+                "Syncing is paused, so nothing was applied. Resume with `{}`.",
+                cli_hint(pair, "resume")
             );
-            ExitCode::FAILURE
         }
         Some(ApplyOutcome::Failed { error, .. }) => {
             eprintln!("The apply failed: {error}");
-            ExitCode::FAILURE
         }
         Some(ApplyOutcome::Scheduled { .. }) => {
             if !json {
-                println!("Apply scheduled; watch it with `proton-sync status`.");
+                println!(
+                    "Apply scheduled; watch it with `{}`.",
+                    cli_hint(pair, "status")
+                );
             }
-            ExitCode::SUCCESS
         }
         Some(ApplyOutcome::Unknown) | None => {
             eprintln!("The daemon did not say what happened to the apply.");
-            ExitCode::FAILURE
         }
     }
+    apply_exit_code(response.apply.as_ref())
 }
 
 /// A single-line stderr spinner for the `syncnow` wait, shown only on a terminal.
@@ -1831,7 +2214,7 @@ fn relative_age(first_seen_epoch_secs: u64) -> Option<String> {
     })
 }
 
-fn print_pending(pending: &[PendingDeletion]) {
+fn print_pending(pending: &[PendingDeletion], pair: Option<&str>) {
     if pending.is_empty() {
         println!("No deletions are pending approval.");
         return;
@@ -1880,14 +2263,20 @@ fn print_pending(pending: &[PendingDeletion]) {
             (None, None) => {}
         }
     }
-    println!("Approve with: proton-sync approve <path>   (or --all)");
-    println!("Keep it instead: proton-sync keep <path>   (or --all)");
+    println!(
+        "Approve with: {}   (or --all)",
+        cli_hint(pair, "approve <path>")
+    );
+    println!(
+        "Keep it instead: {}   (or --all)",
+        cli_hint(pair, "keep <path>")
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proton_drive_sync_engine::ipc::TransferActivity;
+    use proton_drive_sync_engine::ipc::{PairSummary, TransferActivity};
     use proton_drive_sync_engine::sync::UnsyncableReason;
     use std::sync::{Arc, Mutex};
 
@@ -1995,20 +2384,451 @@ mod tests {
         // The gate is client-side because the wire carries no confirmation field: a daemon cannot
         // tell a confirmed request from an unconfirmed one. Refusing before the socket is opened is
         // what makes "nothing was sent" literally true.
-        let error = build_request(&Commands::ResetIndex { yes: false })
+        let error = build_request(&Commands::ResetIndex { yes: false }, None)
             .expect_err("an unconfirmed reset must not be sent");
         assert!(
             error.contains("--yes"),
             "the refusal must say how to confirm: {error}"
         );
 
-        let request = build_request(&Commands::ResetIndex { yes: true }).expect("confirmed");
+        let request = build_request(&Commands::ResetIndex { yes: true }, None).expect("confirmed");
         assert_eq!(request.command, ControlCommand::ResetIndex);
         assert_eq!(request.argument, None);
         assert!(
             !request.literal_path,
             "reset-index carries no path selector"
         );
+    }
+
+    #[test]
+    fn report_plan_treats_the_all_pairs_scheduled_ack_as_success() {
+        // `--all-pairs` never waits (`watch_plan` alone extracts `plan_seq` and polls), so
+        // `report_plan` is the only caller that can see `PlanOutcome::Scheduled` — and before this
+        // it fell into the catch-all "the daemon did not return a plan" arm and exited non-zero on
+        // every successful `proton-sync --all-pairs plan`.
+        let mut response = blank_response();
+        response.plan = Some(PlanOutcome::Scheduled { plan_seq: 3 });
+        assert_eq!(
+            report_plan(&response, false, &plain_style(), Some("work")),
+            ExitCode::SUCCESS
+        );
+    }
+
+    #[test]
+    fn json_result_value_matches_the_single_pair_projection_for_every_projected_verb() {
+        // Decision #10 / ADR 0005 §4 departure (5): `--all-pairs --json`'s per-pair `result` must
+        // be the SAME value a single-pair `--json` invocation prints for that verb, not the whole
+        // envelope. `history`/`activity`/`pending`/`list`/`plan`/`apply` each print one projected
+        // field in `run_for_pair`; before this fix `run_all_pairs` always nested the whole
+        // `ControlResponse`, so these six carried a second, redundant `pairs` array under `result`.
+        let mut response = blank_response();
+        response.history = None;
+        assert_eq!(
+            json_result_value(&Commands::History, &response),
+            serde_json::to_value(&response.history).unwrap()
+        );
+
+        response.pending_deletions = vec![];
+        assert_eq!(
+            json_result_value(&Commands::Pending, &response),
+            serde_json::to_value(&response.pending_deletions).unwrap()
+        );
+
+        response.plan = Some(PlanOutcome::Scheduled { plan_seq: 7 });
+        let projected = json_result_value(&Commands::Plan { limit: None }, &response);
+        assert_eq!(projected, serde_json::to_value(&response.plan).unwrap());
+        // The whole-response shape would also carry `pairs` — the bug this pins against.
+        assert!(
+            projected.get("pairs").is_none(),
+            "plan's projection must not carry the envelope: {projected}"
+        );
+
+        response.apply = Some(ApplyOutcome::Stale);
+        assert_eq!(
+            json_result_value(
+                &Commands::Apply {
+                    token: "tok".to_owned(),
+                    skip_destructive: false,
+                    no_wait: true,
+                },
+                &response
+            ),
+            serde_json::to_value(&response.apply).unwrap()
+        );
+
+        response.listing = None;
+        assert_eq!(
+            json_result_value(
+                &Commands::List {
+                    path: None,
+                    limit: None
+                },
+                &response
+            ),
+            serde_json::to_value(&response.listing).unwrap()
+        );
+
+        // Everything else prints the whole envelope in `run_for_pair` too, so the projection stays
+        // the whole response — `status` is the representative case.
+        assert_eq!(
+            json_result_value(&Commands::Status, &response),
+            serde_json::to_value(&response).unwrap()
+        );
+    }
+
+    #[test]
+    fn reply_exit_code_matches_the_verbs_own_outcome() {
+        // `run_all_pairs`'s human branch used to discard `print_pair_reply`'s return value
+        // entirely (`{ ...; }` blocks), so a busy `list`, a paused `plan` or a failed `apply`
+        // under `--all-pairs` printed an error line but the process still exited 0. Both branches
+        // now fold `reply_exit_code` instead — see `all_pairs_json_list_exits_by_its_own_outcome`
+        // and its plan/apply siblings for the JSON twin of that bug (#409's Copilot finding).
+        let mut failing_list = blank_response();
+        failing_list.listing = Some(ListingOutcome::Busy);
+        assert_eq!(
+            reply_exit_code(
+                &Commands::List {
+                    path: None,
+                    limit: None
+                },
+                &failing_list
+            ),
+            ExitCode::FAILURE
+        );
+
+        let mut failing_plan = blank_response();
+        failing_plan.plan = Some(PlanOutcome::Paused);
+        assert_eq!(
+            reply_exit_code(&Commands::Plan { limit: None }, &failing_plan),
+            ExitCode::FAILURE
+        );
+
+        let ok = blank_response();
+        assert_eq!(reply_exit_code(&Commands::Status, &ok), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn list_exit_code_covers_every_listing_outcome() {
+        assert_eq!(
+            list_exit_code(Some(&ListingOutcome::Listed {
+                path: PathBuf::new(),
+                entries: Vec::new(),
+                total: 0,
+                truncated: false,
+            })),
+            ExitCode::SUCCESS
+        );
+        assert_eq!(
+            list_exit_code(Some(&ListingOutcome::Busy)),
+            ExitCode::FAILURE
+        );
+        assert_eq!(
+            list_exit_code(Some(&ListingOutcome::Failed {
+                error: "x".to_owned()
+            })),
+            ExitCode::FAILURE
+        );
+        assert_eq!(
+            list_exit_code(Some(&ListingOutcome::Unknown)),
+            ExitCode::FAILURE
+        );
+        assert_eq!(list_exit_code(None), ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn plan_exit_code_covers_every_plan_outcome() {
+        assert_eq!(plan_exit_code(Some(&reviewed("tok"))), ExitCode::SUCCESS);
+        // The `--all-pairs` immediate ack — decision #9a8d304 pinned for `report_plan`, restated
+        // here because `plan_exit_code` is now the one place that decision lives.
+        assert_eq!(
+            plan_exit_code(Some(&PlanOutcome::Scheduled { plan_seq: 1 })),
+            ExitCode::SUCCESS
+        );
+        assert_eq!(
+            plan_exit_code(Some(&PlanOutcome::Paused)),
+            ExitCode::FAILURE
+        );
+        assert_eq!(
+            plan_exit_code(Some(&PlanOutcome::Failed {
+                plan_seq: 1,
+                error: "x".to_owned()
+            })),
+            ExitCode::FAILURE
+        );
+        assert_eq!(
+            plan_exit_code(Some(&PlanOutcome::Computing { plan_seq: 1 })),
+            ExitCode::FAILURE
+        );
+        assert_eq!(
+            plan_exit_code(Some(&PlanOutcome::Absent)),
+            ExitCode::FAILURE
+        );
+        assert_eq!(
+            plan_exit_code(Some(&PlanOutcome::Unknown)),
+            ExitCode::FAILURE
+        );
+        assert_eq!(plan_exit_code(None), ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn apply_exit_code_covers_every_apply_outcome() {
+        assert_eq!(
+            apply_exit_code(Some(&ApplyOutcome::Applied {
+                apply_seq: 1,
+                executed: 1,
+                skipped_destructive: 0,
+                failed: 0,
+            })),
+            ExitCode::SUCCESS
+        );
+        // The data-dependent arm: `Applied` only fails when it landed items that themselves
+        // failed (#136). This is the case a `matches!` one-liner over the variant alone would
+        // get wrong.
+        assert_eq!(
+            apply_exit_code(Some(&ApplyOutcome::Applied {
+                apply_seq: 1,
+                executed: 1,
+                skipped_destructive: 0,
+                failed: 1,
+            })),
+            ExitCode::FAILURE
+        );
+        // The `--all-pairs` immediate ack, success like `PlanOutcome::Scheduled`.
+        assert_eq!(
+            apply_exit_code(Some(&ApplyOutcome::Scheduled { apply_seq: 1 })),
+            ExitCode::SUCCESS
+        );
+        assert_eq!(
+            apply_exit_code(Some(&ApplyOutcome::Diverged { apply_seq: 1 })),
+            ExitCode::FAILURE
+        );
+        assert_eq!(
+            apply_exit_code(Some(&ApplyOutcome::Stale)),
+            ExitCode::FAILURE
+        );
+        assert_eq!(
+            apply_exit_code(Some(&ApplyOutcome::Paused)),
+            ExitCode::FAILURE
+        );
+        assert_eq!(
+            apply_exit_code(Some(&ApplyOutcome::Failed {
+                apply_seq: 1,
+                error: "x".to_owned()
+            })),
+            ExitCode::FAILURE
+        );
+        assert_eq!(
+            apply_exit_code(Some(&ApplyOutcome::Unknown)),
+            ExitCode::FAILURE
+        );
+        assert_eq!(apply_exit_code(None), ExitCode::FAILURE);
+    }
+
+    /// One `--all-pairs` run against a single configured pair: the capability probe, then this
+    /// one verb reply. Returns the process's own exit code, exactly what `main` would return.
+    fn run_all_pairs_with(json: bool, command: Commands, verb_reply: ControlResponse) -> ExitCode {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let socket_path = directory.path().join("control.sock");
+        let probe_reply = ControlResponse {
+            pairs: vec![pair_summary("default")],
+            ..blank_response()
+        };
+        let cli = Cli {
+            config: None,
+            socket_path: None,
+            json,
+            pair: None,
+            all_pairs: true,
+            command,
+        };
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                let server = tokio::spawn(serve_scripted(
+                    socket_path.clone(),
+                    vec![probe_reply, verb_reply],
+                ));
+                tokio::task::yield_now().await;
+                let code = run_all_pairs(&cli, &socket_path, &Style { enabled: false }).await;
+                server.abort();
+                code
+            })
+    }
+
+    /// The JSON twin of the bug 9a8d304 fixed for the human branch: `--all-pairs --json`'s fold
+    /// used to check only `response.pair`, never the verb's own outcome, so a busy `list` printed
+    /// its payload and exited 0.
+    #[test]
+    fn all_pairs_json_list_exits_by_its_own_outcome() {
+        let busy = ControlResponse {
+            listing: Some(ListingOutcome::Busy),
+            ..blank_response()
+        };
+        assert_eq!(
+            run_all_pairs_with(
+                true,
+                Commands::List {
+                    path: None,
+                    limit: None
+                },
+                busy
+            ),
+            ExitCode::FAILURE,
+            "a busy listing must fail --all-pairs --json"
+        );
+
+        let listed = ControlResponse {
+            listing: Some(ListingOutcome::Listed {
+                path: PathBuf::new(),
+                entries: Vec::new(),
+                total: 0,
+                truncated: false,
+            }),
+            ..blank_response()
+        };
+        assert_eq!(
+            run_all_pairs_with(
+                true,
+                Commands::List {
+                    path: None,
+                    limit: None
+                },
+                listed
+            ),
+            ExitCode::SUCCESS
+        );
+    }
+
+    #[test]
+    fn all_pairs_json_plan_exits_by_its_own_outcome() {
+        let paused = ControlResponse {
+            plan: Some(PlanOutcome::Paused),
+            ..blank_response()
+        };
+        assert_eq!(
+            run_all_pairs_with(true, Commands::Plan { limit: None }, paused),
+            ExitCode::FAILURE,
+            "a paused plan must fail --all-pairs --json"
+        );
+
+        // `Scheduled` is the immediate ack every `--all-pairs plan` reply actually carries (it
+        // never watches), and it is a success — the case #409's finding calls out by name.
+        let scheduled = ControlResponse {
+            plan: Some(PlanOutcome::Scheduled { plan_seq: 3 }),
+            ..blank_response()
+        };
+        assert_eq!(
+            run_all_pairs_with(true, Commands::Plan { limit: None }, scheduled),
+            ExitCode::SUCCESS
+        );
+    }
+
+    #[test]
+    fn all_pairs_json_apply_exits_by_its_own_outcome() {
+        fn apply_command() -> Commands {
+            Commands::Apply {
+                token: "tok".to_owned(),
+                skip_destructive: false,
+                no_wait: true,
+            }
+        }
+
+        let diverged = ControlResponse {
+            apply: Some(ApplyOutcome::Diverged { apply_seq: 1 }),
+            ..blank_response()
+        };
+        assert_eq!(
+            run_all_pairs_with(true, apply_command(), diverged),
+            ExitCode::FAILURE,
+            "a diverged apply must fail --all-pairs --json"
+        );
+
+        // The data-dependent arm: applied, but with a failed item (#136's partial outcome).
+        let partial = ControlResponse {
+            apply: Some(ApplyOutcome::Applied {
+                apply_seq: 1,
+                executed: 1,
+                skipped_destructive: 0,
+                failed: 1,
+            }),
+            ..blank_response()
+        };
+        assert_eq!(
+            run_all_pairs_with(true, apply_command(), partial),
+            ExitCode::FAILURE,
+            "a partial apply must fail --all-pairs --json"
+        );
+
+        let scheduled = ControlResponse {
+            apply: Some(ApplyOutcome::Scheduled { apply_seq: 7 }),
+            ..blank_response()
+        };
+        assert_eq!(
+            run_all_pairs_with(true, apply_command(), scheduled),
+            ExitCode::SUCCESS
+        );
+    }
+
+    /// The property that stops the two branches drifting again: for the same reply, the JSON
+    /// branch and the human branch must exit with the same code. Each is driven through the real
+    /// `run_all_pairs` (not the two `xxx_exit_code` functions directly), so a regression that
+    /// reintroduces a second, divergent decision inside either branch is caught here even if it
+    /// leaves both `xxx_exit_code` functions themselves untouched.
+    #[test]
+    fn all_pairs_json_and_human_branches_exit_alike() {
+        let busy_list = ControlResponse {
+            listing: Some(ListingOutcome::Busy),
+            ..blank_response()
+        };
+        let json_code = run_all_pairs_with(
+            true,
+            Commands::List {
+                path: None,
+                limit: None,
+            },
+            busy_list.clone(),
+        );
+        let human_code = run_all_pairs_with(
+            false,
+            Commands::List {
+                path: None,
+                limit: None,
+            },
+            busy_list,
+        );
+        assert_eq!(json_code, human_code);
+        assert_eq!(json_code, ExitCode::FAILURE);
+
+        let scheduled_plan = ControlResponse {
+            plan: Some(PlanOutcome::Scheduled { plan_seq: 3 }),
+            ..blank_response()
+        };
+        let json_code =
+            run_all_pairs_with(true, Commands::Plan { limit: None }, scheduled_plan.clone());
+        let human_code = run_all_pairs_with(false, Commands::Plan { limit: None }, scheduled_plan);
+        assert_eq!(json_code, human_code);
+        assert_eq!(json_code, ExitCode::SUCCESS);
+
+        let partial_apply = ControlResponse {
+            apply: Some(ApplyOutcome::Applied {
+                apply_seq: 1,
+                executed: 1,
+                skipped_destructive: 0,
+                failed: 1,
+            }),
+            ..blank_response()
+        };
+        let apply_command = || Commands::Apply {
+            token: "tok".to_owned(),
+            skip_destructive: false,
+            no_wait: true,
+        };
+        let json_code = run_all_pairs_with(true, apply_command(), partial_apply.clone());
+        let human_code = run_all_pairs_with(false, apply_command(), partial_apply);
+        assert_eq!(json_code, human_code);
+        assert_eq!(json_code, ExitCode::FAILURE);
     }
 
     #[test]
@@ -2115,6 +2935,8 @@ mod tests {
             plan: None,
             apply: None,
             auth: AuthState::Unknown,
+            pair: Some("default".to_owned()),
+            pairs: Vec::new(),
         }
     }
 
@@ -2215,6 +3037,53 @@ mod tests {
         assert_eq!(headline(&blank_response(), &style).1, "idle");
     }
 
+    fn pair_summary(name: &str) -> PairSummary {
+        PairSummary {
+            name: name.to_owned(),
+            local_root: PathBuf::from("/local"),
+            remote_root: PathBuf::from("/Drive/Remote"),
+            db_path: PathBuf::from("/local/.sync/index.db"),
+            paused: false,
+            syncing: false,
+            reconcile_seq: 1,
+            last_sync_epoch_secs: None,
+            last_error: None,
+            pending_changes: 0,
+            pending_deletions: 0,
+        }
+    }
+
+    #[test]
+    fn the_headline_names_the_pair_only_when_more_than_one_is_configured() {
+        // Decision #14 (ADR 0005 §4): "everything is up to date" silently meaning one of three
+        // folders is #246's lie read the other way round — but a one-pair daemon (today's only
+        // shape) must print exactly what it prints before #102 phase 3.
+        let style = Style { enabled: false };
+        let single = blank_response();
+        let line = status_headline_line(&single, &style);
+        assert!(
+            !line.contains("default"),
+            "single configured pair must not be named: {line}"
+        );
+
+        let mut multi = blank_response();
+        multi.pairs = vec![pair_summary("default"), pair_summary("second")];
+        let line = status_headline_line(&multi, &style);
+        assert!(
+            line.contains("default"),
+            "multi-pair headline must name the selected pair: {line}"
+        );
+
+        // An unresolved selector (`pair: None`) names nothing — there is no pair to name.
+        let mut unresolved = multi;
+        unresolved.pair = None;
+        let line = status_headline_line(&unresolved, &style);
+        assert!(
+            !line.contains("default") && !line.contains("second"),
+            "an unresolved selector must not name a pair: {line}"
+        );
+    }
+
     #[test]
     fn human_bytes_scales_through_the_units() {
         assert_eq!(human_bytes(0), "0 B");
@@ -2290,10 +3159,36 @@ mod tests {
     #[test]
     fn an_empty_plan_offers_nothing_to_run() {
         let style = plain_style();
-        assert_eq!(run_it_line(0, "1:abc", &style), None);
+        assert_eq!(run_it_line(0, "1:abc", None, &style), None);
         assert_eq!(
-            run_it_line(1, "1:abc", &style),
+            run_it_line(1, "1:abc", None, &style),
             Some("Run it with: proton-sync apply 1:abc".to_owned())
+        );
+    }
+
+    /// The bug class the `refetch_plan_if_diverged` fix belongs to, in text rather than in a
+    /// request: a hint printed after `--pair work ...` must echo `--pair work`, or a user who
+    /// pastes it verbatim is silently sent to the default pair (ADR 0005 §4's selector, omitted,
+    /// resolves to index 0 — never the pair the hint was printed for).
+    #[test]
+    fn cli_hint_echoes_the_selector_the_command_was_run_with() {
+        assert_eq!(cli_hint(None, "plan"), "proton-sync plan");
+        assert_eq!(
+            cli_hint(Some("work"), "plan"),
+            "proton-sync --pair work plan"
+        );
+    }
+
+    /// `run_it_line` is the primary paste target of the plan/apply pair (#321's own hint), so it
+    /// carries the selector too — even though a wrong-pair `apply` usually fails loud (`Stale`,
+    /// since a token is a content hash of the *other* pair's rows and only coincidentally matches
+    /// this pair's stored plan), the wording is still wrong and still worth fixing.
+    #[test]
+    fn run_it_line_carries_the_pair_selector() {
+        let style = plain_style();
+        assert_eq!(
+            run_it_line(1, "1:abc", Some("work"), &style),
+            Some("Run it with: proton-sync --pair work apply 1:abc".to_owned())
         );
     }
 
@@ -2355,6 +3250,66 @@ mod tests {
             stream.write_all(&body).await.expect("write response");
             stream.flush().await.expect("flush");
         }
+    }
+
+    /// `--all-pairs stop` used to loop like every other verb, sending one shutdown request per
+    /// configured pair (ADR 0005 §4's verb table settles `shutdown` as daemon-wide, selector
+    /// ignored). With N pairs the first shutdown kills the daemon and every later iteration fails
+    /// to connect, reporting a clean stop as a failure. A third reply is scripted so a regression
+    /// that still loops is caught by the request COUNT, not by a starved connection that would
+    /// otherwise only show up as a wrong exit code.
+    #[test]
+    fn all_pairs_stop_sends_exactly_one_shutdown_request() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let socket_path = directory.path().join("control.sock");
+        let seen = Arc::new(Mutex::new(Vec::new()));
+
+        let probe_reply = ControlResponse {
+            pairs: vec![pair_summary("default"), pair_summary("second")],
+            ..blank_response()
+        };
+        let shutdown_reply = ControlResponse {
+            message: "shutting down".to_owned(),
+            ..blank_response()
+        };
+
+        let cli = Cli {
+            config: None,
+            socket_path: None,
+            json: false,
+            pair: None,
+            all_pairs: true,
+            command: Commands::Stop,
+        };
+
+        let code = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                let server = tokio::spawn(serve_recording(
+                    socket_path.clone(),
+                    vec![probe_reply, shutdown_reply.clone(), shutdown_reply],
+                    Arc::clone(&seen),
+                ));
+                // `run_all_pairs`'s first request has no retry (unlike `poll_until`'s callers),
+                // so the listener must exist before it connects — one yield is enough for the
+                // spawned task to reach its own first pending await (`accept`).
+                tokio::task::yield_now().await;
+                let code = run_all_pairs(&cli, &socket_path, &Style { enabled: false }).await;
+                server.abort();
+                code
+            });
+
+        assert_eq!(code, ExitCode::SUCCESS);
+        let requests = seen.lock().expect("seen lock").clone();
+        assert_eq!(
+            requests.len(),
+            2,
+            "one capability probe, then exactly one shutdown — never one per pair: {requests:?}"
+        );
+        assert_eq!(requests[0].command, ControlCommand::Status);
+        assert_eq!(requests[1].command, ControlCommand::Shutdown);
     }
 
     /// A pause **does not** end a `plan`/`apply` wait, and must not be "made consistent" with
@@ -2487,7 +3442,14 @@ mod tests {
                 ));
                 let code = tokio::time::timeout(
                     Duration::from_secs(10),
-                    watch_apply(&socket_path, ack, false, false, &Style { enabled: false }),
+                    watch_apply(
+                        &socket_path,
+                        ack,
+                        false,
+                        false,
+                        &Style { enabled: false },
+                        Some("work"),
+                    ),
                 )
                 .await
                 .expect("the wait must finish well inside the timeout");
@@ -2521,6 +3483,13 @@ mod tests {
                 .all(|request| request.command == ControlCommand::PlanResult),
             "both round trips are plan_result reads: {requests:?}"
         );
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.pair.as_deref() == Some("work")),
+            "the divergence refetch used to address the default pair no matter which pair the \
+             apply was for: {requests:?}"
+        );
     }
 
     /// The other half of the same rule, tested at the seam because the merge is invisible from
@@ -2544,6 +3513,7 @@ mod tests {
             &missing_socket,
             diverged.clone(),
             7,
+            None,
         ));
         assert_eq!(
             answered.apply,
@@ -2567,7 +3537,8 @@ mod tests {
             plan: Some(reviewed("tok-kept")),
             ..blank_response()
         };
-        let answered = runtime.block_on(refetch_plan_if_diverged(&missing_socket, applied, 7));
+        let answered =
+            runtime.block_on(refetch_plan_if_diverged(&missing_socket, applied, 7, None));
         assert!(
             matches!(answered.plan, Some(PlanOutcome::Computed(_))),
             "a non-divergent verdict must not be touched at all"

@@ -184,6 +184,15 @@ pub struct ControlRequest {
     /// ignores it.
     #[serde(default)]
     pub skip_destructive: bool,
+    /// Which folder pair this command addresses (#102 phase 3, ADR 0005 §4). `None` = the default
+    /// pair (the first `[[pair]]` table) — what every client predating multi-pair means by every
+    /// verb it sends. Matched **byte-exactly** against a pair's configured name (ADR: "a wire path
+    /// is a rendering, never a selector" extends to this). `Shutdown` ignores it (daemon-wide).
+    /// `#[serde(default)]` keeps wire compat both directions: an old client omits it and reaches
+    /// the default pair; a new reply's own `pair`/`pairs` fields (not this one) are what tell a
+    /// client whether the daemon understands it at all.
+    #[serde(default)]
+    pub pair: Option<String>,
 }
 
 /// Default and hard cap on the rows one [`ControlCommand::Activity`] reply carries. A control
@@ -210,6 +219,7 @@ impl ControlRequest {
             limit: None,
             direction: None,
             skip_destructive: false,
+            pair: None,
         }
     }
 }
@@ -643,6 +653,30 @@ pub struct RunningConfigInfo {
     pub db_path: PathBuf,
 }
 
+/// One entry of [`ControlResponse::pairs`] (#102 phase 3, ADR 0005 §4): enough for a header, a
+/// pair selector and a tray tooltip with no second round trip. **Always populated on a real
+/// reply, including a one-pair daemon** — this is the client capability gate (a `status` reply
+/// carrying neither `pair` nor `pairs` is a daemon that predates multi-pair), so suppressing it
+/// for `N == 1` would make a daemon that supports `--pair` indistinguishable from one that does
+/// not.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PairSummary {
+    pub name: String,
+    #[serde(with = "crate::lossy_path")]
+    pub local_root: PathBuf,
+    #[serde(with = "crate::lossy_path")]
+    pub remote_root: PathBuf,
+    #[serde(with = "crate::lossy_path")]
+    pub db_path: PathBuf,
+    pub paused: bool,
+    pub syncing: bool,
+    pub reconcile_seq: u64,
+    pub last_sync_epoch_secs: Option<u64>,
+    pub last_error: Option<String>,
+    pub pending_changes: usize,
+    pub pending_deletions: usize,
+}
+
 /// Live "what is the daemon doing right now", surfaced while `syncing` is true so clients can
 /// render more than a spinner during a long pass (a multi-minute remote walk, a multi-GB
 /// transfer). Purely informational display data: every field is best-effort, absence means
@@ -1066,6 +1100,21 @@ pub struct ControlResponse {
     /// honest reading — that daemon classified nothing.
     #[serde(default)]
     pub auth: AuthState,
+    /// Which pair the top-level single-pair fields above describe (#102 phase 3, ADR 0005 §4).
+    /// `Some(name)` **exactly when the request's selector resolved** — including an omitted
+    /// selector, which resolves to the default pair's name. `None` means the selector named no
+    /// configured pair: nothing was scheduled, latched, approved, reset or applied, and `message`
+    /// names the configured pairs. A client tells by this shape, never by matching `message`
+    /// (#103, #246). `#[serde(default)]` so an older daemon's reply (which has neither this nor
+    /// `pairs`) still parses — and that absence, together with `pairs` being empty, *is* the
+    /// client capability gate.
+    #[serde(default)]
+    pub pair: Option<String>,
+    /// Every configured pair (#102 phase 3, ADR 0005 §4). **Always non-empty on a real reply**,
+    /// including a one-pair daemon — see [`PairSummary`]'s doc for why this must never be
+    /// suppressed for `N == 1`. `#[serde(default)]` for an older daemon's reply.
+    #[serde(default)]
+    pub pairs: Vec<PairSummary>,
 }
 
 /// One completed reconcile **attempt**, including the idle ones — a rolling debug trail of the
@@ -1971,6 +2020,25 @@ mod tests {
             }))),
             apply: Some(ApplyOutcome::Diverged { apply_seq: 1 }),
             auth: AuthState::SignedOut,
+            // A pair's own name is a path-shaped identifier subject to the same charset as a
+            // `[[pair]]` table's `name` (#102 phase 3): plain ASCII, never a lossy rendering. No
+            // non-UTF-8 fixture is needed here for the same reason `RunningConfigInfo`'s own
+            // fixture value above does not carry one on `local_root`'s *name component* — only the
+            // roots (arbitrary filesystem paths) need the non-UTF-8 case.
+            pair: Some("default".to_owned()),
+            pairs: vec![PairSummary {
+                name: "default".to_owned(),
+                local_root: non_utf8_path(b"-root"),
+                remote_root: PathBuf::from("/Drive/RemoteFolder"),
+                db_path: non_utf8_path(b"-root/.sync/sync_index.db"),
+                paused: false,
+                syncing: true,
+                reconcile_seq: 7,
+                last_sync_epoch_secs: None,
+                last_error: None,
+                pending_changes: 0,
+                pending_deletions: 1,
+            }],
         }
     }
 
@@ -2052,6 +2120,69 @@ mod tests {
             cannot_sync[0].relative_path,
             PathBuf::from(&*wire_path(&non_utf8_path(b"-socket")))
         );
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // #102 phase 3: the control-protocol pair selector.
+    // ---------------------------------------------------------------------------------------
+
+    /// `ControlResponse` as an old (pre-phase-3) client's struct knows it — the nine
+    /// non-`#[serde(default)]` fields plus every field added since, minus `pair`/`pairs`. A new
+    /// daemon's reply must still deserialize into this shape (serde ignores unknown fields absent
+    /// `deny_unknown_fields`, which no wire type here carries). Most fields are read by nothing
+    /// but `Debug`: the test is that deserialization succeeds at all, not what it produces.
+    #[derive(Debug, Deserialize)]
+    #[allow(dead_code)]
+    struct PreSelectorControlResponse {
+        status: String,
+        paused: bool,
+        #[serde(default)]
+        syncing: bool,
+        #[serde(default)]
+        reconcile_seq: u64,
+        pending_changes: usize,
+        message: String,
+        last_sync_epoch_secs: Option<u64>,
+        last_error: Option<String>,
+        last_plan_summary: Option<PlanSummary>,
+        last_successful_sync_summary: Option<PlanSummary>,
+        status_history: Vec<StatusHistoryEntry>,
+    }
+
+    #[test]
+    fn a_new_daemons_reply_round_trips_through_an_older_clients_struct_shape() {
+        // The forward compatibility direction: an old client does not know `pair`/`pairs` exist,
+        // and must still be able to parse a reply from a daemon that sends them (ADR 0005 §4 —
+        // the wire stays additive). `response_with_non_utf8_paths` is deliberately the fullest
+        // fixture in this file, `pair`/`pairs` included.
+        let response = response_with_non_utf8_paths();
+        let json = serde_json::to_string(&response).expect("serialize");
+        let old: PreSelectorControlResponse =
+            serde_json::from_str(&json).expect("an old client's struct shape must still parse");
+        assert_eq!(old.status, response.status);
+        assert_eq!(old.reconcile_seq, response.reconcile_seq);
+    }
+
+    #[test]
+    fn pairs_is_always_populated_on_a_one_pair_daemons_reply() {
+        // The trap named in the brief: `pairs` must never be suppressed for `N == 1`, because the
+        // client capability gate IS "does this reply carry `pair` or `pairs`". A one-pair daemon
+        // that omitted them would be indistinguishable from one that predates the feature.
+        let response = response_with_non_utf8_paths();
+        assert!(response.pair.is_some());
+        assert!(!response.pairs.is_empty());
+    }
+
+    #[test]
+    fn an_unresolved_selector_answers_no_pair_and_names_the_configured_ones() {
+        let mut response = response_with_non_utf8_paths();
+        response.pair = None;
+        response.message = "no such folder pair \"videos\"; configured pairs: default".to_owned();
+        // A client tells by the structural `pair: None`, never by matching `message` (#103,
+        // #246) — this pins that the two are independent fields, not that a client should parse
+        // the sentence.
+        assert!(response.pair.is_none());
+        assert!(response.message.contains("videos"));
     }
 
     #[test]

@@ -94,8 +94,10 @@ notice:
 - **Applying a reviewed plan is a fresh pass.** Dry-run and the real reconcile are separate
   invocations, so the applied plan can differ from the reviewed one — the app says so.
 - **One folder pair.** The daemon syncs one local↔remote pair, and the engine itself refuses
-  a config naming more than one. The Folders tab is two plain inputs for that one pair — no
-  add or remove control.
+  a config naming more than one — the control protocol can already address a pair by name (see
+  the [CLI reference](/cli/reference/)'s `--pair`/`--all-pairs`), but the desktop app does not
+  use that yet. The Folders tab is two plain inputs for that one pair — no add or remove
+  control.
 
 Continue to [Screens](/desktop/screens/) for a tour of each view, or
 [Tray & notifications](/desktop/tray/) for the background indicator.

@@ -1122,6 +1122,141 @@ exit 64
         assert_eq!(again["summary"]["destructive_actions"].as_u64(), Some(1));
     }
 
+    // ---------------------------------------------------------------------------------------
+    // #102 phase 3: the `--pair`/`--all-pairs` client flags, driven against the real binaries.
+    // ---------------------------------------------------------------------------------------
+
+    #[test]
+    fn an_explicit_pair_selector_addresses_the_named_pair() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let socket_path = directory.path().join("daemon.sock");
+        let lockfile_path = directory.path().join("daemon.lock");
+        let db_path = directory.path().join("sync_index.db");
+        let fake_proton_drive = write_fake_proton_drive(directory.path(), "/Drive/RemoteFolder");
+        let mut daemon = DaemonProcess::spawn(
+            &local_root,
+            &socket_path,
+            &lockfile_path,
+            &db_path,
+            &fake_proton_drive,
+        );
+        wait_for_socket(&socket_path, &mut daemon);
+        let status = wait_for_pair_reconcile_seq(&socket_path, &mut daemon, Some("default"), 1);
+        assert_eq!(status["pair"], "default");
+        assert_eq!(status["pairs"].as_array().map(Vec::len), Some(1));
+        assert_eq!(status["pairs"][0]["name"], "default");
+    }
+
+    #[test]
+    fn an_unknown_pair_selector_is_refused_and_names_the_configured_pairs() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let socket_path = directory.path().join("daemon.sock");
+        let lockfile_path = directory.path().join("daemon.lock");
+        let db_path = directory.path().join("sync_index.db");
+        let fake_proton_drive = write_fake_proton_drive(directory.path(), "/Drive/RemoteFolder");
+        let mut daemon = DaemonProcess::spawn(
+            &local_root,
+            &socket_path,
+            &lockfile_path,
+            &db_path,
+            &fake_proton_drive,
+        );
+        wait_for_socket(&socket_path, &mut daemon);
+        wait_for_reconcile_seq(&socket_path, &mut daemon, 1);
+
+        let (response, success) =
+            run_control_args_any_exit(&socket_path, &["--pair", "videos", "--json", "status"]);
+        assert!(!success, "an unresolved --pair must exit non-zero");
+        assert!(response["pair"].is_null());
+        assert!(
+            response["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("default"),
+            "the message must name the configured pairs: {response}"
+        );
+    }
+
+    /// #102 phase 3, ADR 0005 §4: the client capability gate. No real daemon needed — a bare
+    /// socket that answers exactly what a pre-multi-pair daemon's `status` reply looks like
+    /// (neither `pair` nor `pairs`) is enough to prove the client refuses rather than silently
+    /// addressing that daemon's one pair under the wrong name.
+    #[test]
+    fn the_capability_gate_refuses_pair_against_a_daemon_that_predates_it() {
+        use std::os::unix::net::UnixListener;
+
+        let directory = tempdir().expect("tempdir");
+        let socket_path = directory.path().join("old-daemon.sock");
+        let listener = UnixListener::bind(&socket_path).expect("bind fake old daemon");
+        let legacy_reply = r#"{"status":"running","paused":false,"pending_changes":0,
+            "message":"daemon status","last_sync_epoch_secs":null,"last_error":null,
+            "last_plan_summary":null,"last_successful_sync_summary":null,"status_history":[]}"#;
+        let server = thread::spawn(move || {
+            // One connection is enough: the capability gate issues exactly one `status` probe
+            // before the client refuses and exits, never reaching the real request.
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut line = String::new();
+                std::io::BufRead::read_line(&mut std::io::BufReader::new(&stream), &mut line).ok();
+                stream
+                    .write_all(legacy_reply.replace('\n', "").as_bytes())
+                    .ok();
+                stream.write_all(b"\n").ok();
+            }
+        });
+
+        let output = Command::new(env!("CARGO_BIN_EXE_proton-sync"))
+            .arg("--socket-path")
+            .arg(&socket_path)
+            .arg("--pair")
+            .arg("photos")
+            .arg("status")
+            .output()
+            .expect("run proton-sync");
+        server.join().expect("fake old daemon thread");
+
+        assert!(
+            !output.status.success(),
+            "an explicit --pair against a daemon that predates multi-pair must be refused"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("does not support multiple folder pairs"),
+            "stderr: {stderr}"
+        );
+    }
+
+    #[test]
+    fn all_pairs_over_one_pair_is_a_loop_of_one_and_its_json_form_is_an_array() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let socket_path = directory.path().join("daemon.sock");
+        let lockfile_path = directory.path().join("daemon.lock");
+        let db_path = directory.path().join("sync_index.db");
+        let fake_proton_drive = write_fake_proton_drive(directory.path(), "/Drive/RemoteFolder");
+        let mut daemon = DaemonProcess::spawn(
+            &local_root,
+            &socket_path,
+            &lockfile_path,
+            &db_path,
+            &fake_proton_drive,
+        );
+        wait_for_socket(&socket_path, &mut daemon);
+        wait_for_reconcile_seq(&socket_path, &mut daemon, 1);
+
+        let response = run_control_args(&socket_path, &["--all-pairs", "--json", "status"]);
+        let array = response
+            .as_array()
+            .expect("--all-pairs --json is a JSON array");
+        assert_eq!(array.len(), 1, "one configured pair, one array element");
+        assert_eq!(array[0]["pair"], "default");
+        assert_eq!(array[0]["result"]["pair"], "default");
+    }
+
     /// A fake `proton-drive` whose every command fails the way an expired session does.
     fn write_signed_out_proton_drive(directory: &Path) -> PathBuf {
         write_script(
@@ -1464,13 +1599,27 @@ exit 64
         serde_json::from_slice(&output.stdout).expect("control response JSON")
     }
 
-    /// Polls `status` until the daemon has completed at least `passes` reconcile attempts. The
-    /// control socket now answers while a reconcile is in flight, so tests that assert on
-    /// last-sync state must explicitly wait for the pass to finish instead of relying on the
-    /// old accept-queue blocking.
-    fn wait_for_reconcile_seq(
+    /// `run_control`, addressing one folder pair by name (#102 phase 3). `None` is `run_control`
+    /// itself — every existing caller of that stays byte-identical.
+    fn run_control_pair(socket_path: &Path, pair: Option<&str>, command: &str) -> Value {
+        match pair {
+            None => run_control(socket_path, command),
+            Some(name) => run_control_args(socket_path, &["--pair", name, "--json", command]),
+        }
+    }
+
+    /// Polls `status` until the daemon has completed at least `passes` reconcile attempts, for
+    /// one named pair (`None` = the default pair). The control socket answers while a reconcile
+    /// is in flight, so tests that assert on last-sync state must explicitly wait for the pass to
+    /// finish instead of relying on the old accept-queue blocking.
+    ///
+    /// This is the shape every later multi-pair integration test is written against (#102 phase
+    /// 3): a per-pair `reconcile_seq` is what makes waiting on ONE pair's pass — while another
+    /// pair's passes advance their own counter — correct rather than accidental.
+    fn wait_for_pair_reconcile_seq(
         socket_path: &Path,
         daemon: &mut DaemonProcess,
+        pair: Option<&str>,
         passes: u64,
     ) -> Value {
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -1481,7 +1630,7 @@ exit 64
                     daemon.stderr_tail()
                 );
             }
-            let status = run_control(socket_path, "status");
+            let status = run_control_pair(socket_path, pair, "status");
             let seq = status["reconcile_seq"].as_u64().unwrap_or(0);
             let syncing = status["syncing"].as_bool().unwrap_or(false);
             if seq >= passes && !syncing {
@@ -1490,9 +1639,18 @@ exit 64
             thread::sleep(Duration::from_millis(50));
         }
         panic!(
-            "timed out waiting for reconcile pass {passes}\n{}",
+            "timed out waiting for reconcile pass {passes} on pair {pair:?}\n{}",
             daemon.stderr_tail()
         );
+    }
+
+    /// As before #102 phase 3, unchanged: the default pair.
+    fn wait_for_reconcile_seq(
+        socket_path: &Path,
+        daemon: &mut DaemonProcess,
+        passes: u64,
+    ) -> Value {
+        wait_for_pair_reconcile_seq(socket_path, daemon, None, passes)
     }
 
     /// Runs the control CLI and returns its raw stdout, for subcommands whose output is

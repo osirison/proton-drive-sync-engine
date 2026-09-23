@@ -151,6 +151,12 @@ impl Default for WarmStartConfig {
 
 #[derive(Debug, Clone)]
 pub struct DaemonConfig {
+    /// The pair's configured name (#102 phase 3, ADR 0005 §4): `config::DEFAULT_PAIR_NAME` for
+    /// the implicit single-pair config, the `[[pair]]` table's `name` otherwise. `into_parts`
+    /// carries it onto [`PairConfig`], and from there onto [`PairShared::name`] and
+    /// `MetricsSnapshot`/wire replies — the one value a control-protocol selector is matched
+    /// against, byte-exactly.
+    pub name: String,
     pub local_root: PathBuf,
     pub remote_root: PathBuf,
     pub db_path: PathBuf,
@@ -250,6 +256,7 @@ impl DaemonConfig {
     /// ask which pair's they were.
     fn into_parts(self) -> (ProcessConfig, PairConfig) {
         let Self {
+            name,
             local_root,
             remote_root,
             db_path,
@@ -279,6 +286,7 @@ impl DaemonConfig {
                 global_lock_path,
             },
             PairConfig {
+                name,
                 local_root,
                 remote_root,
                 db_path,
@@ -317,6 +325,8 @@ struct ProcessConfig {
 /// which is still the shape a config file and the CLI flags resolve to.
 #[derive(Debug, Clone)]
 struct PairConfig {
+    /// See [`DaemonConfig::name`].
+    name: String,
     local_root: PathBuf,
     remote_root: PathBuf,
     db_path: PathBuf,
@@ -604,12 +614,15 @@ pub struct MetricsSnapshot {
 ///
 /// **Split along the one line that is not a judgement call** (#102 phase 2, ADR 0005 §1): what
 /// describes *a tree* is a [`PairShared`] block, and what describes *this user's Proton session* is
-/// [`Self::auth`]. The block is singular here because the daemon runs exactly one pair; phase 3
-/// replaces it with `pairs: Vec<PairShared>` plus the wire's `pair` selector, at which point every
-/// `self.pair` below becomes a lookup and [`Self::response`] answers for the *selected* pair. The
-/// wire is unchanged by that: [`crate::ipc::ControlResponse`]'s per-pair fields stay flattened at
-/// the top level (three legacy-JSON floor tests pin it), so what phase 3 adds is a second way to
-/// address them, never a second shape.
+/// [`Self::auth`]. Phase 3: [`Self::pairs`] is a `Vec` and the wire's `pair` selector resolves
+/// against it (`Self::resolve_pair_index`) — the **one** resolver, used by
+/// `handle_control_connection` and by [`Daemon::pass`]'s `pair_shared` alike, so a name is looked
+/// up once rather than compared ad hoc at thirty call sites. Every method that used to read the
+/// singular `self.pair` directly now either lives on [`PairShared`] itself (most of them — they
+/// touch nothing else) or takes `pair: &PairShared` as an explicit argument (`response`, `metrics`,
+/// `response_with_sampled_activity` — the ones that also read [`Self::auth`]). The wire is
+/// unchanged by any of this: [`crate::ipc::ControlResponse`]'s per-pair fields stay flattened at
+/// the top level (three legacy-JSON floor tests pin it) and now describe the *selected* pair.
 struct ControlShared {
     /// What the daemon believes about the Proton session (#103), as an [`AuthState`] discriminant.
     ///
@@ -622,13 +635,20 @@ struct ControlShared {
     /// wait for the next pass would be the whole point of designing #99 and #103 together thrown
     /// away.
     auth: AtomicU8,
-    /// Everything the control plane publishes about one folder pair.
-    pair: PairShared,
+    /// Everything the control plane publishes about every folder pair, in config order. **Length 1
+    /// today** — `config::refuse_unsupported_pair_count` sees to that — but the Vec exists now so
+    /// the wire selector has something real to resolve against; `Daemon::pass()` (not this type)
+    /// is what still hardcodes index 0 (ADR 0005 phase plan, phase 4 lifts that one function).
+    pairs: Vec<PairShared>,
 }
 
 /// The per-pair half of [`ControlShared`]: one folder pair's latches, counters and published
-/// snapshot. One block per pair once phase 3 lands; exactly one today.
+/// snapshot. One block per pair.
 struct PairShared {
+    /// The pair's configured name — what a wire selector is matched against, **byte-exactly**
+    /// (ADR 0005 §4: "a wire path is a rendering, never a selector" extends to this). `default`
+    /// for the implicit single-pair config, same as everywhere else in the engine.
+    name: String,
     /// Whether syncing is paused. Written by the IPC task (`pause`/`resume`) and read by the
     /// daemon core before each reconcile, so a pause takes effect from the next pass.
     paused: AtomicBool,
@@ -811,17 +831,66 @@ struct StatusSnapshot {
 }
 
 impl ControlShared {
-    fn new(config: RunningConfigInfo) -> Self {
+    /// One pair today (`pairs.len() == 1`); phase 4 is what lets a caller pass more than one.
+    fn new(name: String, config: RunningConfigInfo) -> Self {
         Self {
             auth: AtomicU8::new(auth_discriminant(AuthState::Unknown)),
-            pair: PairShared::new(config),
+            pairs: vec![PairShared::new(name, config)],
         }
+    }
+
+    /// The default pair — index 0, always. Every daemon-core call site (the pass family, the run
+    /// loop) addresses this and nothing else, because `Daemon::pass()` has not yet been handed
+    /// anything but index 0 to choose from (ADR 0005 phase 4 lifts that). The wire boundary
+    /// (`handle_control_connection`) is the one caller that must not use this — it resolves the
+    /// request's own selector instead.
+    fn pair(&self) -> &PairShared {
+        &self.pairs[0]
+    }
+
+    /// Resolve a wire selector to a pair index. `None` (an omitted selector) resolves to the
+    /// default pair. An unrecognised name resolves to `None` — the ADR 0005 §4 rule that a
+    /// selector which does not resolve authorises nothing. Byte-exact match.
+    fn resolve_pair_index(&self, selector: Option<&str>) -> Option<usize> {
+        match selector {
+            None => Some(0),
+            Some(name) => self.pairs.iter().position(|pair| pair.name == name),
+        }
+    }
+
+    /// Every configured pair's name, for a "which pairs exist" message when a selector does not
+    /// resolve.
+    fn pair_names(&self) -> Vec<&str> {
+        self.pairs.iter().map(|pair| pair.name.as_str()).collect()
+    }
+
+    /// The pair whose pass is running right now, if any — what [`SharedProgressSink`] routes a
+    /// live callback to (#102 phase 3; not in the ADR, the one genuinely new design question the
+    /// brief names).
+    ///
+    /// **"The", not "a", is defensible because passes are serialized** (ADR 0005 §5: one gate, one
+    /// pass at a time), so at most one `PairShared.syncing` is ever `true`. `syncing`, not
+    /// `a_counted_pass_is_running`: a plan-only pass claims `syncing` too and still walks the
+    /// remote tree, and its folder-listed progress needs routing exactly like a real pass's.
+    ///
+    /// **Why a browse cannot pollute another pair's activity through this at all**: `list`
+    /// (`proton::ProtonClient::browse_directory` → `list_one_directory`) calls neither
+    /// `remote_folder_listed` nor `download_staging` — verified in `proton.rs`, a single
+    /// non-recursive listing reports no progress. The two callbacks this sink forwards are fired
+    /// only from `list` (the full-tree walk) and `download`, both reached only from a pass. So
+    /// "route to the active pair, drop it if none is active" is not a guess that happens to be
+    /// safe today — the *only* caller of either callback is a pass, and `active_pair` names
+    /// exactly the one running it. A future caller that reports progress from outside a pass
+    /// would need its own routing, not a change to this one.
+    fn active_pair(&self) -> Option<&PairShared> {
+        self.pairs.iter().find(|pair| pair.is_syncing())
     }
 }
 
 impl PairShared {
-    fn new(config: RunningConfigInfo) -> Self {
+    fn new(name: String, config: RunningConfigInfo) -> Self {
         Self {
+            name,
             paused: AtomicBool::new(false),
             syncing: AtomicBool::new(false),
             plan_pass: AtomicBool::new(false),
@@ -849,13 +918,18 @@ impl PairShared {
     }
 }
 
-impl ControlShared {
+// Everything below that touches only one pair's own latches/counters/activity/plan slot lives on
+// `PairShared` directly, taking no pair argument — the caller has already resolved which pair
+// (`ControlShared::pair()`/`resolve_pair_index`) before reaching here. Only the handful that also read
+// `ControlShared::auth` (`response`, `metrics`, `response_with_sampled_activity`) stay on
+// `ControlShared` and take `pair: &PairShared` explicitly.
+impl PairShared {
     fn is_paused(&self) -> bool {
-        self.pair.paused.load(Ordering::SeqCst)
+        self.paused.load(Ordering::SeqCst)
     }
 
     fn plan_slot(&self) -> std::sync::MutexGuard<'_, PlanSlot> {
-        self.pair.plan.lock().expect("plan slot lock")
+        self.plan.lock().expect("plan slot lock")
     }
 
     /// Books a plan request and returns its number. The IPC task calls this *before* replying, so a
@@ -983,29 +1057,10 @@ impl ControlShared {
         self.plan_slot().apply.clone()
     }
 
-    fn auth_state(&self) -> AuthState {
-        auth_from_discriminant(self.auth.load(Ordering::SeqCst))
-    }
-
-    /// Records a verdict about the Proton session, returning `true` when it actually changed.
-    ///
-    /// Both writers call this and neither may pass [`AuthState::Unknown`]: this is where evidence
-    /// lands, and "I learned nothing" is the absence of a call, not a call. A caller with an
-    /// unclassified failure in hand must therefore leave the state alone rather than reset it —
-    /// which is the point, because the alternative reads a timeout as proof of being signed in.
-    fn record_auth_state(&self, state: AuthState) -> bool {
-        debug_assert!(
-            state != AuthState::Unknown,
-            "`Unknown` is the absence of evidence; do not publish it as a verdict"
-        );
-        let previous = self.auth.swap(auth_discriminant(state), Ordering::SeqCst);
-        auth_from_discriminant(previous) != state
-    }
-
     /// Starts a new activity phase, replacing whatever was current (and dropping any stale
     /// download staging location from the previous action).
     fn begin_activity(&self, mut activity: SyncActivity) {
-        let mut state = self.pair.activity.lock().expect("activity lock");
+        let mut state = self.activity.lock().expect("activity lock");
         activity.pass = state.pass.clone();
         state.current = Some(activity);
         state.download_scratch = None;
@@ -1027,7 +1082,7 @@ impl ControlShared {
     }
 
     fn begin_pass_progress_named(&self, started_epoch_secs: u64, kind: &str) {
-        let mut state = self.pair.activity.lock().expect("activity lock");
+        let mut state = self.activity.lock().expect("activity lock");
         state.pass = Some(PassProgress {
             started_epoch_secs,
             changes: None,
@@ -1043,7 +1098,7 @@ impl ControlShared {
     /// Corrects the pass block once the daemon knows which strategy it is running, or how many
     /// changes the plan holds. No-op before `begin_pass_progress`.
     fn update_pass_progress(&self, update: impl FnOnce(&mut PassProgress)) {
-        let mut state = self.pair.activity.lock().expect("activity lock");
+        let mut state = self.activity.lock().expect("activity lock");
         if let Some(pass) = state.pass.as_mut() {
             update(pass);
         }
@@ -1063,7 +1118,7 @@ impl ControlShared {
     /// current or the phase changed (which also resets `since_epoch_secs` to now, so elapsed
     /// times are per-phase). Used by the high-frequency walk/scan callbacks.
     fn update_activity(&self, phase: &str, update: impl FnOnce(&mut SyncActivity)) {
-        let mut state = self.pair.activity.lock().expect("activity lock");
+        let mut state = self.activity.lock().expect("activity lock");
         let same_phase = matches!(&state.current, Some(current) if current.phase == phase);
         if !same_phase {
             let pass = state.pass.clone();
@@ -1082,43 +1137,54 @@ impl ControlShared {
     /// Records the staging directory of the in-flight download so status replies can sample
     /// bytes-so-far while the CLI child is still running.
     fn note_download_scratch(&self, scratch_dir: &Path) {
-        let mut state = self.pair.activity.lock().expect("activity lock");
+        let mut state = self.activity.lock().expect("activity lock");
         state.download_scratch = Some(scratch_dir.to_path_buf());
     }
 
     /// Clears all live activity (the pass is over; `syncing` is about to read false).
     fn clear_activity(&self) {
-        let mut state = self.pair.activity.lock().expect("activity lock");
+        let mut state = self.activity.lock().expect("activity lock");
         *state = ActivityState::default();
     }
 
     /// Snapshot of the current activity for a status reply. Purely in-memory — a download's
-    /// live `bytes_done` is filled in separately by [`Self::response_with_sampled_activity`],
+    /// live `bytes_done` is filled in separately by [`ControlShared::response_with_sampled_activity`],
     /// so building a plain reply never touches the filesystem.
     ///
     /// The legacy `transfer` mirror is derived here rather than stored, so it cannot disagree with
     /// the list it mirrors (#211).
     fn activity_for_response(&self) -> Option<SyncActivity> {
-        let mut activity = self
-            .pair
-            .activity
-            .lock()
-            .expect("activity lock")
-            .current
-            .clone();
+        let mut activity = self.activity.lock().expect("activity lock").current.clone();
         if let Some(activity) = activity.as_mut() {
             activity.derive_legacy_transfer();
         }
         activity
     }
 
+    fn is_syncing(&self) -> bool {
+        self.syncing.load(Ordering::SeqCst)
+    }
+
+    /// Whether a pass that will bump [`Self::reconcile_seq`] is in flight — i.e. a real reconcile,
+    /// not a rehearsal. The one question the `syncnow`/`resync` acks must ask, because their
+    /// clients count passes by that sequence.
+    fn a_counted_pass_is_running(&self) -> bool {
+        self.is_syncing() && !self.plan_pass.load(Ordering::SeqCst)
+    }
+}
+
+impl ControlShared {
     /// [`Self::response`] plus the one live measurement a reply can carry: a download's
     /// bytes-so-far, sampled from its staging directory with async fs calls. Only the `status`
     /// command pays for this — the IPC handler's "answer from the snapshot, never by running
     /// work on this task" contract stays intact for everything else, and the sampling itself
     /// never blocks the async runtime.
-    async fn response_with_sampled_activity(&self, message: &str) -> ControlResponse {
-        let mut response = self.response(message);
+    async fn response_with_sampled_activity(
+        &self,
+        pair: &PairShared,
+        message: &str,
+    ) -> ControlResponse {
+        let mut response = self.response(pair, message);
         if !response.syncing {
             return response;
         }
@@ -1128,7 +1194,7 @@ impl ControlShared {
         // acquisition) could pair action X's transfer with action Y's staging directory when
         // a poll lands exactly on an action boundary.
         let (current, scratch) = {
-            let state = self.pair.activity.lock().expect("activity lock");
+            let state = pair.activity.lock().expect("activity lock");
             (state.current.clone(), state.download_scratch.clone())
         };
         response.activity = current;
@@ -1149,26 +1215,14 @@ impl ControlShared {
         response
     }
 
-    fn is_syncing(&self) -> bool {
-        self.pair.syncing.load(Ordering::SeqCst)
-    }
-
-    /// Whether a pass that will bump [`Self::reconcile_seq`] is in flight — i.e. a real reconcile,
-    /// not a rehearsal. The one question the `syncnow`/`resync` acks must ask, because their
-    /// clients count passes by that sequence.
-    fn a_counted_pass_is_running(&self) -> bool {
-        self.is_syncing() && !self.pair.plan_pass.load(Ordering::SeqCst)
-    }
-
-    fn response(&self, message: &str) -> ControlResponse {
-        let paused = self.is_paused();
-        let syncing = self.is_syncing();
-        let snapshot = self
-            .pair
-            .snapshot
-            .lock()
-            .expect("control snapshot lock")
-            .clone();
+    /// A reply describing `pair` — the selected pair, resolved by the caller
+    /// (`ControlShared::resolve_pair_index`/`pair()`). `pair`/`pairs` are stamped on by the caller
+    /// (`handle_control_connection`), not here, because building them needs every pair, not just
+    /// this one.
+    fn response(&self, pair: &PairShared, message: &str) -> ControlResponse {
+        let paused = pair.is_paused();
+        let syncing = pair.is_syncing();
+        let snapshot = pair.snapshot.lock().expect("control snapshot lock").clone();
         ControlResponse {
             // The string reports live *activity*, so an in-flight pass stays "syncing" even
             // when a pause was just accepted mid-pass (the pass still runs to completion);
@@ -1183,7 +1237,7 @@ impl ControlShared {
             .to_owned(),
             paused,
             syncing,
-            reconcile_seq: self.pair.reconcile_seq.load(Ordering::SeqCst),
+            reconcile_seq: pair.reconcile_seq.load(Ordering::SeqCst),
             pending_changes: snapshot.pending_changes,
             message: message.to_owned(),
             last_sync_epoch_secs: snapshot.last_sync_epoch_secs,
@@ -1204,7 +1258,7 @@ impl ControlShared {
             // `syncing.store(false)` and `clear_activity()` could pair `syncing: false`
             // with a stale "downloading X".
             activity: if syncing {
-                self.activity_for_response()
+                pair.activity_for_response()
             } else {
                 None
             },
@@ -1221,17 +1275,16 @@ impl ControlShared {
             plan: None,
             apply: None,
             auth: self.auth_state(),
+            // Stamped by the caller: building these needs every pair's `PairShared`, not just the
+            // one `pair` describes. `handle_control_connection` fills them in on every reply.
+            pair: None,
+            pairs: Vec::new(),
         }
     }
 
-    fn metrics(&self) -> MetricsSnapshot {
-        let paused = self.is_paused();
-        let snapshot = self
-            .pair
-            .snapshot
-            .lock()
-            .expect("control snapshot lock")
-            .clone();
+    fn metrics(&self, pair: &PairShared) -> MetricsSnapshot {
+        let paused = pair.is_paused();
+        let snapshot = pair.snapshot.lock().expect("control snapshot lock").clone();
         MetricsSnapshot {
             generated_epoch_secs: current_epoch_secs(),
             status: if paused { "paused" } else { "running" }.to_owned(),
@@ -1251,6 +1304,50 @@ impl ControlShared {
             unsyncable: snapshot.unsyncable,
             index_totals: snapshot.index_totals,
         }
+    }
+
+    fn auth_state(&self) -> AuthState {
+        auth_from_discriminant(self.auth.load(Ordering::SeqCst))
+    }
+
+    /// Records a verdict about the Proton session, returning `true` when it actually changed.
+    ///
+    /// Both writers call this and neither may pass [`AuthState::Unknown`]: this is where evidence
+    /// lands, and "I learned nothing" is the absence of a call, not a call. A caller with an
+    /// unclassified failure in hand must therefore leave the state alone rather than reset it —
+    /// which is the point, because the alternative reads a timeout as proof of being signed in.
+    fn record_auth_state(&self, state: AuthState) -> bool {
+        debug_assert!(
+            state != AuthState::Unknown,
+            "`Unknown` is the absence of evidence; do not publish it as a verdict"
+        );
+        let previous = self.auth.swap(auth_discriminant(state), Ordering::SeqCst);
+        auth_from_discriminant(previous) != state
+    }
+
+    /// Every configured pair as a wire [`PairSummary`] (#102 phase 3, ADR 0005 §4). Always
+    /// non-empty on a real reply — see [`PairSummary`]'s own doc for why `N == 1` must not
+    /// suppress it.
+    fn pair_summaries(&self) -> Vec<crate::ipc::PairSummary> {
+        self.pairs
+            .iter()
+            .map(|pair| {
+                let snapshot = pair.snapshot.lock().expect("control snapshot lock");
+                crate::ipc::PairSummary {
+                    name: pair.name.clone(),
+                    local_root: snapshot.config.local_root.clone(),
+                    remote_root: snapshot.config.remote_root.clone(),
+                    db_path: snapshot.config.db_path.clone(),
+                    paused: pair.is_paused(),
+                    syncing: pair.is_syncing(),
+                    reconcile_seq: pair.reconcile_seq.load(Ordering::SeqCst),
+                    last_sync_epoch_secs: snapshot.last_sync_epoch_secs,
+                    last_error: snapshot.last_error.clone(),
+                    pending_changes: snapshot.pending_changes,
+                    pending_deletions: snapshot.pending_deletions.len(),
+                }
+            })
+            .collect()
     }
 }
 
@@ -1439,29 +1536,42 @@ struct SharedProgressSink {
 
 impl ProgressSink for SharedProgressSink {
     fn remote_folder_listed(&self, folders_listed: u64, directory: &Path) {
-        self.shared
-            .update_activity(PHASE_LISTING_REMOTE, |activity| {
-                activity.folders_listed = Some(folders_listed);
-                activity.detail = Some(if directory.as_os_str().is_empty() {
-                    "/".to_owned()
-                } else {
-                    directory.display().to_string()
-                });
+        // Routed to the pair *whose pass is running*, never a fixed index — see
+        // `ControlShared::active_pair` for why that is well-defined and why a callback that
+        // arrives with none is dropped rather than guessed at.
+        let Some(pair) = self.shared.active_pair() else {
+            return;
+        };
+        pair.update_activity(PHASE_LISTING_REMOTE, |activity| {
+            activity.folders_listed = Some(folders_listed);
+            activity.detail = Some(if directory.as_os_str().is_empty() {
+                "/".to_owned()
+            } else {
+                directory.display().to_string()
             });
+        });
     }
 
     fn download_staging(&self, scratch_dir: &Path) {
-        self.shared.note_download_scratch(scratch_dir);
+        let Some(pair) = self.shared.active_pair() else {
+            return;
+        };
+        pair.note_download_scratch(scratch_dir);
     }
 }
 
 /// Work the control-socket task hands to the daemon's main loop — the two commands that must run
 /// on the core (everything else is answered directly from [`ControlShared`]).
 enum LoopCommand {
-    SyncNow,
+    /// The pair index the IPC task resolved the request's selector against (#102 phase 3). Carried
+    /// through so lifting the `N > 1` refusal (phase 4) is a change to *who picks* — the due
+    /// queue — rather than to this seam: `Daemon::run`'s consumer still `debug_assert_eq!(0, ..)`
+    /// today, because `ControlShared::resolve_pair_index` can answer only index 0 while
+    /// `config::refuse_unsupported_pair_count` holds.
+    SyncNow(usize),
     /// Run a plan-only pass (#100/#192/#209). On the core for the same reason `SyncNow` is: it is a
     /// full local walk plus an O(folders) remote walk, which must never run on the IPC task.
-    PlanNow,
+    PlanNow(usize),
     Shutdown,
 }
 
@@ -1656,11 +1766,14 @@ impl<C: ProtonClient> Daemon<C> {
                     Err(_) => None,
                 }
             });
-        let shared = Arc::new(ControlShared::new(RunningConfigInfo {
-            local_root: pair_config.local_root.clone(),
-            remote_root: pair_config.remote_root.clone(),
-            db_path: pair_config.db_path.clone(),
-        }));
+        let shared = Arc::new(ControlShared::new(
+            pair_config.name.clone(),
+            RunningConfigInfo {
+                local_root: pair_config.local_root.clone(),
+                remote_root: pair_config.remote_root.clone(),
+                db_path: pair_config.db_path.clone(),
+            },
+        ));
         let mut daemon = Self {
             process,
             pairs: vec![PairRuntime {
@@ -1768,26 +1881,36 @@ impl<C: ProtonClient> Daemon<C> {
         // interrupted pass keeps only the checkpoints of actions that fully completed and
         // replans the remainder from ground truth on next start).
         let (loop_tx, mut loop_rx) = mpsc::unbounded_channel();
-        // THREE per-pair values reach the control plane, and each becomes a lookup in phase 3 rather
-        // than a second copy: the approvals connection (one per pair — 2N handles, no schema change,
-        // ADR 0005 §3), the metrics sidecar path, and the `list` verb's relative frame. They are
-        // pair 0's here because there is one pair; the plane itself is per-process and stays so.
-        let approvals_connection = open_database(&self.pair().config.db_path)?;
+        // THREE per-pair values reach the control plane (#102 phase 3): the approvals connection
+        // (one per pair — 2N handles, no schema change, ADR 0005 §3), the metrics sidecar path,
+        // and the `list` verb's relative frame — one `ControlPlanePair` per entry of `self.pairs`,
+        // in the same order, so a resolved index addresses both `shared.pairs[i]` and
+        // `plane.pairs[i]` without a second lookup. Only one entry today
+        // (`config::refuse_unsupported_pair_count`), built from `self.pairs[0]`.
+        let plane_pairs = self
+            .pairs
+            .iter()
+            .map(|pair| {
+                Ok(ControlPlanePair {
+                    approvals: tokio::sync::Mutex::new(open_database(&pair.config.db_path)?),
+                    metrics_path: pair.metrics_path.clone(),
+                    remote_root: pair.config.remote_root.clone(),
+                })
+            })
+            .collect::<AppResult<Vec<_>>>()?;
         let ipc_task = tokio::spawn(serve_control_socket(
             listener,
             Arc::new(ControlPlane {
                 shared: Arc::clone(&self.shared),
-                approvals: tokio::sync::Mutex::new(approvals_connection),
+                pairs: plane_pairs,
                 loop_tx,
                 io_timeout: self.ipc_io_timeout,
-                metrics_path: self.pair().metrics_path.clone(),
                 cancel_flag: Arc::clone(&cancel_flag),
                 browse: BrowseContext {
                     // The SAME client the main loop uses, not a second one built from the same
                     // config: one client is one `proton::CliGate`, and two gates serialize
                     // nothing.
                     proton: Arc::clone(&self.proton),
-                    remote_root: self.pair().config.remote_root.clone(),
                     gate_wait: self.browse_gate_wait,
                 },
             }),
@@ -1884,8 +2007,20 @@ impl<C: ProtonClient> Daemon<C> {
                     }
                     Some(command) = loop_rx.recv() => {
                         match command {
-                            LoopCommand::SyncNow => self.reconcile_if_needed().await?,
-                            LoopCommand::PlanNow => self.plan_now().await,
+                            LoopCommand::SyncNow(pair_index) => {
+                                debug_assert_eq!(
+                                    pair_index, 0,
+                                    "phase 4's due queue is what picks a pair other than 0"
+                                );
+                                self.reconcile_if_needed().await?
+                            }
+                            LoopCommand::PlanNow(pair_index) => {
+                                debug_assert_eq!(
+                                    pair_index, 0,
+                                    "phase 4's due queue is what picks a pair other than 0"
+                                );
+                                self.plan_now().await
+                            }
                             LoopCommand::Shutdown => {
                                 info!("shutting down on control request");
                                 break;
@@ -1989,7 +2124,7 @@ impl<C: ProtonClient> Daemon<C> {
     fn latch_scheduled_full_sweep(&self) {
         info!("scheduled full sweep is due; the next pass will walk the whole tree");
         self.shared
-            .pair
+            .pair()
             .force_full_walk
             .store(true, Ordering::SeqCst);
     }
@@ -2022,6 +2157,7 @@ impl<C: ProtonClient> Daemon<C> {
             false,
             approve,
             None,
+            None,
         )
     }
 
@@ -2033,6 +2169,7 @@ impl<C: ProtonClient> Daemon<C> {
             &self.pair().pending_deletions,
             selector,
             true,
+            None,
         )
     }
 
@@ -2110,11 +2247,11 @@ impl<C: ProtonClient> Daemon<C> {
     #[cfg(test)]
     fn status_response(&mut self, message: &str) -> ControlResponse {
         self.publish_status();
-        self.shared.response(message)
+        self.shared.response(self.shared.pair(), message)
     }
 
     fn is_paused(&self) -> bool {
-        self.shared.is_paused()
+        self.shared.pair().is_paused()
     }
 
     async fn reconcile_if_needed(&mut self) -> AppResult<()> {
@@ -2135,11 +2272,11 @@ impl<C: ProtonClient> Daemon<C> {
     async fn reconcile(&mut self) -> AppResult<PassOutcome> {
         // Flag the pass for status replies before blocking this task; the IPC task keeps
         // serving (and reporting `syncing`) for the whole duration.
-        self.shared.pair.syncing.store(true, Ordering::SeqCst);
+        self.shared.pair().syncing.store(true, Ordering::SeqCst);
         let result = tokio::task::block_in_place(|| self.reconcile_blocking());
-        self.shared.pair.syncing.store(false, Ordering::SeqCst);
+        self.shared.pair().syncing.store(false, Ordering::SeqCst);
         // The pass is over either way; never let a stale "downloading X" outlive it.
-        self.shared.clear_activity();
+        self.shared.pair().clear_activity();
         result
     }
 
@@ -2157,11 +2294,11 @@ impl<C: ProtonClient> Daemon<C> {
     /// client polling for ever, and "the apply did not happen" is exactly what `Failed` says. The
     /// plan itself is untouched, so resuming and applying the same token again just works.
     fn discard_queued_apply_for_pause(&mut self) {
-        let PassIntent::Apply { apply_seq, .. } = self.shared.take_apply_request() else {
+        let PassIntent::Apply { apply_seq, .. } = self.shared.pair().take_apply_request() else {
             return;
         };
         info!("syncing was paused before the scheduled apply ran; it was not applied");
-        self.shared.seal_apply_pass(ApplyOutcome::Failed {
+        self.shared.pair().seal_apply_pass(ApplyOutcome::Failed {
             apply_seq,
             error: "syncing was paused before the apply ran; nothing was applied".to_owned(),
         });
@@ -2199,7 +2336,7 @@ impl<C: ProtonClient> Daemon<C> {
     async fn plan_now(&mut self) {
         // Coalesced: two clicks on `Check again` while one walk is running cost one walk, because
         // the pass that is already booked answers both requests.
-        let Some(generation) = self.shared.claim_plan_pass() else {
+        let Some(generation) = self.shared.pair().claim_plan_pass() else {
             return;
         };
         // `syncing` gates `activity` onto status replies, so a plan pass must claim it or #209's
@@ -2211,13 +2348,13 @@ impl<C: ProtonClient> Daemon<C> {
         // `a_plan_pass_booked_before_a_pause_still_runs_and_seals`.
         // `plan_pass` BEFORE `syncing`, and cleared after it, so no reply can ever observe
         // `syncing` without the flag that says which kind of pass it is.
-        self.shared.pair.plan_pass.store(true, Ordering::SeqCst);
-        self.shared.pair.syncing.store(true, Ordering::SeqCst);
-        self.shared.begin_plan_progress(current_epoch_secs());
+        self.shared.pair().plan_pass.store(true, Ordering::SeqCst);
+        self.shared.pair().syncing.store(true, Ordering::SeqCst);
+        self.shared.pair().begin_plan_progress(current_epoch_secs());
         let result = tokio::task::block_in_place(|| self.pass().plan_only_blocking());
-        self.shared.pair.syncing.store(false, Ordering::SeqCst);
-        self.shared.pair.plan_pass.store(false, Ordering::SeqCst);
-        self.shared.clear_activity();
+        self.shared.pair().syncing.store(false, Ordering::SeqCst);
+        self.shared.pair().plan_pass.store(false, Ordering::SeqCst);
+        self.shared.pair().clear_activity();
         // #103's rule, unchanged: a pass that reached Proton is evidence of a session, a classified
         // auth failure is evidence against one, and anything else moves nothing.
         match &result {
@@ -2231,7 +2368,7 @@ impl<C: ProtonClient> Daemon<C> {
             warn!(%error, "plan pass failed");
             error.to_string()
         });
-        self.shared.seal_plan_pass(generation, sealed);
+        self.shared.pair().seal_plan_pass(generation, sealed);
     }
 }
 
@@ -2350,7 +2487,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
         };
         *self
             .shared
-            .pair
+            .pair()
             .snapshot
             .lock()
             .expect("control snapshot lock") = snapshot;
@@ -2398,10 +2535,12 @@ impl<C: ProtonClient> PairPass<'_, C> {
                 .unwrap_or(path)
                 .display()
                 .to_string();
-            shared.update_activity(PHASE_SCANNING_LOCAL, |activity| {
-                activity.files_scanned = Some(files_seen);
-                activity.detail = Some(display);
-            });
+            shared
+                .pair()
+                .update_activity(PHASE_SCANNING_LOCAL, |activity| {
+                    activity.files_scanned = Some(files_seen);
+                    activity.detail = Some(display);
+                });
         };
         let report = build_plan_report(
             &self.pair.config,
@@ -2409,7 +2548,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
             &self.pair.scan_options,
             base_records,
             Some(&observer),
-            |phase| self.shared.begin_activity(new_activity(phase)),
+            |phase| self.shared.pair().begin_activity(new_activity(phase)),
         )?;
         Ok(StoredPlan {
             token: report.token(),
@@ -2429,7 +2568,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
         // phase change below. The kind is corrected by whichever branch `reconcile_blocking_inner`
         // takes.
         self.pair.pass_log = PassLog::new(current_epoch_secs());
-        self.shared.begin_pass_progress(
+        self.shared.pair().begin_pass_progress(
             self.pair.pass_log.started_epoch_secs,
             self.pair.pass_log.kind,
         );
@@ -2494,7 +2633,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
         // The attempt is complete (recorded either way): bump the sequence a waiting client
         // watches, then publish the final state of this pass.
         self.shared
-            .pair
+            .pair()
             .reconcile_seq
             .fetch_add(1, Ordering::SeqCst);
         self.publish_status();
@@ -2526,7 +2665,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
                     Ok(_) => "the pass ended without applying the reviewed plan".to_owned(),
                 },
             });
-        self.shared.seal_apply_pass(outcome);
+        self.shared.pair().seal_apply_pass(outcome);
     }
 
     fn reconcile_blocking_inner(&mut self) -> AppResult<PassOutcome> {
@@ -2534,7 +2673,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
         // What this pass was asked to do (#100). Taken once, here, so every downstream branch —
         // warm start, incremental, bootstrap — reaches the same single check in
         // `execute_plan_and_commit`, whichever remote map it ends up planning against.
-        self.pair.pass_intent = self.shared.take_apply_request();
+        self.pair.pass_intent = self.shared.pair().take_apply_request();
         self.pair.apply_report = None;
         // Recover event-driven detection if it was disabled at startup because the keyring was
         // still locked (the boot race). No-op once a source exists or when the feature is off.
@@ -2559,7 +2698,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
         // pass is not also forced. (The startup `--full-walk` flag is separate — see below.)
         let resync_requested = self
             .shared
-            .pair
+            .pair()
             .force_full_walk
             .swap(false, Ordering::SeqCst);
 
@@ -2567,13 +2706,13 @@ impl<C: ProtonClient> PairPass<'_, C> {
         // the very rows it just erased. Consumed with the same `swap`-once discipline as the
         // resync latch, and on the main loop — never from the IPC task, which holds its own
         // connection to this database.
-        if self.shared.pair.reset_index.swap(false, Ordering::SeqCst) {
+        if self.shared.pair().reset_index.swap(false, Ordering::SeqCst) {
             // RE-LATCH ON FAILURE. `reset-index` is a typed confirmation the user already gave and
             // the IPC reply already promised; a truncation that fails (a locked database, a disk
             // error) must not consume it, or the request evaporates and the daemon carries on with
             // the state the user asked to discard.
             if let Err(error) = reset_index_state(&self.pair.connection) {
-                self.shared.pair.reset_index.store(true, Ordering::SeqCst);
+                self.shared.pair().reset_index.store(true, Ordering::SeqCst);
                 return Err(error);
             }
             // A reset makes this a first pass in every sense that matters: an empty baseline is
@@ -2984,6 +3123,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
 
         // Fetch the delta (paginating) *before* the local scan so a fully idle cycle does no work.
         self.shared
+            .pair()
             .begin_activity(new_activity(PHASE_FETCHING_EVENTS));
         let delta = match self.fetch_event_delta(&volume, &cursor.last_event_id) {
             Ok(delta) => delta,
@@ -3127,6 +3267,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
         base_records: &HashMap<PathBuf, FileRecord>,
     ) -> AppResult<LocalScan> {
         self.shared
+            .pair()
             .begin_activity(new_activity(PHASE_SCANNING_LOCAL));
         let observer = |files_seen: u64, path: &Path| {
             let display = path
@@ -3135,6 +3276,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
                 .display()
                 .to_string();
             self.shared
+                .pair()
                 .update_activity(PHASE_SCANNING_LOCAL, |activity| {
                     activity.files_scanned = Some(files_seen);
                     activity.detail = Some(display);
@@ -3172,6 +3314,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
         // The client's progress sink updates the per-folder count/path from inside the walk;
         // this just flips the phase so status shows "listing remote" the moment it starts.
         self.shared
+            .pair()
             .begin_activity(new_activity(PHASE_LISTING_REMOTE));
         let (remote_entities, remote_root_missing) = load_remote_entities(
             self.proton.as_ref(),
@@ -3544,7 +3687,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
                     );
                     // Publish what a re-review will find, then refuse. The client learns *which*
                     // refusal this was from the typed `Diverged`, never from the message.
-                    self.shared.replace_stored_plan(StoredPlan {
+                    self.shared.pair().replace_stored_plan(StoredPlan {
                         token: fresh,
                         computed_epoch_secs: current_epoch_secs(),
                         summary,
@@ -3584,6 +3727,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
             .count() as u64;
         self.pair.pass_log.planned_changes = Some(planned_changes);
         self.shared
+            .pair()
             .update_pass_progress(|pass| pass.changes = Some(planned_changes));
         self.record_unsyncable(&plan, &local_scan.unsyncable, remote_map.proves_absence());
 
@@ -3733,7 +3877,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
             // transfer arms would blank the list for the duration of that action, and a client
             // drawing an empty list as "nothing is moving" would say it mid-upload. `transfers`
             // holds the queued rows here and gains an active one when a transfer actually starts.
-            self.shared.begin_activity(executing_activity(
+            self.shared.pair().begin_activity(executing_activity(
                 // Root-level actions have an empty relative path; skip it rather than render
                 // a trailing space ("creating remote folder ").
                 if action.path.as_os_str().is_empty() {
@@ -3778,10 +3922,12 @@ impl<C: ProtonClient> PairPass<'_, C> {
                                     current_epoch_secs(),
                                 )],
                             );
-                            self.shared.update_activity(PHASE_EXECUTING, |activity| {
-                                activity.transfers = transfers;
-                                activity.transfers_remaining = Some(remaining);
-                            });
+                            self.shared
+                                .pair()
+                                .update_activity(PHASE_EXECUTING, |activity| {
+                                    activity.transfers = transfers;
+                                    activity.transfers_remaining = Some(remaining);
+                                });
                             let spinner = begin_transfer_spinner(
                                 interactive_progress,
                                 transfer_index,
@@ -3862,10 +4008,12 @@ impl<C: ProtonClient> PairPass<'_, C> {
                                 current_epoch_secs(),
                             )],
                         );
-                        self.shared.update_activity(PHASE_EXECUTING, |activity| {
-                            activity.transfers = transfers;
-                            activity.transfers_remaining = Some(remaining);
-                        });
+                        self.shared
+                            .pair()
+                            .update_activity(PHASE_EXECUTING, |activity| {
+                                activity.transfers = transfers;
+                                activity.transfers_remaining = Some(remaining);
+                            });
                         let spinner = begin_transfer_spinner(
                             interactive_progress,
                             transfer_index,
@@ -4406,7 +4554,9 @@ impl<C: ProtonClient> PairPass<'_, C> {
             cursor_update = None;
         }
 
-        self.shared.begin_activity(new_activity(PHASE_COMMITTING));
+        self.shared
+            .pair()
+            .begin_activity(new_activity(PHASE_COMMITTING));
         // Read before the transaction opens, exactly as `commit_checkpoint` does — and this second
         // site is not optional (#217): an ADOPTION is index-only, so a whole first sync of an
         // already-matching tree accumulates its `Synced` records here and never touches a
@@ -4680,7 +4830,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
                 current_epoch_secs(),
             )
         };
-        self.shared.begin_activity(executing_activity(
+        self.shared.pair().begin_activity(executing_activity(
             format!(
                 "downloading {} files in {}",
                 chunk.len(),
@@ -5001,6 +5151,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
     fn set_pass_kind(&mut self, kind: PassKind) {
         self.pair.pass_log.kind = kind;
         self.shared
+            .pair()
             .update_pass_progress(|pass| pass.kind = kind.as_str().to_owned());
     }
 
@@ -5038,7 +5189,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
 
     fn metrics_snapshot(&self) -> MetricsSnapshot {
         self.publish_status();
-        self.shared.metrics()
+        self.shared.metrics(self.shared.pair())
     }
 
     fn write_metrics_snapshot(&self) -> AppResult<()> {
@@ -5050,6 +5201,23 @@ impl<C: ProtonClient> PairPass<'_, C> {
             .last_sync
             .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
             .map(|duration| duration.as_secs())
+    }
+}
+
+/// A copy-pasteable `proton-sync` invocation, carrying the same `--pair` selector the *request*
+/// that is building this message arrived with (`ControlRequest.pair`) — the daemon-side twin of
+/// `proton-sync`'s own `cli_hint`, which cannot be shared across the bin/lib boundary. `tail` is
+/// everything after the binary name, e.g. `"syncnow"` or `"pending"`.
+///
+/// **Never key this on `PairShared.name`.** That is `Some("default")` for a single-pair user who
+/// never typed `--pair` at all, so using it here would print `--pair default` in every one of
+/// these messages for every existing user. Callers must pass the selector `handle_control_connection`
+/// read off the wire (`request.pair.as_deref()`), which is `None` on an omitted selector even
+/// though the pair it resolved to always has a name.
+fn cli_hint(pair: Option<&str>, tail: &str) -> String {
+    match pair {
+        Some(name) => format!("proton-sync --pair {name} {tail}"),
+        None => format!("proton-sync {tail}"),
     }
 }
 
@@ -5071,6 +5239,7 @@ fn apply_approval_command(
     literal_path: bool,
     approve: bool,
     direction: Option<DeleteDirection>,
+    pair: Option<&str>,
 ) -> AppResult<String> {
     let Some(selector) = selector else {
         return Ok(
@@ -5096,7 +5265,8 @@ fn apply_approval_command(
         });
     }
     // Fail closed on the destructive side only: a `deny` over-revoking is the safe direction.
-    if approve && let Some(message) = ambiguous_selector_message(&matches, target, "approve") {
+    if approve && let Some(message) = ambiguous_selector_message(&matches, target, "approve", pair)
+    {
         return Ok(message);
     }
 
@@ -5117,8 +5287,9 @@ fn apply_approval_command(
 
     let verb = if approve { "approved" } else { "denied" };
     Ok(format!(
-        "{verb} {} pending deletion(s); run `proton-sync syncnow` to apply now",
-        matches.len()
+        "{verb} {} pending deletion(s); run `{}` to apply now",
+        matches.len(),
+        cli_hint(pair, "syncnow")
     ))
 }
 
@@ -5207,6 +5378,7 @@ fn apply_keep_command(
     pending_deletions: &[PendingDeletion],
     selector: Option<&str>,
     literal_path: bool,
+    pair: Option<&str>,
 ) -> AppResult<(String, bool)> {
     let Some(selector) = selector else {
         return Ok((
@@ -5228,7 +5400,7 @@ fn apply_keep_command(
     // revokes — its effect is that nothing happens — while keeping MUTATES the index and puts
     // content back on a side the user may have deliberately cleared, on rows they provably cannot
     // tell apart.
-    if let Some(message) = ambiguous_selector_message(&matches, target, "keep") {
+    if let Some(message) = ambiguous_selector_message(&matches, target, "keep", pair) {
         return Ok((message, false));
     }
 
@@ -5270,7 +5442,8 @@ fn apply_keep_command(
         return Ok((
             format!(
                 "nothing was kept: {stale} pending deletion(s) no longer match what was shown; \
-                 check `proton-sync pending` and try again"
+                 check `{}` and try again",
+                cli_hint(pair, "pending")
             ),
             false,
         ));
@@ -5341,6 +5514,7 @@ fn ambiguous_selector_message(
     matches: &[&PendingDeletion],
     target: Option<&str>,
     command: &str,
+    pair: Option<&str>,
 ) -> Option<String> {
     let target = target?;
     if matches.len() < 2 {
@@ -5358,33 +5532,50 @@ fn ambiguous_selector_message(
     Some(format!(
         "{} pending deletions render as '{target}' and cannot be told apart on the wire (their \
          paths are not valid UTF-8); nothing was {past_tense} — {command} every pending deletion \
-         instead with `proton-sync {command} --all`",
+         instead with `{}`",
         matches.len(),
+        cli_hint(pair, &format!("{command} --all")),
     ))
 }
 
 /// What the control task needs to answer the read-only `list` verb (#99) without going near the
 /// daemon core: the daemon's **own** client (so every `proton-drive` invocation in this process
 /// shares one `proton::CliGate`) and the remote root its selectors resolve against.
+/// What the control task needs to answer the read-only `list` verb (#99) without going near the
+/// daemon core, and that is **process-wide, not per-pair** (#102 phase 3): the daemon's own client
+/// (so every `proton-drive` invocation in this process shares one [`crate::proton::CliGate`]) and
+/// how long a browse may wait for it. The per-pair half — which `remote_root` a *relative* selector
+/// resolves against — lives on [`ControlPlanePair`] instead, one per pair, chosen by the same
+/// selector resolution as everything else on the wire.
 struct BrowseContext<C: ProtonClient> {
     proton: Arc<C>,
-    remote_root: PathBuf,
     /// How long a browse may wait for the CLI gate before answering `busy`. A field rather than
     /// the constant so tests can drive it at a cadence they can observe, like `ipc_io_timeout`.
     gate_wait: Duration,
 }
 
-/// Everything a control connection is served from, in one place: the published snapshot, the IPC
-/// task's own database handle, the channel to the daemon core, and the `list` verb's context.
-/// Built once in [`Daemon::run`] and shared by every connection task.
+/// The three per-pair values `Daemon::run`'s own comment names (#102 phase 3): the IPC task's
+/// second connection to that pair's index, its metrics sidecar path, and the `remote_root` a
+/// relative `list` selector resolves against. One block per pair, in the same order as
+/// [`ControlShared::pairs`] — `ControlPlane::pairs[i]` and `ControlShared::pairs[i]` describe the
+/// same pair, which is what lets a resolved index address both without a second lookup.
+struct ControlPlanePair {
+    /// The IPC task's *second* connection to this pair's index — the core owns the first. Both set
+    /// a busy timeout, so a rare same-database collision waits rather than failing.
+    approvals: tokio::sync::Mutex<Connection>,
+    metrics_path: PathBuf,
+    remote_root: PathBuf,
+}
+
+/// Everything a control connection is served from, in one place: the published snapshot, every
+/// pair's own IPC-task state, the channel to the daemon core, and the `list` verb's process-wide
+/// context. Built once in [`Daemon::run`] and shared by every connection task.
 struct ControlPlane<C: ProtonClient> {
     shared: Arc<ControlShared>,
-    /// The IPC task's *second* connection to the index — the core owns the first. Both set a busy
-    /// timeout, so a rare same-database collision waits rather than failing.
-    approvals: tokio::sync::Mutex<Connection>,
+    /// Same order as [`ControlShared::pairs`]; see [`ControlPlanePair`].
+    pairs: Vec<ControlPlanePair>,
     loop_tx: mpsc::UnboundedSender<LoopCommand>,
     io_timeout: Duration,
-    metrics_path: PathBuf,
     cancel_flag: Arc<AtomicBool>,
     browse: BrowseContext<C>,
 }
@@ -5411,21 +5602,36 @@ async fn serve_control_socket<C: ProtonClient + 'static>(
     }
 }
 
-/// Serves one control connection: read a request (time-bounded), answer it from [`ControlShared`]
-/// — never by running work on this task — and write the reply (time-bounded). `syncnow` and
-/// `shutdown` are acknowledged immediately and forwarded to the daemon core over `loop_tx`; a
-/// client that wants to observe the requested sync finishing polls `status` until
-/// `reconcile_seq` advances past the value in its ack and `syncing` is false again.
+/// A wire selector that did not resolve to any configured pair (#102 phase 3, ADR 0005 §4).
+/// `message` names the configured pairs; the caller's response carries `pair: None` and does
+/// nothing else.
+fn unknown_pair_message(shared: &ControlShared, selector: &str) -> String {
+    format!(
+        "no such folder pair {selector:?}; configured pairs: {}",
+        shared.pair_names().join(", ")
+    )
+}
+
+/// Serves one control connection: read a request (time-bounded), resolve which pair it addresses,
+/// answer it from [`ControlShared`]/[`ControlPlanePair`] — never by running work on this task —
+/// and write the reply (time-bounded). `syncnow` and `shutdown` are acknowledged immediately and
+/// forwarded to the daemon core over `loop_tx`; a client that wants to observe the requested sync
+/// finishing polls `status` until `reconcile_seq` advances past the value in its ack and `syncing`
+/// is false again.
+///
+/// **The selector is resolved once, here, and nowhere else** (ADR 0005 §4): every verb below reads
+/// `pair`/`plane_pair`, never `request.pair` directly, so there is exactly one place a name is
+/// compared. `Shutdown` is the sole exception — daemon-wide, selector ignored — resolved to the
+/// default pair only so its reply has *a* pair to describe, never refused for an unknown one.
 async fn handle_control_connection<C: ProtonClient + 'static>(
     stream: UnixStream,
     plane: &ControlPlane<C>,
 ) -> AppResult<()> {
     let ControlPlane {
         shared,
-        approvals,
+        pairs,
         loop_tx,
         io_timeout,
-        metrics_path,
         cancel_flag,
         browse,
     } = plane;
@@ -5442,37 +5648,68 @@ async fn handle_control_connection<C: ProtonClient + 'static>(
             return Ok(());
         }
     };
-    debug!(command = ?request.command, "handling control request");
-    let response = match request.command {
-        ControlCommand::Status => shared.response_with_sampled_activity("daemon status").await,
+    debug!(command = ?request.command, pair = ?request.pair, "handling control request");
+    // `Shutdown` ignores the selector (ADR 0005 §4's verb table): it always resolves to the
+    // default pair so `shared.response` has something to describe, never refused for a name that
+    // does not match — a mistyped `--pair` must not stop a shutdown from working.
+    let pair_index = if request.command == ControlCommand::Shutdown {
+        Some(0)
+    } else {
+        shared.resolve_pair_index(request.pair.as_deref())
+    };
+    let Some(pair_index) = pair_index else {
+        let selector = request.pair.as_deref().unwrap_or("");
+        let mut response = shared.response(shared.pair(), &unknown_pair_message(shared, selector));
+        // Unresolved: `pair: None` is the structural signal (ADR 0005 §4) that nothing was
+        // scheduled, latched, approved, reset or applied — a client must never infer that from
+        // `message`. `pairs` still rides the reply (the capability gate needs it even here).
+        response.pair = None;
+        response.pairs = shared.pair_summaries();
+        match tokio::time::timeout(io_timeout, write_response(&mut stream, &response)).await {
+            Ok(result) => result?,
+            Err(_elapsed) => warn!(
+                timeout_secs = io_timeout.as_secs(),
+                "control client did not read the response within the timeout; dropping it"
+            ),
+        }
+        return Ok(());
+    };
+    let pair = &shared.pairs[pair_index];
+    let plane_pair = &pairs[pair_index];
+    let mut response = match request.command {
+        ControlCommand::Status => {
+            shared
+                .response_with_sampled_activity(pair, "daemon status")
+                .await
+        }
         ControlCommand::Pause => {
-            shared.pair.paused.store(true, Ordering::SeqCst);
-            info!("sync paused");
-            persist_metrics_best_effort(shared, metrics_path);
-            shared.response("sync paused")
+            pair.paused.store(true, Ordering::SeqCst);
+            info!(pair = %pair.name, "sync paused");
+            persist_metrics_best_effort(shared, pair, &plane_pair.metrics_path);
+            shared.response(pair, "sync paused")
         }
         ControlCommand::Resume => {
-            shared.pair.paused.store(false, Ordering::SeqCst);
-            info!("sync resumed");
-            persist_metrics_best_effort(shared, metrics_path);
-            shared.response("sync resumed")
+            pair.paused.store(false, Ordering::SeqCst);
+            info!(pair = %pair.name, "sync resumed");
+            persist_metrics_best_effort(shared, pair, &plane_pair.metrics_path);
+            shared.response(pair, "sync resumed")
         }
         ControlCommand::Syncnow => {
-            if shared.is_paused() {
-                shared.response("sync skipped because daemon is paused")
+            if pair.is_paused() {
+                shared.response(pair, "sync skipped because daemon is paused")
             } else {
                 // `a_counted_pass_is_running`, not `is_syncing`: a rehearsal claims `syncing`
                 // but bumps no `reconcile_seq`, so telling a client "another pass will follow"
                 // would make it wait for a count the queued sync cannot reach alone.
-                let message = if shared.a_counted_pass_is_running() {
+                let message = if pair.a_counted_pass_is_running() {
                     "sync already in progress; another pass will follow"
                 } else {
                     "sync scheduled"
                 };
-                if loop_tx.send(LoopCommand::SyncNow).is_ok() {
-                    shared.response(message)
+                if loop_tx.send(LoopCommand::SyncNow(pair_index)).is_ok() {
+                    shared.response(pair, message)
                 } else {
-                    shared.response("daemon is shutting down; sync not scheduled")
+                    shared.response(pair, "daemon is shutting down; sync not scheduled")
                 }
             }
         }
@@ -5480,19 +5717,19 @@ async fn handle_control_connection<C: ProtonClient + 'static>(
             // Latch the full-walk request first so it survives even if the daemon is paused (it
             // will apply on the next pass after resume), then schedule a pass via the same path as
             // `syncnow`. The core consumes the latch with a `swap` at the top of that pass.
-            shared.pair.force_full_walk.store(true, Ordering::SeqCst);
-            if shared.is_paused() {
-                shared.response("full resync queued; it will run when syncing resumes")
+            pair.force_full_walk.store(true, Ordering::SeqCst);
+            if pair.is_paused() {
+                shared.response(pair, "full resync queued; it will run when syncing resumes")
             } else {
-                let message = if shared.a_counted_pass_is_running() {
+                let message = if pair.a_counted_pass_is_running() {
                     "full resync scheduled; it will run after the current pass"
                 } else {
                     "full resync scheduled"
                 };
-                if loop_tx.send(LoopCommand::SyncNow).is_ok() {
-                    shared.response(message)
+                if loop_tx.send(LoopCommand::SyncNow(pair_index)).is_ok() {
+                    shared.response(pair, message)
                 } else {
-                    shared.response("daemon is shutting down; resync not scheduled")
+                    shared.response(pair, "daemon is shutting down; resync not scheduled")
                 }
             }
         }
@@ -5501,26 +5738,28 @@ async fn handle_control_connection<C: ProtonClient + 'static>(
             // database and a reconcile may be mid-checkpoint on the first one. Order matters —
             // latch the reset before scheduling the pass that consumes it, and latch the full walk
             // with it so a cleared cursor cannot be mistaken for a warm-start opportunity.
-            shared.pair.reset_index.store(true, Ordering::SeqCst);
-            shared.pair.force_full_walk.store(true, Ordering::SeqCst);
-            if shared.is_paused() {
-                shared.response("index reset queued; it will run when syncing resumes")
-            } else if loop_tx.send(LoopCommand::SyncNow).is_ok() {
-                shared.response("index reset scheduled; the next pass rebuilds from scratch")
+            pair.reset_index.store(true, Ordering::SeqCst);
+            pair.force_full_walk.store(true, Ordering::SeqCst);
+            if pair.is_paused() {
+                shared.response(pair, "index reset queued; it will run when syncing resumes")
+            } else if loop_tx.send(LoopCommand::SyncNow(pair_index)).is_ok() {
+                shared.response(
+                    pair,
+                    "index reset scheduled; the next pass rebuilds from scratch",
+                )
             } else {
-                shared.response("daemon is shutting down; index reset not scheduled")
+                shared.response(pair, "daemon is shutting down; index reset not scheduled")
             }
         }
         ControlCommand::Approve | ControlCommand::Deny => {
             let approve = request.command == ControlCommand::Approve;
-            let pending = shared
-                .pair
+            let pending = pair
                 .snapshot
                 .lock()
                 .expect("control snapshot lock")
                 .pending_deletions
                 .clone();
-            let connection = approvals.lock().await;
+            let connection = plane_pair.approvals.lock().await;
             let message = apply_approval_command(
                 &connection,
                 &pending,
@@ -5528,6 +5767,9 @@ async fn handle_control_connection<C: ProtonClient + 'static>(
                 request.literal_path,
                 approve,
                 request.direction,
+                // The wire selector, not `pair.name`: the latter resolves even on an omitted
+                // selector and would print `--pair default` for a user who never typed it.
+                request.pair.as_deref(),
             )?;
             drop(connection);
             if approve {
@@ -5535,17 +5777,17 @@ async fn handle_control_connection<C: ProtonClient + 'static>(
             } else {
                 info!(argument = ?request.argument, "delete approval revoked");
             }
-            shared.response(&message)
+            shared.response(pair, &message)
         }
         ControlCommand::Activity => {
             // Answered from the index on this task, like `approve`/`deny` — a bounded, indexed
             // read over the history tables, not daemon work.
-            let connection = approvals.lock().await;
+            let connection = plane_pair.approvals.lock().await;
             let outcome = query_file_history(&connection, &request);
             drop(connection);
             match outcome {
                 Ok(history) => {
-                    let mut response = shared.response("sync activity");
+                    let mut response = shared.response(pair, "sync activity");
                     response.file_history = Some(history);
                     response
                 }
@@ -5553,26 +5795,27 @@ async fn handle_control_connection<C: ProtonClient + 'static>(
                 // data, and a client that asked for it must be told why it is missing.
                 Err(error) => {
                     warn!(%error, "failed to read the per-file sync history");
-                    let mut response = shared.response("sync activity unavailable");
+                    let mut response = shared.response(pair, "sync activity unavailable");
                     response.last_error = Some(error.to_string());
                     response
                 }
             }
         }
         ControlCommand::Keep => {
-            let pending = shared
-                .pair
+            let pending = pair
                 .snapshot
                 .lock()
                 .expect("control snapshot lock")
                 .pending_deletions
                 .clone();
-            let connection = approvals.lock().await;
+            let connection = plane_pair.approvals.lock().await;
             let (message, changed) = apply_keep_command(
                 &connection,
                 &pending,
                 request.argument.as_deref(),
                 request.literal_path,
+                // Same rule as `Approve`/`Deny` above: the wire selector, not `pair.name`.
+                request.pair.as_deref(),
             )?;
             drop(connection);
             // Nothing purged (no match, an ambiguous selector, a stale fingerprint) means nothing
@@ -5590,16 +5833,16 @@ async fn handle_control_connection<C: ProtonClient + 'static>(
                 // downloads nothing, ever, until something else forces a full walk — and the
                 // periodic resync is off by default. Latched for both directions: one rule, and it
                 // costs one full walk on a rare user click.
-                shared.pair.force_full_walk.store(true, Ordering::SeqCst);
-                if shared.is_paused() {
+                pair.force_full_walk.store(true, Ordering::SeqCst);
+                if pair.is_paused() {
                     format!("{message} (queued: syncing is paused)")
-                } else if loop_tx.send(LoopCommand::SyncNow).is_ok() {
+                } else if loop_tx.send(LoopCommand::SyncNow(pair_index)).is_ok() {
                     message
                 } else {
                     format!("{message} (the daemon is shutting down; no sync was scheduled)")
                 }
             };
-            shared.response(&message)
+            shared.response(pair, &message)
         }
         ControlCommand::List => {
             // The one control command that runs work on this task, and the only place the
@@ -5615,15 +5858,23 @@ async fn handle_control_connection<C: ProtonClient + 'static>(
             //
             // The listing itself is bounded only by the CLI's own command timeout, which can
             // outlast a client's patience; that costs a dropped reply, not a stuck daemon.
-            let outcome =
-                browse_remote_directory(browse, shared, request.argument.as_deref(), request.limit)
-                    .await;
+            //
+            // The remote root is this **pair's** — a relative selector resolves against it
+            // (ADR 0005 §4); an absolute selector (#323) is pair-independent and ignores it.
+            let outcome = browse_remote_directory(
+                browse,
+                shared,
+                &plane_pair.remote_root,
+                request.argument.as_deref(),
+                request.limit,
+            )
+            .await;
             let message = match &outcome {
                 ListingOutcome::Listed { .. } => "remote listing",
                 ListingOutcome::Busy => "remote listing unavailable: the proton-drive CLI is busy",
                 ListingOutcome::Failed { .. } | ListingOutcome::Unknown => "remote listing failed",
             };
-            let mut response = shared.response(message);
+            let mut response = shared.response(pair, message);
             response.listing = Some(outcome);
             response
         }
@@ -5632,24 +5883,24 @@ async fn handle_control_connection<C: ProtonClient + 'static>(
             // stat-walk plus an O(folders) remote walk, which must never run on this task. Ack now,
             // compute on the core. Pause semantics mirror `syncnow`'s exactly — a paused daemon
             // runs no passes, and a plan is a pass.
-            if shared.is_paused() {
-                let mut response = shared.response("plan skipped because daemon is paused");
+            if pair.is_paused() {
+                let mut response = shared.response(pair, "plan skipped because daemon is paused");
                 response.plan = Some(PlanOutcome::Paused);
                 response
             } else {
                 // Booked BEFORE the reply is built, so a client polling straight after its ack
                 // reads `Computing` rather than the previous plan as its own answer.
-                let plan_seq = shared.book_plan_request();
-                if loop_tx.send(LoopCommand::PlanNow).is_ok() {
-                    let mut response = shared.response("plan scheduled");
+                let plan_seq = pair.book_plan_request();
+                if loop_tx.send(LoopCommand::PlanNow(pair_index)).is_ok() {
+                    let mut response = shared.response(pair, "plan scheduled");
                     response.plan = Some(PlanOutcome::Scheduled { plan_seq });
                     response
                 } else {
                     // Un-book it: a request nothing will ever seal leaves every later poller
                     // reading `Computing` for ever.
-                    shared.unbook_plan_request();
+                    pair.unbook_plan_request();
                     let mut response =
-                        shared.response("daemon is shutting down; plan not scheduled");
+                        shared.response(pair, "daemon is shutting down; plan not scheduled");
                     response.plan = Some(PlanOutcome::Failed {
                         plan_seq,
                         error: "the daemon is shutting down".to_owned(),
@@ -5662,15 +5913,16 @@ async fn handle_control_connection<C: ProtonClient + 'static>(
             // A query, answered straight from the published slot — no work on this task, exactly
             // like `status`. Carries the last apply's verdict too: a client that asked to apply
             // learns "applied" from here, and on a divergence finds the new plan in the same reply.
-            let mut response = shared.response("plan result");
-            response.plan = Some(shared.plan_outcome(request.limit));
-            response.apply = shared.apply_outcome();
+            let mut response = shared.response(pair, "plan result");
+            response.plan = Some(pair.plan_outcome(request.limit));
+            response.apply = pair.apply_outcome();
             response
         }
         ControlCommand::Apply => {
             let outcome = schedule_apply(
-                shared,
+                pair,
                 loop_tx,
+                pair_index,
                 request.argument.as_deref(),
                 request.skip_destructive,
             );
@@ -5688,7 +5940,7 @@ async fn handle_control_connection<C: ProtonClient + 'static>(
                 | ApplyOutcome::Diverged { .. }
                 | ApplyOutcome::Unknown => "apply",
             };
-            let mut response = shared.response(message);
+            let mut response = shared.response(pair, message);
             response.apply = Some(outcome);
             response
         }
@@ -5699,9 +5951,13 @@ async fn handle_control_connection<C: ProtonClient + 'static>(
             // below, instead of finishing a potentially long transfer first.
             cancel_flag.store(true, Ordering::SeqCst);
             let _ = loop_tx.send(LoopCommand::Shutdown);
-            shared.response("shutting down")
+            shared.response(pair, "shutting down")
         }
     };
+    // Every real reply says which pair it describes and lists every configured pair — `pairs` is
+    // never suppressed for `N == 1` (see `PairSummary`'s doc: it is the client capability gate).
+    response.pair = Some(pair.name.clone());
+    response.pairs = shared.pair_summaries();
     // Time-bound the response write too, so a client that sends a valid request then never
     // reads cannot park this task on a full send buffer.
     match tokio::time::timeout(io_timeout, write_response(&mut stream, &response)).await {
@@ -5722,8 +5978,9 @@ async fn handle_control_connection<C: ProtonClient + 'static>(
 /// freshly computes, because a token matching the *stored* plan says only that no newer plan has
 /// been computed, not that the tree still looks like it did.
 fn schedule_apply(
-    shared: &ControlShared,
+    pair: &PairShared,
     loop_tx: &mpsc::UnboundedSender<LoopCommand>,
+    pair_index: usize,
     token: Option<&str>,
     skip_destructive: bool,
 ) -> ApplyOutcome {
@@ -5732,17 +5989,17 @@ fn schedule_apply(
     let Some(token) = token else {
         return ApplyOutcome::Stale;
     };
-    if shared.is_paused() {
+    if pair.is_paused() {
         return ApplyOutcome::Paused;
     }
-    let Some(apply_seq) = shared.book_apply_request(token, skip_destructive) else {
+    let Some(apply_seq) = pair.book_apply_request(token, skip_destructive) else {
         return ApplyOutcome::Stale;
     };
-    if loop_tx.send(LoopCommand::SyncNow).is_ok() {
+    if loop_tx.send(LoopCommand::SyncNow(pair_index)).is_ok() {
         info!(skip_destructive, "apply scheduled for a reviewed plan");
         ApplyOutcome::Scheduled { apply_seq }
     } else {
-        shared.unbook_apply_request();
+        pair.unbook_apply_request();
         ApplyOutcome::Failed {
             apply_seq,
             error: "the daemon is shutting down".to_owned(),
@@ -5824,6 +6081,7 @@ impl BrowseTarget {
 async fn browse_remote_directory<C: ProtonClient + 'static>(
     browse: &BrowseContext<C>,
     shared: &ControlShared,
+    remote_root: &Path,
     selector: Option<&str>,
     limit: Option<usize>,
 ) -> ListingOutcome {
@@ -5849,7 +6107,7 @@ async fn browse_remote_directory<C: ProtonClient + 'static>(
     // What the CLI is asked for, in the CLI's own terms: an absolute target is its own root with an
     // empty relative part. `relative` is what the reply's entry keys are relative to, and is used
     // again by the parent filter below.
-    let (root, relative) = target.request(&browse.remote_root);
+    let (root, relative) = target.request(remote_root);
     let (root, relative) = (root.to_path_buf(), relative.to_path_buf());
     let listed_relative = relative.clone();
     // `spawn_blocking`: the listing is a synchronous subprocess. Running it inline would block a
@@ -6099,8 +6357,8 @@ fn resolve_history_path(
 
 /// Writes the metrics sidecar from the shared control state, logging (not failing) on error —
 /// the IPC task must keep serving even if the sidecar path is briefly unwritable.
-fn persist_metrics_best_effort(shared: &ControlShared, metrics_path: &Path) {
-    if let Err(error) = write_metrics_snapshot(metrics_path, &shared.metrics()) {
+fn persist_metrics_best_effort(shared: &ControlShared, pair: &PairShared, metrics_path: &Path) {
+    if let Err(error) = write_metrics_snapshot(metrics_path, &shared.metrics(pair)) {
         warn!(
             path = %metrics_path.display(),
             %error,
@@ -6787,7 +7045,7 @@ impl PassLog {
                 (Some(_), None) | (None, _) => {}
             }
         }
-        shared.update_pass_progress(|pass| {
+        shared.pair().update_pass_progress(|pass| {
             pass.uploaded_files = self.files_uploaded;
             pass.downloaded_files = self.files_downloaded;
             pass.uploaded_bytes = self.bytes_uploaded;
@@ -7450,6 +7708,7 @@ mod tests {
     use crate::events::{RemoteChangeKind, VolumeEventPage};
     use crate::index::EntityKind;
     use crate::index::get_record;
+    use crate::ipc::ControlRequest;
     use crate::proton::{NodeNotFound, RemoteDirectory, RemoteFile};
     use crate::sync::UnsyncableReason;
     use notify::event::{CreateKind, DataChange, ModifyKind, RemoveKind};
@@ -7464,7 +7723,6 @@ mod tests {
     fn browse_context<C: ProtonClient>(daemon: &Daemon<C>) -> BrowseContext<C> {
         BrowseContext {
             proton: Arc::clone(&daemon.proton),
-            remote_root: daemon.pair().config.remote_root.clone(),
             gate_wait: daemon.browse_gate_wait,
         }
     }
@@ -7540,6 +7798,7 @@ mod tests {
             .block_on(browse_remote_directory(
                 &context,
                 &daemon.shared,
+                &daemon.pair().config.remote_root,
                 selector,
                 limit,
             ))
@@ -7771,7 +8030,6 @@ mod tests {
     ) -> ListingOutcome {
         let context = BrowseContext {
             proton: Arc::clone(&daemon.proton),
-            remote_root: daemon.pair().config.remote_root.clone(),
             gate_wait: daemon.browse_gate_wait,
         };
         tokio::runtime::Builder::new_current_thread()
@@ -7781,6 +8039,7 @@ mod tests {
             .block_on(browse_remote_directory(
                 &context,
                 &daemon.shared,
+                &daemon.pair().config.remote_root,
                 selector,
                 None,
             ))
@@ -7926,6 +8185,7 @@ mod tests {
             .block_on(browse_remote_directory(
                 &context,
                 &daemon.shared,
+                &daemon.pair().config.remote_root,
                 Some("photos"),
                 None,
             ));
@@ -8066,7 +8326,7 @@ mod tests {
         }
         assert_eq!(daemon.shared.auth_state(), AuthState::SignedOut);
         assert_eq!(
-            daemon.shared.response("x").auth,
+            daemon.shared.response(daemon.shared.pair(), "x").auth,
             AuthState::SignedOut,
             "and it is on the wire, not just in memory"
         );
@@ -8868,6 +9128,7 @@ mod tests {
             },
         );
         let config = DaemonConfig {
+            name: "default".to_owned(),
             local_root,
             remote_root: PathBuf::from("/Drive/RemoteFolder"),
             db_path: directory.path().join("missing.db"),
@@ -9815,6 +10076,7 @@ mod tests {
             true,
             true,
             None,
+            None,
         )
         .expect("literal-path approve");
         assert!(
@@ -9834,6 +10096,7 @@ mod tests {
             Some("All"),
             false,
             true,
+            None,
             None,
         )
         .expect("legacy approve");
@@ -9891,6 +10154,7 @@ mod tests {
             true,
             true,
             None,
+            None,
         )
         .expect("approve by wire form");
 
@@ -9947,6 +10211,7 @@ mod tests {
             true,
             true,
             None,
+            None,
         )
         .expect("ambiguous approve");
 
@@ -9976,6 +10241,7 @@ mod tests {
             false,
             true,
             None,
+            None,
         )
         .expect("approve all");
         assert_eq!(
@@ -9990,6 +10256,7 @@ mod tests {
             Some(&selector),
             true,
             false,
+            None,
             None,
         )
         .expect("ambiguous deny");
@@ -10036,11 +10303,12 @@ mod tests {
                 true,
                 false,
                 None,
+                None,
             )
             .expect("deny with no match"),
         );
         bounded(
-            &apply_keep_command(&daemon.pair().connection, &[], Some(&huge), true)
+            &apply_keep_command(&daemon.pair().connection, &[], Some(&huge), true, None)
                 .expect("keep with no match")
                 .0,
         );
@@ -10053,6 +10321,7 @@ mod tests {
                 true,
                 true,
                 None,
+                None,
             )
             .expect("pre-approve without a direction"),
         );
@@ -10064,6 +10333,7 @@ mod tests {
                 true,
                 true,
                 Some(DeleteDirection::Remote),
+                None,
             )
             .expect("pre-approve with no index record"),
         );
@@ -10100,6 +10370,7 @@ mod tests {
             true,
             true,
             None,
+            None,
         )
         .expect("ambiguous approve");
         assert!(message.contains("cannot be told apart"), "{message}");
@@ -10133,6 +10404,7 @@ mod tests {
             Some(&selector),
             true,
             true,
+            None,
             None,
         )
         .expect("approve a long path");
@@ -10182,6 +10454,7 @@ mod tests {
             Some("nested/folder/"),
             true,
             true,
+            None,
             None,
         )
         .expect("approve by completed path");
@@ -10795,14 +11068,164 @@ mod tests {
         let selector = crate::ipc::wire_path(&pending[0].path).into_owned();
         assert_eq!(selector, crate::ipc::wire_path(&pending[1].path));
 
-        let (message, changed) =
-            apply_keep_command(&daemon.pair().connection, &pending, Some(&selector), true)
-                .expect("ambiguous keep");
+        let (message, changed) = apply_keep_command(
+            &daemon.pair().connection,
+            &pending,
+            Some(&selector),
+            true,
+            None,
+        )
+        .expect("ambiguous keep");
 
         assert!(!changed);
         assert!(
             message.contains("nothing was kept") && message.contains("proton-sync keep --all"),
             "an ambiguous selector must keep nothing and name the deliberate form: {message}"
+        );
+    }
+
+    /// #409. `ambiguous_selector_message` builds one of the three daemon-side hints directly, so
+    /// pin its own echo rule without the rest of `apply_approval_command`/`apply_keep_command`
+    /// around it: bare on `None`, `--pair <name>` on `Some`.
+    #[test]
+    fn ambiguous_selector_message_echoes_the_pair_selector() {
+        let a = PendingDeletion {
+            path: PathBuf::from("a"),
+            direction: DeleteDirection::Local,
+            entity_kind: EntityKind::File,
+            fingerprint: "fp-a".to_owned(),
+            detected_epoch_secs: 1,
+            first_seen_epoch_secs: 1,
+            subtree_files: None,
+            subtree_bytes: None,
+            disposal: LocalDisposal::Permanent,
+        };
+        let b = PendingDeletion {
+            path: PathBuf::from("b"),
+            fingerprint: "fp-b".to_owned(),
+            ..a.clone()
+        };
+        let matches = [&a, &b];
+
+        let message = ambiguous_selector_message(&matches, Some("x"), "approve", None)
+            .expect("two matches are ambiguous");
+        assert!(
+            message.contains("proton-sync approve --all") && !message.contains("--pair"),
+            "an omitted selector must stay bare: {message}"
+        );
+
+        let message = ambiguous_selector_message(&matches, Some("x"), "approve", Some("work"))
+            .expect("two matches are ambiguous");
+        assert!(
+            message.contains("proton-sync --pair work approve --all"),
+            "a named selector must be echoed verbatim: {message}"
+        );
+    }
+
+    /// #409. The syncnow hint `apply_approval_command` prints on success must carry the SAME
+    /// selector `handle_control_connection` was asked to resolve — never the resolved pair's own
+    /// name (see `cli_hint`'s doc: that would print `--pair default` for every existing user).
+    #[test]
+    fn apply_approval_command_hint_echoes_the_pair_selector() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let (client, _operations) = RecordingProtonClient::new(HashMap::new());
+        let daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        let pending = vec![PendingDeletion {
+            path: PathBuf::from("a.txt"),
+            direction: DeleteDirection::Remote,
+            entity_kind: EntityKind::File,
+            fingerprint: "fp".to_owned(),
+            detected_epoch_secs: 1,
+            first_seen_epoch_secs: 1,
+            subtree_files: None,
+            subtree_bytes: None,
+            disposal: LocalDisposal::Permanent,
+        }];
+
+        let message = apply_approval_command(
+            &daemon.pair().connection,
+            &pending,
+            Some("a.txt"),
+            true,
+            true,
+            None,
+            None,
+        )
+        .expect("approve");
+        assert!(
+            message.contains("run `proton-sync syncnow` to apply now")
+                && !message.contains("--pair"),
+            "an omitted selector must stay bare: {message}"
+        );
+
+        let message = apply_approval_command(
+            &daemon.pair().connection,
+            &pending,
+            Some("a.txt"),
+            true,
+            false,
+            None,
+            Some("work"),
+        )
+        .expect("deny");
+        assert!(
+            message.contains("run `proton-sync --pair work syncnow` to apply now"),
+            "a named selector must be echoed verbatim: {message}"
+        );
+    }
+
+    /// #409, the keep side. No baseline record exists for the path, so every attempt below takes
+    /// the "nothing was kept" arm (a stale-fingerprint refusal) — the one that names
+    /// `proton-sync pending`.
+    #[test]
+    fn apply_keep_command_hint_echoes_the_pair_selector() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let (client, _operations) = RecordingProtonClient::new(HashMap::new());
+        let daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        let pending = vec![PendingDeletion {
+            path: PathBuf::from("a.txt"),
+            direction: DeleteDirection::Remote,
+            entity_kind: EntityKind::File,
+            fingerprint: "fp".to_owned(),
+            detected_epoch_secs: 1,
+            first_seen_epoch_secs: 1,
+            subtree_files: None,
+            subtree_bytes: None,
+            disposal: LocalDisposal::Permanent,
+        }];
+
+        let (message, changed) = apply_keep_command(
+            &daemon.pair().connection,
+            &pending,
+            Some("a.txt"),
+            true,
+            None,
+        )
+        .expect("keep");
+        assert!(!changed);
+        assert!(
+            message.contains("check `proton-sync pending` and try again")
+                && !message.contains("--pair"),
+            "an omitted selector must stay bare: {message}"
+        );
+
+        let (message, _changed) = apply_keep_command(
+            &daemon.pair().connection,
+            &pending,
+            Some("a.txt"),
+            true,
+            Some("work"),
+        )
+        .expect("keep");
+        assert!(
+            message.contains("check `proton-sync --pair work pending` and try again"),
+            "a named selector must be echoed verbatim: {message}"
         );
     }
 
@@ -10834,6 +11257,7 @@ mod tests {
             true,
             true,
             Some(DeleteDirection::Local),
+            None,
         )
         .expect("pre-approve");
         assert!(message.contains("approved 1"), "{message}");
@@ -10872,6 +11296,7 @@ mod tests {
             true,
             true,
             None,
+            None,
         )
         .expect("pre-approve without a direction");
 
@@ -10907,6 +11332,7 @@ mod tests {
                 true,
                 true,
                 Some(DeleteDirection::Local),
+                None,
             )
             .expect("pre-approve");
             assert!(
@@ -11154,7 +11580,7 @@ mod tests {
         // The latch the `keep` control command sets alongside the purge.
         daemon
             .shared
-            .pair
+            .pair()
             .force_full_walk
             .store(true, Ordering::SeqCst);
         daemon.reconcile_blocking().expect_clean("full-walk pass");
@@ -11218,7 +11644,7 @@ mod tests {
         // which is why there is no precedence rule to get wrong.
         daemon
             .shared
-            .pair
+            .pair()
             .force_full_walk
             .store(true, Ordering::SeqCst);
         daemon.latch_scheduled_full_sweep();
@@ -14147,31 +14573,150 @@ mod tests {
         // A pause accepted mid-pass does not stop the in-flight pass; the status string must
         // keep reporting the live activity ("syncing") while the `paused` boolean carries the
         // standing request. Once the pass ends, the string becomes "paused".
-        let shared = ControlShared::new(RunningConfigInfo {
-            local_root: PathBuf::from("/local"),
-            remote_root: PathBuf::from("/remote"),
-            db_path: PathBuf::from("/db"),
-        });
-        shared.pair.syncing.store(true, Ordering::SeqCst);
-        shared.pair.paused.store(true, Ordering::SeqCst);
-        let mid_pass = shared.response("m");
+        let shared = ControlShared::new(
+            "default".to_owned(),
+            RunningConfigInfo {
+                local_root: PathBuf::from("/local"),
+                remote_root: PathBuf::from("/remote"),
+                db_path: PathBuf::from("/db"),
+            },
+        );
+        shared.pair().syncing.store(true, Ordering::SeqCst);
+        shared.pair().paused.store(true, Ordering::SeqCst);
+        let mid_pass = shared.response(shared.pair(), "m");
         assert_eq!(mid_pass.status, "syncing");
         assert!(mid_pass.paused);
         assert!(mid_pass.syncing);
 
-        shared.pair.syncing.store(false, Ordering::SeqCst);
-        assert_eq!(shared.response("m").status, "paused");
+        shared.pair().syncing.store(false, Ordering::SeqCst);
+        assert_eq!(shared.response(shared.pair(), "m").status, "paused");
 
-        shared.pair.paused.store(false, Ordering::SeqCst);
-        assert_eq!(shared.response("m").status, "running");
+        shared.pair().paused.store(false, Ordering::SeqCst);
+        assert_eq!(shared.response(shared.pair(), "m").status, "running");
     }
 
     fn activity_test_shared() -> ControlShared {
-        ControlShared::new(RunningConfigInfo {
-            local_root: PathBuf::from("/local"),
-            remote_root: PathBuf::from("/remote"),
-            db_path: PathBuf::from("/db"),
-        })
+        ControlShared::new(
+            "default".to_owned(),
+            RunningConfigInfo {
+                local_root: PathBuf::from("/local"),
+                remote_root: PathBuf::from("/remote"),
+                db_path: PathBuf::from("/db"),
+            },
+        )
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // #102 phase 3: the wire selector resolver.
+    // ---------------------------------------------------------------------------------------
+
+    /// Two pairs, built directly (bypassing `Daemon`/`config::refuse_unsupported_pair_count`,
+    /// which constrain the *runtime*, not this struct) so the resolver can be pinned against more
+    /// than the one pair a daemon may configure today.
+    fn two_pair_shared() -> ControlShared {
+        ControlShared {
+            auth: AtomicU8::new(auth_discriminant(AuthState::Unknown)),
+            pairs: vec![
+                PairShared::new(
+                    "photos".to_owned(),
+                    RunningConfigInfo {
+                        local_root: PathBuf::from("/photos"),
+                        remote_root: PathBuf::from("/Drive/Photos"),
+                        db_path: PathBuf::from("/photos/.sync/sync_index.db"),
+                    },
+                ),
+                PairShared::new(
+                    "docs".to_owned(),
+                    RunningConfigInfo {
+                        local_root: PathBuf::from("/docs"),
+                        remote_root: PathBuf::from("/Drive/Docs"),
+                        db_path: PathBuf::from("/docs/.sync/sync_index.db"),
+                    },
+                ),
+            ],
+        }
+    }
+
+    #[test]
+    fn an_omitted_selector_resolves_to_the_first_pair() {
+        let shared = two_pair_shared();
+        assert_eq!(shared.resolve_pair_index(None), Some(0));
+        assert_eq!(shared.pairs[0].name, "photos");
+    }
+
+    #[test]
+    fn a_selector_naming_a_configured_pair_resolves_to_it() {
+        let shared = two_pair_shared();
+        assert_eq!(shared.resolve_pair_index(Some("docs")), Some(1));
+        assert_eq!(shared.resolve_pair_index(Some("photos")), Some(0));
+    }
+
+    #[test]
+    fn an_unknown_selector_resolves_to_nothing() {
+        let shared = two_pair_shared();
+        assert_eq!(shared.resolve_pair_index(Some("videos")), None);
+    }
+
+    #[test]
+    fn selector_matching_is_byte_exact_not_case_insensitive() {
+        // ADR 0005 §4: "a wire path is a rendering, never a selector" extends to the pair name.
+        // Config-side uniqueness is case-insensitive (#298's rule one layer up); wire matching is
+        // exact, the conservative reading an unresolved selector's "authorises nothing" is built
+        // on.
+        let shared = two_pair_shared();
+        assert_eq!(shared.resolve_pair_index(Some("Photos")), None);
+        assert_eq!(shared.resolve_pair_index(Some("photos")), Some(0));
+    }
+
+    #[test]
+    fn no_pair_syncing_has_no_active_pair() {
+        let shared = two_pair_shared();
+        assert!(shared.active_pair().is_none());
+    }
+
+    #[test]
+    fn the_active_pair_is_the_one_whose_pass_is_running() {
+        let shared = two_pair_shared();
+        shared.pairs[1].syncing.store(true, Ordering::SeqCst);
+        assert_eq!(
+            shared.active_pair().map(|pair| pair.name.as_str()),
+            Some("docs")
+        );
+    }
+
+    /// #102 phase 3: the one genuinely new design question in the brief. A `SharedProgressSink`
+    /// callback must land on the pair whose pass is running, and must never land on a *different*
+    /// pair's activity when that pair is idle — pinned directly against the sink rather than
+    /// against `active_pair` alone, so a future change to either cannot drift apart unnoticed.
+    #[test]
+    fn the_progress_sink_routes_to_the_running_pairs_activity_and_never_an_idle_pairs() {
+        let shared = Arc::new(two_pair_shared());
+        shared.pairs[1].syncing.store(true, Ordering::SeqCst);
+        let sink = SharedProgressSink {
+            shared: Arc::clone(&shared),
+        };
+        sink.remote_folder_listed(3, Path::new("a/b"));
+        assert!(
+            shared.pairs[0].activity_for_response().is_none(),
+            "the idle pair (`photos`) must not observe the running pair's progress"
+        );
+        let activity = shared.pairs[1]
+            .activity_for_response()
+            .expect("the running pair (`docs`) receives the callback");
+        assert_eq!(activity.folders_listed, Some(3));
+    }
+
+    #[test]
+    fn a_progress_callback_with_no_pair_syncing_is_dropped_rather_than_guessed_at() {
+        // Unreachable via a real `browse_directory`/`download` call today (see `active_pair`'s
+        // doc), but the sink itself must not silently default to index 0 if that ever changes.
+        let shared = Arc::new(two_pair_shared());
+        let sink = SharedProgressSink {
+            shared: Arc::clone(&shared),
+        };
+        sink.remote_folder_listed(3, Path::new("a/b"));
+        assert!(shared.pairs[0].activity_for_response().is_none());
+        assert!(shared.pairs[1].activity_for_response().is_none());
     }
 
     /// A planned action, for the window tests below. Only the fields the window reads.
@@ -14295,7 +14840,7 @@ mod tests {
         };
 
         let shared = activity_test_shared();
-        shared.pair.syncing.store(true, Ordering::SeqCst);
+        shared.pair().syncing.store(true, Ordering::SeqCst);
         for (index, window) in [
             (0, queue.window(0, Vec::new())),
             (
@@ -14322,8 +14867,10 @@ mod tests {
                 ),
             ),
         ] {
-            shared.begin_activity(executing_activity("x".to_owned(), index, 2, window));
-            let activity = shared.activity_for_response().expect("activity");
+            shared
+                .pair()
+                .begin_activity(executing_activity("x".to_owned(), index, 2, window));
+            let activity = shared.pair().activity_for_response().expect("activity");
             assert_eq!(activity.phase, PHASE_EXECUTING);
             assert!(
                 activity.transfers_remaining.is_some(),
@@ -14339,8 +14886,10 @@ mod tests {
     #[test]
     fn per_direction_progress_folds_only_what_actually_crossed_the_network() {
         let shared = activity_test_shared();
-        shared.begin_pass_progress(100, PassKind::Incremental);
-        shared.begin_activity(new_activity(PHASE_EXECUTING));
+        shared
+            .pair()
+            .begin_pass_progress(100, PassKind::Incremental);
+        shared.pair().begin_activity(new_activity(PHASE_EXECUTING));
         let mut log = PassLog::new(100);
 
         log.note(SyncAction::Upload, Path::new("a.txt"), Some(30));
@@ -14356,6 +14905,7 @@ mod tests {
         log.note_committed(None, &shared);
 
         let pass = shared
+            .pair()
             .activity_for_response()
             .and_then(|activity| activity.pass)
             .expect("the pass block carries the counters");
@@ -14379,11 +14929,11 @@ mod tests {
         // mirror one sample stale; sampling the mirror instead would starve the list every #211
         // client reads.
         let shared = activity_test_shared();
-        shared.pair.syncing.store(true, Ordering::SeqCst);
+        shared.pair().syncing.store(true, Ordering::SeqCst);
         let scratch = tempdir().expect("scratch dir");
         fs::write(scratch.path().join("part.bin"), vec![0u8; 4096]).expect("staged bytes");
 
-        shared.begin_activity(SyncActivity {
+        shared.pair().begin_activity(SyncActivity {
             transfers: vec![
                 TransferActivity::active("download", PathBuf::from("a/b.bin"), None, 1),
                 TransferActivity::queued("upload", PathBuf::from("c/d.txt"), Some(12)),
@@ -14391,10 +14941,10 @@ mod tests {
             transfers_remaining: Some(2),
             ..new_activity(PHASE_EXECUTING)
         });
-        shared.note_download_scratch(scratch.path());
+        shared.pair().note_download_scratch(scratch.path());
 
         let activity = shared
-            .response_with_sampled_activity("m")
+            .response_with_sampled_activity(shared.pair(), "m")
             .await
             .activity
             .expect("activity");
@@ -14416,13 +14966,16 @@ mod tests {
         let shared = Arc::new(activity_test_shared());
         // Replies only carry activity while a pass is in flight (`syncing`), matching how the
         // daemon core brackets every reconcile.
-        shared.pair.syncing.store(true, Ordering::SeqCst);
+        shared.pair().syncing.store(true, Ordering::SeqCst);
         let sink = SharedProgressSink {
             shared: Arc::clone(&shared),
         };
 
         sink.remote_folder_listed(3, Path::new("Companies/Acme"));
-        let activity = shared.response("m").activity.expect("walk activity");
+        let activity = shared
+            .response(shared.pair(), "m")
+            .activity
+            .expect("walk activity");
         assert_eq!(activity.phase, PHASE_LISTING_REMOTE);
         assert_eq!(activity.folders_listed, Some(3));
         assert_eq!(activity.detail.as_deref(), Some("Companies/Acme"));
@@ -14430,7 +14983,10 @@ mod tests {
 
         // Further folders update the same activity (phase start time stays put)…
         sink.remote_folder_listed(4, Path::new(""));
-        let activity = shared.response("m").activity.expect("walk activity");
+        let activity = shared
+            .response(shared.pair(), "m")
+            .activity
+            .expect("walk activity");
         assert_eq!(activity.folders_listed, Some(4));
         assert_eq!(
             activity.detail.as_deref(),
@@ -14443,25 +14999,25 @@ mod tests {
         );
 
         // …and the end of the pass clears everything.
-        shared.clear_activity();
-        assert!(shared.response("m").activity.is_none());
+        shared.pair().clear_activity();
+        assert!(shared.response(shared.pair(), "m").activity.is_none());
 
         // Even a not-yet-cleared activity is withheld once `syncing` is false: the two are
         // updated independently at pass end, and a reply between the two stores must never
         // pair `syncing: false` with a stale "downloading X".
         sink.remote_folder_listed(9, Path::new("stale"));
-        shared.pair.syncing.store(false, Ordering::SeqCst);
-        assert!(shared.response("m").activity.is_none());
+        shared.pair().syncing.store(false, Ordering::SeqCst);
+        assert!(shared.response(shared.pair(), "m").activity.is_none());
     }
 
     #[tokio::test]
     async fn download_bytes_are_sampled_live_from_the_staging_directory() {
         let shared = activity_test_shared();
-        shared.pair.syncing.store(true, Ordering::SeqCst);
+        shared.pair().syncing.store(true, Ordering::SeqCst);
         let scratch = tempdir().expect("scratch dir");
         fs::write(scratch.path().join("partial.bin"), vec![0u8; 2048]).expect("partial file");
 
-        shared.begin_activity(SyncActivity {
+        shared.pair().begin_activity(SyncActivity {
             transfers: vec![TransferActivity::active(
                 "download",
                 PathBuf::from("a/b.bin"),
@@ -14470,11 +15026,11 @@ mod tests {
             )],
             ..new_activity(PHASE_EXECUTING)
         });
-        shared.note_download_scratch(scratch.path());
+        shared.pair().note_download_scratch(scratch.path());
 
         // The plain (in-memory) reply never touches the filesystem…
         let transfer = shared
-            .response("m")
+            .response(shared.pair(), "m")
             .activity
             .expect("activity")
             .transfer
@@ -14486,7 +15042,7 @@ mod tests {
 
         // …while the status reply samples the staging directory at reply time.
         let transfer = shared
-            .response_with_sampled_activity("m")
+            .response_with_sampled_activity(shared.pair(), "m")
             .await
             .activity
             .expect("activity")
@@ -14498,7 +15054,7 @@ mod tests {
         // intervening daemon-side update: sampling happens at reply time.
         fs::write(scratch.path().join("partial.bin"), vec![0u8; 6144]).expect("grow file");
         let transfer = shared
-            .response_with_sampled_activity("m")
+            .response_with_sampled_activity(shared.pair(), "m")
             .await
             .activity
             .expect("activity")
@@ -14508,7 +15064,7 @@ mod tests {
 
         // Beginning the next action drops the stale staging dir: a following upload must
         // never report the previous download's bytes.
-        shared.begin_activity(SyncActivity {
+        shared.pair().begin_activity(SyncActivity {
             transfers: vec![TransferActivity::active(
                 "upload",
                 PathBuf::from("c/d.bin"),
@@ -14518,7 +15074,7 @@ mod tests {
             ..new_activity(PHASE_EXECUTING)
         });
         let transfer = shared
-            .response_with_sampled_activity("m")
+            .response_with_sampled_activity(shared.pair(), "m")
             .await
             .activity
             .expect("activity")
@@ -14544,12 +15100,15 @@ mod tests {
         let (loop_tx, _loop_rx) = mpsc::unbounded_channel();
         let plane = ControlPlane {
             shared: Arc::clone(&daemon.shared),
-            approvals: tokio::sync::Mutex::new(
-                open_database(&daemon.pair().config.db_path).expect("second connection"),
-            ),
+            pairs: vec![ControlPlanePair {
+                approvals: tokio::sync::Mutex::new(
+                    open_database(&daemon.pair().config.db_path).expect("second connection"),
+                ),
+                metrics_path: daemon.pair().metrics_path.clone(),
+                remote_root: daemon.pair().config.remote_root.clone(),
+            }],
             loop_tx,
             io_timeout: Duration::from_millis(50),
-            metrics_path: daemon.pair().metrics_path.clone(),
             cancel_flag: Arc::new(AtomicBool::new(false)),
             browse: browse_context(&daemon),
         };
@@ -14567,6 +15126,260 @@ mod tests {
         drop(control_client);
 
         outcome.expect("dropping an idle control connection is a clean, non-error outcome");
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // #102 phase 3: the wire selector, driven through `handle_control_connection` itself.
+    //
+    // Built directly rather than through `Daemon::with_client` (which
+    // `config::refuse_unsupported_pair_count` limits to one pair): `ControlShared`/`ControlPlane`
+    // carry no such limit themselves, so two pairs here is a fixture for the wire boundary, not a
+    // claim that a `Daemon` can run two yet.
+    // ---------------------------------------------------------------------------------------
+
+    /// Two independent pairs' worth of `ControlShared`/`ControlPlane` state, named `alpha` and
+    /// `beta`, each with its own temp index. `alpha` is index 0 (the default pair an omitted
+    /// selector resolves to).
+    fn two_pair_control_plane(
+        directory: &Path,
+    ) -> (
+        ControlPlane<RecordingProtonClient>,
+        mpsc::UnboundedReceiver<LoopCommand>,
+    ) {
+        let pair_names = ["alpha", "beta"];
+        let mut shared_pairs = Vec::new();
+        let mut plane_pairs = Vec::new();
+        for name in pair_names {
+            let db_path = directory.join(format!("{name}.db"));
+            let config = RunningConfigInfo {
+                local_root: directory.join(name),
+                remote_root: PathBuf::from(format!("/Drive/{name}")),
+                db_path: db_path.clone(),
+            };
+            shared_pairs.push(PairShared::new(name.to_owned(), config));
+            plane_pairs.push(ControlPlanePair {
+                approvals: tokio::sync::Mutex::new(
+                    open_database(&db_path).expect("open per-pair index"),
+                ),
+                metrics_path: directory.join(format!("{name}.metrics.json")),
+                remote_root: PathBuf::from(format!("/Drive/{name}")),
+            });
+        }
+        let shared = Arc::new(ControlShared {
+            auth: AtomicU8::new(auth_discriminant(AuthState::Unknown)),
+            pairs: shared_pairs,
+        });
+        let (loop_tx, loop_rx) = mpsc::unbounded_channel();
+        let (proton, _operations) = RecordingProtonClient::new(HashMap::new());
+        let plane = ControlPlane {
+            shared,
+            pairs: plane_pairs,
+            loop_tx,
+            io_timeout: Duration::from_secs(5),
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+            browse: BrowseContext {
+                proton: Arc::new(proton),
+                gate_wait: Duration::from_secs(5),
+            },
+        };
+        (plane, loop_rx)
+    }
+
+    /// Sends `request` over a fresh socket pair and reads back the reply — `handle_control_connection`
+    /// end to end, exactly as the real control socket serves it.
+    async fn roundtrip(
+        plane: &ControlPlane<RecordingProtonClient>,
+        request: ControlRequest,
+    ) -> ControlResponse {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        let (mut client, server) = UnixStream::pair().expect("socket pair");
+        // Written before the handler runs: `UnixStream::pair` is a real OS socket pair, so the
+        // bytes sit in the kernel buffer until `handle_control_connection` reads them — no
+        // concurrent task is needed for one request/response.
+        let json = serde_json::to_vec(&request).expect("serialize request");
+        client.write_all(&json).await.expect("write request");
+        client.write_all(b"\n").await.expect("write newline");
+        handle_control_connection(server, plane)
+            .await
+            .expect("handled");
+        let mut reader = tokio::io::BufReader::new(client);
+        let mut line = String::new();
+        reader.read_line(&mut line).await.expect("read response");
+        serde_json::from_str(line.trim()).expect("parse response")
+    }
+
+    #[tokio::test]
+    async fn an_omitted_selector_answers_the_default_pair() {
+        let directory = tempdir().expect("tempdir");
+        let (plane, _loop_rx) = two_pair_control_plane(directory.path());
+        let response = roundtrip(&plane, ControlRequest::new(ControlCommand::Status)).await;
+        assert_eq!(response.pair.as_deref(), Some("alpha"));
+        assert_eq!(response.pairs.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_selector_naming_the_second_pair_answers_that_pair() {
+        let directory = tempdir().expect("tempdir");
+        let (plane, _loop_rx) = two_pair_control_plane(directory.path());
+        let mut request = ControlRequest::new(ControlCommand::Status);
+        request.pair = Some("beta".to_owned());
+        let response = roundtrip(&plane, request).await;
+        assert_eq!(response.pair.as_deref(), Some("beta"));
+    }
+
+    /// #409, driven through `handle_control_connection` itself — the keying trap the fix names
+    /// explicitly. `alpha` is this plane's DEFAULT pair (index 0, what an omitted selector
+    /// resolves to): if `Approve`/`Keep` echoed the *resolved* `PairShared.name` instead of the
+    /// wire's `request.pair`, an omitted selector would still print `--pair alpha` here, exactly
+    /// as it would print `--pair default` for a single-pair user in production.
+    #[tokio::test]
+    async fn approve_and_keep_hints_key_on_the_wire_selector_not_the_resolved_pair_name() {
+        let directory = tempdir().expect("tempdir");
+        let (plane, _loop_rx) = two_pair_control_plane(directory.path());
+
+        let seed_pending = |index: usize| {
+            plane.shared.pairs[index]
+                .snapshot
+                .lock()
+                .expect("snapshot lock")
+                .pending_deletions = vec![PendingDeletion {
+                path: PathBuf::from("a.txt"),
+                direction: DeleteDirection::Remote,
+                entity_kind: EntityKind::File,
+                fingerprint: "fp".to_owned(),
+                detected_epoch_secs: 1,
+                first_seen_epoch_secs: 1,
+                subtree_files: None,
+                subtree_bytes: None,
+                disposal: LocalDisposal::Permanent,
+            }];
+        };
+
+        // Approve, selector omitted: resolves to alpha, but the hint must stay bare.
+        seed_pending(0);
+        let mut request = ControlRequest::new(ControlCommand::Approve);
+        request.argument = Some("a.txt".to_owned());
+        request.literal_path = true;
+        let response = roundtrip(&plane, request).await;
+        assert_eq!(response.pair.as_deref(), Some("alpha"));
+        assert!(
+            response.message.contains("proton-sync syncnow")
+                && !response.message.contains("--pair"),
+            "an omitted selector resolved to alpha must not echo alpha's name: {}",
+            response.message
+        );
+
+        // Approve, selector names beta: the hint must echo it verbatim.
+        seed_pending(1);
+        let mut request = ControlRequest::new(ControlCommand::Approve);
+        request.pair = Some("beta".to_owned());
+        request.argument = Some("a.txt".to_owned());
+        request.literal_path = true;
+        let response = roundtrip(&plane, request).await;
+        assert_eq!(response.pair.as_deref(), Some("beta"));
+        assert!(
+            response.message.contains("proton-sync --pair beta syncnow"),
+            "{}",
+            response.message
+        );
+
+        // Keep, selector omitted: same rule. No baseline record exists for "a.txt" so this takes
+        // the "nothing was kept" arm — still the message under test.
+        seed_pending(0);
+        let mut request = ControlRequest::new(ControlCommand::Keep);
+        request.argument = Some("a.txt".to_owned());
+        request.literal_path = true;
+        let response = roundtrip(&plane, request).await;
+        assert!(
+            response.message.contains("proton-sync pending")
+                && !response.message.contains("--pair"),
+            "{}",
+            response.message
+        );
+
+        // Keep, selector names beta: echoed verbatim.
+        seed_pending(1);
+        let mut request = ControlRequest::new(ControlCommand::Keep);
+        request.pair = Some("beta".to_owned());
+        request.argument = Some("a.txt".to_owned());
+        request.literal_path = true;
+        let response = roundtrip(&plane, request).await;
+        assert!(
+            response.message.contains("proton-sync --pair beta pending"),
+            "{}",
+            response.message
+        );
+    }
+
+    /// #102 phase 3, ADR 0005 §4: an unknown pair authorises **nothing** — every verb that would
+    /// otherwise mutate a latch, schedule a pass or touch the index must instead answer
+    /// `pair: None` and do exactly what `status` on a bad selector does: nothing.
+    #[tokio::test]
+    async fn an_unknown_pair_selector_refuses_every_verb_and_schedules_nothing() {
+        let directory = tempdir().expect("tempdir");
+        for command in [
+            ControlCommand::ResetIndex,
+            ControlCommand::Approve,
+            ControlCommand::Deny,
+            ControlCommand::Keep,
+            ControlCommand::Apply,
+            ControlCommand::Syncnow,
+            ControlCommand::Resync,
+            ControlCommand::Pause,
+        ] {
+            let (plane, mut loop_rx) = two_pair_control_plane(directory.path());
+            let mut request = ControlRequest::new(command.clone());
+            request.pair = Some("videos".to_owned());
+            // These four need a non-empty argument to reach past their own early returns; an
+            // unresolved pair must refuse before any of that is even read.
+            if matches!(
+                command,
+                ControlCommand::Approve | ControlCommand::Deny | ControlCommand::Keep
+            ) {
+                request.argument = Some("some/file.txt".to_owned());
+            }
+            if command == ControlCommand::Apply {
+                request.argument = Some("1:whatever".to_owned());
+            }
+            let response = roundtrip(&plane, request).await;
+            assert_eq!(
+                response.pair, None,
+                "{command:?}: an unresolved selector must answer no pair"
+            );
+            assert!(
+                response.message.contains("alpha") && response.message.contains("beta"),
+                "{command:?}: the message must name the configured pairs: {}",
+                response.message
+            );
+            assert_eq!(
+                response.pairs.len(),
+                2,
+                "{command:?}: `pairs` still rides the reply"
+            );
+            assert!(
+                loop_rx.try_recv().is_err(),
+                "{command:?}: an unresolved selector must schedule no pass"
+            );
+            assert!(
+                !plane.shared.pairs[0].paused.load(Ordering::SeqCst),
+                "{command:?}: no latch on the default pair may move either"
+            );
+            assert!(!plane.shared.pairs[0].reset_index.load(Ordering::SeqCst));
+            assert!(!plane.shared.pairs[0].force_full_walk.load(Ordering::SeqCst));
+        }
+    }
+
+    #[tokio::test]
+    async fn shutdown_ignores_an_unresolved_selector() {
+        // ADR 0005 §4: shutdown is daemon-wide, and a mistyped `--pair` must not stop it from
+        // working.
+        let directory = tempdir().expect("tempdir");
+        let (plane, mut loop_rx) = two_pair_control_plane(directory.path());
+        let mut request = ControlRequest::new(ControlCommand::Shutdown);
+        request.pair = Some("videos".to_owned());
+        let response = roundtrip(&plane, request).await;
+        assert_eq!(response.pair.as_deref(), Some("alpha"));
+        assert!(matches!(loop_rx.try_recv(), Ok(LoopCommand::Shutdown)));
     }
 
     #[test]
@@ -15253,6 +16066,7 @@ mod tests {
 
     fn test_config(directory: &Path, local_root: &Path) -> DaemonConfig {
         DaemonConfig {
+            name: "default".to_owned(),
             local_root: local_root.to_path_buf(),
             remote_root: PathBuf::from("/Drive/RemoteFolder"),
             db_path: directory.join("sync_index.db"),
@@ -18051,7 +18865,7 @@ mod tests {
         // A resync request → the next pass full-walks.
         daemon
             .shared
-            .pair
+            .pair()
             .force_full_walk
             .store(true, Ordering::SeqCst);
         daemon
@@ -18129,7 +18943,11 @@ mod tests {
         // Only the reset latch — NOT `force_full_walk`, which the IPC handler also sets. The full
         // walk below therefore proves the reset's own doing: a cleared cursor leaves nothing to
         // warm-start from, so the pass has to walk.
-        daemon.shared.pair.reset_index.store(true, Ordering::SeqCst);
+        daemon
+            .shared
+            .pair()
+            .reset_index
+            .store(true, Ordering::SeqCst);
         daemon.reconcile_blocking().expect_clean("reset pass");
 
         assert_eq!(
@@ -18166,7 +18984,7 @@ mod tests {
             .expect("the rebuilt baseline re-adopts the already-agreeing pair");
         assert_eq!(record.sha1_hash.as_deref(), Some(keep.as_str()));
         assert!(
-            !daemon.shared.pair.reset_index.load(Ordering::SeqCst),
+            !daemon.shared.pair().reset_index.load(Ordering::SeqCst),
             "the reset latch is consumed exactly once"
         );
     }
@@ -18620,7 +19438,7 @@ mod tests {
             "only the startup sweep is recorded: {passes:?}"
         );
         // The daemon still reports that it is passing — that is a different surface.
-        assert!(daemon.shared.pair.reconcile_seq.load(Ordering::SeqCst) >= 50);
+        assert!(daemon.shared.pair().reconcile_seq.load(Ordering::SeqCst) >= 50);
     }
 
     #[test]
@@ -18792,21 +19610,30 @@ mod tests {
         // #213: `SyncActivity::since_epoch_secs` restarts on each phase, so a client rendering it
         // as the pass's elapsed time counts backwards three times per pass. The pass block is
         // stamped onto every activity from one place and never reset by a phase.
-        let shared = ControlShared::new(RunningConfigInfo {
-            local_root: PathBuf::from("/local"),
-            remote_root: PathBuf::from("/Drive/RemoteFolder"),
-            db_path: PathBuf::from("/local/.sync/sync_index.db"),
-        });
-        shared.begin_pass_progress(1_000, PassKind::WarmStart);
-        shared.begin_activity(new_activity(PHASE_SCANNING_LOCAL));
-        shared.update_pass_progress(|pass| pass.changes = Some(3));
-        shared.begin_activity(new_activity(PHASE_EXECUTING));
+        let shared = ControlShared::new(
+            "default".to_owned(),
+            RunningConfigInfo {
+                local_root: PathBuf::from("/local"),
+                remote_root: PathBuf::from("/Drive/RemoteFolder"),
+                db_path: PathBuf::from("/local/.sync/sync_index.db"),
+            },
+        );
+        shared
+            .pair()
+            .begin_pass_progress(1_000, PassKind::WarmStart);
+        shared
+            .pair()
+            .begin_activity(new_activity(PHASE_SCANNING_LOCAL));
+        shared
+            .pair()
+            .update_pass_progress(|pass| pass.changes = Some(3));
+        shared.pair().begin_activity(new_activity(PHASE_EXECUTING));
         // A phase started by the high-frequency walk callback keeps it too.
-        shared.update_activity(PHASE_COMMITTING, |activity| {
+        shared.pair().update_activity(PHASE_COMMITTING, |activity| {
             activity.folders_listed = Some(1)
         });
 
-        let activity = shared.activity_for_response().expect("activity");
+        let activity = shared.pair().activity_for_response().expect("activity");
         assert_eq!(activity.phase, PHASE_COMMITTING);
         let pass = activity.pass.expect("pass block");
         assert_eq!(pass.started_epoch_secs, 1_000);
@@ -18814,8 +19641,8 @@ mod tests {
         assert_eq!(pass.kind, "warm-start");
 
         // The pass ending clears it, so a stale pass can never outlive its own reconcile.
-        shared.clear_activity();
-        assert!(shared.activity_for_response().is_none());
+        shared.pair().clear_activity();
+        assert!(shared.pair().activity_for_response().is_none());
     }
 
     #[test]
@@ -18826,14 +19653,21 @@ mod tests {
         let (client, _operations) = RecordingProtonClient::new(HashMap::new());
         let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
             .expect("daemon");
-        daemon.shared.begin_pass_progress(1, PassKind::Incremental);
+        daemon
+            .shared
+            .pair()
+            .begin_pass_progress(1, PassKind::Incremental);
         daemon.pass().set_pass_kind(PassKind::FullSweep);
 
         assert_eq!(daemon.pair().pass_log.kind, PassKind::FullSweep);
-        daemon.shared.begin_activity(new_activity(PHASE_EXECUTING));
+        daemon
+            .shared
+            .pair()
+            .begin_activity(new_activity(PHASE_EXECUTING));
         assert_eq!(
             daemon
                 .shared
+                .pair()
                 .activity_for_response()
                 .and_then(|activity| activity.pass)
                 .map(|pass| pass.kind),
@@ -18980,7 +19814,7 @@ mod tests {
     }
 
     fn computed_plan(shared: &ControlShared) -> ReviewedPlan {
-        match shared.plan_outcome(None) {
+        match shared.pair().plan_outcome(None) {
             PlanOutcome::Computed(plan) => *plan,
             other => panic!("expected a computed plan, got {other:?}"),
         }
@@ -19035,8 +19869,8 @@ mod tests {
         });
         daemon.pair_mut().warm_starts_since_full_walk = 3;
         daemon.pair_mut().force_local_rescan = true;
-        let seq_before = daemon.shared.pair.reconcile_seq.load(Ordering::SeqCst);
-        let plan_seq = daemon.shared.book_plan_request();
+        let seq_before = daemon.shared.pair().reconcile_seq.load(Ordering::SeqCst);
+        let plan_seq = daemon.shared.pair().book_plan_request();
 
         run_plan_pass(&mut daemon);
 
@@ -19117,7 +19951,7 @@ mod tests {
         // `reconcile_seq` deliberately does not move: a `syncnow` watcher polling it must not be
         // satisfied by a pass that synced nothing.
         assert_eq!(
-            daemon.shared.pair.reconcile_seq.load(Ordering::SeqCst),
+            daemon.shared.pair().reconcile_seq.load(Ordering::SeqCst),
             seq_before
         );
     }
@@ -19129,13 +19963,15 @@ mod tests {
     fn a_plan_pass_is_visible_as_a_plan_on_the_activity_surface() {
         let directory = tempdir().expect("tempdir");
         let mut daemon = plan_verb_daemon(&directory);
-        daemon.shared.begin_plan_progress(42);
-        daemon.shared.pair.syncing.store(true, Ordering::SeqCst);
+        daemon.shared.pair().begin_plan_progress(42);
+        daemon.shared.pair().syncing.store(true, Ordering::SeqCst);
         daemon
             .shared
+            .pair()
             .begin_activity(new_activity(PHASE_SCANNING_LOCAL));
         daemon
             .shared
+            .pair()
             .update_activity(PHASE_SCANNING_LOCAL, |activity| {
                 activity.files_scanned = Some(8_431);
             });
@@ -19161,8 +19997,8 @@ mod tests {
     fn a_second_plan_request_while_one_is_running_is_answered_by_that_pass() {
         let directory = tempdir().expect("tempdir");
         let mut daemon = plan_verb_daemon(&directory);
-        let first = daemon.shared.book_plan_request();
-        let second = daemon.shared.book_plan_request();
+        let first = daemon.shared.pair().book_plan_request();
+        let second = daemon.shared.pair().book_plan_request();
         assert_eq!((first, second), (1, 2));
 
         run_plan_pass(&mut daemon);
@@ -19172,7 +20008,7 @@ mod tests {
             "one pass answers every request booked before it started"
         );
         // The queued duplicate finds nothing left to do.
-        assert!(daemon.shared.claim_plan_pass().is_none());
+        assert!(daemon.shared.pair().claim_plan_pass().is_none());
         let walks_before = daemon.proton.full_walks.load(Ordering::SeqCst);
         run_plan_pass(&mut daemon);
         assert_eq!(
@@ -19186,8 +20022,8 @@ mod tests {
     fn a_plan_result_before_any_plan_is_absent_rather_than_an_empty_plan() {
         let directory = tempdir().expect("tempdir");
         let daemon = plan_verb_daemon(&directory);
-        assert_eq!(daemon.shared.plan_outcome(None), PlanOutcome::Absent);
-        assert!(daemon.shared.apply_outcome().is_none());
+        assert_eq!(daemon.shared.pair().plan_outcome(None), PlanOutcome::Absent);
+        assert!(daemon.shared.pair().apply_outcome().is_none());
     }
 
     /// #100 happy path: the token names the plan, the pass re-plans, the plans agree, and the work
@@ -19196,19 +20032,20 @@ mod tests {
     fn applying_a_reviewed_plan_executes_it() {
         let directory = tempdir().expect("tempdir");
         let mut daemon = plan_verb_daemon(&directory);
-        daemon.shared.book_plan_request();
+        daemon.shared.pair().book_plan_request();
         run_plan_pass(&mut daemon);
         let token = computed_plan(&daemon.shared).token;
 
         let apply_seq = daemon
             .shared
+            .pair()
             .book_apply_request(&token, false)
             .expect("the current plan's token must be accepted");
         daemon
             .reconcile_blocking()
             .expect_clean("an apply of an unchanged plan runs cleanly");
 
-        match daemon.shared.apply_outcome().expect("verdict") {
+        match daemon.shared.pair().apply_outcome().expect("verdict") {
             ApplyOutcome::Applied {
                 apply_seq: sealed,
                 executed,
@@ -19238,7 +20075,7 @@ mod tests {
     fn an_apply_whose_plan_moved_executes_nothing_and_publishes_the_new_plan() {
         let directory = tempdir().expect("tempdir");
         let mut daemon = plan_verb_daemon(&directory);
-        daemon.shared.book_plan_request();
+        daemon.shared.pair().book_plan_request();
         run_plan_pass(&mut daemon);
         let reviewed = computed_plan(&daemon.shared);
 
@@ -19247,6 +20084,7 @@ mod tests {
 
         let apply_seq = daemon
             .shared
+            .pair()
             .book_apply_request(&reviewed.token, false)
             .expect("the token is still the stored one");
         let outcome = daemon.reconcile_blocking();
@@ -19256,7 +20094,7 @@ mod tests {
              'everything is up to date' over a plan still waiting"
         );
 
-        match daemon.shared.apply_outcome().expect("verdict") {
+        match daemon.shared.pair().apply_outcome().expect("verdict") {
             ApplyOutcome::Diverged { apply_seq: sealed } => assert_eq!(sealed, apply_seq),
             other => panic!("expected a divergence, got {other:?}"),
         }
@@ -19285,6 +20123,7 @@ mod tests {
         assert!(
             daemon
                 .shared
+                .pair()
                 .book_apply_request(&reviewed.token, false)
                 .is_none(),
             "one stored plan at a time, latest wins"
@@ -19298,7 +20137,7 @@ mod tests {
         let (loop_tx, mut loop_rx) = mpsc::unbounded_channel();
 
         for token in [None, Some("1:never-computed")] {
-            let outcome = schedule_apply(&daemon.shared, &loop_tx, token, false);
+            let outcome = schedule_apply(daemon.shared.pair(), &loop_tx, 0, token, false);
             assert_eq!(outcome, ApplyOutcome::Stale, "token: {token:?}");
         }
         assert!(
@@ -19311,12 +20150,12 @@ mod tests {
     fn a_paused_daemon_applies_nothing() {
         let directory = tempdir().expect("tempdir");
         let daemon = plan_verb_daemon(&directory);
-        daemon.shared.pair.paused.store(true, Ordering::SeqCst);
+        daemon.shared.pair().paused.store(true, Ordering::SeqCst);
         let (loop_tx, mut loop_rx) = mpsc::unbounded_channel();
         // Same pause semantics as `syncnow`, whose refusal this mirrors: a paused daemon runs no
         // passes, and a plan is a pass.
         assert_eq!(
-            schedule_apply(&daemon.shared, &loop_tx, Some("1:whatever"), false),
+            schedule_apply(daemon.shared.pair(), &loop_tx, 0, Some("1:whatever"), false),
             ApplyOutcome::Paused
         );
         assert!(loop_rx.try_recv().is_err());
@@ -19363,20 +20202,21 @@ mod tests {
         .expect("seed approval");
         store_event_cursor(&daemon.pair().connection, "vol", "cursor-0", 1).expect("seed cursor");
 
-        daemon.shared.book_plan_request();
+        daemon.shared.pair().book_plan_request();
         run_plan_pass(&mut daemon);
         let reviewed = computed_plan(&daemon.shared);
         assert_eq!(reviewed.summary.destructive_actions, 1);
 
         daemon
             .shared
+            .pair()
             .book_apply_request(&reviewed.token, true)
             .expect("token accepted");
         daemon
             .reconcile_blocking()
             .expect_clean("a filtered apply runs its non-destructive rows cleanly");
 
-        match daemon.shared.apply_outcome().expect("verdict") {
+        match daemon.shared.pair().apply_outcome().expect("verdict") {
             ApplyOutcome::Applied {
                 skipped_destructive,
                 failed,
@@ -19444,11 +20284,12 @@ mod tests {
         )
         .expect("seed record");
 
-        daemon.shared.book_plan_request();
+        daemon.shared.pair().book_plan_request();
         run_plan_pass(&mut daemon);
         let reviewed = computed_plan(&daemon.shared);
         daemon
             .shared
+            .pair()
             .book_apply_request(&reviewed.token, true)
             .expect("token accepted");
         daemon
@@ -19571,18 +20412,19 @@ mod tests {
     fn an_apply_that_fails_before_deciding_still_seals_a_verdict() {
         let directory = tempdir().expect("tempdir");
         let mut daemon = plan_verb_daemon(&directory);
-        daemon.shared.book_plan_request();
+        daemon.shared.pair().book_plan_request();
         run_plan_pass(&mut daemon);
         let token = computed_plan(&daemon.shared).token;
         let apply_seq = daemon
             .shared
+            .pair()
             .book_apply_request(&token, false)
             .expect("token accepted");
         // The local scan now fails, so the pass never reaches the token comparison.
         fs::remove_dir_all(&daemon.pair().config.local_root).expect("remove the local root");
 
         assert!(daemon.reconcile_blocking().is_err());
-        match daemon.shared.apply_outcome().expect("verdict") {
+        match daemon.shared.pair().apply_outcome().expect("verdict") {
             ApplyOutcome::Failed {
                 apply_seq: sealed, ..
             } => assert_eq!(sealed, apply_seq),
@@ -19601,28 +20443,35 @@ mod tests {
         let daemon = plan_verb_daemon(&directory);
 
         // Idle: nothing is running.
-        assert!(!daemon.shared.a_counted_pass_is_running());
+        assert!(!daemon.shared.pair().a_counted_pass_is_running());
 
         // A rehearsal in flight. It MUST claim `syncing` (or `activity` is gated off every status
         // reply and #209's progress line has nothing to read) …
-        daemon.shared.pair.plan_pass.store(true, Ordering::SeqCst);
-        daemon.shared.pair.syncing.store(true, Ordering::SeqCst);
+        daemon.shared.pair().plan_pass.store(true, Ordering::SeqCst);
+        daemon.shared.pair().syncing.store(true, Ordering::SeqCst);
         assert!(
-            daemon.shared.is_syncing(),
+            daemon.shared.pair().is_syncing(),
             "a rehearsal must still publish its activity"
         );
         // … and must NOT read as a pass a `syncnow` can be queued behind.
-        assert!(!daemon.shared.a_counted_pass_is_running());
-        assert_eq!(daemon.shared.response("x").status, "syncing");
+        assert!(!daemon.shared.pair().a_counted_pass_is_running());
+        assert_eq!(
+            daemon.shared.response(daemon.shared.pair(), "x").status,
+            "syncing"
+        );
 
         // A real pass is both.
-        daemon.shared.pair.plan_pass.store(false, Ordering::SeqCst);
-        assert!(daemon.shared.a_counted_pass_is_running());
+        daemon
+            .shared
+            .pair()
+            .plan_pass
+            .store(false, Ordering::SeqCst);
+        assert!(daemon.shared.pair().a_counted_pass_is_running());
 
         // And the flag is cleared inside `syncing`'s window, so no reply can see `syncing` without
         // knowing which kind of pass it is.
-        daemon.shared.pair.syncing.store(false, Ordering::SeqCst);
-        assert!(!daemon.shared.a_counted_pass_is_running());
+        daemon.shared.pair().syncing.store(false, Ordering::SeqCst);
+        assert!(!daemon.shared.pair().a_counted_pass_is_running());
     }
 
     /// An apply overtaken by a pause is cancelled, not latched: a destructive request must not fire
@@ -19631,15 +20480,16 @@ mod tests {
     fn a_pause_cancels_an_apply_it_overtook_rather_than_latching_it() {
         let directory = tempdir().expect("tempdir");
         let mut daemon = plan_verb_daemon(&directory);
-        daemon.shared.book_plan_request();
+        daemon.shared.pair().book_plan_request();
         run_plan_pass(&mut daemon);
         let plan = computed_plan(&daemon.shared);
         let apply_seq = daemon
             .shared
+            .pair()
             .book_apply_request(&plan.token, false)
             .expect("token accepted");
         // The pause lands after the ack, so the loop reaches its paused early-return.
-        daemon.shared.pair.paused.store(true, Ordering::SeqCst);
+        daemon.shared.pair().paused.store(true, Ordering::SeqCst);
 
         tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
@@ -19650,7 +20500,7 @@ mod tests {
             .expect("a paused tick is not an error");
 
         // Cancelled and sealed, so the client stops polling…
-        match daemon.shared.apply_outcome().expect("verdict") {
+        match daemon.shared.pair().apply_outcome().expect("verdict") {
             ApplyOutcome::Failed {
                 apply_seq: sealed, ..
             } => assert_eq!(sealed, apply_seq),
@@ -19666,12 +20516,13 @@ mod tests {
         );
 
         // …and resuming does NOT fire it: the intent is gone, so the next pass is an ordinary sync.
-        daemon.shared.pair.paused.store(false, Ordering::SeqCst);
-        assert_eq!(daemon.shared.take_apply_request(), PassIntent::Sync);
+        daemon.shared.pair().paused.store(false, Ordering::SeqCst);
+        assert_eq!(daemon.shared.pair().take_apply_request(), PassIntent::Sync);
         // The plan itself survives, so the same token applies again once syncing resumes.
         assert!(
             daemon
                 .shared
+                .pair()
                 .book_apply_request(&plan.token, false)
                 .is_some()
         );
@@ -19695,9 +20546,9 @@ mod tests {
     fn a_plan_pass_booked_before_a_pause_still_runs_and_seals() {
         let directory = tempdir().expect("tempdir");
         let mut daemon = plan_verb_daemon(&directory);
-        let plan_seq = daemon.shared.book_plan_request();
+        let plan_seq = daemon.shared.pair().book_plan_request();
         // The pause lands after the ack booked the request — the one window the ack cannot cover.
-        daemon.shared.pair.paused.store(true, Ordering::SeqCst);
+        daemon.shared.pair().paused.store(true, Ordering::SeqCst);
 
         run_plan_pass(&mut daemon);
 
@@ -19732,7 +20583,7 @@ mod tests {
         let directory = tempdir().expect("tempdir");
         let (mut daemon, full_walks) = steady_state_event_daemon(&directory);
         daemon.event_source_factory = Box::new(|| None);
-        daemon.shared.book_plan_request();
+        daemon.shared.pair().book_plan_request();
         run_plan_pass(&mut daemon);
         let plan = computed_plan(&daemon.shared);
         assert_eq!(plan.total, 0, "precondition: both sides already match");
@@ -19740,6 +20591,7 @@ mod tests {
 
         let apply_seq = daemon
             .shared
+            .pair()
             .book_apply_request(&plan.token, false)
             .expect("token accepted");
         daemon
@@ -19751,7 +20603,7 @@ mod tests {
             walks_after_planning,
             "the apply still runs as an incremental pass; it is only the idle SKIP that is suppressed"
         );
-        match daemon.shared.apply_outcome().expect("verdict") {
+        match daemon.shared.pair().apply_outcome().expect("verdict") {
             ApplyOutcome::Applied {
                 apply_seq: sealed,
                 executed,

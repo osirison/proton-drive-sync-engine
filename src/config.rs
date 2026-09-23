@@ -1372,6 +1372,11 @@ pub fn resolve_runtime_config(input: DaemonConfigInput) -> AppResult<(DaemonConf
     let default_command_policy = CommandPolicy::default();
 
     let config = DaemonConfig {
+        // The pair's configured name (#102 phase 3, ADR 0005 §4) — `config::DEFAULT_PAIR_NAME`
+        // for the implicit single-pair file, the `[[pair]]` table's own `name` otherwise. What a
+        // wire selector is matched against. `resolve_pairs` already validated it (charset,
+        // uniqueness, the `default`-is-first rule), so no further check is needed here.
+        name: pair.name.clone(),
         local_root,
         remote_root,
         db_path,
@@ -3822,9 +3827,15 @@ download_batch_size = 5
     }
 
     /// The same config written the two supposedly equivalent ways, resolved with the same flags.
+    ///
+    /// Named `default` in the tabled form (#102 phase 3), not an arbitrary name: the implicit
+    /// top-level pair is *always* `DEFAULT_PAIR_NAME`, and `DaemonConfig::name` is now part of the
+    /// resolved answer this asserts is identical — a `[[pair]]` table named anything else would be
+    /// comparing two different pairs, not two spellings of the same one.
     fn assert_spellings_agree(daemon_wide: &str, per_pair_body: &str, input: &DaemonConfigInput) {
         let flat = format!("{daemon_wide}{per_pair_body}");
-        let tabled = format!("{daemon_wide}\n[[pair]]\nname = \"docs\"\n{per_pair_body}");
+        let tabled =
+            format!("{daemon_wide}\n[[pair]]\nname = \"{DEFAULT_PAIR_NAME}\"\n{per_pair_body}");
         assert_eq!(
             resolve_spelling(&flat, input),
             resolve_spelling(&tabled, input),
