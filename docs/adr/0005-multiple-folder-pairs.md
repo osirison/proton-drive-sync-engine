@@ -473,7 +473,7 @@ pass, ending the wait early and reporting that pass's outcome. Per-pair, an old 
 one pair from beginning to end. `plan_seq`/`apply_seq` follow the same rule for the same reason.
 
 **No reserved word, no fan-out on the wire.** "All pairs" is a **client-side loop** (`proton-sync
-status --all` issues one request per pair, from the `pairs` list it just read), not a magic
+status --all-pairs` issues one request per pair, from the `pairs` list it just read), not a magic
 selector value. A folder may legitimately be named `all`, a reserved sentinel collides on both the
 wire and the UI's identity (the #140 lesson), and a wire-level fan-out would need partial-failure
 semantics on every verb. One request, one pair, one answer.
@@ -494,7 +494,7 @@ Verb-by-verb, the selector's meaning:
 | --- | --- |
 | `status` | which pair the single-pair fields describe (`pairs` is always present) |
 | `syncnow`, `resync`, `plan`, `apply`, `reset-index` | which pair's queue entry / latch |
-| `pause`, `resume` | **per-pair.** "Pause everything" is the client's `--all` loop |
+| `pause`, `resume` | **per-pair.** "Pause everything" is the client's `--all-pairs` loop |
 | `approve`, `deny`, `keep` | which pair's `delete_approvals` / `withheld_deletions`, and which pair's local root the path is relative to |
 | `activity` | which pair's `sync_events`; the path argument is relative to that pair's local root |
 | `list` | which pair's `remote_root` the *relative* frame resolves against. An **absolute** selector (#323) names a Drive location directly and is pair-independent — it already is today, and it is what `gui_core::folder_probe` uses to price a folder before any pair exists |
@@ -504,7 +504,7 @@ Verb-by-verb, the selector's meaning:
 is exactly one pair. It stays, describing the selected pair, and `PairSummary` carries the same
 three fields per pair.
 
-`proton-sync` gains a global `--pair NAME` and `--all`; with neither, it addresses the default pair
+`proton-sync` gains a global `--pair NAME` and `--all-pairs`; with neither, it addresses the default pair
 and prints exactly what it prints today. On a multi-pair setup the human-readable output names the
 pair in its headline, because "everything is up to date" that silently means one of three folders is
 the same lie as #246's.
@@ -516,9 +516,9 @@ Two client-side details that are easy to miss and expensive to find in phase 4:
   the whole response; `history`, `activity`, `pending`, `list`, `plan` and `apply` print a
   *projection* (`response.history`, `response.file_history`, …) with the envelope discarded. The
   rule: **the projections do not change** — a script that asked for one pair knows which pair it
-  asked for — and `--all` with `--json` prints a JSON array of `{"pair": name, …}` objects. That
-  wrapper appears only under `--all`, a flag no existing script passes, so no output any script
-  parses today changes shape.
+  asked for — and `--all-pairs` with `--json` prints a JSON array of `{"pair": name, …}` objects.
+  That wrapper appears only under `--all-pairs`, a flag no existing script passes, so no output
+  any script parses today changes shape.
 - **`watch_syncnow` decides "scheduled" by string-matching the ack message** (`"sync scheduled"` or
   a message containing `"already in progress"`) and then waits for `reconcile_seq + 1` or `+ 2`.
   Per-pair scheduling must keep those exact substrings and keep "already in progress" meaning *this
@@ -622,7 +622,7 @@ config — that file exists precisely because `deny_unknown_fields` bricks on GU
   across `tray.rs`, `tray_menu.rs`, `sni.rs`, `notify.rs` returns nothing. So the cost there is not
   code but *semantics*, and it is two questions this ADR leaves to the GUI phase: which state wins
   when pair A is syncing and pair B is in outage (one glyph, N pairs), and how the fixed
-  `Pause syncing` row spends the per-pair `paused` that §4 already decides on (fan out as `--all`,
+  `Pause syncing` row spends the per-pair `paused` that §4 already decides on (fan out as `--all-pairs`,
   or add a daemon-wide flag beside it — §8b) — bearing in mind `tray_menu.rs`'s own warning that "a
   stale menu dispatches the action its label promised, or none". Notification bodies already carry a
   root-*relative* path, which is ambiguous the moment there are two roots, so every such body needs
@@ -740,7 +740,7 @@ without it and it is not usable without multi-pair to motivate it.
 - **What the tray's single pause toggle means.** The *wire and daemon state* are decided, not open:
   `paused` is per-pair (§1, §4), because everything else about a pair is. What is open is one layer
   up — the tray has one `Pause syncing` row, and pausing one of three folders from it would be a
-  surprise. Two candidates: the row fans out as the client's `--all` loop (no new daemon state, but
+  surprise. Two candidates: the row fans out as the client's `--all-pairs` loop (no new daemon state, but
   N requests and no atomic "everything is paused" reading), or a daemon-wide `paused` is added
   *beside* the per-pair one and a pair runs only when neither is set (one more flag, one more thing
   to publish, but an honest global). What decides it: whether design-v2 draws pause per-pair
@@ -818,8 +818,10 @@ than in phase 4. Closes: the wire. Leaves broken: nothing — `--all` over one p
 > per-command `--all` (every currently pending deletion, on the one pair they address); a *global*
 > `--all` with the same long name panics `clap`'s `Command::build` in debug the moment a subcommand
 > defines its own arg of that name. The paragraph above named `--all` because the ADR was written
-> before this collision was found; `--all-pairs` is the corrected name everywhere it appears,
-> including in a future GUI's copy deck.
+> before this collision was found, and keeps that name as the historical record the departure
+> pattern is for — the correction lives here, not in the prose above it. §4, §6 and §8b described
+> the same global flag before this collision was found and are corrected in place; `--all-pairs` is
+> the name everywhere else in this document, including in a future GUI's copy deck.
 >
 > (2) **`ControlShared.pair: PairShared` did not become `pairs: Vec<PairShared>` with the ~30
 > methods threaded a `pair: &PairShared` parameter — most of them moved onto `impl PairShared`
