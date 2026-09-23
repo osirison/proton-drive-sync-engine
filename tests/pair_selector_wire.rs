@@ -478,3 +478,193 @@ fn all_pairs_json_list_exits_nonzero_when_the_listing_is_busy() {
         run.stdout, run.stderr
     );
 }
+
+/// Runs `args` against `replies` (no `--pair`/`--all-pairs`, so no capability probe) and checks
+/// the real process exit status, the number of requests it took to get there, and that `fragment`
+/// landed somewhere in stdout+stderr — the last part is what stops a non-success case from passing
+/// for the wrong reason (a script-count mismatch that starves `poll_until` into `WAIT_ERROR_LIMIT`
+/// also exits non-zero, but with "lost contact", not the outcome's own line).
+fn assert_exit(
+    label: &str,
+    args: &[&str],
+    replies: Vec<ControlResponse>,
+    expect_success: bool,
+    expect_requests: usize,
+    fragment: &str,
+) {
+    let run = drive(args, replies);
+    assert_eq!(
+        run.requests.len(),
+        expect_requests,
+        "{label}: requests={:?}\nstdout={}\nstderr={}",
+        run.requests,
+        run.stdout,
+        run.stderr
+    );
+    assert_eq!(
+        run.success, expect_success,
+        "{label}: stdout={}\nstderr={}",
+        run.stdout, run.stderr
+    );
+    let combined = format!("{}{}", run.stdout, run.stderr);
+    assert!(
+        combined.contains(fragment),
+        "{label}: expected {fragment:?} in stdout+stderr, got stdout={} stderr={}",
+        run.stdout,
+        run.stderr
+    );
+}
+
+/// `print_listing`'s trailing call to `list_exit_code` (L927ish) is the ONLY thing that turns a
+/// `list` reply's typed outcome into the process's exit status on the plain, no-selector path —
+/// the one every real user without `--pair` takes. Swap that trailing call for a bare
+/// `ExitCode::SUCCESS` and this is what goes red; nothing else in the suite notices (measured:
+/// the workspace suite stays green under that exact poison — see PR #409's follow-up commit).
+#[test]
+fn single_pair_list_exit_status_follows_the_listing_outcome() {
+    let mut busy = blank();
+    busy.listing = Some(ListingOutcome::Busy);
+    assert_exit(
+        "list busy",
+        &["list"],
+        vec![busy],
+        false,
+        1,
+        "busy with a sync",
+    );
+
+    let mut listed = blank();
+    listed.listing = Some(ListingOutcome::Listed {
+        path: PathBuf::new(),
+        entries: Vec::new(),
+        total: 0,
+        truncated: false,
+    });
+    assert_exit(
+        "list listed",
+        &["list"],
+        vec![listed],
+        true,
+        1,
+        "the remote root is empty",
+    );
+}
+
+/// `report_plan`'s trailing call to `plan_exit_code` is reached from both of `watch_plan`'s return
+/// points on the plain (no `--pair`) path: the early return on a non-`Scheduled` ack (`Paused`
+/// here — nothing to poll for) and the return after the poll lands (`Failed`/`Computed` here).
+/// `PlanOutcome::Scheduled` is deliberately never the terminal reply in this table — it is the
+/// poll's *target*, not an outcome `report_plan` renders on the single-pair path (that only
+/// happens under `--all-pairs`, which never watches). Poisoning either trailing call to
+/// `ExitCode::SUCCESS` turns the first two rows here red; the workspace suite otherwise stays
+/// green under that poison.
+#[test]
+fn single_pair_plan_exit_status_follows_the_plan_outcome() {
+    let mut paused = blank();
+    paused.plan = Some(PlanOutcome::Paused);
+    assert_exit(
+        "plan paused (early return)",
+        &["plan"],
+        vec![paused],
+        false,
+        1,
+        "Syncing is paused",
+    );
+
+    let mut ack = blank();
+    ack.plan = Some(PlanOutcome::Scheduled { plan_seq: 3 });
+    let mut failed = blank();
+    failed.plan = Some(PlanOutcome::Failed {
+        plan_seq: 3,
+        error: "disk full".to_owned(),
+    });
+    assert_exit(
+        "plan failed (polled)",
+        &["plan"],
+        vec![ack, failed],
+        false,
+        2,
+        "Could not work out a plan: disk full",
+    );
+
+    let mut ack = blank();
+    ack.plan = Some(PlanOutcome::Scheduled { plan_seq: 3 });
+    let mut computed = blank();
+    computed.plan = Some(reviewed("tok", 0));
+    assert_exit(
+        "plan computed (polled)",
+        &["plan"],
+        vec![ack, computed],
+        true,
+        2,
+        "Nothing would change",
+    );
+}
+
+/// `report_apply`'s trailing call to `apply_exit_code` is reached from all three of `watch_apply`'s
+/// return points on the plain path: the early return on a non-`Scheduled` ack (`Stale`), the
+/// `--no-wait` early return (the ack itself, `Scheduled`, is the verdict a script asked for), and
+/// the return after the poll lands on `Applied` — which is data-dependent, so both `failed == 0`
+/// and `failed > 0` are covered, per `apply_exit_code`'s own doc. Poisoning any of the three
+/// trailing calls to `ExitCode::SUCCESS` turns the corresponding non-success row here red; the
+/// workspace suite otherwise stays green under that poison.
+#[test]
+fn single_pair_apply_exit_status_follows_the_apply_outcome() {
+    let mut stale = blank();
+    stale.apply = Some(ApplyOutcome::Stale);
+    assert_exit(
+        "apply stale (early return)",
+        &["apply", "tok"],
+        vec![stale],
+        false,
+        1,
+        "no longer the current one",
+    );
+
+    let mut scheduled = blank();
+    scheduled.apply = Some(ApplyOutcome::Scheduled { apply_seq: 7 });
+    assert_exit(
+        "apply scheduled --no-wait (early return)",
+        &["apply", "tok", "--no-wait"],
+        vec![scheduled],
+        true,
+        1,
+        "Apply scheduled",
+    );
+
+    let mut ack = blank();
+    ack.apply = Some(ApplyOutcome::Scheduled { apply_seq: 7 });
+    let mut failed = blank();
+    failed.apply = Some(ApplyOutcome::Applied {
+        apply_seq: 7,
+        executed: 1,
+        skipped_destructive: 0,
+        failed: 1,
+    });
+    assert_exit(
+        "apply applied with failures (polled)",
+        &["apply", "tok"],
+        vec![ack, failed],
+        false,
+        2,
+        "1 failed",
+    );
+
+    let mut ack = blank();
+    ack.apply = Some(ApplyOutcome::Scheduled { apply_seq: 7 });
+    let mut clean = blank();
+    clean.apply = Some(ApplyOutcome::Applied {
+        apply_seq: 7,
+        executed: 1,
+        skipped_destructive: 0,
+        failed: 0,
+    });
+    assert_exit(
+        "apply applied clean (polled)",
+        &["apply", "tok"],
+        vec![ack, clean],
+        true,
+        2,
+        "1 action(s) applied",
+    );
+}
