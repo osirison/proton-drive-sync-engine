@@ -556,9 +556,10 @@ success, unchanged.
 
 **Watcher.** One `notify` watcher with N watched roots (`watcher.watch` is called per root), and
 `handle_fs_event` routes an absolute path to the owning pair by longest-prefix match — unambiguous,
-because rule 4 of §2 forbids nesting. A watcher **error**, and an `Ok` event flagged `Rescan` (how
-notify reports an inotify overflow, #423), carry no path, and either means events were lost
-*somewhere*, so it sets `force_local_rescan` on **every** pair. That is the
+because rule 4 of §2 forbids nesting. A watcher **error** carries no path, and an `Ok` event flagged
+`Rescan` (how notify reports an inotify overflow, #423) carries none on Linux (the macOS FSEvents
+backend may attach one). Either means events were lost *somewhere*, so it sets
+`force_local_rescan` on **every** pair. That is the
 fail-safe reading of #51 and the only one available.
 
 **Event scope.** The event source is one per process (it is a session; the volume is a per-call
