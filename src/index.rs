@@ -1898,6 +1898,51 @@ struct WalkContext<'a> {
     observer: Option<ScanObserver<'a>>,
 }
 
+/// Whether the tree at `root` holds **anything the scan would keep**: a regular file the options
+/// allow, or a directory that is itself a sync entity.
+///
+/// The same predicates as [`visit_directory`] — which is the one definition of what the engine
+/// syncs — but stopping at the first hit instead of reading the tree, so an empty folder costs one
+/// directory listing and a populated one a handful. What the scan *drops* is not content: the state
+/// directory, a trash directory, the per-directory settings file, a conflict sidecar, a path an
+/// exclude rule or the include filter hides, and a socket, symlink, FIFO or device node.
+///
+/// An error other than a child that vanished mid-walk is returned, not read as "empty": a folder
+/// that cannot be read is not evidence that nothing is in it.
+pub fn local_tree_holds_syncable_entry(root: &Path, options: &ScanOptions) -> AppResult<bool> {
+    fn holds_in(root: &Path, directory: &Path, options: &ScanOptions) -> AppResult<bool> {
+        for entry in fs::read_dir(directory)? {
+            let entry = entry?;
+            let path = entry.path();
+            let Some(file_type) = vanished_entry_to_skip(entry.file_type().map_err(Into::into))?
+            else {
+                continue;
+            };
+            let relative_path = path.strip_prefix(root).map_err(|err| {
+                boxed_error(format!(
+                    "failed to compute relative path for {} against {}: {err}",
+                    path.display(),
+                    root.display()
+                ))
+            })?;
+            if file_type.is_dir() {
+                if !options.allows_directory_traversal(relative_path) {
+                    continue;
+                }
+                if options.allows_relative_directory(relative_path)
+                    || vanished_entry_to_skip(holds_in(root, &path, options))? == Some(true)
+                {
+                    return Ok(true);
+                }
+            } else if file_type.is_file() && options.allows_relative_file(relative_path) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+    holds_in(root, root, options)
+}
+
 /// See [`scan_local_files`] for the default-naming caveat.
 pub fn scan_local_entities(root: &Path) -> AppResult<HashMap<PathBuf, LocalEntityState>> {
     let options = ScanOptions::new(root, &[], &[], &[], &ConflictNaming::default())?;
