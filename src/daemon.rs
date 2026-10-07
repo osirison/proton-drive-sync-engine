@@ -5625,10 +5625,12 @@ async fn serve_control_socket<C: ProtonClient + 'static>(
 
 /// A wire selector that did not resolve to any configured pair (#102 phase 3, ADR 0005 §4).
 /// `message` names the configured pairs; the caller's response carries `pair: None` and does
-/// nothing else.
+/// nothing else. The echoed selector is bounded by [`truncate_selector`] (#422): display only,
+/// resolution has already compared the full value.
 fn unknown_pair_message(shared: &ControlShared, selector: &str) -> String {
     format!(
-        "no such folder pair {selector:?}; configured pairs: {}",
+        "no such folder pair '{}'; configured pairs: {}",
+        truncate_selector(selector),
         shared.pair_names().join(", ")
     )
 }
@@ -15387,6 +15389,72 @@ mod tests {
             );
             assert!(!plane.shared.pairs[0].reset_index.load(Ordering::SeqCst));
             assert!(!plane.shared.pairs[0].force_full_walk.load(Ordering::SeqCst));
+        }
+    }
+
+    /// #422: the unresolved-selector reply echoes what the client typed, and a request may carry
+    /// up to `ipc::MAX_REQUEST_BYTES` of it. The echo is bounded like every other selector
+    /// rendering (#313); resolution itself still compares the full selector byte-exactly.
+    #[tokio::test]
+    async fn an_oversized_unresolved_selector_is_bounded_in_the_reply() {
+        let directory = tempdir().expect("tempdir");
+        let (plane, _loop_rx) = two_pair_control_plane(directory.path());
+        let mut request = ControlRequest::new(ControlCommand::Status);
+        request.pair = Some("v".repeat(60 * 1024));
+        let response = roundtrip(&plane, request).await;
+        assert_eq!(response.pair, None);
+        assert!(
+            response.message.len() <= SELECTOR_DISPLAY_LIMIT + 400,
+            "an echoed selector must not carry the client's 60 KiB back: {} bytes",
+            response.message.len()
+        );
+        assert!(
+            response.message.contains("vvvvvvvv"),
+            "the bounded message still shows the start of what was typed: {}",
+            response.message
+        );
+        assert!(
+            response.message.contains("alpha") && response.message.contains("beta"),
+            "the bounded message still lists the configured pairs: {}",
+            response.message
+        );
+    }
+
+    /// The echo is bounded *as sent*: no escaping may run after the cut, or a control character
+    /// (`{:?}` writes U+0001 as six bytes) pushes the message past the documented limit (#422).
+    /// The allowance is derived from the empty-selector message, not a magic number, and every
+    /// UTF-8 cut offset is hit by varying an ASCII prefix before each multi-byte character.
+    #[tokio::test]
+    async fn an_unresolved_selector_echo_is_bounded_whatever_it_contains() {
+        let directory = tempdir().expect("tempdir");
+        let (plane, _loop_rx) = two_pair_control_plane(directory.path());
+        let mut empty = ControlRequest::new(ControlCommand::Status);
+        empty.pair = Some(String::new());
+        let overhead = roundtrip(&plane, empty).await.message.len();
+
+        let mut selectors: Vec<(String, String)> = vec![
+            // U+0001 is six bytes on the wire (`\u0001`), so 10_000 of them is the largest
+            // request the 64 KiB read cap still accepts.
+            ("U+0001".to_owned(), "\u{1}".repeat(10_000)),
+            ("U+007F".to_owned(), "\u{7f}".repeat(60 * 1024)),
+        ];
+        for ch in ['é', '€', '😀'] {
+            for prefix in 0..=3 {
+                let selector = format!("{}{}", "a".repeat(prefix), ch.to_string().repeat(10_000));
+                selectors.push((format!("{ch} with {prefix} prefix bytes"), selector));
+            }
+        }
+        for (label, selector) in selectors {
+            let mut request = ControlRequest::new(ControlCommand::Status);
+            request.pair = Some(selector);
+            let response = roundtrip(&plane, request).await;
+            assert_eq!(response.pair, None, "{label}");
+            assert!(
+                response.message.len() <= SELECTOR_DISPLAY_LIMIT + overhead,
+                "{label}: {} bytes, allowed {}",
+                response.message.len(),
+                SELECTOR_DISPLAY_LIMIT + overhead
+            );
         }
     }
 

@@ -2177,7 +2177,7 @@ mod tests {
     fn an_unresolved_selector_answers_no_pair_and_names_the_configured_ones() {
         let mut response = response_with_non_utf8_paths();
         response.pair = None;
-        response.message = "no such folder pair \"videos\"; configured pairs: default".to_owned();
+        response.message = "no such folder pair 'videos'; configured pairs: default".to_owned();
         // A client tells by the structural `pair: None`, never by matching `message` (#103,
         // #246) — this pins that the two are independent fields, not that a client should parse
         // the sentence.
