@@ -883,6 +883,61 @@ where the tests are genuinely new rather than mechanical (two pairs, one gate, o
 watcher-driven pass? does a shutdown mid-pair-2 leave pair 1 committed and pair 3 untouched?).
 Expect this phase to be as large as phase 2 and riskier. Closes: the feature, headlessly.
 
+> **Split into three PRs — 4a (scheduler and shape), 4b (unavailable pairs), 4c (the lift) — and
+> 4a shipped with departures, recorded here because 4b and 4c build on them.** 4a is runtime only:
+> `config::refuse_unsupported_pair_count` still holds a resolved config to one pair, the N-pair
+> constructor (`Daemon::from_pairs`) is crate-private, and no binary path reaches two pairs. What
+> landed: the pure due queue (`src/due_queue.rs`, §5's order with a rotating tie-break, re-armed
+> from the moment a pass *ends*); one step function that `run()` and the tests both call; boot
+> through the queue; per-pair pause and per-pair cadence; shutdown as the cancel flag plus a
+> `Notify`, checked before every pop; per-path watcher routing; a `pair{name=…}` tracing span on
+> every per-pair line; and the `Ready`/`Unavailable` pair slot (maintainer decision M1, M1b on
+> issue #102) with every sealing arm, though only `Ready` is built in production.
+>
+> (1) **The answers to the three questions above are tests that drive the real loop body**, not a
+> pure predicate: `a_syncnow_sent_through_the_channel_jumps_a_timer_due_pair`,
+> `a_long_pass_on_pair_a_does_not_starve_pair_bs_watcher_driven_pass` and
+> `a_shutdown_mid_pair_two_leaves_pair_one_committed_and_pair_three_untouched` (plus
+> `a_boot_sequence_is_cut_at_a_pair_boundary` through `run` in real time). Yes, no, yes.
+>
+> (2) **#428 re-registers the root with `watch` alone, not `unwatch` then `watch` as the issue
+> named.** notify 8.2's `add_watch` walks every directory under the root and `IN_MASK_ADD`s the
+> ones it already holds, so `watch` alone picks up a folder whose create event the overflow
+> dropped, and nothing already watched loses its watch. An `unwatch` first buys nothing, opens a
+> window with no watch at all, and fails partway on the descriptor of any directory deleted during
+> the overflow (its `IN_IGNORED` was lost too, so notify still holds a descriptor the kernel has
+> dropped — `inotify_rm_watch` then fails with `EINVAL`; inferred from inotify(7) and notify's
+> `remove_watch`, not reproduced). If the re-walk then failed (`MaxFilesWatch`), the root would be
+> left with fewer watches than before, with nothing in 4a to retry it. The real-backend test
+> (`a_folder_created_during_an_inotify_overflow_is_watched_once_its_root_is_registered_again`)
+> overflows a real inotify queue and shows the folder unwatched before and watched after.
+>
+> (3) **A pass holds its pair's `PairShared` as a field (`pair_shared: &PairShared`), not an index
+> and a `pair_shared()` method.** A `&self` method borrows the whole pass, which the borrow checker
+> refuses beside `&mut self.pair.connection` at the checkpoint commits; a field is the disjoint
+> borrow, and it means no pass body names an index at all.
+>
+> (4) **The IPC `shutdown` verb does not notify.** Its `LoopCommand::Shutdown` already wakes the
+> loop's wait on the control channel; the `Notify` exists for the signal task, which has no channel.
+>
+> (5) **An unavailable pair's `status_history` is never empty**: one in-memory entry when the slot
+> is built, and one per `Sync` attempt (bounded like a ready pair's). M1b's "one entry" was read as
+> "never empty", which is what keeps gui-core's `FirstRun` rule off for a reply served before the
+> pair's first job pops. A paused unavailable pair seals a queued apply too: the implementation
+> brief's table said "re-arm only" and "same as a paused ready pair" in one row, and a ready pair
+> seals it.
+>
+> (6) **A session that comes back mid-life now reseeds every events-driven pair**, not only the one
+> whose pass reacquired it: `Daemon::event_source_generation` is bumped on reacquisition, and each
+> pair full-walks once at its next steady-state pass, because every pair's stored cursor went stale
+> in the same degraded window. The loop also pulls every pair in to its new, live cadence.
+>
+> (7) **N = 1 is wire-identical; four things change that a person could see.** Boot goes through
+> the queue (same order as before: socket first, then the first pass); a cadence is measured from
+> the end of the previous pass; under live events the poll and the `scan_interval` tick are one
+> cadence, so there is no second pass at each `scan_interval`; and a signal wakes an idle loop at
+> once. Every per-pair log line also gains a `pair{name=default}:` prefix.
+
 **Phase 5 — GUI (large, and larger than the issue assumes).** Splits into three, and they are worth
 tracking separately because only the first is mechanical: (5a) pair-index `RuntimePaths` and the
 ~14 commands that follow, plus the selected pair in `gui.toml` — mechanical; (5b) `ConfigDoc`'s

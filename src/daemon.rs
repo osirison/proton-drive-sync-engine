@@ -3096,9 +3096,9 @@ impl<C: ProtonClient> PairPass<'_, C> {
     /// Publishes this pair's current state to [`ControlShared`], from which the IPC task answers
     /// every control request. Called whenever the state it copies changes.
     ///
-    /// Everything below the `auth` line of that struct is per-pair, so with N pairs this publishes
-    /// into *this* pair's block and the reply's flattened top-level fields describe whichever pair
-    /// the request selected (ADR 0005 §4). Phase 2 has one pair, so it publishes as it always did.
+    /// Everything below the `auth` line of that struct is per-pair, so this publishes into *this*
+    /// pair's block (`pair_shared`) and the reply's flattened top-level fields describe whichever
+    /// pair the request selected (ADR 0005 §4).
     fn publish_status(&self) {
         let snapshot = StatusSnapshot {
             pending_changes: self.pair.pending_changes.len(),
