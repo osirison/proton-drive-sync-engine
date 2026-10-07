@@ -555,7 +555,7 @@ interrupts the sequence at a pair boundary. `is_first_reconcile` clears per-pair
 success, unchanged.
 
 **Watcher.** One `notify` watcher with N watched roots (`watcher.watch` is called per root), and
-`handle_fs_event` routes an absolute path to the owning pair by longest-prefix match — unambiguous,
+the router (`Daemon::route_event`) hands an absolute path to the owning pair by longest-prefix match — unambiguous,
 because rule 4 of §2 forbids nesting. A watcher **error** carries no path, and an `Ok` event flagged
 `Rescan` (how notify reports an inotify overflow, #423) carries none on Linux (the macOS FSEvents
 backend may attach one). Either means events were lost *somewhere*, so it sets
@@ -839,7 +839,7 @@ than in phase 4. Closes: the wire. Leaves broken: nothing — `--all` over one p
 > `PairShared.syncing` is true," with no new state.** Passes are serialized (§5), so at most one
 > pair is ever syncing; `ControlShared::active_pair` finds it, and `SharedProgressSink` drops a
 > callback when none is active rather than guessing. The "browse must not pollute another pair's
-> activity" risk named in the brief turned out to be **structurally absent today**, not merely
+> activity" risk turned out to be **structurally absent today**, not merely
 > guarded against: `list_one_directory` (what `list`'s `browse_directory` calls) reports through
 > neither `ProgressSink` method — verified by reading `proton.rs`, not assumed — so a browse cannot
 > reach `active_pair` at all. The routing is index-based anyway, on the day either changes.
@@ -882,6 +882,106 @@ where the tests are genuinely new rather than mechanical (two pairs, one gate, o
 `syncnow` on pair B jump a timer-due pair A? does a 30-minute pair A bootstrap starve pair B's
 watcher-driven pass? does a shutdown mid-pair-2 leave pair 1 committed and pair 3 untouched?).
 Expect this phase to be as large as phase 2 and riskier. Closes: the feature, headlessly.
+
+> **Split into three PRs — 4a (scheduler and shape), 4b (unavailable pairs), 4c (the lift) — and
+> 4a shipped with departures, recorded here because 4b and 4c build on them.** 4a is runtime only:
+> `config::refuse_unsupported_pair_count` still holds a resolved config to one pair, the N-pair
+> constructor (`Daemon::from_pairs`) is crate-private, and no binary path reaches two pairs. What
+> landed: the pure due queue (`src/due_queue.rs`, §5's order with a rotating tie-break, re-armed
+> from the moment a pass *ends*); one step function that `run()` and the tests both call; boot
+> through the queue; per-pair pause and per-pair cadence; shutdown as the cancel flag plus a
+> `Notify`, checked before every pop; per-path watcher routing; a `pair{name=…}` tracing span on
+> every per-pair line; and the `Ready`/`Unavailable` pair slot (maintainer decision M1, M1b on
+> issue #102) with every sealing arm, though only `Ready` is built in production.
+>
+> (1) **The answers to the three questions above are tests that drive the real loop body**, not a
+> pure predicate: `a_syncnow_sent_through_the_channel_jumps_a_timer_due_pair`,
+> `a_long_pass_on_pair_a_does_not_starve_pair_bs_watcher_driven_pass` and
+> `a_shutdown_mid_pair_two_leaves_pair_one_committed_and_pair_three_untouched` (plus
+> `a_boot_sequence_is_cut_at_a_pair_boundary` through `run` in real time). Yes, no, yes.
+>
+> (2) **#428 re-registers the root with `watch` alone, not `unwatch` then `watch` as the issue
+> named.** notify 8.2's `add_watch` walks every directory under the root and `IN_MASK_ADD`s the
+> ones it already holds, so `watch` alone picks up a folder whose create event the overflow
+> dropped, and nothing already watched loses its watch. An `unwatch` first buys nothing, opens a
+> window with no watch at all, and fails partway on the descriptor of any directory deleted during
+> the overflow (its `IN_IGNORED` was lost too, so notify still holds a descriptor the kernel has
+> dropped — `inotify_rm_watch` then fails with `EINVAL`; inferred from inotify(7) and notify's
+> `remove_watch`, not reproduced). If the re-walk then failed (`MaxFilesWatch`), the root would be
+> left with fewer watches than before, with nothing in 4a to retry it. The real-backend test
+> (`a_folder_created_during_an_inotify_overflow_is_watched_once_its_root_is_registered_again`)
+> overflows a real inotify queue and shows the folder unwatched before and watched after.
+>
+> (3) **A pass holds its pair's `PairShared` as a field (`pair_shared: &PairShared`), not an index
+> and a `pair_shared()` method.** A `&self` method borrows the whole pass, which the borrow checker
+> refuses beside `&mut self.pair.connection` at the checkpoint commits; a field is the disjoint
+> borrow, and it means no pass body names an index at all.
+>
+> (4) **The IPC `shutdown` verb does not notify.** Its `LoopCommand::Shutdown` already wakes the
+> loop's wait on the control channel; the `Notify` exists for the signal task, which has no channel.
+>
+> (5) **An unavailable pair's `status_history` is never empty**: one in-memory entry when the slot
+> is built, and one per `Sync` attempt (bounded like a ready pair's). M1b's "one entry" was read as
+> "never empty", which is what keeps gui-core's `FirstRun` rule off for a reply served before the
+> pair's first job pops. A paused unavailable pair seals a queued apply too: the plan for the
+> unavailable arms said "re-arm only" and "same as a paused ready pair" in one row, and a ready pair
+> seals it.
+>
+> (6) **A session that comes back mid-life now reseeds every events-driven pair**, not only the one
+> whose pass reacquired it: `Daemon::event_source_generation` is bumped on reacquisition, and each
+> pair full-walks once at its next steady-state pass, because every pair's stored cursor went stale
+> in the same degraded window. The loop also pulls every pair in to its new, live cadence.
+>
+> (7) **N = 1 is wire-identical; four things change that a person could see.** Boot goes through
+> the queue (same order as before: socket first, then the first pass); a cadence is measured from
+> the end of the previous pass; under live events the poll and the `scan_interval` tick are one
+> cadence, so there is no second pass at each `scan_interval`; and a signal wakes an idle loop at
+> once. Every per-pair log line also gains a `pair{name=default}:` prefix.
+>
+> (8) **A drain is bounded on both channels, and the run loop's idle wait routes nothing.** The
+> first version drained each channel until it was empty before it looked at the cancel flag or
+> popped a job, so a tree producing events faster than they were routed held off every pass and
+> every shutdown (4.2 s with the flag already set, at 50k events/s, as measured in review). Now the
+> control channel's backlog at entry is taken once, and the watcher channel is taken in at most
+> `MAX_DRAIN_ROUNDS` (3) rounds, each sized by the backlog counted when it begins; the flag is read
+> between events. One round was the first bound and it was too tight: an echo of a pair's own
+> download (#49) that arrived while the backlog ahead of it was being routed was not in that
+> round's count, so the pop ran first, the pair's pass cleared `authored_writes`, and the next
+> drain routed the echo as a user's edit — flipping the fresh `Synced` record to `Modified`, which
+> uploads the stale file over a newer remote edit. A further round routes it before the pop; the
+> cap keeps the starvation bound (at most three rounds; since each round is sized by what
+> arrived during the one before, a producer that outpaces the router delays the pop by a finite
+> but growing multiple of the backlog, and the shutdown flag is read between events). What
+> arrives after the last round waits for the next **drain**, which the step
+> reaches as soon as the job it popped has run — a step loops drain, pop, run, drain. An echo
+> still in notify's own thread when the last round ends is routed after the pair's next pass has
+> cleared `authored_writes`; that residual stays #425. The idle wait hands the event it received
+> to the next step (`LoopInputs::carried`) instead of calling the router itself, so the router has
+> one call site; it is the oldest event, routed first, so it is the cause a drain reports for
+> lost events. Lost-event handling is per drain, not per notice or per round: a rescan notice or
+> watcher error is noted while events are routed and settled once after the last round — one
+> latch, one re-registration per affected root — where an overflow's thousands of notices each
+> used to latch, warn and walk every root again.
+>
+> (9) **A due sweep and an explicit `Sync` for the same pair are one pass** (#193). `resync` popped
+> beside an overdue scheduled sweep returns as the sweep (`Cause::Sweep`), because the daemon
+> re-arms a sweep only for that cause. A `Plan` never absorbs it: a plan-only pass observes and
+> consumes nothing, so the sweep stays pending for its own pop.
+>
+> (10) **The `pair` span is an `error_span!`** (`pair_span`, one constructor). A span below the
+> subscriber's level is never created, so an info-level one removed the pair from every WARN and
+> ERROR line under `RUST_LOG=warn`, which is where attribution matters most.
+>
+> (11) **The N-pair constructor compares pair names with the config reader's own fold**
+> (`config::pair_name_key`): `Photos` and `photos` are one name in both places.
+>
+> **Left for 4b**, found in review and deliberately not fixed here: a notify `Err(MaxFilesWatch)`
+> latches a rescan but never registers the directory it could not watch, so nothing watches it
+> afterwards; a `Ready` pair demoted to `Unavailable` would publish `last_sync: None`, which the GUI
+> reads as never synced; an unavailable pair's 20-entry history fills with `unavailable` entries in
+> about ten minutes and needs the real history carried over; and IPC `pause`/`resume` still writes
+> the metrics sidecar for an unavailable pair. A relative `local_root` is a separate, older
+> problem (#431).
 
 **Phase 5 — GUI (large, and larger than the issue assumes).** Splits into three, and they are worth
 tracking separately because only the first is mechanical: (5a) pair-index `RuntimePaths` and the

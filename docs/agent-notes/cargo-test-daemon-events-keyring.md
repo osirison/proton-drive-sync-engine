@@ -8,24 +8,25 @@ cargo test --workspace --all-targets --all-features   # or: cargo test daemon::t
 
 ## The precondition nothing states
 
-`Daemon::with_client` (`src/daemon.rs`, `impl<C: ProtonClient> Daemon<C>` → `with_client_and_event_source`)
-installs a **default** `event_source_factory`. Its body is a closure over `config.events_driven`, and
-when that is true it calls `CliKeyringSession::from_cli_keyring()` — which shells `secret-tool` and
-reads the **real OS keyring** for the logged-in `proton-drive` CLI's session:
+`Daemon::with_client` (`src/daemon.rs`, `impl<C: ProtonClient> Daemon<C>` → `with_client_and_event_source`
+→ `from_pairs` → `from_pairs_with_opener`) installs a **default** `event_source_factory`. Its body is a
+closure over whether **any** pair is `events_driven` (#102 phase 4a), and when that is true it calls the
+session opener `open_cli_keyring_event_source` → `CliKeyringSession::from_cli_keyring()` — which shells
+`secret-tool` and reads the **real OS keyring** for the logged-in `proton-drive` CLI's session:
 
 ```rust
-// src/daemon.rs, in with_client_and_event_source (grep: `let event_source_factory`)
-Box::new(move || {
-    if !events_driven { return None; }
-    match CliKeyringSession::from_cli_keyring() {
-        Ok(session) => Some(Box::new(EventsClient::new(...)) as Box<dyn EventSource>),
-        Err(_) => None,
-    }
-})
+// src/daemon.rs (grep: `fn event_source_factory`)
+fn event_source_factory(events_wanted: bool, open_session: fn() -> Option<Box<dyn EventSource>>)
+    -> EventSourceFactory
+{
+    Box::new(move || if events_wanted { open_session() } else { None })
+}
+// from_pairs passes `open_cli_keyring_event_source`: CliKeyringSession::from_cli_keyring().ok()...
 ```
 
 `reacquire_event_source_if_needed` calls that factory on **every pass**, so a test does not have to
-ask for an event source to get one.
+ask for an event source to get one. With several pairs, ONE events-driven pair is enough to arm it
+for the whole daemon.
 
 ## What goes wrong
 
@@ -48,6 +49,11 @@ Override the factory immediately after building the daemon, before the first pas
 let mut daemon = Daemon::with_client(config, client).expect("daemon");
 daemon.event_source_factory = Box::new(|| None);
 ```
+
+A test that must exercise the **constructor's own** factory (the any-pair rule) builds the daemon with
+`Daemon::from_pairs_with_opener(configs, client, None, || Some(fake))`: the real factory, with only the
+keyring opener swapped (`the_event_source_is_built_when_any_pair_is_events_driven`). Multi-pair tests
+build through `multi_pair_daemon`, which pins the factory as below.
 
 Existing precedents in `src/daemon.rs` (grep `event_source_factory = Box::new(|| None)`) — including
 `a_degraded_session_still_reconciles_on_the_scan_interval` and the plan/apply tests. A test that
