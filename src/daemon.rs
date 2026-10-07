@@ -2589,9 +2589,9 @@ impl<C: ProtonClient> Daemon<C> {
     fn route(&mut self, event: notify::Result<Event>, lost: &mut LostEvents) {
         match event {
             Ok(event) => {
-                if let Err(error) = self.route_event(event, lost) {
-                    warn!(%error, "failed to process filesystem event");
-                }
+                // Each handler failure is already logged inside its pair's span by `route_event`;
+                // the returned first error exists for the test helper and is not logged twice.
+                let _ = self.route_event(event, lost);
             }
             Err(error) => lost.note_error(&error),
         }
@@ -2626,7 +2626,8 @@ impl<C: ProtonClient> Daemon<C> {
     /// unambiguous, since roots may not nest — and a path no pair owns is dropped. A rename that
     /// straddles two roots therefore queues each side on its own pair.
     ///
-    /// Returns the first handler error; every other pair's paths are still handled.
+    /// Logs each pair's handler error inside that pair's span and returns the first one; every
+    /// other pair's paths are still handled.
     fn route_event(&mut self, event: Event, lost: &mut LostEvents) -> AppResult<()> {
         // #423: notify's inotify overflow is `Ok(Other + Flag::Rescan)` with no paths. Noted before
         // the per-path handlers, which return early on error and would skip a later note. A notice
@@ -2675,6 +2676,9 @@ impl<C: ProtonClient> Daemon<C> {
                 // one in its group were never queued: a change the watcher saw and we could not
                 // record.
                 lost.note(format!("filesystem event could not be queued: {error}"));
+                // Logged here, inside the pair's span, so the line names its pair and every
+                // failing pair gets its own (the returned error is only the first).
+                warn!(%error, "failed to process filesystem event");
                 first_error.get_or_insert(error);
             }
         }
@@ -23876,6 +23880,49 @@ mod tests {
     }
 
     #[test]
+    fn each_failing_pairs_handler_error_is_logged_under_its_own_pair() {
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a", "b"]);
+        let files: Vec<PathBuf> = configs
+            .iter()
+            .map(|config| config.local_root.join("a.txt"))
+            .collect();
+        let mut daemon = multi_pair_daemon(configs, MultiRootClient::default(), None);
+        for pair in 0..2 {
+            let connection = &daemon.runtime(pair).expect("ready").connection;
+            upsert_record(connection, &base_record("a.txt", None, &sha1_bytes(b"a")))
+                .expect("seed record");
+            connection
+                .execute_batch(
+                    "CREATE TRIGGER refuse_update BEFORE UPDATE ON file_index \
+                     BEGIN SELECT RAISE(ABORT, 'boom'); END;",
+                )
+                .expect("install failing trigger");
+        }
+        let mut event = Event::new(EventKind::Modify(ModifyKind::Any));
+        for file in &files {
+            event = event.add_path(file.clone());
+        }
+        let mut lost = LostEvents::default();
+        let log = capture_log("warn", || {
+            assert!(daemon.route_event(event, &mut lost).is_err());
+        });
+        let lines: Vec<&str> = log
+            .lines()
+            .filter(|line| line.contains("failed to process filesystem event"))
+            .collect();
+        assert_eq!(lines.len(), 2, "{log}");
+        for name in ["a", "b"] {
+            assert!(
+                lines
+                    .iter()
+                    .any(|line| line.contains(&format!("name={name}"))),
+                "no line names pair {name}: {log}"
+            );
+        }
+    }
+
+    #[test]
     fn a_warn_or_error_line_still_names_its_pair() {
         // `info_span!` is disabled below INFO, so at `RUST_LOG=warn` — which `ipc_cli` runs the daemon
         // under — the lines that matter most lost the pair they belong to.
@@ -23952,10 +23999,11 @@ mod tests {
     /// How far off the schedule's next occurrence is, by the wall clock the daemon reads.
     fn delay_to_next_due(schedule: FullScanSchedule) -> Duration {
         let now = Local::now();
-        let due = Local
-            .from_local_datetime(&schedule.next_due(now.naive_local()))
-            .earliest()
-            .expect("a resolvable local time");
+        // The production resolver, so a gap or fold day gets the production policy.
+        let due = crate::schedule::resolve_local(schedule.next_due(now.naive_local()), |naive| {
+            Local.from_local_datetime(&naive)
+        })
+        .expect("a resolvable local time");
         (due - now).to_std().expect("in the future")
     }
 
