@@ -981,7 +981,79 @@ Expect this phase to be as large as phase 2 and riskier. Closes: the feature, he
 > reads as never synced; an unavailable pair's 20-entry history fills with `unavailable` entries in
 > about ten minutes and needs the real history carried over; and IPC `pause`/`resume` still writes
 > the metrics sidecar for an unavailable pair. A relative `local_root` is a separate, older
-> problem (#431).
+> problem (#431). The first four are fixed by 4b, below.
+>
+> **4b (availability producers) shipped, with departures.** 4b is runtime only: a resolved config
+> still holds one pair. What landed: boot preparation per pair (`prepare_pair_state`, the same
+> steps as before, no longer fatal), the retry from `Unavailable` (`retry_unavailable`), the typed
+> `RootUnavailable` for a folder that vanishes under a ready pair, the root-identity re-watch, the
+> per-root watch state (`RootWatch`), the typed `LockHeld`, and the four items 4a left for it.
+> Maintainer decisions M1 (keep running, N = 1 included) and M1b (show the error, not the
+> onboarding wizard) are on issue #102.
+>
+> (1) **A root that cannot be watched keeps its pair *ready*; it is not made unavailable.** M1's
+> wording says "prepared or watched", §6.5 says degrade, and §6.5 is what is built: syncing
+> without a watch is correct and only slower, so the pair scans locally on every pass and
+> registers the watch again before each one, instead of dropping out of sync. The same state
+> (`RootWatch::Incomplete`) carries 4a's first left-over: a watcher `Err` (`MaxFilesWatch` names the
+> directory it could not add) marks the roots it names, and a failed overflow re-registration marks
+> its root, so neither is left unwatched with nothing to retry it. The retry is before the pass,
+> not at the error, so a burst of errors costs one registration per root per pass. Each retry
+> re-walks the root (O(directories) `inotify_add_watch` calls); with the limit exhausted that is
+> paid every pass, and it has no backoff.
+>
+> (2) **A folder that vanishes under a ready pair does not demote the pair.** §6.4's typed error
+> leaves the runtime in place, and that is what keeps `seal_apply_outcome`, the latches and the
+> rest of `reconcile_blocking` doing their jobs. `RootUnavailable` is raised after
+> `take_apply_request` and before the event-source reacquire and the `force_full_walk` /
+> `reset_index` swaps: after, so a booked apply is answered; before, so a `reset-index` made while
+> the folder is gone is not spent by a pass that did nothing, and so the events-mode idle
+> fast-path cannot report `Clean` and move the cursor over it. It writes no `sync_passes` row,
+> spawns no child, and writes **no sidecar** — `write_atomically` creates its directory, which
+> with the default layout is inside the root, so a status write would make the missing folder
+> again. Demotion (`demote_pair`) exists and has one production caller: the first metrics write,
+> which is part of preparing a pair, at boot and on a retry. A vanished folder with the default
+> layout still leaves an index and lock on an unlinked inode (§6.7, unchanged and out of scope).
+>
+> (3) **A retry never creates the folder; only boot does.** `RootMode::Create` at boot, `MustExist`
+> on a retry: a mount point that disappears and is re-created empty by the daemon would be
+> reconciled against the remote as the user's own empty tree. The cost is that a pair
+> unavailable because its folder could not be created at boot stays so until the folder exists or
+> the daemon restarts; the reason text says that. An existing but empty mount point is still not
+> "missing" (#426, not in this phase).
+>
+> (4) **`LockHeld` is fatal at boot and a failed attempt on a retry.** At boot it refuses the start
+> naming the pair (`folder pair 'default': daemon already running; lockfile is locked at …`), which
+> is what the per-root lock exists to stop, and it is taken before the one global lock as before. On
+> a retry it leaves the pair unavailable ("locked by another process") and the daemon running.
+>
+> (5) **An unavailable pair publishes its real history, and a standing cause is one entry.** Its
+> history is never empty (gui-core reads no `last_sync` and no history as `FirstRun`), it starts
+> from the sidecar when that is readable (boot) or from the demoted runtime's history, and
+> `record_repeatable_status_entry` moves the newest entry's time for a repeat of the same cause
+> instead of adding one — at the 30 s cadence an entry per attempt evicted a 20-entry history in
+> about ten minutes. The same rule covers a ready pair whose folder is missing. `last_sync`, the
+> last plan and successful summaries, the pass history and the corpus size are carried across a
+> demotion and back, so an established pair never starts publishing "never synced" (4a's second and
+> third left-overs).
+>
+> (6) **The IPC task decides from `PairShared::has_runtime`.** It opens the approvals connection on
+> first use when the flag is set and drops it when it is not, so a pair that becomes ready after
+> the plane was built gets one, and `control_plane_pair` no longer fails the daemon when an index
+> cannot be opened. `pause`/`resume` write no metrics sidecar for a pair that is not ready (4a's
+> fourth left-over: the file belongs to whoever holds that pair's lock) and none into a directory
+> that is gone.
+>
+> (7) **Root identity includes the directory's birth time.** `(st_dev, st_ino)` alone cannot tell a
+> deleted-and-recreated folder from the old one on a filesystem that hands the freed inode number
+> straight back (ext4 often does). The birth time counts only when both sides have one, so a
+> filesystem that reports it on one `stat` and not the next cannot read as a replaced folder on
+> every pass. A remount of the same device over the same path is still not caught (P5).
+>
+> **Still not done**, deliberately: the empty mount point and the unmounted-at-boot root (#426); the
+> index and lock unlinked with a deleted default-layout root (§6.7); a watcher that cannot be built
+> at all is still fatal (it is process-wide, not per root); `fs::metadata(root)` on a hung network
+> mount blocks the one main task, as the scan already does; and the lift itself (4c).
 
 **Phase 5 — GUI (large, and larger than the issue assumes).** Splits into three, and they are worth
 tracking separately because only the first is mechanical: (5a) pair-index `RuntimePaths` and the

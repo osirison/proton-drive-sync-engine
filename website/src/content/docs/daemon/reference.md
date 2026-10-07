@@ -63,6 +63,17 @@ folder rather than failing. Confirm the path first:
 proton-drive filesystem list --json /Drive/RemoteFolder
 ```
 
+### `--local-root`
+
+The daemon creates the folder when it **starts**, if it doesn't exist. If it can't (a parent
+that is a file, a read-only filesystem), or the folder is gone later — an unplugged drive, a
+deleted tree — the daemon **keeps running** instead of exiting: that folder pair shows the
+reason as its error (`proton-sync status`, and the desktop app's error state rather than its
+first-run wizard), any other pair keeps syncing, and the pair is tried again on its normal
+cadence. A folder that disappears *while the daemon runs* is never created again: put it back
+(re-mount the drive, restore the folder) and the next attempt picks it up. To have a folder
+that could not be created at startup created, restart the daemon.
+
 ### `--include` / `--exclude`
 
 Both are repeatable and match paths relative to the roots. Passing `--include` on the

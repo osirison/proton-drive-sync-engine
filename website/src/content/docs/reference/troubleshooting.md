@@ -1,6 +1,6 @@
 ---
 title: Troubleshooting
-description: Fixes for the common failure modes — can't reach the daemon, lockfile errors, remote failures, and unexpected sync behavior.
+description: Fixes for the common failure modes — can't reach the daemon, lockfile errors, an unavailable folder pair, remote failures, and unexpected sync behavior.
 sidebar:
   order: 1
 ---
@@ -27,7 +27,7 @@ error, another live daemon already holds a lock — because every daemon shells 
 Note that `--lockfile-path` only isolates the **per-root** lock; the **per-user**
 single-instance lock can't be bypassed by any flag (for a fully isolated test, run under a
 separate `$XDG_STATE_HOME`). The daemon fails to start with a clear error naming the locked
-lockfile, rather than failing silently.
+lockfile — and, for a per-root lock, the folder pair — rather than failing silently.
 
 A lockfile left on disk after the daemon stops is **normal** and does not mean a daemon is
 running: the lock is an advisory `flock` on the file, released when the process exits, and
@@ -35,6 +35,31 @@ the (empty) file is deliberately kept so every start contends on the same one. D
 it to "unstick" a start: deleting it lets a second daemon lock a fresh inode and run
 alongside the first. Only a start that fails with the lock error above is being refused by
 the lock — startup failures with any other message have another cause.
+
+## A folder pair shows an error and isn't syncing
+
+A folder pair whose local folder can't be used does **not** stop the daemon: the pair shows
+the reason (`proton-sync status`; the desktop app shows the error rather than the first-run
+wizard), every other pair keeps syncing, and the daemon tries the pair again on its normal
+cadence. The reason says which of these it is:
+
+- **The folder doesn't exist** — it couldn't be created when the daemon started, or it went
+  away since (an unplugged or unmounted drive, a deleted folder). Put it back and the next
+  attempt picks it up. The daemon creates the folder only when it *starts*, never while it
+  runs, so a folder that could not be created at startup stays missing until you create it
+  or restart the daemon.
+- **Locked by another process** — something else holds the folder's lock (a second
+  `proton-syncd`, or another account's daemon syncing the same folder). A daemon that is
+  *starting* refuses to start, naming the pair; one that is already running leaves that pair
+  unavailable until the lock is free.
+- **Its state could not be opened, or its metrics file could not be written** — the
+  `.sync` directory (or the index path you configured) isn't usable. Fix the permissions or
+  free the space.
+
+If the daemon can't *watch* a folder (usually the inotify watch limit, `ENOSPC`), the pair is
+not unavailable: it keeps syncing, but scans the local folder on every pass instead of
+waiting for change events, and registers the watch again before each pass. Raise
+`fs.inotify.max_user_watches` to get the cheap path back.
 
 ## Remote operations fail
 
