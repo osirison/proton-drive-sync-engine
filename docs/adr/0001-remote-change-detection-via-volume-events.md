@@ -252,7 +252,8 @@ periodic full scan as backstop", and the original `EVENTS_POLL_INTERVAL` comment
 
 Corollary for **local** changes: with no periodic full walk, the idle fast-path is the only thing
 standing between a dropped `notify` event and a change that is never re-derived. Directory events
-are queued and a watcher error forces a local rescan (#51) for that reason.
+are queued, and a watcher error, a `Rescan`-flagged event or an event that could not be queued
+forces a local rescan (#51, #423) for that reason.
 
 ## Prototype evidence (this spike, no code shipped)
 

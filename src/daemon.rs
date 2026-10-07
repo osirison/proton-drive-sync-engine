@@ -384,13 +384,14 @@ struct PairRuntime {
     /// still queues it in `pending_changes`); it is cleared at the top of every pass, so the
     /// suppression lasts exactly one echo window and a later genuine user edit is never affected.
     authored_writes: HashSet<PathBuf>,
-    /// Set when the filesystem watcher reported an error (typically an inotify queue overflow =
-    /// events were dropped), so `pending_changes` under-reports and the events-mode idle
+    /// Set when filesystem events may have been lost or left unqueued: a watcher `Err`, an `Ok`
+    /// event flagged `Rescan` (notify's inotify-overflow shape, #423), or an event the handler
+    /// failed to queue. `pending_changes` then under-reports and the events-mode idle
     /// fast-path must not skip the local stat-walk — the lost events would otherwise never be
     /// re-derived (#51). Forces `force_local_scan` on the next incremental pass; cleared only when
     /// a pass succeeds, so a failed pass keeps the rescan pending.
     ///
-    /// Per-pair, but a watcher **error** carries no path: an inotify overflow means events were lost
+    /// Per-pair, but a watcher error or `Rescan` notice carries no path: events were lost
     /// *somewhere*, so once there are N pairs it must be set on every one of them (ADR 0005 §5).
     force_local_rescan: bool,
     last_sync: Option<SystemTime>,
@@ -2129,21 +2130,28 @@ impl<C: ProtonClient> Daemon<C> {
             .store(true, Ordering::SeqCst);
     }
 
-    /// The filesystem watcher failed. On Linux that is usually an inotify queue overflow, which
-    /// means events were **dropped**: the files they described are absent from `pending_changes`
-    /// and, in events mode, produce no remote event either — so the idle fast-path would skip the
-    /// local stat-walk and strand them (#51). Force the next pass to scan the local tree.
-    /// The whole run-loop arm is this call, so the loop cannot drift from what the tests drive.
+    /// The filesystem watcher failed (`Err`). Events may have been **dropped**: the files they
+    /// described are absent from `pending_changes` and, in events mode, produce no remote event
+    /// either — so the idle fast-path would skip the local stat-walk and strand them (#51).
+    /// Force the next pass to scan the local tree. NOT the Linux inotify-overflow shape: notify
+    /// reports that as an `Ok` event flagged `Rescan`, which `handle_fs_event` routes to the same
+    /// [`Self::latch_local_rescan`] (#423). The run-loop arms are these calls, so the loop cannot
+    /// drift from what the tests drive.
     fn note_watch_error(&mut self, error: &notify::Error) {
+        self.latch_local_rescan(&format!("filesystem watcher reported an error: {error}"));
+    }
+
+    /// The one definition of "events may have been lost": force a local scan on the next pass.
+    /// The notice carries no path, so with N pairs this sets the flag on *every* one of them —
+    /// loss happened somewhere, and that is the only fail-safe reading available (ADR 0005 §5).
+    fn latch_local_rescan(&mut self, cause: &str) {
         warn!(
-            %error,
-            "filesystem watcher reported an error; forcing a local rescan on the next pass \
-             because events may have been dropped"
+            cause,
+            "forcing a local rescan on the next pass because filesystem events may have been dropped"
         );
-        // The error carries no path, so with N pairs this must set the flag on *every* one of them:
-        // an inotify overflow means events were lost somewhere, and that is the only fail-safe
-        // reading available (ADR 0005 §5).
-        self.pair_mut().force_local_rescan = true;
+        for pair in &mut self.pairs {
+            pair.force_local_rescan = true;
+        }
     }
 
     /// Test-only convenience wrapper over the free [`apply_approval_command`], which production
@@ -2219,6 +2227,7 @@ impl<C: ProtonClient> Daemon<C> {
         &self.pairs[0]
     }
 
+    #[cfg(test)]
     fn pair_mut(&mut self) -> &mut PairRuntime {
         &mut self.pairs[0]
     }
@@ -2235,7 +2244,19 @@ impl<C: ProtonClient> Daemon<C> {
     /// nesting. Routing must happen *before* the pair's filters run, or an event under pair A's root
     /// would be tested against pair B's globs.
     fn handle_fs_event(&mut self, event: Event) -> AppResult<()> {
-        self.pass().handle_fs_event(event)
+        // #423: notify's inotify overflow is `Ok(Other + Flag::Rescan)` with no paths. Latched
+        // before the per-path handler, which returns early on error and would skip a later latch.
+        // A notice that also carries paths still has them processed below.
+        if event.need_rescan() {
+            self.latch_local_rescan("filesystem watcher flagged the event stream for rescan");
+        }
+        let result = self.pass().handle_fs_event(event);
+        if let Err(error) = &result {
+            // The per-path handler returns at its first failure, so that path and every later one
+            // in the event were never queued: a change the watcher saw and we could not record.
+            self.latch_local_rescan(&format!("filesystem event could not be queued: {error}"));
+        }
+        result
     }
 
     fn publish_status(&mut self) {
@@ -2747,7 +2768,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
             if matches!(result, Ok(PassOutcome::Clean)) {
                 self.pair.is_first_reconcile = false;
                 // Both first-pass branches full-scan the local tree, so any pending
-                // watcher-error rescan is satisfied here.
+                // rescan is satisfied here.
                 self.pair.force_local_rescan = false;
             }
             return result;
@@ -2759,7 +2780,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
         // today's behavior. When `events_driven` is off this predicate is always false.
         if !resync_requested && self.should_try_incremental(&base_records) {
             self.set_pass_kind(PassKind::Incremental);
-            // A watcher error dropped events (#51): this pass must stat-walk the local tree
+            // Events may have been lost (#51): this pass must stat-walk the local tree
             // instead of taking the idle fast-path, which only knows about `pending_changes`.
             //
             // An **apply** forces it for a different reason (#100): the idle fast-path returns
@@ -3108,7 +3129,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
     /// `force_local_scan` skips the idle fast-path so the local stat-walk always runs. Two callers
     /// set it: the warm start (first pass after boot — `pending_changes` is empty on a fresh
     /// process, so the fast-path would strand a file edited while the daemon was down), and a
-    /// steady-state pass after a watcher error dropped events (#51, `force_local_rescan`).
+    /// steady-state pass after lost or unqueued watcher events (#51, `force_local_rescan`).
     /// Otherwise steady-state passes leave it `false` to keep the O(1) idle poll cheap.
     fn try_incremental_reconcile(
         &mut self,
@@ -18125,9 +18146,11 @@ mod tests {
 
     #[test]
     fn a_watcher_error_forces_the_next_event_driven_pass_to_scan_locally() {
-        // #51: an inotify queue overflow drops events, so `pending_changes` under-reports. A local
-        // edit produces no remote event either, so an idle-skipping pass strands it — and with the
-        // periodic resync off by default there is no later full walk to re-derive it from.
+        // #51: a watcher `Err` is a real input but NOT the overflow shape — notify 8.2 reports an
+        // inotify overflow as an `Ok` event flagged `Rescan` (see the guard below, #423). Either
+        // way events may be lost: `pending_changes` under-reports. A local edit produces no remote
+        // event either, so an idle-skipping pass strands it — and with the periodic resync off by
+        // default there is no later full walk to re-derive it from.
         let directory = tempdir().expect("tempdir");
         let (mut daemon, full_walks) = steady_state_event_daemon(&directory);
         let edited = daemon.pair().config.local_root.join("a.txt");
@@ -18136,7 +18159,7 @@ mod tests {
         // Deliberately no `handle_fs_event`: this is the event the overflow dropped.
         assert!(daemon.pair().pending_changes.is_empty());
 
-        daemon.note_watch_error(&notify::Error::generic("inotify queue overflow"));
+        daemon.note_watch_error(&notify::Error::generic("watch descriptor limit reached"));
         daemon
             .reconcile_blocking()
             .expect_clean("incremental reconcile after the watcher error");
@@ -18159,6 +18182,142 @@ mod tests {
             .expect("index lookup")
             .expect("index record");
         assert_eq!(record.sha1_hash, Some(sha1_bytes(contents)));
+        assert!(
+            !daemon.pair().force_local_rescan,
+            "a successful pass clears the pending rescan"
+        );
+    }
+
+    #[test]
+    fn an_inotify_overflow_event_forces_the_next_event_driven_pass_to_scan_locally() {
+        // #423: notify 8.2 delivers an inotify queue overflow as `Ok(Event::new(Other).set_flag(
+        // Rescan))` with NO paths (inotify.rs:212-214), not as `Err`. It enters through the run
+        // loop's `Ok` arm -> `handle_fs_event`, whose per-path loop saw nothing, so the #51 rescan
+        // never fired. Drive that exact shape through that exact entry point.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, full_walks) = steady_state_event_daemon(&directory);
+        let edited = daemon.pair().config.local_root.join("a.txt");
+        let contents = b"edited while the queue overflowed";
+        fs::write(&edited, contents).expect("local edit");
+        assert!(daemon.pair().pending_changes.is_empty());
+
+        daemon
+            .handle_fs_event(Event::new(EventKind::Other).set_flag(notify::event::Flag::Rescan))
+            .expect("handle overflow event");
+        assert!(
+            daemon.pair().force_local_rescan,
+            "a Rescan-flagged event must latch the local rescan"
+        );
+        daemon
+            .reconcile_blocking()
+            .expect_clean("incremental reconcile after the overflow event");
+
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            1,
+            "the forced rescan is local-only; the remote stays on the event stream"
+        );
+        let summary = daemon
+            .pair()
+            .last_successful_sync_summary
+            .as_ref()
+            .expect("successful pass summary");
+        assert_eq!(
+            summary.uploads, 1,
+            "the edit whose watcher event was lost must still upload"
+        );
+        let record = get_record(&daemon.pair().connection, Path::new("a.txt"))
+            .expect("index lookup")
+            .expect("index record");
+        assert_eq!(record.sha1_hash, Some(sha1_bytes(contents)));
+        assert!(
+            !daemon.pair().force_local_rescan,
+            "a successful pass clears the pending rescan"
+        );
+    }
+
+    #[test]
+    fn a_rescan_event_that_also_carries_paths_still_queues_them() {
+        // #423: the rescan check sits BEFORE the per-path loop and must not replace it.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, _full_walks) = steady_state_event_daemon(&directory);
+        let created = daemon.pair().config.local_root.join("photos");
+        fs::create_dir(&created).expect("empty local directory");
+
+        daemon
+            .handle_fs_event(
+                Event::new(EventKind::Create(CreateKind::Folder))
+                    .add_path(created)
+                    .set_flag(notify::event::Flag::Rescan),
+            )
+            .expect("handle flagged directory create");
+
+        assert!(daemon.pair().force_local_rescan);
+        assert!(
+            daemon.pair().pending_changes.contains(Path::new("photos")),
+            "a rescan notice that carries paths must still process them"
+        );
+    }
+
+    #[test]
+    fn an_event_the_handler_could_not_queue_still_forces_a_local_scan() {
+        // The invariant's own sentence: a local change the watcher cannot queue must still force a
+        // scan. `mark_modified` failing (here: a trigger that aborts every UPDATE of `file_index`)
+        // returns early from the per-path loop, so this path and every later one in the event is
+        // never queued. Only the latch makes the next pass stat-walk and find the edit.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, full_walks) = steady_state_event_daemon(&directory);
+        let edited = daemon.pair().config.local_root.join("a.txt");
+        let contents = b"edited while the index refused writes";
+        fs::write(&edited, contents).expect("local edit");
+        daemon
+            .pair()
+            .connection
+            .execute_batch(
+                "CREATE TRIGGER refuse_update BEFORE UPDATE ON file_index \
+                 BEGIN SELECT RAISE(ABORT, 'boom'); END;",
+            )
+            .expect("install failing trigger");
+
+        let result = daemon.handle_fs_event(
+            Event::new(EventKind::Modify(notify::event::ModifyKind::Any)).add_path(edited),
+        );
+        assert!(
+            result.is_err(),
+            "the handler's error still reaches the loop"
+        );
+        assert!(
+            daemon.pair().pending_changes.is_empty(),
+            "the failure is exactly the case where nothing was queued"
+        );
+        assert!(
+            daemon.pair().force_local_rescan,
+            "an event that could not be queued must latch the local rescan"
+        );
+
+        daemon
+            .pair()
+            .connection
+            .execute_batch("DROP TRIGGER refuse_update;")
+            .expect("remove failing trigger");
+        daemon
+            .reconcile_blocking()
+            .expect_clean("incremental reconcile after the failed event");
+
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            1,
+            "the forced rescan is local-only; the remote stays on the event stream"
+        );
+        let summary = daemon
+            .pair()
+            .last_successful_sync_summary
+            .as_ref()
+            .expect("successful pass summary");
+        assert_eq!(
+            summary.uploads, 1,
+            "the edit whose event could not be queued must still upload"
+        );
         assert!(
             !daemon.pair().force_local_rescan,
             "a successful pass clears the pending rescan"
