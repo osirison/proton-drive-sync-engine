@@ -555,7 +555,7 @@ interrupts the sequence at a pair boundary. `is_first_reconcile` clears per-pair
 success, unchanged.
 
 **Watcher.** One `notify` watcher with N watched roots (`watcher.watch` is called per root), and
-`handle_fs_event` routes an absolute path to the owning pair by longest-prefix match — unambiguous,
+the router (`Daemon::route_event`) hands an absolute path to the owning pair by longest-prefix match — unambiguous,
 because rule 4 of §2 forbids nesting. A watcher **error** carries no path, and an `Ok` event flagged
 `Rescan` (how notify reports an inotify overflow, #423) carries none on Linux (the macOS FSEvents
 backend may attach one). Either means events were lost *somewhere*, so it sets
@@ -839,7 +839,7 @@ than in phase 4. Closes: the wire. Leaves broken: nothing — `--all` over one p
 > `PairShared.syncing` is true," with no new state.** Passes are serialized (§5), so at most one
 > pair is ever syncing; `ControlShared::active_pair` finds it, and `SharedProgressSink` drops a
 > callback when none is active rather than guessing. The "browse must not pollute another pair's
-> activity" risk named in the brief turned out to be **structurally absent today**, not merely
+> activity" risk turned out to be **structurally absent today**, not merely
 > guarded against: `list_one_directory` (what `list`'s `browse_directory` calls) reports through
 > neither `ProgressSink` method — verified by reading `proton.rs`, not assumed — so a browse cannot
 > reach `active_pair` at all. The routing is index-based anyway, on the day either changes.
@@ -923,8 +923,8 @@ Expect this phase to be as large as phase 2 and riskier. Closes: the feature, he
 > (5) **An unavailable pair's `status_history` is never empty**: one in-memory entry when the slot
 > is built, and one per `Sync` attempt (bounded like a ready pair's). M1b's "one entry" was read as
 > "never empty", which is what keeps gui-core's `FirstRun` rule off for a reply served before the
-> pair's first job pops. A paused unavailable pair seals a queued apply too: the implementation
-> brief's table said "re-arm only" and "same as a paused ready pair" in one row, and a ready pair
+> pair's first job pops. A paused unavailable pair seals a queued apply too: the plan for the
+> unavailable arms said "re-arm only" and "same as a paused ready pair" in one row, and a ready pair
 > seals it.
 >
 > (6) **A session that comes back mid-life now reseeds every events-driven pair**, not only the one
@@ -937,6 +937,38 @@ Expect this phase to be as large as phase 2 and riskier. Closes: the feature, he
 > the end of the previous pass; under live events the poll and the `scan_interval` tick are one
 > cadence, so there is no second pass at each `scan_interval`; and a signal wakes an idle loop at
 > once. Every per-pair log line also gains a `pair{name=default}:` prefix.
+>
+> (8) **A step drains the backlog present when it starts, on both channels, and the run loop's idle
+> wait routes nothing.** The first version drained each channel until it was empty before it looked
+> at the cancel flag or popped a job, so a tree producing events faster than they were routed held
+> off every pass and every shutdown (4.2 s with the flag already set, at 50k events/s, as measured in review).
+> Now only the entry backlog is taken, the flag is read between events, and what arrives meanwhile
+> belongs to the next step. The idle wait hands the event it received to the next step
+> (`LoopInputs::carried`) instead of calling the router itself, so the router has one call site.
+> Lost-event handling is per drain, not per notice: a rescan notice or watcher error is noted
+> while events are routed and settled after the drain — one latch, one re-registration per
+> affected root — where an overflow's thousands of notices each used to latch, warn and walk every
+> root again.
+>
+> (9) **A due sweep and an explicit `Sync` for the same pair are one pass** (#193). `resync` popped
+> beside an overdue scheduled sweep returns as the sweep (`Cause::Sweep`), because the daemon
+> re-arms a sweep only for that cause. A `Plan` never absorbs it: a plan-only pass observes and
+> consumes nothing, so the sweep stays pending for its own pop.
+>
+> (10) **The `pair` span is an `error_span!`** (`pair_span`, one constructor). A span below the
+> subscriber's level is never created, so an info-level one removed the pair from every WARN and
+> ERROR line under `RUST_LOG=warn`, which is where attribution matters most.
+>
+> (11) **The N-pair constructor compares pair names with the config reader's own fold**
+> (`config::pair_name_key`): `Photos` and `photos` are one name in both places.
+>
+> **Left for 4b**, found in review and deliberately not fixed here: a notify `Err(MaxFilesWatch)`
+> latches a rescan but never registers the directory it could not watch, so nothing watches it
+> afterwards; a `Ready` pair demoted to `Unavailable` would publish `last_sync: None`, which the GUI
+> reads as never synced; an unavailable pair's 20-entry history fills with `unavailable` entries in
+> about ten minutes and needs the real history carried over; and IPC `pause`/`resume` still writes
+> the metrics sidecar for an unavailable pair. A relative `local_root` is a separate, older
+> problem (#431).
 
 **Phase 5 — GUI (large, and larger than the issue assumes).** Splits into three, and they are worth
 tracking separately because only the first is mechanical: (5a) pair-index `RuntimePaths` and the
