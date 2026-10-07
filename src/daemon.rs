@@ -23532,6 +23532,19 @@ mod tests {
         then: Box<dyn Fn() + Send + Sync>,
     }
 
+    /// Decrements `budget` if it is above zero; true when it did. A compare-exchange loop rather
+    /// than `fetch_update`, which newer toolchains deprecate in favour of a name older ones lack.
+    fn take_one(budget: &AtomicUsize) -> bool {
+        let mut left = budget.load(Ordering::SeqCst);
+        while left > 0 {
+            match budget.compare_exchange(left, left - 1, Ordering::SeqCst, Ordering::SeqCst) {
+                Ok(_) => return true,
+                Err(actual) => left = actual,
+            }
+        }
+        false
+    }
+
     impl OnWarn {
         fn new(
             needle: &'static str,
@@ -23569,14 +23582,7 @@ mod tests {
             }
             let mut message = Message(String::new());
             event.record(&mut message);
-            if message.0.contains(self.needle)
-                && self
-                    .budget
-                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
-                        left.checked_sub(1)
-                    })
-                    .is_ok()
-            {
+            if message.0.contains(self.needle) && take_one(&self.budget) {
                 (self.then)();
             }
         }
