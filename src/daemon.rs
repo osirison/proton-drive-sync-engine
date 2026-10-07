@@ -427,6 +427,16 @@ struct PairRuntime {
     /// snapshots never advanced: its next steady-state pass full-walks once
     /// (`PairPass::catch_up_with_event_source_generation`; ADR 0005, phase 4a departure 6).
     seen_event_source_generation: u64,
+    /// Where this pair's recursive watch stands ([`RootWatch`]). Read and moved by
+    /// `Daemon::maintain_root_watch` before each pass and by the lost-event settle, nowhere else.
+    root_watch: RootWatch,
+    /// The last reason the watch could not be registered, so a standing failure is logged once per
+    /// cause instead of at every pass's retry. `None` while it is registered.
+    watch_declined: Option<String>,
+    /// The last reported reason this pair's folder was missing, so a folder that stays gone is
+    /// logged once per cause instead of at every attempt (and again if the cause changes). `None`
+    /// while the folder is there. Diagnostic only — see `PairPass::ensure_root_available`.
+    root_unavailable: Option<String>,
     /// Deletions withheld by the delete-approval guard on the most recent reconcile, awaiting the
     /// user's approval. Recomputed from ground truth every pass, so it always reflects the current
     /// plan; surfaced over IPC (`proton-sync pending`) and in the metrics sidecar.
@@ -523,71 +533,237 @@ struct PairPass<'a, C: ProtonClient> {
 /// Rebuilds the event session on demand (see [`Daemon::event_source_factory`]).
 type EventSourceFactory = Box<dyn FnMut() -> Option<Box<dyn EventSource>> + Send>;
 
-/// One configured folder pair, as the daemon holds it (#102 phase 4a, maintainer decision M1).
+/// One configured folder pair, as the daemon holds it (#102 phase 4, maintainer decision M1).
 ///
 /// `Ready` is a pair with a runtime: prepared root, locks, an open index. `Unavailable` is a pair the
-/// daemon keeps running *without*: its root could not be prepared or watched, so it publishes its
-/// reason and answers every request for it rather than stopping the process — N = 1 included.
-/// **Phase 4a constructs only `Ready`**; the producers (boot preparation, retry, missing root,
-/// watch failure, a held lock) are phase 4b. Every arm that consumes a request on an unavailable
-/// slot already seals it here (`Daemon::run_job`), so 4b adds producers and no new arm.
+/// daemon keeps running *without*: its root could not be prepared, so it publishes its reason and
+/// answers every request for it rather than stopping the process — N = 1 included. Boot builds
+/// whichever each pair's preparation allows (`Daemon::from_pairs_with_opener`); a `Sync` job on an
+/// unavailable slot retries the preparation (`Daemon::retry_unavailable`) and a ready one is demoted
+/// by `Daemon::demote_pair`. Every arm that consumes a request on an unavailable slot seals it
+/// (`Daemon::run_job`).
+///
+/// A per-root lock held by **another process** is not an unavailable pair at boot but a refused
+/// startup (that is what the lock exists to stop), and it keeps a pair unavailable on a retry.
 enum PairSlot {
     Ready(Box<PairRuntime>),
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "constructed by phase 4b's producers; 4a only seals its arms"
-        )
-    )]
     Unavailable(Box<UnavailablePair>),
 }
 
-/// A configured pair the daemon could not prepare (see [`PairSlot`]).
+/// A configured pair the daemon holds no runtime for (see [`PairSlot`]).
 struct UnavailablePair {
     config: PairConfig,
     /// What a status reply carries as `last_error`.
     reason: String,
-    /// In memory only — its `.sync` directory may be exactly what is missing. Never empty: gui-core
-    /// reads "never synced and no history" as `FirstRun` *before* it reads `last_error`
+    /// What the pair last published while it was ready, kept so a pair that *was* syncing does not
+    /// start publishing "never synced" the moment it is demoted: the GUI reads that as a machine
+    /// that never synced. `None`/empty for a pair that was never ready in this process.
+    last_sync: Option<SystemTime>,
+    last_plan_summary: Option<PlanSummary>,
+    last_successful_sync_summary: Option<PlanSummary>,
+    /// In memory only — its `.sync` directory may be exactly what is missing. **Never empty**:
+    /// gui-core reads "never synced and no history" as `FirstRun` *before* it reads `last_error`
     /// (`gui-core/src/state.rs`), so an established user with an unplugged drive would otherwise be
-    /// shown the onboarding wizard instead of the error (maintainer decision M1b).
+    /// shown the onboarding wizard instead of the error (maintainer decision M1b). It is the pair's
+    /// real history (the sidecar at boot, the ready runtime's on a demotion) with at most one
+    /// `unavailable` entry on the end, because a cause that stands refreshes that entry's time
+    /// instead of adding one per attempt (see [`record_repeatable_status_entry`]).
     status_history: Vec<StatusHistoryEntry>,
+    pass_history: Option<PassHistory>,
+    index_totals: Option<IndexTotals>,
 }
 
+/// The `message` of the status-history entry an unavailable pair's attempts write.
+const UNAVAILABLE_ENTRY_MESSAGE: &str = "folder pair unavailable";
+
 impl UnavailablePair {
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "phase 4b's producers call it; 4a builds slots only in tests"
-        )
-    )]
+    /// A pair that was never ready in this process, with no history of its own.
+    #[cfg(test)]
     fn new(config: PairConfig, reason: String) -> Self {
+        Self::with_history(config, reason, Vec::new())
+    }
+
+    /// A pair that could not be prepared, carrying whatever real history the caller could read.
+    fn with_history(
+        config: PairConfig,
+        reason: String,
+        status_history: Vec<StatusHistoryEntry>,
+    ) -> Self {
         let mut pair = Self {
             config,
             reason,
-            status_history: Vec::new(),
+            last_sync: None,
+            last_plan_summary: None,
+            last_successful_sync_summary: None,
+            status_history,
+            pass_history: None,
+            index_totals: None,
         };
         pair.record_attempt();
         pair
     }
 
-    /// One in-memory history entry per attempt, bounded like a ready pair's.
-    fn record_attempt(&mut self) {
-        self.status_history.push(StatusHistoryEntry {
-            epoch_secs: current_epoch_secs(),
-            message: "folder pair unavailable".to_owned(),
-            last_error: Some(self.reason.clone()),
-            plan_summary: None,
-            successful_sync_summary: None,
-            failed_item_count: 0,
-        });
-        if self.status_history.len() > STATUS_HISTORY_LIMIT {
-            let excess = self.status_history.len() - STATUS_HISTORY_LIMIT;
-            self.status_history.drain(0..excess);
-        }
+    /// A ready pair that cannot stay one. Copies — it does not take — so the caller decides when
+    /// the runtime (its index connection, its per-root lock) is dropped.
+    fn demoted(runtime: &PairRuntime, reason: String) -> Self {
+        let mut pair = Self {
+            config: runtime.config.clone(),
+            reason,
+            last_sync: runtime.last_sync,
+            last_plan_summary: runtime.last_plan_summary.clone(),
+            last_successful_sync_summary: runtime.last_successful_sync_summary.clone(),
+            status_history: runtime.status_history.clone(),
+            pass_history: runtime.pass_history.clone(),
+            index_totals: runtime.index_totals,
+        };
+        pair.record_attempt();
+        pair
     }
+
+    /// One in-memory history entry for the current cause: a repeat of it moves the newest entry's
+    /// time, so a pair that stays unavailable never pushes the real history out of the 20-entry
+    /// window (at a 30 s cadence it would in about ten minutes).
+    fn record_attempt(&mut self) {
+        record_repeatable_status_entry(
+            &mut self.status_history,
+            StatusHistoryEntry {
+                epoch_secs: current_epoch_secs(),
+                message: UNAVAILABLE_ENTRY_MESSAGE.to_owned(),
+                last_error: Some(self.reason.clone()),
+                plan_summary: None,
+                successful_sync_summary: None,
+                failed_item_count: 0,
+            },
+        );
+    }
+}
+
+/// Appends `entry` to an in-memory status history **unless it repeats the newest one**, in which
+/// case the newest entry's time moves instead. A cause that stands (a folder that stays missing, a
+/// pair that stays unavailable) is one entry whose time is "last seen", not one entry per attempt:
+/// the history holds [`STATUS_HISTORY_LIMIT`] entries, so an entry per 30 s attempt would evict
+/// everything real within ten minutes. Same-cause means the same `message` and `last_error`; a
+/// changed cause is a new entry.
+fn record_repeatable_status_entry(
+    history: &mut Vec<StatusHistoryEntry>,
+    entry: StatusHistoryEntry,
+) {
+    if let Some(newest) = history.last_mut()
+        && newest.message == entry.message
+        && newest.last_error == entry.last_error
+    {
+        newest.epoch_secs = entry.epoch_secs;
+        return;
+    }
+    history.push(entry);
+    if history.len() > STATUS_HISTORY_LIMIT {
+        let excess = history.len() - STATUS_HISTORY_LIMIT;
+        history.drain(0..excess);
+    }
+}
+
+/// This pair's folder is gone (or is not a directory) — the typed reason a pass did not start
+/// (#102 phase 4b, ADR 0005 §6). A pass that fails with it is **not a failed pass**: nothing was
+/// scanned, listed or written, no `sync_passes` row exists to describe, and no `proton-drive` child
+/// was spawned. Downcast with [`is_root_unavailable_error`], the way `AuthFailure` is.
+#[derive(Debug)]
+struct RootUnavailable {
+    root: PathBuf,
+    detail: String,
+}
+
+impl std::fmt::Display for RootUnavailable {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "the folder {} is not available: {}",
+            self.root.display(),
+            self.detail
+        )
+    }
+}
+
+impl std::error::Error for RootUnavailable {}
+
+fn is_root_unavailable_error(error: &(dyn std::error::Error + 'static)) -> bool {
+    error.downcast_ref::<RootUnavailable>().is_some()
+}
+
+/// A per-root (or user-global) instance lock is held by another process — typed so that **boot**
+/// can refuse to start on it while a **retry** keeps its pair unavailable instead; both used to be
+/// the same untyped string. The message is the one `LockGuard::acquire` always had.
+#[derive(Debug)]
+struct LockHeld {
+    path: PathBuf,
+}
+
+impl std::fmt::Display for LockHeld {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "daemon already running; lockfile is locked at {}",
+            self.path.display()
+        )
+    }
+}
+
+impl std::error::Error for LockHeld {}
+
+fn is_lock_held_error(error: &(dyn std::error::Error + 'static)) -> bool {
+    error.downcast_ref::<LockHeld>().is_some()
+}
+
+/// What identifies the directory a recursive watch was registered on: the device and inode, plus
+/// the directory's birth time where the filesystem has one. A root deleted and created again
+/// between two passes is a *different directory* whose watch the kernel dropped with the old one
+/// (inotify removes a watch on `DELETE_SELF`), yet it passes an `is_dir()` check; the inode alone
+/// would not tell them apart when the filesystem hands the freed number straight back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RootIdentity {
+    device: u64,
+    inode: u64,
+    born: Option<SystemTime>,
+}
+
+impl RootIdentity {
+    /// Whether `other` is the same directory. The birth time counts only when **both** sides have
+    /// one: a filesystem that reports it on one `stat` and not the next would otherwise read as a
+    /// replaced folder every time, and cost a re-registration and a full local scan per pass.
+    fn is_same_directory(&self, other: &Self) -> bool {
+        self.device == other.device
+            && self.inode == other.inode
+            && match (self.born, other.born) {
+                (Some(ours), Some(theirs)) => ours == theirs,
+                _ => true,
+            }
+    }
+}
+
+/// The identity of the directory at `root` — `None` when there is no directory there to watch
+/// (missing, not a directory, unreadable). Follows symlinks, like the scan's `read_dir`.
+fn root_identity(root: &Path) -> Option<RootIdentity> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = fs::metadata(root).ok().filter(fs::Metadata::is_dir)?;
+    Some(RootIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        born: metadata.created().ok(),
+    })
+}
+
+/// Where one pair's recursive watch stands (#102 phase 4b, ADR 0005 §6.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RootWatch {
+    /// Not registered yet: boot registers every ready root before the loop, and a pair that came
+    /// back from unavailable is registered before its first pass.
+    Unregistered,
+    /// Registered, completely, on the directory with this identity.
+    Watching(RootIdentity),
+    /// Registration failed — which can leave it partial, as notify adds one watch per directory and
+    /// stops at the first error — or something said a directory may have been missed (a watcher
+    /// error, a root that went away). Retried before every pass, and every pass scans locally until
+    /// it takes: an unwatched change is invisible to the events-mode idle fast-path.
+    Incomplete,
 }
 
 pub struct Daemon<C: ProtonClient = ProtonDriveClient> {
@@ -757,6 +933,13 @@ struct PairShared {
     /// for `reconcile_seq + 2`, when the pass it is queued behind contributes 0 — so it would sit
     /// until some later unrelated pass reached that number and then report *that* pass's outcome.
     plan_pass: AtomicBool,
+    /// `true` while the pair's slot is [`PairSlot::Ready`]: the daemon holds its index and its
+    /// per-root lock. Written by the daemon core on every transition, read by the IPC task — which
+    /// has no other way to tell a ready pair from one it must not touch: it opens its approvals
+    /// connection on first use once this is `true`, drops it when it is `false`, and never writes
+    /// the metrics sidecar of a pair that is not (that file belongs to the process that holds the
+    /// pair's lock, and its directory may be exactly what is missing).
+    has_runtime: AtomicBool,
     /// Count of completed reconcile attempts since startup (see `ControlResponse::reconcile_seq`).
     reconcile_seq: AtomicU64,
     /// Set by the IPC `resync` command to force the daemon's next reconcile to a full-tree walk
@@ -996,6 +1179,7 @@ impl PairShared {
             paused: AtomicBool::new(false),
             syncing: AtomicBool::new(false),
             plan_pass: AtomicBool::new(false),
+            has_runtime: AtomicBool::new(true),
             reconcile_seq: AtomicU64::new(0),
             force_full_walk: AtomicBool::new(false),
             reset_index: AtomicBool::new(false),
@@ -1028,6 +1212,14 @@ impl PairShared {
 impl PairShared {
     fn is_paused(&self) -> bool {
         self.paused.load(Ordering::SeqCst)
+    }
+
+    fn has_runtime(&self) -> bool {
+        self.has_runtime.load(Ordering::SeqCst)
+    }
+
+    fn set_has_runtime(&self, ready: bool) {
+        self.has_runtime.store(ready, Ordering::SeqCst);
     }
 
     fn plan_slot(&self) -> std::sync::MutexGuard<'_, PlanSlot> {
@@ -1744,6 +1936,11 @@ struct LostEvents {
     rewatch_roots: BTreeSet<usize>,
     /// ...or every root, when a notice named none.
     rewatch_every_root: bool,
+    /// Roots a watcher `Err` may have left unwatched (#102 phase 4b): the owners of the paths the
+    /// error carried — `MaxFilesWatch` carries the directory it could not add — ...
+    unwatched_roots: BTreeSet<usize>,
+    /// ...or every root, when the error carried no path.
+    unwatched_every_root: bool,
 }
 
 impl LostEvents {
@@ -1751,9 +1948,17 @@ impl LostEvents {
         self.cause.get_or_insert(cause);
     }
 
-    /// A watcher `Err`: events may be gone, but nothing says the watch itself is, so no re-walk.
-    fn note_error(&mut self, error: &notify::Error) {
+    /// A watcher `Err`: events may be gone, and so may a watch — notify reports a directory it
+    /// could not add (`MaxFilesWatch`) through the same channel. The owners of the paths it carries
+    /// are marked [`RootWatch::Incomplete`] (every root when it carries none), which makes the next
+    /// pass register them again; nothing is re-walked here.
+    fn note_error(&mut self, error: &notify::Error, owners: BTreeSet<usize>) {
         self.note(format!("filesystem watcher reported an error: {error}"));
+        if owners.is_empty() {
+            self.unwatched_every_root = true;
+        } else {
+            self.unwatched_roots.extend(owners);
+        }
     }
 
     /// A `Rescan`-flagged notice (#423): the owning roots when it carries paths some pair owns
@@ -1963,16 +2168,24 @@ impl<C: ProtonClient> Daemon<C> {
         create_parent_directory(&process.socket_path)?;
         // Every pair's directories and per-root lock BEFORE the user-global lock, in today's order,
         // so a second daemon on the same root is refused by the per-root lock exactly as before.
-        let mut locked = Vec::with_capacity(pair_configs.len());
+        //
+        // **A pair that cannot be prepared does not stop the daemon** (maintainer decision M1,
+        // N = 1 included): it becomes an unavailable slot that shows why, and is retried on its
+        // cadence. The one refusal is a per-root lock held by another process — that is what the
+        // lock exists to stop, and it names the pair.
+        let mut prepared = Vec::with_capacity(pair_configs.len());
         for config in pair_configs {
             let _span = pair_span(&config.name).entered();
-            fs::create_dir_all(&config.local_root)?;
-            create_parent_directory(&config.db_path)?;
-            // Ensure the lockfile's directory (the `.sync` state dir by default) exists before
-            // acquiring the lock, so a first-ever run on a fresh root does not fail here.
-            create_parent_directory(&config.lockfile_path)?;
-            let lock_guard = LockGuard::acquire(&config.lockfile_path)?;
-            locked.push((config, lock_guard));
+            match prepare_pair_state(&config, RootMode::Create) {
+                Ok(lock_guard) => prepared.push((config, Ok(lock_guard))),
+                Err(PrepareFailure::LockHeld(message)) => {
+                    return Err(boxed_error(format!(
+                        "folder pair '{}': {message}",
+                        config.name
+                    )));
+                }
+                Err(PrepareFailure::Unavailable(reason)) => prepared.push((config, Err(reason))),
+            }
         }
         // Then the user-global lock, so a second daemon started for a *different* root (its per-root
         // lock above would succeed) still cannot run: every daemon shells the same `proton-drive`
@@ -1985,9 +2198,9 @@ impl<C: ProtonClient> Daemon<C> {
                  not safe for concurrent use (#23). Stop the other daemon first."
             ))
         })?;
-        let mut slots = Vec::with_capacity(locked.len());
-        let mut published = Vec::with_capacity(locked.len());
-        for (config, lock_guard) in locked {
+        let mut slots = Vec::with_capacity(prepared.len());
+        let mut published = Vec::with_capacity(prepared.len());
+        for (config, lock_guard) in prepared {
             let _span = pair_span(&config.name).entered();
             published.push((
                 config.name.clone(),
@@ -1997,9 +2210,28 @@ impl<C: ProtonClient> Daemon<C> {
                     db_path: config.db_path.clone(),
                 },
             ));
-            slots.push(PairSlot::Ready(Box::new(PairRuntime::open(
-                config, lock_guard,
-            )?)));
+            let outcome = match lock_guard {
+                Ok(lock_guard) => PairRuntime::open(config.clone(), lock_guard)
+                    .map_err(|error| format!("its state could not be opened: {error}")),
+                Err(reason) => Err(reason),
+            };
+            slots.push(match outcome {
+                Ok(runtime) => PairSlot::Ready(Box::new(runtime)),
+                Err(reason) => {
+                    warn!(
+                        %reason,
+                        "folder pair unavailable; the daemon keeps running and tries it again"
+                    );
+                    // The real history, when the sidecar can be read (it lives under the root,
+                    // which may be exactly what is missing): an unavailable pair that publishes
+                    // none looks like a machine that never synced.
+                    let history = load_status_history(&status_history_path(&config.db_path))
+                        .unwrap_or_default();
+                    PairSlot::Unavailable(Box::new(UnavailablePair::with_history(
+                        config, reason, history,
+                    )))
+                }
+            });
         }
         let session_live = event_source.is_some();
         let cadences = slots
@@ -2023,12 +2255,20 @@ impl<C: ProtonClient> Daemon<C> {
             shutdown_notify: Arc::new(Notify::new()),
             _global_lock_guard: global_lock_guard,
         };
+        for (pair, slot) in daemon.pairs.iter().enumerate() {
+            daemon.shared.pairs[pair].set_has_runtime(matches!(slot, PairSlot::Ready(_)));
+        }
         // Every pair's published history before the first pass, so a client polling a just-started
         // daemon already sees the last full sweep from a previous run — for every pair, not only the
-        // default one.
+        // default one. A pair whose first metrics write fails is unavailable, not fatal.
         for pair in 0..daemon.pairs.len() {
             let _span = pair_span(&daemon.pair_config(pair).name).entered();
-            daemon.publish_at_startup(pair)?;
+            if let Err(reason) = daemon.publish_at_startup(pair) {
+                warn!(
+                    %reason,
+                    "folder pair unavailable; the daemon keeps running and tries it again"
+                );
+            }
         }
         Ok(daemon)
     }
@@ -2082,7 +2322,7 @@ impl<C: ProtonClient> Daemon<C> {
         // addresses both `shared.pairs[i]` and `plane.pairs[i]` without a second lookup.
         let plane_pairs = (0..self.pairs.len())
             .map(|pair| self.control_plane_pair(pair))
-            .collect::<AppResult<Vec<_>>>()?;
+            .collect::<Vec<_>>();
         let ipc_task = tokio::spawn(serve_control_socket(
             listener,
             Arc::new(ControlPlane {
@@ -2101,15 +2341,12 @@ impl<C: ProtonClient> Daemon<C> {
             }),
         ));
         // One watcher, one recursive watch per ready root; `route` hands each event to the pair
-        // that owns its path. A failed watch is still fatal here, as it was for the one pair; phase
-        // 4b degrades it per pair.
+        // that owns its path. A root that cannot be watched is not fatal (maintainer decision M1):
+        // that pair scans locally on every pass and retries the registration before each one
+        // (`maintain_root_watch`). Only a watcher that cannot be built at all stops the daemon.
         let (watch_tx, watch_rx) = mpsc::unbounded_channel();
         let mut watcher = build_watcher(watch_tx)?;
-        for pair in 0..self.pairs.len() {
-            if let Some(runtime) = self.runtime(pair) {
-                watcher.watch_root(&runtime.config.local_root)?;
-            }
-        }
+        self.register_root_watches(&mut watcher);
         let mut inputs = LoopInputs {
             loop_rx,
             watch_rx,
@@ -2181,7 +2418,7 @@ impl<C: ProtonClient> Daemon<C> {
             };
             // `ControlShared::active_pair` needs passes serialized: only this loop starts one.
             debug_assert!(self.shared.active_pair().is_none());
-            self.run_job(job, clock);
+            self.run_job(job, inputs.watcher.as_mut(), clock);
         }
     }
 
@@ -2270,8 +2507,9 @@ impl<C: ProtonClient> Daemon<C> {
     ///
     /// | job  | slot        | paused | what runs                                                  |
     /// |------|-------------|--------|------------------------------------------------------------|
-    /// | Sync | Ready       | either | `reconcile_if_needed`: a pass, or (paused) seal a queued apply |
-    /// | Sync | Unavailable | no     | `skip_unavailable_pass`: reason + history entry, seal an apply, `reconcile_seq` + 1 |
+    /// | Sync | Ready       | no     | `maintain_root_watch`, then `reconcile_if_needed`: a pass  |
+    /// | Sync | Ready       | yes    | `reconcile_if_needed`: seal a queued apply                 |
+    /// | Sync | Unavailable | no     | `retry_unavailable`; if it took, the Ready row, else `skip_unavailable_pass`: reason + history entry, seal an apply, `reconcile_seq` + 1 |
     /// | Sync | Unavailable | yes    | seal a queued apply, as a paused ready pair does          |
     /// | Plan | Ready       | either | `plan_now`: an inert pass that seals its own request       |
     /// | Plan | Unavailable | either | seal the booked plan `Failed` with the reason              |
@@ -2280,12 +2518,25 @@ impl<C: ProtonClient> Daemon<C> {
     /// and a skipped pair fires no backlog); a `Plan` job never does, because it is inert. A due
     /// sweep latches the pair's full walk before either arm, so a paused pair keeps it, as a
     /// `resync` does.
-    fn run_job(&mut self, job: Job, clock: &dyn Fn() -> Instant) {
+    ///
+    /// **A paused pair does no preparation and no watch upkeep**: a pause means no work, and both
+    /// are done right before a pass that is not going to run.
+    fn run_job(&mut self, job: Job, watcher: &mut dyn RootWatcher, clock: &dyn Fn() -> Instant) {
         // Every line the job logs — the pass family's included — names its pair.
         let _span = pair_span(&self.pair_config(job.pair).name).entered();
         let generation = self.event_source_generation;
         if job.kind == JobKind::Sync && job.cause == Cause::Sweep {
             self.latch_scheduled_full_sweep(job.pair);
+        }
+        if job.kind == JobKind::Sync && !self.is_paused(job.pair) {
+            // The retry comes first, so a pair that just became ready is looked after below like any
+            // other and its first pass runs now, not a cadence later.
+            if self.slot_state(job.pair) == SlotState::Unavailable {
+                self.retry_unavailable(job.pair);
+            }
+            if self.slot_state(job.pair) == SlotState::Ready {
+                self.maintain_root_watch(job.pair, watcher);
+            }
         }
         match (
             job.kind,
@@ -2314,6 +2565,92 @@ impl<C: ProtonClient> Daemon<C> {
         if self.event_source_generation != generation {
             self.retune_after_session_change(clock());
         }
+    }
+
+    /// Tries to make an unavailable pair ready (ADR 0005 §6.3): the same preparation boot does, with
+    /// one difference — **it never creates the folder** ([`RootMode::MustExist`]). On success the
+    /// pair is `Ready` with `is_first_reconcile` set, so the pass that follows in the same job is a
+    /// first pass (a full local scan, warm start or bootstrap); on failure it stays unavailable and
+    /// says why, once per cause. A per-root lock held by another process is such a failure here — at
+    /// boot it refuses the start, but nothing running may be stopped over one pair.
+    fn retry_unavailable(&mut self, pair: usize) {
+        let Some(unavailable) = self.unavailable(pair) else {
+            return;
+        };
+        let config = unavailable.config.clone();
+        let lock_guard = match prepare_pair_state(&config, RootMode::MustExist) {
+            Ok(lock_guard) => lock_guard,
+            Err(failure) => {
+                self.note_unavailable_cause(pair, failure.reason());
+                return;
+            }
+        };
+        let mut runtime = match PairRuntime::open(config, lock_guard) {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                self.note_unavailable_cause(
+                    pair,
+                    format!("its state could not be opened: {error}"),
+                );
+                return;
+            }
+        };
+        // What the pair published while it was unavailable is what a client has been shown: keep
+        // it, so a pair that was syncing is not reborn as one that never did. The sidecar is read
+        // fresh by `open`; the carried history only fills in when that found nothing (a root that
+        // was re-created holds no sidecar).
+        if let Some(unavailable) = self.unavailable(pair) {
+            runtime.last_sync = unavailable.last_sync;
+            runtime.last_plan_summary = unavailable.last_plan_summary.clone();
+            runtime.last_successful_sync_summary = unavailable.last_successful_sync_summary.clone();
+            if runtime.status_history.is_empty() {
+                runtime.status_history = unavailable.status_history.clone();
+            }
+        }
+        let previous_reason = self
+            .unavailable(pair)
+            .map(|unavailable| unavailable.reason.clone());
+        self.pairs[pair] = PairSlot::Ready(Box::new(runtime));
+        self.shared.pairs[pair].set_has_runtime(true);
+        // The first metrics write is part of being prepared. When it fails the pair goes straight
+        // back, and that is the same cause it already stood on unless it changed — so it speaks
+        // only then, not once per attempt for as long as the directory stays unwritable.
+        match self.publish_at_startup(pair) {
+            Ok(()) => info!("folder pair is available again"),
+            Err(reason) if previous_reason.as_deref() != Some(reason.as_str()) => {
+                warn!(%reason, "folder pair still unavailable");
+            }
+            Err(_) => {}
+        }
+    }
+
+    /// Records why an unavailable pair is still unavailable. Logged when the reason **changes** —
+    /// the first time a cause is seen, and again if it becomes another — never once per attempt.
+    fn note_unavailable_cause(&mut self, pair: usize, reason: String) {
+        let Some(unavailable) = self.unavailable_mut(pair) else {
+            return;
+        };
+        if unavailable.reason != reason {
+            warn!(%reason, "folder pair still unavailable");
+            unavailable.reason = reason;
+        }
+    }
+
+    /// Ready → unavailable: the runtime (its index connection, its per-root lock) is dropped and the
+    /// slot publishes `reason`. **What the pair last published stays published** — `last_sync`, the
+    /// summaries, the history — because `last_sync: None` is how the GUI tells a machine that has
+    /// never synced, and an established pair must not start looking like one (maintainer decision
+    /// M1b; the 4a note's first carried item).
+    ///
+    /// Silent: the caller knows whether this cause is news (`publish_at_startup`'s callers do).
+    fn demote_pair(&mut self, pair: usize, reason: String) {
+        let Some(runtime) = self.runtime(pair) else {
+            return;
+        };
+        let unavailable = UnavailablePair::demoted(runtime, reason);
+        self.pairs[pair] = PairSlot::Unavailable(Box::new(unavailable));
+        self.shared.pairs[pair].set_has_runtime(false);
+        self.publish_pair(pair);
     }
 
     /// A `Sync` job on a pair that is not ready. Not a pass — nothing is scanned, listed or written
@@ -2355,6 +2692,82 @@ impl<C: ProtonClient> Daemon<C> {
                 generation,
                 Err(format!("the folder pair is unavailable: {reason}")),
             );
+        }
+    }
+
+    /// Registers every ready pair's root on the watcher, once, before the loop.
+    fn register_root_watches(&mut self, watcher: &mut dyn RootWatcher) {
+        for pair in 0..self.pairs.len() {
+            let _span = pair_span(&self.pair_config(pair).name).entered();
+            self.maintain_root_watch(pair, watcher);
+        }
+    }
+
+    /// Looks after one ready pair's recursive watch right before its pass (ADR 0005 §5.5, §6.5):
+    /// registers it when it is not registered, **registers it again** when what is at the root is
+    /// no longer the directory that was watched, and retries a registration that failed. One
+    /// function, so boot, a promotion and every pass share a single definition of "watched".
+    ///
+    /// - **Replaced.** A root deleted and created again between two passes passes an `is_dir()`
+    ///   check and carries no watch: the kernel dropped it with the old directory. Its identity
+    ///   (device, inode, birth time) says so.
+    /// - **Unwatched.** A failed registration (`ENOSPC` is the realistic one) leaves the root
+    ///   unwatched, or partly: notify watches one directory at a time and stops at the first error.
+    ///   Until it takes, **every pass scans the local tree**, because the events-mode idle
+    ///   fast-path only knows what the watcher queued.
+    /// - **Gone.** No directory at the root: nothing to register, and the watch it had went with it,
+    ///   so it is marked for registration when the folder returns. The pass reports the folder.
+    ///
+    /// Every registration after the first sets `force_local_rescan`: changes made while the root was
+    /// unwatched were queued by nothing. The first one does not — a first pass scans anyway.
+    fn maintain_root_watch(&mut self, pair: usize, watcher: &mut dyn RootWatcher) {
+        let Some(runtime) = self.runtime_mut(pair) else {
+            return;
+        };
+        let root = runtime.config.local_root.clone();
+        let Some(current) = root_identity(&root) else {
+            if matches!(runtime.root_watch, RootWatch::Watching(_)) {
+                runtime.root_watch = RootWatch::Incomplete;
+            }
+            return;
+        };
+        let first = match runtime.root_watch {
+            RootWatch::Watching(registered) if registered.is_same_directory(&current) => return,
+            RootWatch::Watching(_) => {
+                warn!(
+                    root = %root.display(),
+                    "the folder was replaced while the daemon was running (a different directory \
+                     is at the same path); watching it again and scanning it on the next pass"
+                );
+                false
+            }
+            RootWatch::Unregistered => true,
+            RootWatch::Incomplete => false,
+        };
+        let registered = watcher.watch_root(&root);
+        if !first || registered.is_err() {
+            runtime.force_local_rescan = true;
+        }
+        match registered {
+            Ok(()) => {
+                runtime.root_watch = RootWatch::Watching(current);
+                if runtime.watch_declined.take().is_some() {
+                    info!(root = %root.display(), "the folder is watched again");
+                }
+            }
+            Err(error) => {
+                runtime.root_watch = RootWatch::Incomplete;
+                let cause = error.to_string();
+                if runtime.watch_declined.as_deref() != Some(cause.as_str()) {
+                    warn!(
+                        %cause,
+                        root = %root.display(),
+                        "could not watch the folder; every pass scans it locally until it can be \
+                         watched, and the watch is tried again before each one"
+                    );
+                    runtime.watch_declined = Some(cause);
+                }
+            }
         }
     }
 
@@ -2598,7 +3011,14 @@ impl<C: ProtonClient> Daemon<C> {
                 // the returned first error exists for the test helper and is not logged twice.
                 let _ = self.route_event(event, lost);
             }
-            Err(error) => lost.note_error(&error),
+            Err(error) => {
+                let owners = error
+                    .paths
+                    .iter()
+                    .filter_map(|path| self.owning_pair(path))
+                    .collect();
+                lost.note_error(&error, owners);
+            }
         }
     }
 
@@ -2606,7 +3026,27 @@ impl<C: ProtonClient> Daemon<C> {
     /// drain saw (#423, #428). Before the pop, so the flag is up when the pass that needs it starts.
     fn settle_lost_events(&mut self, lost: &LostEvents, watcher: &mut dyn RootWatcher) {
         self.latch_lost_events(lost);
+        self.mark_roots_unwatched(lost);
         self.rewatch_after_rescan(lost, watcher);
+    }
+
+    /// A watcher `Err` may have left a directory unwatched: the roots it names are no longer known
+    /// to be completely watched, so [`Self::maintain_root_watch`] registers them again before their
+    /// next pass (and until it takes, that pass scans locally). Marked here rather than re-walked
+    /// here, so a burst of errors costs one registration per root per pass, not one per error.
+    fn mark_roots_unwatched(&mut self, lost: &LostEvents) {
+        let targets: Vec<usize> = if lost.unwatched_every_root {
+            (0..self.pairs.len()).collect()
+        } else {
+            lost.unwatched_roots.iter().copied().collect()
+        };
+        for pair in targets {
+            if let Some(runtime) = self.runtime_mut(pair)
+                && matches!(runtime.root_watch, RootWatch::Watching(_))
+            {
+                runtime.root_watch = RootWatch::Incomplete;
+            }
+        }
     }
 
     fn latch_lost_events(&mut self, lost: &LostEvents) {
@@ -2711,7 +3151,8 @@ impl<C: ProtonClient> Daemon<C> {
     /// window with no watch at all, and fails partway (EINVAL) on the descriptor of any directory
     /// deleted during the overflow, whose `IN_IGNORED` was among the lost events. And if the
     /// re-walk then failed (`MaxFilesWatch`), the root would be left with fewer watches than before
-    /// — with nothing in phase 4a to retry it.
+    /// — which is why a failure marks the root [`RootWatch::Incomplete`]: the next pass registers it
+    /// again ([`Self::maintain_root_watch`]), and scans locally until that takes.
     ///
     /// The owning root(s) when a notice carries paths (macOS can attach one), every ready root when
     /// one carries none (Linux always) — **once per root per drain**, whatever the notice count. The
@@ -2723,22 +3164,33 @@ impl<C: ProtonClient> Daemon<C> {
             lost.rewatch_roots.iter().copied().collect()
         };
         for pair in targets {
-            let Some(runtime) = self.runtime(pair) else {
+            let Some(runtime) = self.runtime_mut(pair) else {
                 continue;
             };
             let _span = pair_span(&runtime.config.name).entered();
-            let root = &runtime.config.local_root;
-            match watcher.watch_root(root) {
-                Ok(()) => info!(
-                    root = %root.display(),
-                    "re-registered the watch after the event stream was flagged for rescan"
-                ),
-                Err(error) => warn!(
-                    %error,
-                    root = %root.display(),
-                    "could not re-register the watch after the event stream was flagged for \
-                     rescan; a folder created meanwhile may stay unwatched"
-                ),
+            let root = runtime.config.local_root.clone();
+            match watcher.watch_root(&root) {
+                Ok(()) => {
+                    // A complete registration, whatever state the watch was in before it.
+                    runtime.root_watch =
+                        root_identity(&root).map_or(RootWatch::Incomplete, RootWatch::Watching);
+                    runtime.watch_declined = None;
+                    info!(
+                        root = %root.display(),
+                        "re-registered the watch after the event stream was flagged for rescan"
+                    );
+                }
+                Err(error) => {
+                    // Retried before the pair's next pass (`maintain_root_watch`); the 4a version of
+                    // this arm had nothing to retry it with.
+                    runtime.root_watch = RootWatch::Incomplete;
+                    warn!(
+                        %error,
+                        root = %root.display(),
+                        "could not re-register the watch after the event stream was flagged for \
+                         rescan; a folder created meanwhile may stay unwatched"
+                    );
+                }
             }
         }
     }
@@ -2752,24 +3204,30 @@ impl<C: ProtonClient> Daemon<C> {
         let Some(unavailable) = self.unavailable(pair) else {
             return;
         };
+        // What a pair that *was* ready last published, carried (see [`UnavailablePair`]): only the
+        // facts about its past. What belongs to a pass that is not running — pending deletions,
+        // failed items, the unsyncable list — is empty, because nothing here can act on them.
         let snapshot = StatusSnapshot {
             pending_changes: 0,
-            last_sync_epoch_secs: None,
+            last_sync_epoch_secs: unavailable
+                .last_sync
+                .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                .map(|duration| duration.as_secs()),
             last_error: Some(unavailable.reason.clone()),
-            last_plan_summary: None,
-            last_successful_sync_summary: None,
+            last_plan_summary: unavailable.last_plan_summary.clone(),
+            last_successful_sync_summary: unavailable.last_successful_sync_summary.clone(),
             status_history: unavailable.status_history.clone(),
             pending_deletions: Vec::new(),
             failed_items: Vec::new(),
             failed_item_count: 0,
             unsyncable: Vec::new(),
-            index_totals: None,
+            index_totals: unavailable.index_totals,
             config: RunningConfigInfo {
                 local_root: unavailable.config.local_root.clone(),
                 remote_root: unavailable.config.remote_root.clone(),
                 db_path: unavailable.config.db_path.clone(),
             },
-            history: None,
+            history: unavailable.pass_history.clone(),
         };
         *self.shared.pairs[pair]
             .snapshot
@@ -2778,34 +3236,57 @@ impl<C: ProtonClient> Daemon<C> {
     }
 
     /// Everything a client polling a just-started daemon should already see, per pair: the pass
-    /// history and corpus size from the previous run, and the metrics sidecar (whose write failing
-    /// is still fatal for a ready pair, as it was; phase 4b makes it per pair). A pair that is not
+    /// history and corpus size from the previous run, and the metrics sidecar. A pair that is not
     /// ready publishes its reason and writes nothing — its directory may be what is missing.
-    fn publish_at_startup(&mut self, pair: usize) -> AppResult<()> {
-        if let Some(mut pass) = self.pass_for(pair) {
-            pass.refresh_pass_history();
-            pass.refresh_index_totals();
-            pass.publish_status();
-            return pass.write_metrics_snapshot();
+    ///
+    /// **The first metrics write is part of a pair being prepared**: when it fails (a read-only or
+    /// full state directory) the pair is demoted rather than the daemon stopped, keeping the
+    /// history this just read, and the reason comes back for the caller to report — once, since
+    /// whether it is news is the caller's to know. A pair that was not ready to begin with has
+    /// nothing to write and nothing new to say: `Ok`.
+    fn publish_at_startup(&mut self, pair: usize) -> Result<(), String> {
+        let Some(mut pass) = self.pass_for(pair) else {
+            self.publish_pair(pair);
+            return Ok(());
+        };
+        pass.refresh_pass_history();
+        pass.refresh_index_totals();
+        pass.publish_status();
+        match pass.write_metrics_snapshot() {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                let reason = format!("its metrics file could not be written: {error}");
+                self.demote_pair(pair, reason.clone());
+                Err(reason)
+            }
         }
-        self.publish_pair(pair);
-        Ok(())
     }
 
     /// The IPC task's per-pair state for pair `pair` (#102 phase 3): its own connection for the
     /// approval verbs — `None` for a pair that is not ready, which those verbs answer rather than
     /// failing the connection — its metrics sidecar, and the `list` verb's relative frame.
-    fn control_plane_pair(&self, pair: usize) -> AppResult<ControlPlanePair> {
+    fn control_plane_pair(&self, pair: usize) -> ControlPlanePair {
         let config = self.pair_config(pair);
+        // Opened here for a pair that is ready, and on first use (`approvals_connection`) for one
+        // that becomes ready later — neither failure may stop a daemon that is otherwise running.
         let approvals = match self.slot_state(pair) {
-            SlotState::Ready => Some(open_database(&config.db_path)?),
+            SlotState::Ready => match open_database(&config.db_path) {
+                Ok(connection) => Some(connection),
+                Err(error) => {
+                    warn!(
+                        %error,
+                        "no approvals connection for this folder pair yet; opening it on first use"
+                    );
+                    None
+                }
+            },
             SlotState::Unavailable => None,
         };
-        Ok(ControlPlanePair {
+        ControlPlanePair {
             approvals: tokio::sync::Mutex::new(approvals),
             metrics_path: metrics_path(&config.db_path),
             remote_root: config.remote_root.clone(),
-        })
+        }
     }
 
     /// The cancel flag and the live-progress sink, on the one client. The only `&mut` the client
@@ -2849,6 +3330,9 @@ impl<C: ProtonClient> Daemon<C> {
             // total, and the outcome is on every status reply. Logging it again here would be a
             // second, differently-worded report of the same pass.
             Ok(PassOutcome::Clean | PassOutcome::Partial { .. }) => {}
+            // A missing folder is reported once per cause by the pass itself; an `error!` per
+            // attempt would be the same line every 30 seconds for as long as it stays gone.
+            Err(error) if is_root_unavailable_error(error.as_ref()) => {}
             Err(error) => error!(%error, "scheduled reconciliation failed"),
         }
     }
@@ -3089,6 +3573,86 @@ fn create_parent_directory(path: &Path) -> AppResult<()> {
     Ok(())
 }
 
+/// What preparing a pair does about its folder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RootMode {
+    /// Boot: a folder that does not exist is created, as it always was.
+    Create,
+    /// A retry: **never** created. A folder that is gone while the daemon runs is gone — an
+    /// unplugged drive's mount point, a deleted tree — and creating it would present an empty folder
+    /// as the user's own, which a pass would then reconcile against the remote. A retry succeeds
+    /// when the folder is back, not by making one.
+    MustExist,
+}
+
+/// Why a pair's state could not be prepared.
+#[derive(Debug)]
+enum PrepareFailure {
+    /// Another process holds the pair's per-root lock (the message is the lock's own).
+    LockHeld(String),
+    /// Anything else, as the one-line reason a status reply carries.
+    Unavailable(String),
+}
+
+impl PrepareFailure {
+    /// The reason a retry that failed this way leaves the pair unavailable for.
+    fn reason(self) -> String {
+        match self {
+            Self::LockHeld(message) => format!("locked by another process: {message}"),
+            Self::Unavailable(reason) => reason,
+        }
+    }
+}
+
+/// Everything that has to hold before a pair's index is opened: its folder, the directories its
+/// index and lockfile live in, and its per-root instance lock. Boot and a retry both call this, so
+/// there is one definition of what "prepared" means; they differ only in [`RootMode`].
+///
+/// The lock is the **last** step, so a failure before it holds nothing.
+fn prepare_pair_state(config: &PairConfig, root: RootMode) -> Result<LockGuard, PrepareFailure> {
+    let local_root = config.local_root.display();
+    match root {
+        RootMode::Create => fs::create_dir_all(&config.local_root).map_err(|error| {
+            PrepareFailure::Unavailable(format!(
+                "the folder {local_root} could not be created: {error}"
+            ))
+        })?,
+        RootMode::MustExist => match fs::metadata(&config.local_root) {
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => {
+                return Err(PrepareFailure::Unavailable(format!(
+                    "the folder {local_root} is not a directory"
+                )));
+            }
+            Err(error) => {
+                return Err(PrepareFailure::Unavailable(format!(
+                    "the folder {local_root} does not exist ({error}); the daemon creates it when \
+                     it starts, not while it runs"
+                )));
+            }
+        },
+    }
+    create_parent_directory(&config.db_path).map_err(|error| {
+        PrepareFailure::Unavailable(format!(
+            "the directory for its index could not be created: {error}"
+        ))
+    })?;
+    // Ensure the lockfile's directory (the `.sync` state dir by default) exists before acquiring
+    // the lock, so a first-ever run on a fresh root does not fail here.
+    create_parent_directory(&config.lockfile_path).map_err(|error| {
+        PrepareFailure::Unavailable(format!(
+            "the directory for its lockfile could not be created: {error}"
+        ))
+    })?;
+    LockGuard::acquire(&config.lockfile_path).map_err(|error| {
+        if is_lock_held_error(error.as_ref()) {
+            PrepareFailure::LockHeld(error.to_string())
+        } else {
+            PrepareFailure::Unavailable(format!("its instance lock could not be taken: {error}"))
+        }
+    })
+}
+
 impl PairRuntime {
     /// A ready pair over a prepared root: its index, filters, history and persisted counters.
     fn open(config: PairConfig, lock_guard: LockGuard) -> AppResult<Self> {
@@ -3145,6 +3709,9 @@ impl PairRuntime {
             warm_starts_since_full_walk,
             event_scope_declined: None,
             seen_event_source_generation: 0,
+            root_watch: RootWatch::Unregistered,
+            watch_declined: None,
+            root_unavailable: None,
             pending_deletions: Vec::new(),
             last_failed_items: Vec::new(),
             last_failed_item_count: 0,
@@ -3352,6 +3919,55 @@ impl<C: ProtonClient> PairPass<'_, C> {
         })
     }
 
+    /// Fails with the typed [`RootUnavailable`] when this pair's folder is not a directory right now
+    /// (ADR 0005 §6.4). Reported once per cause per pair: the first sight and every change of cause
+    /// speak, a standing one is silent, and the folder coming back says so and re-arms the latch.
+    ///
+    /// **Never creates the folder.** Only boot preparation does; a folder that vanished while the
+    /// daemon runs is gone, and a status write or a download that quietly made it again (both reach
+    /// `create_dir_all`) would hand the next pass an empty tree to reconcile against the remote.
+    fn ensure_root_available(&mut self) -> AppResult<()> {
+        let root = &self.pair.config.local_root;
+        let detail = match fs::metadata(root) {
+            Ok(metadata) if metadata.is_dir() => {
+                if self.pair.root_unavailable.take().is_some() {
+                    info!(root = %root.display(), "the folder is available again");
+                }
+                return Ok(());
+            }
+            Ok(_) => "it is not a directory".to_owned(),
+            Err(error) => error.to_string(),
+        };
+        let error = RootUnavailable {
+            root: root.clone(),
+            detail,
+        };
+        let cause = error.to_string();
+        if self.pair.root_unavailable.as_deref() != Some(cause.as_str()) {
+            warn!(
+                %cause,
+                "folder unavailable; this pair is skipped, and tried again at its next turn"
+            );
+            self.pair.root_unavailable = Some(cause);
+        }
+        Err(Box::new(error))
+    }
+
+    /// The status-history entry for an attempt that found the folder gone: pushed in memory, **never
+    /// persisted**, and a repeat of the same cause moves the newest entry's time instead of adding
+    /// one (see [`record_repeatable_status_entry`]).
+    fn record_unavailable_status(&mut self, message: &str) {
+        let entry = StatusHistoryEntry {
+            epoch_secs: current_epoch_secs(),
+            message: message.to_owned(),
+            last_error: self.pair.last_error.clone(),
+            plan_summary: self.pair.last_plan_summary.clone(),
+            successful_sync_summary: self.pair.last_successful_sync_summary.clone(),
+            failed_item_count: self.pair.last_failed_item_count,
+        };
+        record_repeatable_status_entry(&mut self.pair.status_history, entry);
+    }
+
     fn reconcile_blocking(&mut self) -> AppResult<PassOutcome> {
         // Open the pass as a unit (#213): one start time and one clock, both surviving every
         // phase change below. The kind is corrected by whichever branch `reconcile_blocking_inner`
@@ -3401,6 +4017,13 @@ impl<C: ProtonClient> PairPass<'_, C> {
                 self.pair.last_error = Some(summary);
                 format!("sync completed with {failed} failed item(s)")
             }
+            // The folder is not there, so nothing ran (`ensure_root_available`): there is no pass to
+            // describe, and so no `sync_passes` row — one per attempt, at the pair's cadence, would
+            // bury the history that matters. Still an attempt a waiting client is owed an answer to.
+            Err(error) if is_root_unavailable_error(error.as_ref()) => {
+                self.pair.last_error = Some(error.to_string());
+                "folder unavailable".to_owned()
+            }
             Err(error) => {
                 let error = error.to_string();
                 // Reachable by a shutdown mid-plan too, which is why `interrupted` never is: every
@@ -3410,15 +4033,24 @@ impl<C: ProtonClient> PairPass<'_, C> {
                 "sync failed".to_owned()
             }
         };
+        let folder_unavailable =
+            matches!(&result, Err(error) if is_root_unavailable_error(error.as_ref()));
         // Seal this pass's apply verdict (#100), before the reply that carries it is publishable.
         // Every exit seals: a pass that never reached the comparison — a failed scan, a failed
         // listing — would otherwise leave its client polling a request nothing will ever answer.
         self.seal_apply_outcome(&result);
-        // Before `record_status_history`, which snapshots into the metrics sidecar: refreshing
-        // after it would publish this pass's history beside the previous pass's corpus size.
-        // Runs on every outcome, not just `Ok` — see `index_totals_stale`.
-        self.refresh_index_totals();
-        self.record_status_history(&message);
+        if folder_unavailable {
+            // In memory only, and a standing cause is one entry: the pair's directory — where the
+            // sidecars live — may be exactly what is missing, and `write_atomically` would create
+            // it, which is a missing root brought back to life by a status write.
+            self.record_unavailable_status(&message);
+        } else {
+            // Before `record_status_history`, which snapshots into the metrics sidecar: refreshing
+            // after it would publish this pass's history beside the previous pass's corpus size.
+            // Runs on every outcome, not just `Ok` — see `index_totals_stale`.
+            self.refresh_index_totals();
+            self.record_status_history(&message);
+        }
         // The attempt is complete (recorded either way): bump the sequence a waiting client
         // watches, then publish the final state of this pass.
         self.pair_shared
@@ -3457,12 +4089,21 @@ impl<C: ProtonClient> PairPass<'_, C> {
     }
 
     fn reconcile_blocking_inner(&mut self) -> AppResult<PassOutcome> {
-        info!("starting reconciliation");
         // What this pass was asked to do (#100). Taken once, here, so every downstream branch —
         // warm start, incremental, bootstrap — reaches the same single check in
         // `execute_plan_and_commit`, whichever remote map it ends up planning against.
         self.pair.pass_intent = self.pair_shared.take_apply_request();
         self.pair.apply_report = None;
+        // **After the apply is taken and before anything else**, and both halves of that are the
+        // point. After: the request is this pass's, so `reconcile_blocking` seals it with the
+        // error — a client polling an apply must be answered. Before: the event-source reacquire
+        // below spawns a keyring read, and the `resync`/`reset_index` latches below are *consumed*
+        // by a `swap` — a latch consumed by a pass that did nothing is a request that evaporated,
+        // so a `reset-index` made while the folder is gone has to survive until it returns. It is
+        // also what stops the events-mode idle fast-path reporting `Clean` (and moving the cursor)
+        // over a folder that is not there.
+        self.ensure_root_available()?;
+        info!("starting reconciliation");
         // Recover event-driven detection if it was disabled at startup because the keyring was
         // still locked (the boot race). No-op once a source exists or when the feature is off.
         self.reacquire_event_source_if_needed();
@@ -6419,6 +7060,57 @@ fn unavailable_pair_message(pair: &PairShared) -> String {
     format!("folder pair '{}' is unavailable: {reason}", pair.name)
 }
 
+/// The IPC task's connection to a pair's index, for the verbs that read or write it (`approve`,
+/// `deny`, `keep`, `activity`) — `None` while the pair has no runtime.
+///
+/// **The pair's own `has_runtime` decides, in both directions.** A pair that became ready after the
+/// plane was built (an unavailable pair whose folder returned) gets its connection opened here, on
+/// first use; one that stopped being ready has the connection it held dropped, so no verb writes
+/// the index of a pair whose per-root lock this daemon no longer holds.
+async fn approvals_connection<'a>(
+    plane_pair: &'a ControlPlanePair,
+    pair: &PairShared,
+) -> tokio::sync::MutexGuard<'a, Option<Connection>> {
+    let mut approvals = plane_pair.approvals.lock().await;
+    if !pair.has_runtime() {
+        *approvals = None;
+    } else if approvals.is_none() {
+        let db_path = pair
+            .snapshot
+            .lock()
+            .expect("control snapshot lock")
+            .config
+            .db_path
+            .clone();
+        match open_database(&db_path) {
+            Ok(connection) => *approvals = Some(connection),
+            Err(error) => warn!(
+                %error,
+                pair = %pair.name,
+                "could not open an approvals connection for this folder pair"
+            ),
+        }
+    }
+    approvals
+}
+
+/// `pause`/`resume` persist the metrics sidecar so a GUI that has lost the socket still sees the
+/// pause (best effort, as ever). Two things it must not do: write for a pair that is not ready —
+/// the file belongs to whoever holds that pair's lock, and its directory may be what is missing —
+/// and bring a missing directory back, which the write would do (`write_atomically` creates the
+/// sidecar's directory, and with the default layout that directory is *inside* the root).
+fn persist_pause_state(shared: &ControlShared, pair: &PairShared, metrics_path: &Path) {
+    if !pair.has_runtime() {
+        debug!(pair = %pair.name, "no metrics file written: the folder pair is not ready");
+        return;
+    }
+    if metrics_path.parent().is_some_and(|parent| !parent.is_dir()) {
+        debug!(pair = %pair.name, "no metrics file written: its directory is gone");
+        return;
+    }
+    persist_metrics_best_effort(shared, pair, metrics_path);
+}
+
 /// A wire selector that did not resolve to any configured pair (#102 phase 3, ADR 0005 §4).
 /// `message` names the configured pairs; the caller's response carries `pair: None` and does
 /// nothing else. The echoed selector is bounded by [`truncate_selector`] (#422): display only,
@@ -6507,13 +7199,13 @@ async fn handle_control_connection<C: ProtonClient + 'static>(
         ControlCommand::Pause => {
             pair.paused.store(true, Ordering::SeqCst);
             info!(pair = %pair.name, "sync paused");
-            persist_metrics_best_effort(shared, pair, &plane_pair.metrics_path);
+            persist_pause_state(shared, pair, &plane_pair.metrics_path);
             shared.response(pair, "sync paused")
         }
         ControlCommand::Resume => {
             pair.paused.store(false, Ordering::SeqCst);
             info!(pair = %pair.name, "sync resumed");
-            persist_metrics_best_effort(shared, pair, &plane_pair.metrics_path);
+            persist_pause_state(shared, pair, &plane_pair.metrics_path);
             shared.response(pair, "sync resumed")
         }
         ControlCommand::Syncnow => {
@@ -6582,7 +7274,7 @@ async fn handle_control_connection<C: ProtonClient + 'static>(
                 .pending_deletions
                 .clone();
             let message = {
-                let approvals = plane_pair.approvals.lock().await;
+                let approvals = approvals_connection(plane_pair, pair).await;
                 match approvals.as_ref() {
                     Some(connection) => Some(apply_approval_command(
                         connection,
@@ -6615,7 +7307,7 @@ async fn handle_control_connection<C: ProtonClient + 'static>(
             // Answered from the index on this task, like `approve`/`deny` — a bounded, indexed
             // read over the history tables, not daemon work.
             let outcome = {
-                let approvals = plane_pair.approvals.lock().await;
+                let approvals = approvals_connection(plane_pair, pair).await;
                 approvals
                     .as_ref()
                     .map(|connection| query_file_history(connection, &request))
@@ -6645,7 +7337,7 @@ async fn handle_control_connection<C: ProtonClient + 'static>(
                 .pending_deletions
                 .clone();
             let kept = {
-                let approvals = plane_pair.approvals.lock().await;
+                let approvals = approvals_connection(plane_pair, pair).await;
                 match approvals.as_ref() {
                     Some(connection) => Some(apply_keep_command(
                         connection,
@@ -8455,10 +9147,10 @@ impl LockGuard {
             })?;
         file.try_lock_exclusive().map_err(|error| {
             if error.kind() == std::io::ErrorKind::WouldBlock {
-                boxed_error(format!(
-                    "daemon already running; lockfile is locked at {}",
-                    path.display()
-                ))
+                // Typed, so boot can refuse on it and a retry can keep its pair unavailable.
+                Box::new(LockHeld {
+                    path: path.to_path_buf(),
+                }) as Box<dyn std::error::Error + Send + Sync>
             } else {
                 boxed_error(format!(
                     "failed to lock lockfile {}: {error}",
@@ -16051,8 +16743,8 @@ mod tests {
 
     /// Sends `request` over a fresh socket pair and reads back the reply — `handle_control_connection`
     /// end to end, exactly as the real control socket serves it.
-    async fn roundtrip(
-        plane: &ControlPlane<RecordingProtonClient>,
+    async fn roundtrip<C: ProtonClient + 'static>(
+        plane: &ControlPlane<C>,
         request: ControlRequest,
     ) -> ControlResponse {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
@@ -19069,7 +19761,10 @@ mod tests {
         assert!(daemon.pair().pending_changes.is_empty());
 
         let mut lost = LostEvents::default();
-        lost.note_error(&notify::Error::generic("watch descriptor limit reached"));
+        lost.note_error(
+            &notify::Error::generic("watch descriptor limit reached"),
+            BTreeSet::new(),
+        );
         daemon.latch_lost_events(&lost);
         daemon
             .reconcile_blocking()
@@ -21742,14 +22437,39 @@ mod tests {
         fn new<C: ProtonClient>(daemon: &mut Daemon<C>) -> Self {
             let clock = FakeClock::new();
             daemon.seed_schedule(clock.now());
-            Self::with_clock(clock)
+            Self::booted(daemon, clock, false)
         }
 
         /// For routing-only tests: the boot passes are an hour out, so a step only drains.
         fn quiet<C: ProtonClient>(daemon: &mut Daemon<C>) -> Self {
             let clock = FakeClock::new();
             daemon.seed_schedule(clock.now() + Duration::from_secs(3600));
-            Self::with_clock(clock)
+            Self::booted(daemon, clock, false)
+        }
+
+        /// [`Self::new`] over a watcher that refuses every registration, including the one boot makes.
+        fn new_with_a_watcher_that_fails<C: ProtonClient>(daemon: &mut Daemon<C>) -> Self {
+            let clock = FakeClock::new();
+            daemon.seed_schedule(clock.now());
+            Self::booted(daemon, clock, true)
+        }
+
+        /// Registers every ready root as `run` does before its loop, then forgets that it did: the
+        /// tests below assert what a *step* registers, not what boot did.
+        fn booted<C: ProtonClient>(
+            daemon: &mut Daemon<C>,
+            clock: FakeClock,
+            failing: bool,
+        ) -> Self {
+            let mut stepper = Self::with_clock(clock);
+            stepper.watcher_fails.store(failing, Ordering::SeqCst);
+            daemon.register_root_watches(stepper.inputs.watcher.as_mut());
+            stepper
+                .rewatched
+                .lock()
+                .expect("watched roots lock")
+                .clear();
+            stepper
         }
 
         fn with_clock(clock: FakeClock) -> Self {
@@ -22068,13 +22788,21 @@ mod tests {
         (daemon, client, stepper)
     }
 
-    /// Phase 4a builds `Unavailable` slots only in tests; 4b's boot preparation will build them the
-    /// same way (the runtime, and so its per-root lock, released).
-    fn make_unavailable<C: ProtonClient>(daemon: &mut Daemon<C>, pair: usize, reason: &str) {
+    /// Makes pair `pair` an unavailable slot that **stays** one: its runtime (and so its per-root
+    /// lock) is released and its folder removed, so a retry fails with the reason this returns. A
+    /// hand-picked reason with a folder that exists would be promoted by the first `Sync` job.
+    fn make_unavailable<C: ProtonClient>(daemon: &mut Daemon<C>, pair: usize) -> String {
         let config = daemon.pair_config(pair).clone();
+        fs::remove_dir_all(&config.local_root).expect("remove the folder");
+        let reason = prepare_pair_state(&config, RootMode::MustExist)
+            .err()
+            .expect("the folder is gone, so preparing it fails")
+            .reason();
         daemon.pairs[pair] =
-            PairSlot::Unavailable(Box::new(UnavailablePair::new(config, reason.to_owned())));
+            PairSlot::Unavailable(Box::new(UnavailablePair::new(config, reason.clone())));
+        daemon.shared.pairs[pair].set_has_runtime(false);
         daemon.publish_pair(pair);
+        reason
     }
 
     fn reviewed_token(pair: &PairShared) -> String {
@@ -23218,7 +23946,7 @@ mod tests {
             client.clone(),
             None,
         );
-        make_unavailable(&mut daemon, 1, "the folder /media/usb/b is missing");
+        make_unavailable(&mut daemon, 1);
         // A plan `b` reviewed while it was ready, an apply booked against it, and a new plan request.
         daemon.shared.pairs[1].replace_stored_plan(StoredPlan {
             token: "reviewed".to_owned(),
@@ -23249,7 +23977,7 @@ mod tests {
                 error,
             }) => {
                 assert_eq!(sealed, apply_seq);
-                assert!(error.contains("is missing"), "{error}");
+                assert!(error.contains("does not exist"), "{error}");
             }
             other => panic!("the apply is sealed, got {other:?}"),
         }
@@ -23259,7 +23987,7 @@ mod tests {
                 error,
             } => {
                 assert!(sealed >= plan_seq);
-                assert!(error.contains("is missing"), "{error}");
+                assert!(error.contains("does not exist"), "{error}");
             }
             other => panic!("the plan is sealed, got {other:?}"),
         }
@@ -23283,7 +24011,7 @@ mod tests {
         let configs = pair_configs(directory.path(), &["a"]);
         let db_path = configs[0].db_path.clone();
         let mut daemon = multi_pair_daemon(configs, MultiRootClient::default(), None);
-        make_unavailable(&mut daemon, 0, "the folder /media/usb/sync is missing");
+        let reason = make_unavailable(&mut daemon, 0);
 
         let reply = daemon
             .shared
@@ -23296,7 +24024,7 @@ mod tests {
         );
         assert_eq!(
             reply.last_error.as_deref(),
-            Some("the folder /media/usb/sync is missing"),
+            Some(reason.as_str()),
             "…and the error is what it reads instead: `Failed`"
         );
         assert!(!reply.paused && !reply.syncing && reply.auth != AuthState::SignedOut);
@@ -23306,7 +24034,11 @@ mod tests {
         let reply = daemon
             .shared
             .response(&daemon.shared.pairs[0], "daemon status");
-        assert_eq!(reply.status_history.len(), 2, "one entry per attempt");
+        assert_eq!(
+            reply.status_history.len(),
+            1,
+            "an attempt at the same cause moves the entry's time; it does not add one"
+        );
         assert_eq!(reply.reconcile_seq, 1);
         assert!(
             !status_history_path(&db_path).exists(),
@@ -23319,6 +24051,7 @@ mod tests {
         let directory = tempdir().expect("tempdir");
         let (mut plane, _loop_rx) = two_pair_control_plane(directory.path());
         plane.pairs[1].approvals = tokio::sync::Mutex::new(None);
+        plane.shared.pairs[1].set_has_runtime(false);
         plane.shared.pairs[1]
             .snapshot
             .lock()
@@ -24343,7 +25076,7 @@ mod tests {
             MultiRootClient::default(),
             None,
         );
-        make_unavailable(&mut daemon, 1, "the folder /media/usb/b is missing");
+        make_unavailable(&mut daemon, 1);
         daemon.shared.pairs[1].replace_stored_plan(StoredPlan {
             token: "reviewed".to_owned(),
             computed_epoch_secs: 1,
@@ -24554,5 +25287,1241 @@ mod tests {
             "the event the idle wait received was never routed: {:?}",
             client.directories()
         );
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // #102 phase 4b: a pair whose folder, lock or watch is not there keeps the daemon running
+    // (maintainer decisions M1/M1b). Every test drives the step function `run()` calls.
+    // ---------------------------------------------------------------------------------------
+
+    /// A config whose folder can never be created: its parent is a regular file. Its index and
+    /// lockfile sit under the same file, so nothing of the pair is reachable until that file goes.
+    /// Works for root and non-root alike, which a read-only directory would not.
+    fn unpreparable_config(directory: &Path, name: &str) -> DaemonConfig {
+        let blocker = directory.join(format!("{name}-blocker"));
+        fs::write(&blocker, b"a file where a directory would have to be").expect("blocker");
+        DaemonConfig {
+            name: name.to_owned(),
+            remote_root: remote_root_of(name),
+            local_root: blocker.join("local"),
+            db_path: blocker.join("state").join("sync_index.db"),
+            lockfile_path: blocker.join("state").join("daemon.lock"),
+            ..test_config(directory, &directory.join("unused"))
+        }
+    }
+
+    /// One events-driven pair `a`, past boot on a live fake session, `a.txt` in step on both sides.
+    /// `pages` are what its next event polls answer, so a test can see a cursor move.
+    fn steady_events_pair(
+        directory: &Path,
+        pages: Vec<VolumeEventPage>,
+    ) -> (Daemon<MultiRootClient>, MultiRootClient, Stepper) {
+        let mut configs = pair_configs(directory, &["a"]);
+        configs[0].events_driven = true;
+        fs::write(configs[0].local_root.join("a.txt"), b"a").expect("local file");
+        let client = MultiRootClient::default().with_tree(
+            &configs[0].remote_root,
+            vec![remote_file_entity("a.txt", "vola~na", &sha1_bytes(b"a"))],
+        );
+        let mut daemon = multi_pair_daemon(
+            configs,
+            client.clone(),
+            Some(Box::new(FakeEventSource::with_pages("cursor-0", pages))),
+        );
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        assert!(
+            load_event_cursor(&daemon.runtime(0).expect("ready").connection, "vola")
+                .expect("cursor read")
+                .is_some(),
+            "precondition: `a` streams from here on"
+        );
+        client.clear_walks();
+        (daemon, client, stepper)
+    }
+
+    fn no_changes_page(latest: &str) -> VolumeEventPage {
+        VolumeEventPage {
+            latest_event_id: latest.to_owned(),
+            more: false,
+            refresh: false,
+            changes: Vec::new(),
+        }
+    }
+
+    fn published_error(daemon: &Daemon<impl ProtonClient>, pair: usize) -> Option<String> {
+        daemon.shared.pairs[pair]
+            .snapshot
+            .lock()
+            .expect("snapshot lock")
+            .last_error
+            .clone()
+    }
+
+    fn stored_cursor(daemon: &Daemon<impl ProtonClient>, pair: usize, volume: &str) -> String {
+        load_event_cursor(&daemon.runtime(pair).expect("ready").connection, volume)
+            .expect("cursor read")
+            .expect("a stored cursor")
+            .last_event_id
+    }
+
+    fn passes_recorded(daemon: &Daemon<impl ProtonClient>, pair: usize) -> usize {
+        recent_passes(&daemon.runtime(pair).expect("ready").connection, 100)
+            .expect("recent passes")
+            .len()
+    }
+
+    #[test]
+    fn a_missing_root_skips_that_pair_and_the_others_still_run() {
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a", "b"]);
+        let b_root = configs[1].local_root.clone();
+        let client = MultiRootClient::default();
+        let mut daemon = multi_pair_daemon(configs, client.clone(), None);
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        client.clear_walks();
+
+        fs::remove_dir_all(&b_root).expect("the folder goes away");
+        stepper.send(LoopCommand::SyncNow(1));
+        stepper.send(LoopCommand::SyncNow(0));
+        let log = capture_log("warn", || {
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        });
+
+        assert_eq!(
+            client.walks(),
+            [remote_root_of("a")],
+            "`a` ran; `b` listed nothing, because nothing of `b` ran"
+        );
+        let b = &daemon.shared.pairs[1];
+        assert_eq!(
+            b.reconcile_seq.load(Ordering::SeqCst),
+            2,
+            "boot, and this attempt: a waiting client is answered"
+        );
+        assert!(
+            published_error(&daemon, 1).is_some_and(|error| error.contains("is not available")),
+            "{:?}",
+            published_error(&daemon, 1)
+        );
+        assert_eq!(
+            daemon.shared.pairs[0].reconcile_seq.load(Ordering::SeqCst),
+            2
+        );
+        assert_eq!(published_error(&daemon, 0), None);
+        assert!(
+            !log.contains("scheduled reconciliation failed"),
+            "a missing folder is not a failed pass:\n{log}"
+        );
+        assert!(
+            log.contains("pair{name=b}") && log.contains("is not available"),
+            "and it is reported, under its pair:\n{log}"
+        );
+    }
+
+    #[test]
+    fn a_missing_root_is_reported_once_not_once_per_pass() {
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a"]);
+        let root = configs[0].local_root.clone();
+        let mut daemon = multi_pair_daemon(configs, MultiRootClient::default(), None);
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+
+        fs::remove_dir_all(&root).expect("the folder goes away");
+        let log = capture_log("info", || {
+            for _ in 0..3 {
+                stepper.send(LoopCommand::SyncNow(0));
+                assert_eq!(stepper.step(&mut daemon), Step::Idle);
+            }
+        });
+        assert_eq!(
+            log.matches("folder unavailable;").count(),
+            1,
+            "three attempts at one cause, one line:\n{log}"
+        );
+
+        // It comes back, says so, and a later loss is a new report: the latch re-arms.
+        fs::create_dir(&root).expect("the folder returns");
+        let log = capture_log("info", || {
+            stepper.send(LoopCommand::SyncNow(0));
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        });
+        assert!(log.contains("the folder is available again"), "{log}");
+        fs::remove_dir_all(&root).expect("and goes again");
+        let log = capture_log("warn", || {
+            stepper.send(LoopCommand::SyncNow(0));
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        });
+        assert_eq!(log.matches("folder unavailable;").count(), 1, "{log}");
+    }
+
+    #[test]
+    fn a_missing_root_writes_no_history_row_and_runs_no_cli_child() {
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a"]);
+        let root = configs[0].local_root.clone();
+        let db_path = configs[0].db_path.clone();
+        fs::write(root.join("a.txt"), b"a").expect("a file");
+        let client = MultiRootClient::default();
+        let mut daemon = multi_pair_daemon(configs, client.clone(), None);
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        let rows = passes_recorded(&daemon, 0);
+        assert!(
+            rows >= 1,
+            "precondition: the boot pass is a full sweep, recorded"
+        );
+        let history = daemon.runtime(0).expect("ready").status_history.clone();
+        let sidecar = fs::read(status_history_path(&db_path)).expect("status sidecar");
+        let metrics = fs::read(metrics_path(&db_path)).expect("metrics sidecar");
+        let last_sync = daemon.shared.pairs[0]
+            .snapshot
+            .lock()
+            .expect("snapshot lock")
+            .last_sync_epoch_secs;
+        assert!(last_sync.is_some(), "precondition: it has synced");
+        client.clear_walks();
+
+        fs::remove_dir_all(&root).expect("the folder goes away");
+        for _ in 0..40 {
+            stepper.send(LoopCommand::SyncNow(0));
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        }
+
+        assert_eq!(
+            passes_recorded(&daemon, 0),
+            rows,
+            "no `sync_passes` row per attempt"
+        );
+        assert!(
+            client.walks().is_empty(),
+            "no `proton-drive` child per attempt"
+        );
+        assert_eq!(
+            fs::read(status_history_path(&db_path)).expect("status sidecar"),
+            sidecar,
+            "no sidecar write: the directory may be the thing that is missing"
+        );
+        assert_eq!(fs::read(metrics_path(&db_path)).expect("metrics"), metrics);
+        // Forty attempts at one cause are one entry on the end of the real history, not forty.
+        let published = daemon.shared.pairs[0]
+            .snapshot
+            .lock()
+            .expect("snapshot lock")
+            .clone();
+        assert_eq!(
+            published.last_sync_epoch_secs, last_sync,
+            "still synced, as far as it knows"
+        );
+        assert_eq!(published.status_history.len(), history.len() + 1);
+        assert_eq!(&published.status_history[..history.len()], &history[..]);
+        assert!(
+            !root.exists(),
+            "and nothing — not a sidecar write, not a download — made the folder again"
+        );
+    }
+
+    #[test]
+    fn a_missing_root_never_takes_the_idle_fast_path() {
+        // Events live, an empty delta, nothing pending: the pass that would be `Clean` and move the
+        // cursor without ever looking at the folder.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) =
+            steady_events_pair(directory.path(), vec![no_changes_page("cursor-1")]);
+        let root = daemon.runtime(0).expect("ready").config.local_root.clone();
+        let last_sync = daemon.shared.pairs[0]
+            .snapshot
+            .lock()
+            .expect("snapshot lock")
+            .last_sync_epoch_secs;
+
+        fs::remove_dir_all(&root).expect("the folder goes away");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(
+            published_error(&daemon, 0).is_some_and(|error| error.contains("is not available")),
+            "not `Clean`: {:?}",
+            published_error(&daemon, 0)
+        );
+        assert_eq!(
+            stored_cursor(&daemon, 0, "vola"),
+            "cursor-0",
+            "the cursor claims events were applied; none were"
+        );
+        assert_eq!(
+            daemon.shared.pairs[0]
+                .snapshot
+                .lock()
+                .expect("snapshot lock")
+                .last_sync_epoch_secs,
+            last_sync
+        );
+        assert!(client.walks().is_empty());
+
+        // The folder returns: the very next pass is an ordinary one and takes the cursor.
+        fs::create_dir(&root).expect("the folder returns");
+        fs::write(root.join("a.txt"), b"a").expect("its file");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(published_error(&daemon, 0), None);
+        assert_eq!(stored_cursor(&daemon, 0, "vola"), "cursor-1");
+    }
+
+    #[test]
+    fn a_syncnow_an_apply_and_a_plan_for_a_pair_with_a_missing_root_are_sealed() {
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) = steady_events_pair(directory.path(), Vec::new());
+        let root = daemon.runtime(0).expect("ready").config.local_root.clone();
+        daemon.shared.pairs[0].replace_stored_plan(StoredPlan {
+            token: "reviewed".to_owned(),
+            computed_epoch_secs: 1,
+            summary: PlanSummary::default(),
+            actions: Vec::new(),
+            cannot_sync: Vec::new(),
+            local_disposal: LocalDisposal::Permanent,
+        });
+        let apply_seq = daemon.shared.pairs[0]
+            .book_apply_request("reviewed", false)
+            .expect("token accepted");
+        let seq_before = daemon.shared.pairs[0].reconcile_seq.load(Ordering::SeqCst);
+        let rows = passes_recorded(&daemon, 0);
+
+        fs::remove_dir_all(&root).expect("the folder goes away");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert_eq!(
+            daemon.shared.pairs[0].reconcile_seq.load(Ordering::SeqCst),
+            seq_before + 1,
+            "the sync a client is polling for ended"
+        );
+        match daemon.shared.pairs[0].apply_outcome() {
+            Some(ApplyOutcome::Failed {
+                apply_seq: sealed,
+                error,
+            }) => {
+                assert_eq!(sealed, apply_seq);
+                assert!(error.contains("is not available"), "{error}");
+            }
+            other => panic!("the apply is sealed, got {other:?}"),
+        }
+
+        // A plan is the one request that still goes to the scan, which fails on its own and seals.
+        let plan_seq = daemon.shared.pairs[0].book_plan_request();
+        stepper.send(LoopCommand::PlanNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        match daemon.shared.pairs[0].plan_outcome(None) {
+            PlanOutcome::Failed {
+                plan_seq: sealed, ..
+            } => assert!(sealed >= plan_seq),
+            other => panic!("the plan is sealed, got {other:?}"),
+        }
+        assert!(client.walks().is_empty(), "and neither listed the remote");
+        assert_eq!(
+            passes_recorded(&daemon, 0),
+            rows,
+            "and neither recorded a pass"
+        );
+    }
+
+    #[test]
+    fn a_reset_latched_while_the_root_is_missing_survives_until_it_returns() {
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) = steady_events_pair(directory.path(), Vec::new());
+        let root = daemon.runtime(0).expect("ready").config.local_root.clone();
+        let shared = &daemon.shared.pairs[0];
+        shared.reset_index.store(true, Ordering::SeqCst);
+        shared.force_full_walk.store(true, Ordering::SeqCst);
+
+        fs::remove_dir_all(&root).expect("the folder goes away");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        let shared = &daemon.shared.pairs[0];
+        assert!(
+            shared.reset_index.load(Ordering::SeqCst),
+            "a `reset-index` is a request the user confirmed; a pass that did nothing may not spend it"
+        );
+        assert!(shared.force_full_walk.load(Ordering::SeqCst));
+        assert!(
+            get_record(
+                &daemon.runtime(0).expect("ready").connection,
+                Path::new("a.txt")
+            )
+            .expect("index read")
+            .is_some(),
+            "and nothing was truncated"
+        );
+        assert!(client.walks().is_empty());
+
+        fs::create_dir(&root).expect("the folder returns");
+        fs::write(root.join("a.txt"), b"a").expect("its file");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        let shared = &daemon.shared.pairs[0];
+        assert!(
+            !shared.reset_index.load(Ordering::SeqCst)
+                && !shared.force_full_walk.load(Ordering::SeqCst),
+            "consumed by the first pass that could act on them"
+        );
+        assert_eq!(
+            client.walks(),
+            [remote_root_of("a")],
+            "and the full walk they asked for happened"
+        );
+    }
+
+    #[test]
+    fn a_root_deleted_and_recreated_between_passes_is_rewatched_and_rescanned() {
+        // The folder is a different directory at the same path: it passes an `is_dir()` check, and
+        // the kernel dropped the watch with the old one. Events live and idle, so only a local scan
+        // can find what no event announced.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) = steady_events_pair(directory.path(), Vec::new());
+        let root = daemon.runtime(0).expect("ready").config.local_root.clone();
+        // Renamed, not removed: the old directory keeps its inode, so the new one cannot reuse it.
+        fs::rename(&root, root.with_file_name("local-old")).expect("the old folder moves away");
+        fs::create_dir(&root).expect("a new folder at the same path");
+        fs::write(root.join("a.txt"), b"a").expect("in step");
+        fs::write(root.join("new.txt"), b"new").expect("a file no event announced");
+
+        stepper.send(LoopCommand::SyncNow(0));
+        let log = capture_log("warn", || {
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        });
+
+        assert_eq!(
+            stepper.rewatched(),
+            std::slice::from_ref(&root),
+            "registered again"
+        );
+        assert!(log.contains("was replaced"), "and said once:\n{log}");
+        assert!(
+            client
+                .uploads()
+                .contains(&(remote_root_of("a"), PathBuf::from("new.txt"))),
+            "scanned: {:?}",
+            client.uploads()
+        );
+
+        // Registered, so the pair is back on the idle fast path: a file no event announced waits.
+        fs::write(root.join("later.txt"), b"later").expect("another");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(
+            stepper.rewatched() == std::slice::from_ref(&root),
+            "not registered again"
+        );
+        assert!(
+            !client
+                .uploads()
+                .contains(&(remote_root_of("a"), PathBuf::from("later.txt")))
+        );
+    }
+
+    #[test]
+    fn a_pair_whose_root_cannot_be_prepared_at_boot_does_not_stop_the_others() {
+        let directory = tempdir().expect("tempdir");
+        let mut configs = pair_configs(directory.path(), &["a"]);
+        fs::write(configs[0].local_root.join("one.txt"), b"1").expect("a's file");
+        configs.push(unpreparable_config(directory.path(), "b"));
+        let client = MultiRootClient::default();
+        let mut daemon = multi_pair_daemon(configs, client.clone(), None);
+
+        assert!(daemon.runtime(0).is_some() && daemon.unavailable(1).is_some());
+        assert!(daemon.shared.pairs[0].has_runtime() && !daemon.shared.pairs[1].has_runtime());
+        // Published before any pass: M1b — the error, and a history, so gui-core reads `Failed`.
+        let reply = daemon
+            .shared
+            .response(&daemon.shared.pairs[1], "daemon status");
+        assert!(
+            reply
+                .last_error
+                .as_deref()
+                .is_some_and(|error| error.contains("could not be created")),
+            "{:?}",
+            reply.last_error
+        );
+        assert_eq!(reply.last_sync_epoch_secs, None);
+        assert!(!reply.status_history.is_empty(), "never empty");
+
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(
+            client.walks(),
+            [remote_root_of("a")],
+            "`a` synced; `b` did not"
+        );
+        assert_eq!(
+            client.uploads(),
+            [(remote_root_of("a"), PathBuf::from("one.txt"))]
+        );
+        assert_eq!(
+            daemon.shared.pairs[1].reconcile_seq.load(Ordering::SeqCst),
+            1,
+            "`b`'s attempt is an answer too"
+        );
+    }
+
+    #[test]
+    fn an_unavailable_pair_becomes_ready_when_its_root_appears_and_runs_a_first_pass() {
+        let directory = tempdir().expect("tempdir");
+        let mut configs = pair_configs(directory.path(), &["a"]);
+        configs.push(unpreparable_config(directory.path(), "b"));
+        let b_root = configs[1].local_root.clone();
+        let blocker = b_root.parent().expect("blocker").to_path_buf();
+        let client = MultiRootClient::default();
+        let mut daemon = multi_pair_daemon(configs, client.clone(), None);
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        client.clear_walks();
+
+        // What kept it unavailable goes away — but the folder is not made by anything.
+        fs::remove_file(&blocker).expect("the blocker goes");
+        stepper.send(LoopCommand::SyncNow(1));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(daemon.unavailable(1).is_some(), "still not ready");
+        assert!(
+            !blocker.exists() && !b_root.exists(),
+            "a retry never creates the folder"
+        );
+        assert!(
+            published_error(&daemon, 1).is_some_and(|error| error.contains("does not exist")),
+            "{:?}",
+            published_error(&daemon, 1)
+        );
+        assert!(client.walks().is_empty());
+
+        // The folder appears, with a file in it.
+        fs::create_dir_all(&b_root).expect("the folder appears");
+        fs::write(b_root.join("hello.txt"), b"hi").expect("a file");
+        stepper.send(LoopCommand::SyncNow(1));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(daemon.runtime(1).is_some() && daemon.shared.pairs[1].has_runtime());
+        assert_eq!(
+            client.walks(),
+            [remote_root_of("b")],
+            "its first pass ran in the same job that made it ready"
+        );
+        assert!(
+            client
+                .uploads()
+                .contains(&(remote_root_of("b"), PathBuf::from("hello.txt")))
+        );
+        assert!(!daemon.runtime(1).expect("ready").is_first_reconcile);
+        assert_eq!(published_error(&daemon, 1), None);
+        assert_eq!(stepper.rewatched(), [b_root], "watched before that pass");
+        let reply = daemon
+            .shared
+            .response(&daemon.shared.pairs[1], "daemon status");
+        assert!(reply.last_sync_epoch_secs.is_some());
+        assert!(!reply.status_history.is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_approval_on_a_pair_that_could_not_be_prepared_at_boot_answers_rather_than_dropping_the_connection()
+     {
+        // Built the way `run` builds it: through the daemon's own `control_plane_pair`, for a pair
+        // whose index cannot even be opened — the eager `open_database(..)?` of 4a would stop
+        // `run` here.
+        let directory = tempdir().expect("tempdir");
+        let mut configs = pair_configs(directory.path(), &["a"]);
+        configs.push(unpreparable_config(directory.path(), "b"));
+        let daemon = multi_pair_daemon(configs, MultiRootClient::default(), None);
+        let (loop_tx, _loop_rx) = mpsc::unbounded_channel();
+        let plane = ControlPlane {
+            shared: Arc::clone(&daemon.shared),
+            pairs: (0..2).map(|pair| daemon.control_plane_pair(pair)).collect(),
+            loop_tx,
+            io_timeout: Duration::from_secs(5),
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+            browse: BrowseContext {
+                proton: Arc::new(MultiRootClient::default()),
+                gate_wait: Duration::from_secs(5),
+            },
+        };
+        for command in [
+            ControlCommand::Approve,
+            ControlCommand::Deny,
+            ControlCommand::Keep,
+            ControlCommand::Activity,
+        ] {
+            let mut request = ControlRequest::new(command.clone());
+            request.pair = Some("b".to_owned());
+            request.argument = Some("a.txt".to_owned());
+            request.literal_path = true;
+            let response = roundtrip(&plane, request).await;
+            assert_eq!(response.pair.as_deref(), Some("b"), "{command:?}");
+            assert!(
+                response.message.contains("'b' is unavailable"),
+                "{command:?}: {}",
+                response.message
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_pair_that_becomes_ready_gets_its_approvals_connection_on_first_use() {
+        // The plane was built while the pair was unavailable. Once the daemon says it is ready the
+        // IPC task opens the connection itself — and drops it again if the pair stops being.
+        let directory = tempdir().expect("tempdir");
+        let (plane, _loop_rx) = two_pair_control_plane(directory.path());
+        *plane.pairs[1].approvals.lock().await = None;
+        let mut request = ControlRequest::new(ControlCommand::Approve);
+        request.pair = Some("beta".to_owned());
+        request.argument = Some("a.txt".to_owned());
+        request.literal_path = true;
+
+        let response = roundtrip(&plane, request.clone()).await;
+        assert!(
+            response.message.contains("no pending deletion matches"),
+            "the verb ran against the index: {}",
+            response.message
+        );
+        assert!(
+            plane.pairs[1].approvals.lock().await.is_some(),
+            "opened on first use"
+        );
+
+        plane.shared.pairs[1].set_has_runtime(false);
+        let response = roundtrip(&plane, request).await;
+        assert!(
+            response.message.contains("'beta' is unavailable"),
+            "{}",
+            response.message
+        );
+        assert!(
+            plane.pairs[1].approvals.lock().await.is_none(),
+            "and dropped with the runtime: the daemon no longer holds that pair's lock"
+        );
+    }
+
+    #[test]
+    fn a_per_root_lock_held_at_boot_refuses_startup_naming_the_pair() {
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a", "b"]);
+        // Another process holds `b`'s lock: what the lock exists to stop.
+        let _held = LockGuard::acquire(&configs[1].lockfile_path).expect("the other daemon");
+        let error = Daemon::from_pairs(configs, MultiRootClient::default(), None)
+            .err()
+            .expect("startup is refused");
+        let message = error.to_string();
+        assert!(
+            message.contains("folder pair 'b'") && message.contains("daemon already running"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_per_root_lock_held_mid_life_keeps_the_pair_unavailable_and_the_daemon_running() {
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a", "b"]);
+        let b_lockfile = configs[1].lockfile_path.clone();
+        let client = MultiRootClient::default();
+        let mut daemon = multi_pair_daemon(configs, client.clone(), None);
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        // `b` stops being ready (its lock is released with its runtime) and another process takes it.
+        daemon.demote_pair(1, "its metrics file could not be written".to_owned());
+        let held = LockGuard::acquire(&b_lockfile).expect("another process takes the lock");
+        daemon.shared.pairs[1].replace_stored_plan(StoredPlan {
+            token: "reviewed".to_owned(),
+            computed_epoch_secs: 1,
+            summary: PlanSummary::default(),
+            actions: Vec::new(),
+            cannot_sync: Vec::new(),
+            local_disposal: LocalDisposal::Permanent,
+        });
+        let apply_seq = daemon.shared.pairs[1]
+            .book_apply_request("reviewed", false)
+            .expect("token accepted");
+        client.clear_walks();
+
+        stepper.send(LoopCommand::SyncNow(1));
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        let reason = published_error(&daemon, 1).expect("it says why");
+        assert!(reason.contains("locked by another process"), "{reason}");
+        assert!(daemon.unavailable(1).is_some());
+        assert_eq!(
+            client.walks(),
+            [remote_root_of("a")],
+            "`a` is untouched, `b` ran nothing"
+        );
+        match daemon.shared.pairs[1].apply_outcome() {
+            Some(ApplyOutcome::Failed {
+                apply_seq: sealed,
+                error,
+            }) => {
+                assert_eq!(sealed, apply_seq);
+                assert!(error.contains("locked by another process"), "{error}");
+            }
+            other => panic!("the apply is sealed, got {other:?}"),
+        }
+
+        // The other process lets go: the next attempt takes it.
+        drop(held);
+        stepper.send(LoopCommand::SyncNow(1));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(daemon.runtime(1).is_some());
+        assert_eq!(client.walks(), [remote_root_of("a"), remote_root_of("b")]);
+    }
+
+    #[test]
+    fn a_root_the_watcher_cannot_watch_forces_a_local_scan_every_pass() {
+        // Events live and idle, so only a forced local scan can find an edit no event announced.
+        let directory = tempdir().expect("tempdir");
+        let mut configs = pair_configs(directory.path(), &["a"]);
+        configs[0].events_driven = true;
+        let root = configs[0].local_root.clone();
+        fs::write(root.join("a.txt"), b"a").expect("local file");
+        let client = MultiRootClient::default().with_tree(
+            &configs[0].remote_root,
+            vec![remote_file_entity("a.txt", "vola~na", &sha1_bytes(b"a"))],
+        );
+        let mut daemon = multi_pair_daemon(
+            configs,
+            client.clone(),
+            Some(Box::new(FakeEventSource::new("cursor-0"))),
+        );
+        let mut stepper = Stepper::new_with_a_watcher_that_fails(&mut daemon);
+        assert_eq!(
+            daemon.runtime(0).expect("ready").root_watch,
+            RootWatch::Incomplete,
+            "the daemon runs, with the watch it could not get marked as missing"
+        );
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        client.clear_walks();
+        assert_eq!(
+            stepper.rewatched().len(),
+            1,
+            "the boot pass tried the watch again"
+        );
+
+        for name in ["one.txt", "two.txt"] {
+            fs::write(root.join(name), name).expect("an edit nothing watched");
+            stepper.send(LoopCommand::SyncNow(0));
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+            assert!(
+                client
+                    .uploads()
+                    .contains(&(remote_root_of("a"), PathBuf::from(name))),
+                "{name}: scanned, because nothing is watching: {:?}",
+                client.uploads()
+            );
+        }
+        assert_eq!(
+            stepper.rewatched().len(),
+            3,
+            "and the watch was tried again before each of those passes"
+        );
+
+        // The watcher recovers: one more scan, then the pair is back on the idle fast path.
+        stepper.watcher_fails.store(false, Ordering::SeqCst);
+        fs::write(root.join("three.txt"), b"3").expect("an edit nothing watched");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(stepper.rewatched().len(), 4);
+        assert!(matches!(
+            daemon.runtime(0).expect("ready").root_watch,
+            RootWatch::Watching(_)
+        ));
+        assert!(
+            client
+                .uploads()
+                .contains(&(remote_root_of("a"), PathBuf::from("three.txt")))
+        );
+        fs::write(root.join("four.txt"), b"4").expect("an edit nothing watched");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(
+            stepper.rewatched().len(),
+            4,
+            "watched: no more registrations"
+        );
+        assert!(
+            !client
+                .uploads()
+                .contains(&(remote_root_of("a"), PathBuf::from("four.txt"))),
+            "watched again, so an unannounced edit waits for its event"
+        );
+    }
+
+    #[test]
+    fn a_watcher_error_that_left_a_folder_unwatched_registers_its_root_before_the_next_pass() {
+        // 4a latched a rescan for a `MaxFilesWatch` error and never registered the directory it
+        // could not watch. The error names the directory, so only its owner is registered again.
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a", "b"]);
+        let b_root = configs[1].local_root.clone();
+        let mut daemon = multi_pair_daemon(configs, MultiRootClient::default(), None);
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        assert!(stepper.rewatched().is_empty());
+
+        stepper
+            .watch_tx
+            .send(Err(notify::Error::new(notify::ErrorKind::MaxFilesWatch)
+                .add_path(b_root.join("a-folder-it-could-not-add"))))
+            .expect("watch channel open");
+        stepper.send(LoopCommand::SyncNow(0));
+        stepper.send(LoopCommand::SyncNow(1));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert_eq!(
+            stepper.rewatched(),
+            [b_root],
+            "`b`'s root, and only it, before `b`'s pass"
+        );
+        assert!(matches!(
+            daemon.runtime(1).expect("ready").root_watch,
+            RootWatch::Watching(_)
+        ));
+    }
+
+    #[test]
+    fn a_ready_pair_demoted_keeps_what_it_last_published() {
+        // Carried item 2 of the 4a note: `last_sync: None` is how the GUI tells a machine that has
+        // never synced, so a pair that was syncing may not start publishing it.
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a", "b"]);
+        fs::write(configs[1].local_root.join("kept.txt"), b"k").expect("a file");
+        let mut daemon = multi_pair_daemon(configs, MultiRootClient::default(), None);
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        let before = daemon.shared.pairs[1]
+            .snapshot
+            .lock()
+            .expect("snapshot lock")
+            .clone();
+        assert!(before.last_sync_epoch_secs.is_some());
+        assert!(before.last_successful_sync_summary.is_some());
+        assert!(!before.status_history.is_empty());
+        assert!(before.history.is_some() && before.index_totals.is_some());
+
+        daemon.demote_pair(1, "its metrics file could not be written".to_owned());
+
+        let after = daemon.shared.pairs[1]
+            .snapshot
+            .lock()
+            .expect("snapshot lock")
+            .clone();
+        assert_eq!(after.last_sync_epoch_secs, before.last_sync_epoch_secs);
+        assert_eq!(
+            after.last_successful_sync_summary,
+            before.last_successful_sync_summary
+        );
+        assert_eq!(after.index_totals, before.index_totals);
+        assert_eq!(
+            after.history.as_ref().map(|history| history.recent.len()),
+            before.history.as_ref().map(|history| history.recent.len())
+        );
+        assert_eq!(
+            &after.status_history[..before.status_history.len()],
+            &before.status_history[..],
+            "the real history is all still there, in order"
+        );
+        assert_eq!(after.status_history.len(), before.status_history.len() + 1);
+        assert_eq!(
+            after.last_error.as_deref(),
+            Some("its metrics file could not be written")
+        );
+        assert!(!daemon.shared.pairs[1].has_runtime());
+
+        // And it keeps them across the way back.
+        stepper.send(LoopCommand::SyncNow(1));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(daemon.runtime(1).is_some(), "the retry took");
+        assert!(
+            daemon.shared.pairs[1]
+                .snapshot
+                .lock()
+                .expect("snapshot lock")
+                .last_sync_epoch_secs
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn a_pair_whose_first_metrics_write_fails_is_unavailable_and_keeps_its_history() {
+        // The one production demotion: boot's first metrics write is part of preparing a pair.
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a", "b"]);
+        let b_db = configs[1].db_path.clone();
+        let earlier: Vec<StatusHistoryEntry> = (1..=5)
+            .map(|index| StatusHistoryEntry {
+                epoch_secs: 1_000 + index,
+                message: format!("sync {index}"),
+                last_error: None,
+                plan_summary: None,
+                successful_sync_summary: None,
+                failed_item_count: 0,
+            })
+            .collect();
+        write_status_history(&status_history_path(&b_db), &earlier)
+            .expect("a previous run's history");
+        // A directory where the sidecar's file would go: the write cannot land.
+        fs::create_dir_all(metrics_path(&b_db)).expect("an obstacle");
+
+        let daemon = multi_pair_daemon(configs, MultiRootClient::default(), None);
+
+        assert!(daemon.runtime(0).is_some(), "`a` is untouched");
+        let reason = daemon
+            .unavailable(1)
+            .expect("`b` is unavailable")
+            .reason
+            .clone();
+        assert!(
+            reason.contains("metrics file could not be written"),
+            "{reason}"
+        );
+        let reply = daemon
+            .shared
+            .response(&daemon.shared.pairs[1], "daemon status");
+        assert_eq!(reply.last_error.as_deref(), Some(reason.as_str()));
+        assert_eq!(
+            &reply.status_history[..5],
+            &earlier[..],
+            "the history the sidecar held is what is published, with the unavailable entry after it"
+        );
+        assert_eq!(reply.status_history.len(), 6);
+        assert!(!daemon.shared.pairs[1].has_runtime());
+    }
+
+    #[test]
+    fn a_standing_unavailable_cause_refreshes_one_entry_and_a_new_cause_adds_one() {
+        // Carried item 3 of the 4a note: an entry per attempt pushed the real history out of the
+        // 20-entry window in about ten minutes at the 30 s cadence.
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a"]);
+        let mut daemon = multi_pair_daemon(configs, MultiRootClient::default(), None);
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        let real = daemon.runtime(0).expect("ready").status_history.clone();
+        assert!(!real.is_empty());
+        let root = daemon.runtime(0).expect("ready").config.local_root.clone();
+
+        daemon.demote_pair(0, "locked by another process".to_owned());
+        fs::remove_dir_all(&root).expect("the folder goes away");
+        let reason = {
+            // The retry's own reason is a second cause: one more entry, then it stands.
+            stepper.send(LoopCommand::SyncNow(0));
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+            published_error(&daemon, 0).expect("a reason")
+        };
+        assert!(reason.contains("does not exist"), "{reason}");
+        let settled = daemon
+            .unavailable(0)
+            .expect("unavailable")
+            .status_history
+            .clone();
+        assert_eq!(settled.len(), real.len() + 2);
+        // Age the newest entry so a refresh is visible.
+        daemon
+            .unavailable_mut(0)
+            .expect("unavailable")
+            .status_history
+            .last_mut()
+            .expect("an entry")
+            .epoch_secs = 1;
+
+        for _ in 0..60 {
+            stepper.send(LoopCommand::SyncNow(0));
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        }
+
+        let history = &daemon.unavailable(0).expect("unavailable").status_history;
+        assert_eq!(
+            history.len(),
+            real.len() + 2,
+            "sixty attempts, no new entries"
+        );
+        assert_eq!(
+            &history[..real.len()],
+            &real[..],
+            "the real history is intact"
+        );
+        assert!(
+            history.last().expect("an entry").epoch_secs > 1,
+            "the newest entry's time moved: it means 'last seen'"
+        );
+    }
+
+    #[tokio::test]
+    async fn pause_and_resume_write_no_metrics_file_for_a_pair_that_is_not_ready() {
+        // Carried item 4: the file belongs to whoever holds that pair's lock, and its directory may
+        // be exactly what is missing.
+        let directory = tempdir().expect("tempdir");
+        let (plane, _loop_rx) = two_pair_control_plane(directory.path());
+        plane.shared.pairs[1].set_has_runtime(false);
+        let alpha = directory.path().join("alpha.metrics.json");
+        let beta = directory.path().join("beta.metrics.json");
+        for command in [ControlCommand::Pause, ControlCommand::Resume] {
+            for name in ["alpha", "beta"] {
+                let mut request = ControlRequest::new(command.clone());
+                request.pair = Some(name.to_owned());
+                roundtrip(&plane, request).await;
+            }
+            assert!(alpha.exists(), "{command:?}: a ready pair still records it");
+            assert!(
+                !beta.exists(),
+                "{command:?}: a pair that is not ready does not"
+            );
+            fs::remove_file(&alpha).expect("reset");
+        }
+    }
+
+    #[tokio::test]
+    async fn pause_never_brings_a_missing_state_directory_back() {
+        // `write_atomically` creates the sidecar's directory — which, with the default layout, is
+        // inside the root. A pause is not a way to make a folder that went away.
+        let directory = tempdir().expect("tempdir");
+        let (mut plane, _loop_rx) = two_pair_control_plane(directory.path());
+        let gone = directory.path().join("gone");
+        plane.pairs[0].metrics_path = gone.join("alpha.metrics.json");
+        let mut request = ControlRequest::new(ControlCommand::Pause);
+        request.pair = Some("alpha".to_owned());
+
+        let response = roundtrip(&plane, request).await;
+
+        assert_eq!(response.message, "sync paused");
+        assert!(
+            plane.shared.pairs[0].is_paused(),
+            "the pause itself took effect"
+        );
+        assert!(!gone.exists());
+    }
+
+    #[test]
+    fn a_standing_failure_to_become_ready_is_reported_once_not_once_per_attempt() {
+        // The first metrics write is part of preparing a pair, so a directory that stays unwritable
+        // promotes and demotes the pair on every retry. It is one cause, and it speaks once.
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a"]);
+        fs::create_dir_all(metrics_path(&configs[0].db_path)).expect("an obstacle");
+        let mut daemon = multi_pair_daemon(configs, MultiRootClient::default(), None);
+        let mut stepper = Stepper::new(&mut daemon);
+        assert!(
+            daemon.unavailable(0).is_some(),
+            "precondition: unavailable at boot"
+        );
+        let history = daemon
+            .unavailable(0)
+            .expect("unavailable")
+            .status_history
+            .len();
+
+        let log = capture_log("info", || {
+            for _ in 0..5 {
+                stepper.send(LoopCommand::SyncNow(0));
+                assert_eq!(stepper.step(&mut daemon), Step::Idle);
+            }
+        });
+
+        assert!(daemon.unavailable(0).is_some(), "and it stays so");
+        assert_eq!(
+            log.matches("folder pair still unavailable").count(),
+            0,
+            "the cause did not change, so nothing is said:\n{log}"
+        );
+        assert_eq!(
+            log.matches("folder pair is available again").count(),
+            0,
+            "and it never became available:\n{log}"
+        );
+        assert_eq!(
+            daemon
+                .unavailable(0)
+                .expect("unavailable")
+                .status_history
+                .len(),
+            history,
+            "one standing cause is one history entry"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_daemon_whose_only_pair_cannot_be_prepared_keeps_running_and_answers_status() {
+        // M1 with N = 1, through the real `run`: this used to exit at once, and systemd started it
+        // again every ten seconds.
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        let directory = tempdir().expect("tempdir");
+        let config = unpreparable_config(directory.path(), "default");
+        let socket_path = config.socket_path.clone();
+        let mut daemon = Daemon::from_pairs(vec![config], MultiRootClient::default(), None)
+            .expect("the daemon starts");
+        daemon.event_source_factory = Box::new(|| None);
+        let shared = Arc::clone(&daemon.shared);
+        let cancel = Arc::clone(&daemon.cancel_flag);
+        let notify = Arc::clone(&daemon.shutdown_notify);
+        let handle = tokio::spawn(daemon.run());
+        for _ in 0..200 {
+            if shared.pairs[0].reconcile_seq.load(Ordering::SeqCst) >= 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(
+            shared.pairs[0].reconcile_seq.load(Ordering::SeqCst) >= 1,
+            "precondition: its first attempt ran"
+        );
+        assert!(!handle.is_finished(), "the daemon is still running");
+
+        let mut stream = UnixStream::connect(&socket_path)
+            .await
+            .expect("the socket answers");
+        let request = serde_json::to_vec(&ControlRequest::new(ControlCommand::Status))
+            .expect("serialize request");
+        stream.write_all(&request).await.expect("write request");
+        stream.write_all(b"\n").await.expect("write newline");
+        let mut line = String::new();
+        tokio::io::BufReader::new(stream)
+            .read_line(&mut line)
+            .await
+            .expect("read response");
+        let reply: ControlResponse = serde_json::from_str(line.trim()).expect("parse response");
+        assert!(
+            reply
+                .last_error
+                .as_deref()
+                .is_some_and(|error| error.contains("default-blocker")),
+            "{:?}",
+            reply.last_error
+        );
+        assert_eq!(reply.last_sync_epoch_secs, None);
+        assert!(
+            !reply.status_history.is_empty(),
+            "so the GUI shows the error, not onboarding"
+        );
+
+        cancel.store(true, Ordering::SeqCst);
+        notify.notify_one();
+        tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("run() returns once shutdown is signalled")
+            .expect("join")
+            .expect("a clean exit");
+    }
+
+    #[test]
+    fn a_retry_never_creates_the_folder_it_is_waiting_for() {
+        // Only boot creates a missing folder. A retry that did would turn an unplugged drive's mount
+        // point into an empty tree that the next pass reconciles against the remote.
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a"]);
+        let root = configs[0].local_root.clone();
+        let mut daemon = multi_pair_daemon(configs, MultiRootClient::default(), None);
+        daemon.demote_pair(0, "locked by another process".to_owned());
+        fs::remove_dir_all(&root).expect("the folder goes away");
+        let mut stepper = Stepper::new(&mut daemon);
+
+        for _ in 0..3 {
+            stepper.send(LoopCommand::SyncNow(0));
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        }
+
+        assert!(daemon.unavailable(0).is_some(), "still waiting");
+        assert!(!root.exists(), "and nothing made the folder");
+    }
+
+    #[test]
+    fn a_paused_unavailable_pair_is_not_retried() {
+        // A pause means no work: no preparation either, which takes a lock and opens an index.
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a"]);
+        let mut daemon = multi_pair_daemon(configs, MultiRootClient::default(), None);
+        daemon.demote_pair(0, "locked by another process".to_owned());
+        daemon.shared.pairs[0].paused.store(true, Ordering::SeqCst);
+        let mut stepper = Stepper::new(&mut daemon);
+
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(daemon.unavailable(0).is_some(), "paused: not retried");
+
+        daemon.shared.pairs[0].paused.store(false, Ordering::SeqCst);
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(daemon.runtime(0).is_some(), "resumed: retried, and it took");
+    }
+
+    #[test]
+    fn a_pair_whose_index_cannot_be_opened_at_boot_publishes_the_history_its_sidecar_holds() {
+        // Boot's other unavailable path: the folder is fine, the index is not. The sidecar next to
+        // it is readable, so the real history is what is published — not just the one entry.
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a", "b"]);
+        let b_db = configs[1].db_path.clone();
+        let earlier: Vec<StatusHistoryEntry> = (1..=3)
+            .map(|index| StatusHistoryEntry {
+                epoch_secs: 2_000 + index,
+                message: format!("sync {index}"),
+                last_error: None,
+                plan_summary: None,
+                successful_sync_summary: None,
+                failed_item_count: 0,
+            })
+            .collect();
+        write_status_history(&status_history_path(&b_db), &earlier)
+            .expect("a previous run's history");
+        fs::create_dir_all(&b_db).expect("a directory where the database file belongs");
+
+        let daemon = multi_pair_daemon(configs, MultiRootClient::default(), None);
+
+        let reason = daemon
+            .unavailable(1)
+            .expect("`b` is unavailable")
+            .reason
+            .clone();
+        assert!(reason.contains("its state could not be opened"), "{reason}");
+        let reply = daemon
+            .shared
+            .response(&daemon.shared.pairs[1], "daemon status");
+        assert_eq!(&reply.status_history[..3], &earlier[..]);
+        assert_eq!(reply.status_history.len(), 4);
+        assert_eq!(reply.last_sync_epoch_secs, None);
+    }
+
+    #[test]
+    fn a_failed_re_registration_after_an_overflow_is_retried_before_the_next_pass() {
+        // The 4a arm warned that "a folder created meanwhile may stay unwatched" and had nothing to
+        // retry it with.
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a"]);
+        let root = configs[0].local_root.clone();
+        let mut daemon = multi_pair_daemon(configs, MultiRootClient::default(), None);
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        assert!(matches!(
+            daemon.runtime(0).expect("ready").root_watch,
+            RootWatch::Watching(_)
+        ));
+
+        stepper.watcher_fails.store(true, Ordering::SeqCst);
+        stepper.event(rescan_notice());
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(
+            stepper.rewatched(),
+            [root.clone(), root.clone()],
+            "the overflow's registration failed, and the pass tried it again"
+        );
+        assert_eq!(
+            daemon.runtime(0).expect("ready").root_watch,
+            RootWatch::Incomplete
+        );
+
+        stepper.watcher_fails.store(false, Ordering::SeqCst);
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(stepper.rewatched().len(), 3);
+        assert!(matches!(
+            daemon.runtime(0).expect("ready").root_watch,
+            RootWatch::Watching(_)
+        ));
     }
 }
