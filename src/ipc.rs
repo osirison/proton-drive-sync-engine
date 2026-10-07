@@ -2165,7 +2165,7 @@ mod tests {
 
     #[test]
     fn pairs_is_always_populated_on_a_one_pair_daemons_reply() {
-        // The trap named in the brief: `pairs` must never be suppressed for `N == 1`, because the
+        // The trap: `pairs` must never be suppressed for `N == 1`, because the
         // client capability gate IS "does this reply carry `pair` or `pairs`". A one-pair daemon
         // that omitted them would be indistinguishable from one that predates the feature.
         let response = response_with_non_utf8_paths();

@@ -735,6 +735,14 @@ const PAIR_NAME_RESERVED_PATHS: [&str; 2] = [".", ".."];
 /// about a folder needs more.
 const PAIR_NAME_MAX_LEN: usize = 64;
 
+/// What two pair names are compared by: ASCII-folded, because a person cannot tell `Photos` from
+/// `photos`. **The one definition of "the same pair name"** — [`validate_pair_names`] and the
+/// daemon's own N-pair constructor both compare through it, so a pair set the file reader accepts is
+/// never one the runtime refuses, nor the other way round.
+pub(crate) fn pair_name_key(name: &str) -> String {
+    name.to_ascii_lowercase()
+}
+
 /// `name` is required, `[A-Za-z0-9._-]{1,64}`, unique **case-insensitively**, and
 /// [`DEFAULT_PAIR_NAME`] belongs to the first pair.
 ///
@@ -755,7 +763,7 @@ fn validate_pair_names(pairs: &[PairFileConfig]) -> AppResult<()> {
     let mut seen: Vec<String> = Vec::with_capacity(pairs.len());
     for (position, pair) in pairs.iter().enumerate() {
         validate_pair_name(&pair.name)?;
-        let folded = pair.name.to_ascii_lowercase();
+        let folded = pair_name_key(&pair.name);
         // The duplicate check runs FIRST. Two tables both named `default` are two names that are
         // the same, not one name in the wrong position, and the reservation's advice ("move its
         // table first") would produce two `default`s if it spoke about them.

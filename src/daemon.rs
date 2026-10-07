@@ -61,7 +61,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{Notify, mpsc};
-use tracing::{debug, error, info, info_span, warn};
+use tracing::{debug, error, error_span, info, warn};
 
 pub(crate) const STATUS_HISTORY_LIMIT: usize = 20;
 /// Time budget for a single control-connection read or write. Control connections are served
@@ -425,7 +425,7 @@ struct PairRuntime {
     /// The [`Daemon::event_source_generation`] this pair last caught up with. Behind it means the
     /// session came back since this pair's last pass, so its stored cursor may be one the degraded
     /// snapshots never advanced: its next steady-state pass full-walks once
-    /// (`PairPass::catch_up_with_event_source_generation`, brief §10.3).
+    /// (`PairPass::catch_up_with_event_source_generation`; ADR 0005, phase 4a departure 6).
     seen_event_source_generation: u64,
     /// Deletions withheld by the delete-approval guard on the most recent reconcile, awaiting the
     /// user's approval. Recomputed from ground truth every pass, so it always reflects the current
@@ -499,7 +499,7 @@ struct PairPass<'a, C: ProtonClient> {
     pair: &'a mut PairRuntime,
     /// **This** pair's published block, resolved once by `pass_for` from the same index as
     /// [`Self::pair`]. A field rather than a lookup so no pass body names an index: everything a pass
-    /// latches, publishes, seals or bumps lands here, never on another pair (brief R1).
+    /// latches, publishes, seals or bumps lands here, never on another pair.
     pair_shared: &'a PairShared,
     /// The one `proton-drive` client, hence the one [`crate::proton::CliGate`] (#23).
     proton: &'a Arc<C>,
@@ -625,12 +625,13 @@ pub struct Daemon<C: ProtonClient = ProtonDriveClient> {
     /// unlocked — the common case for a systemd user service launched at boot — resumes O(changes)
     /// event-driven detection without a manual restart once the keyring becomes readable. Boxed so
     /// tests can inject a fake that flips from `None` to `Some`. Built from whether **any** pair is
-    /// events-driven: one capturing the first pair's flag never streams for the others (§10.2).
+    /// events-driven: one capturing the first pair's flag never streams for the others.
     event_source_factory: EventSourceFactory,
     /// Bumped each time a pass reacquires [`Self::event_source`]. Every *other* pair's stored cursor
     /// is as stale as the reacquiring pair's — the degraded snapshots never advanced it — so each
     /// pair compares its `PairRuntime::seen_event_source_generation` against this at its next pass
-    /// and full-walks once, and the dispatcher re-arms every pair at its new cadence (§10.3).
+    /// and full-walks once, and the dispatcher re-arms every pair at its new cadence (ADR 0005,
+    /// phase 4a departure 6).
     event_source_generation: u64,
     /// The **process-wide** half of the "event-driven detection unavailable" message family: why this
     /// daemon cannot stream events *at all*, latched so a standing cause is logged once instead of
@@ -656,7 +657,7 @@ pub struct Daemon<C: ProtonClient = ProtonDriveClient> {
     /// still stop dead on shutdown, or it would spawn (and immediately kill) one CLI child per
     /// remaining action. Owned here so `run` can install the same flag on the client.
     ///
-    /// **The one shutdown fact** (brief E19): [`Self::step_blocking`] checks it before every pop, so
+    /// **The one shutdown fact**: [`Self::step_blocking`] checks it before every pop, so
     /// no pair starts once it is set.
     cancel_flag: Arc<AtomicBool>,
     /// Wakes an idle run loop when [`Self::cancel_flag`] is set by the signal task. `notify_one`
@@ -941,7 +942,7 @@ impl ControlShared {
         Self::with_pairs(vec![(name, config)])
     }
 
-    /// The default pair, for tests. **Test-only on purpose** (brief R1): with N pairs an index-0
+    /// The default pair, for tests. **Test-only on purpose**: with N pairs an index-0
     /// shortcut in the core is a pass on pair B taking pair A's apply, truncating its own index
     /// for A's `reset-index`, or bumping A's `reconcile_seq`. Production code addresses
     /// `pairs[i]` by the index it was handed, and the compiler finds any site that forgets.
@@ -967,8 +968,7 @@ impl ControlShared {
     }
 
     /// The pair whose pass is running right now, if any — what [`SharedProgressSink`] routes a
-    /// live callback to (#102 phase 3; not in the ADR, the one genuinely new design question the
-    /// brief names).
+    /// live callback to (#102 phase 3; the ADR left it open — see its phase 3 departure 3).
     ///
     /// **"The", not "a", is defensible because passes are serialized** (ADR 0005 §5: one gate, one
     /// pass at a time), so at most one `PairShared.syncing` is ever `true`. `syncing`, not
@@ -1694,6 +1694,63 @@ struct LoopInputs {
     loop_rx: mpsc::UnboundedReceiver<LoopCommand>,
     watch_rx: mpsc::UnboundedReceiver<notify::Result<Event>>,
     watcher: Box<dyn RootWatcher>,
+    /// The watcher event the run loop's idle wait received. The wait routes nothing itself: it
+    /// leaves the event here and the next step routes it first, inside its own bounded drain, so
+    /// [`Daemon::route`] has exactly one call site and no path of its own that a step-driven test
+    /// does not reach.
+    carried: Option<notify::Result<Event>>,
+}
+
+impl LoopInputs {
+    /// The next watcher event of this drain: the carried one, then at most `remaining` queued ones —
+    /// the backlog counted when the drain began, so events that arrive while it runs wait for the
+    /// next step instead of extending this one for as long as they keep coming.
+    fn next_event(&mut self, remaining: &mut usize) -> Option<notify::Result<Event>> {
+        if let Some(event) = self.carried.take() {
+            return Some(event);
+        }
+        if *remaining == 0 {
+            return None;
+        }
+        *remaining -= 1;
+        self.watch_rx.try_recv().ok()
+    }
+}
+
+/// What a drain learned about **lost** watcher events: filled while events are routed, settled once
+/// after the drain by [`Daemon::settle_lost_events`]. An inotify overflow can deliver thousands of
+/// notices in one backlog, and each used to latch every pair, warn, and walk every watched root
+/// again.
+#[derive(Default)]
+struct LostEvents {
+    /// Why events may have been dropped; the first cause of the drain is the one that is logged.
+    cause: Option<String>,
+    /// Roots to register again (#428): the owners a notice named...
+    rewatch_roots: BTreeSet<usize>,
+    /// ...or every root, when a notice named none.
+    rewatch_every_root: bool,
+}
+
+impl LostEvents {
+    fn note(&mut self, cause: String) {
+        self.cause.get_or_insert(cause);
+    }
+
+    /// A watcher `Err`: events may be gone, but nothing says the watch itself is, so no re-walk.
+    fn note_error(&mut self, error: &notify::Error) {
+        self.note(format!("filesystem watcher reported an error: {error}"));
+    }
+
+    /// A `Rescan`-flagged notice (#423): the owning roots when it carries paths some pair owns
+    /// (macOS can attach one), every root when it does not (Linux never does).
+    fn note_rescan(&mut self, owners: BTreeSet<usize>) {
+        self.note("filesystem watcher flagged the event stream for rescan".to_owned());
+        if owners.is_empty() {
+            self.rewatch_every_root = true;
+        } else {
+            self.rewatch_roots.extend(owners);
+        }
+    }
 }
 
 /// How one [`Daemon::step_blocking`] call ended.
@@ -1799,6 +1856,16 @@ impl Daemon<ProtonDriveClient> {
     }
 }
 
+/// The span every line a pair writes sits inside, so a log line names its pair (ADR 0005 §5).
+///
+/// `error_span!`, not `info_span!`: a span's level only decides whether it exists, and one below
+/// the subscriber's filter is never created — so at `RUST_LOG=warn`, which the control-socket
+/// integration tests run under, the WARN and ERROR lines that most need attributing would have
+/// carried no pair. The one constructor, so no site can quietly use a lower level.
+fn pair_span(name: &str) -> tracing::Span {
+    error_span!("pair", name = %name)
+}
+
 /// Whether [`Daemon::pairs`] slot `i` has a runtime. Matched by [`Daemon::run_job`]'s arm table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SlotState {
@@ -1819,9 +1886,9 @@ impl<C: ProtonClient> Daemon<C> {
         Self::from_pairs(vec![config], proton, event_source)
     }
 
-    /// The N-pair constructor (#102 phase 4a). **Crate-private until the lift** (phase 4c, brief
-    /// E23): a resolved config still has exactly one pair, so no binary path reaches more than one,
-    /// and two-pair tests build their daemons here.
+    /// The N-pair constructor (#102 phase 4a). **Crate-private until the lift** (phase 4c, ADR
+    /// 0005's phase plan): a resolved config still has exactly one pair, so no binary path reaches
+    /// more than one, and two-pair tests build their daemons here.
     pub(crate) fn from_pairs(
         configs: Vec<DaemonConfig>,
         proton: C,
@@ -1852,19 +1919,21 @@ impl<C: ProtonClient> Daemon<C> {
                 )));
             }
         }
+        // The comparison is the config reader's own (`pair_name_key`), not a second copy of it.
         for (index, config) in configs.iter().enumerate() {
-            if configs[..index]
+            let key = crate::config::pair_name_key(&config.name);
+            if let Some(earlier) = configs[..index]
                 .iter()
-                .any(|earlier| earlier.name == config.name)
+                .find(|earlier| crate::config::pair_name_key(&earlier.name) == key)
             {
                 return Err(boxed_error(format!(
-                    "two folder pairs are named '{}'",
-                    config.name
+                    "two folder pairs are named '{}' without regard to case (the earlier is '{}')",
+                    config.name, earlier.name
                 )));
             }
         }
-        // §10.2: a factory that captured only the first pair's flag would never stream for the
-        // others when the first opts out.
+        // A factory that captured only the first pair's flag would never stream for the others when
+        // the first opts out.
         let events_wanted = configs.iter().any(|config| config.events_driven);
         let mut process = None;
         let mut pair_configs = Vec::with_capacity(configs.len());
@@ -1881,7 +1950,7 @@ impl<C: ProtonClient> Daemon<C> {
         // so a second daemon on the same root is refused by the per-root lock exactly as before.
         let mut locked = Vec::with_capacity(pair_configs.len());
         for config in pair_configs {
-            let _span = info_span!("pair", name = %config.name).entered();
+            let _span = pair_span(&config.name).entered();
             fs::create_dir_all(&config.local_root)?;
             create_parent_directory(&config.db_path)?;
             // Ensure the lockfile's directory (the `.sync` state dir by default) exists before
@@ -1904,7 +1973,7 @@ impl<C: ProtonClient> Daemon<C> {
         let mut slots = Vec::with_capacity(locked.len());
         let mut published = Vec::with_capacity(locked.len());
         for (config, lock_guard) in locked {
-            let _span = info_span!("pair", name = %config.name).entered();
+            let _span = pair_span(&config.name).entered();
             published.push((
                 config.name.clone(),
                 RunningConfigInfo {
@@ -1943,7 +2012,7 @@ impl<C: ProtonClient> Daemon<C> {
         // daemon already sees the last full sweep from a previous run — for every pair, not only the
         // default one.
         for pair in 0..daemon.pairs.len() {
-            let _span = info_span!("pair", name = %daemon.pair_config(pair).name).entered();
+            let _span = pair_span(&daemon.pair_config(pair).name).entered();
             daemon.publish_at_startup(pair)?;
         }
         Ok(daemon)
@@ -1963,7 +2032,7 @@ impl<C: ProtonClient> Daemon<C> {
     {
         for pair in 0..self.pairs.len() {
             let config = self.pair_config(pair);
-            let _span = info_span!("pair", name = %config.name).entered();
+            let _span = pair_span(&config.name).entered();
             info!(
                 local_root = %config.local_root.display(),
                 remote_root = %config.remote_root.display(),
@@ -2030,6 +2099,7 @@ impl<C: ProtonClient> Daemon<C> {
             loop_rx,
             watch_rx,
             watcher: Box::new(watcher),
+            carried: None,
         };
         // Why this daemon may behave like an events-off one is reported by
         // `note_degraded_session_if_needed`, from inside every pass — one message family with one
@@ -2059,10 +2129,9 @@ impl<C: ProtonClient> Daemon<C> {
                         break;
                     }
                 }
+                // Not routed here: the next step routes it, so `route` has one call site.
                 event = inputs.watch_rx.recv() => match event {
-                    Some(event) => {
-                        tokio::task::block_in_place(|| self.route(event, inputs.watcher.as_mut()));
-                    }
+                    Some(event) => inputs.carried = Some(event),
                     None => break,
                 },
                 () = tokio::time::sleep_until(wake) => {}
@@ -2075,9 +2144,9 @@ impl<C: ProtonClient> Daemon<C> {
         Ok(())
     }
 
-    /// One step of the run loop — **the** loop body, called by [`Self::run`] and by the tests alike
-    /// (brief E18): a test feeds it real channels and a fake clock, so a wrong drain order fails a
-    /// test instead of hiding behind a seam that skips the ordering.
+    /// One step of the run loop — **the** loop body, called by [`Self::run`] and by the tests alike:
+    /// a test feeds it real channels and a fake clock, so a wrong drain order fails a test instead
+    /// of hiding behind a seam that skips the ordering.
     ///
     /// Each turn: drain the control channel into the queue (explicit requests jump ahead), drain the
     /// watcher channel into the pairs (so a pair's queued changes reach its next pass), check the
@@ -2085,19 +2154,10 @@ impl<C: ProtonClient> Daemon<C> {
     /// shutdown was requested ([`Step::Stop`]).
     fn step_blocking(&mut self, inputs: &mut LoopInputs, clock: &dyn Fn() -> Instant) -> Step {
         loop {
-            // `Disconnected` (the IPC task died) ends the drain, not the daemon, and cannot spin.
-            while let Ok(command) = inputs.loop_rx.try_recv() {
-                if !self.enqueue(command) {
-                    return Step::Stop;
-                }
+            if self.drain_inputs(inputs).is_break() {
+                return Step::Stop;
             }
-            // Before the pop, so a pair's events — the echo of its own last write included (#49) —
-            // are routed before its next pass. That narrows the echo window rather than closing it:
-            // notify sends from its own thread, so an echo can still be in flight here (#425).
-            while let Ok(event) = inputs.watch_rx.try_recv() {
-                self.route(event, inputs.watcher.as_mut());
-            }
-            // Before EVERY pop: once shutdown is requested no further pair starts (R4).
+            // Before EVERY pop: once shutdown is requested no further pair starts.
             if self.cancel_flag.load(Ordering::SeqCst) {
                 return Step::Stop;
             }
@@ -2108,6 +2168,40 @@ impl<C: ProtonClient> Daemon<C> {
             debug_assert!(self.shared.active_pair().is_none());
             self.run_job(job, clock);
         }
+    }
+
+    /// Moves what is queued **now** from the two channels into the daemon: control commands into the
+    /// queue, watcher events into the pairs. `Break` means shut down.
+    ///
+    /// **Bounded by the backlog at entry**, for both channels. Draining until a channel is empty let
+    /// a busy tree starve everything after it — the pop and the shutdown check — for as long as
+    /// events arrived faster than they were routed (a reviewer measured 4.2 s with the cancel flag
+    /// already set, at 50k events/s). What arrives during the drain is the next step's, and the
+    /// flag is read between events so a shutdown does not wait for the rest of the backlog either.
+    ///
+    /// Before the pop, so a pair's events — the echo of its own last write included (#49) — are
+    /// routed before its next pass. That narrows the echo window rather than closing it: notify
+    /// sends from its own thread, so an echo can still be in flight here (#425).
+    fn drain_inputs(&mut self, inputs: &mut LoopInputs) -> std::ops::ControlFlow<()> {
+        // `Disconnected` (the IPC task died) ends the drain, not the daemon, and cannot spin.
+        for _ in 0..inputs.loop_rx.len() {
+            let Ok(command) = inputs.loop_rx.try_recv() else {
+                break;
+            };
+            if !self.enqueue(command) {
+                return std::ops::ControlFlow::Break(());
+            }
+        }
+        let mut remaining = inputs.watch_rx.len();
+        let mut lost = LostEvents::default();
+        while let Some(event) = inputs.next_event(&mut remaining) {
+            if self.cancel_flag.load(Ordering::SeqCst) {
+                return std::ops::ControlFlow::Break(());
+            }
+            self.route(event, &mut lost);
+        }
+        self.settle_lost_events(&lost, inputs.watcher.as_mut());
+        std::ops::ControlFlow::Continue(())
     }
 
     /// Queues a control command as an explicit job; `false` means shut down.
@@ -2134,7 +2228,7 @@ impl<C: ProtonClient> Daemon<C> {
         true
     }
 
-    /// Runs one popped job. **Every arm that consumes a request seals it** (brief §2.10, R2): a
+    /// Runs one popped job. **Every arm that consumes a request seals it**: a
     /// client polls a sync, a plan or an apply with no deadline, so an arm that drops one hangs it.
     ///
     /// | job  | slot        | paused | what runs                                                  |
@@ -2150,8 +2244,8 @@ impl<C: ProtonClient> Daemon<C> {
     /// sweep latches the pair's full walk before either arm, so a paused pair keeps it, as a
     /// `resync` does.
     fn run_job(&mut self, job: Job, clock: &dyn Fn() -> Instant) {
-        // Every line the job logs — the pass family's included — names its pair (brief E26).
-        let _span = info_span!("pair", name = %self.pair_config(job.pair).name).entered();
+        // Every line the job logs — the pass family's included — names its pair.
+        let _span = pair_span(&self.pair_config(job.pair).name).entered();
         let generation = self.event_source_generation;
         if job.kind == JobKind::Sync && job.cause == Cause::Sweep {
             self.latch_scheduled_full_sweep(job.pair);
@@ -2227,7 +2321,7 @@ impl<C: ProtonClient> Daemon<C> {
         }
     }
 
-    /// Every pair due `now`, ties in config order, each with its sweep armed (boot, brief §3.1).
+    /// Every pair due `now`, ties in config order, each with its sweep armed (boot, ADR 0005 §5).
     fn seed_schedule(&mut self, now: Instant) {
         let cadences = (0..self.pairs.len())
             .map(|pair| self.cadence_for(pair))
@@ -2252,7 +2346,7 @@ impl<C: ProtonClient> Daemon<C> {
 
     /// The session came back during the job just run: every pair's cadence follows
     /// [`Self::cadence_for`] again, and an events-driven pair's timer is pulled in to the new, faster
-    /// one rather than waiting out its degraded `scan_interval` (brief §10.3).
+    /// one rather than waiting out its degraded `scan_interval` (ADR 0005, phase 4a departure 6).
     fn retune_after_session_change(&mut self, now: Instant) {
         for pair in 0..self.pairs.len() {
             let cadence = self.cadence_for(pair);
@@ -2330,21 +2424,16 @@ impl<C: ProtonClient> Daemon<C> {
             .store(true, Ordering::SeqCst);
     }
 
-    /// The filesystem watcher failed (`Err`). Events may have been **dropped**: the files they
-    /// described are absent from `pending_changes` and, in events mode, produce no remote event
-    /// either — so the idle fast-path would skip the local stat-walk and strand them (#51).
-    /// Force the next pass to scan the local tree. NOT the Linux inotify-overflow shape: notify
-    /// reports that as an `Ok` event flagged `Rescan`, which `handle_fs_event` routes to the same
-    /// [`Self::latch_local_rescan`] (#423). The run loop reaches this through [`Self::route`], so
-    /// the loop cannot drift from what the tests drive.
-    fn note_watch_error(&mut self, error: &notify::Error) {
-        self.latch_local_rescan(&format!("filesystem watcher reported an error: {error}"));
-    }
-
-    /// The one definition of "events may have been lost": force a local scan on the next pass.
-    /// The notice carries no path, so this sets the flag on *every* pair — loss happened
-    /// somewhere, and that is the only fail-safe reading available (ADR 0005 §5). A pair that is
-    /// not ready has nothing to set: it starts as a first pass, which always scans.
+    /// Forces the next pass of **every** pair to scan the local tree, because filesystem events may
+    /// have been dropped. The files they described are absent from `pending_changes` and, in events
+    /// mode, produce no remote event either — so the idle fast-path would skip the local stat-walk
+    /// and strand them (#51). Two shapes reach it, both through [`LostEvents`] and one settle per
+    /// drain: a watcher `Err`, and notify's inotify overflow, which is an `Ok` event flagged
+    /// `Rescan` (#423). The one definition of "events may have been lost".
+    ///
+    /// The notice carries no pair, so this sets the flag on *every* pair — loss happened somewhere,
+    /// and that is the only fail-safe reading available (ADR 0005 §5). A pair that is not ready has
+    /// nothing to set: it starts as a first pass, which always scans.
     fn latch_local_rescan(&mut self, cause: &str) {
         warn!(
             cause,
@@ -2470,7 +2559,7 @@ impl<C: ProtonClient> Daemon<C> {
         slot_config(&self.pairs[pair])
     }
 
-    /// The default pair's pass, for tests. **Test-only on purpose** (brief R1): every production
+    /// The default pair's pass, for tests. **Test-only on purpose**: every production
     /// caller is handed the index it acts on, and the compiler finds one that forgets.
     #[cfg(test)]
     fn pass(&mut self) -> PairPass<'_, C> {
@@ -2493,24 +2582,42 @@ impl<C: ProtonClient> Daemon<C> {
         self.pass().reconcile_blocking()
     }
 
-    /// The watcher's one entry point, from the step function's drain and from the run loop's wait
-    /// alike. An `Err` loses events somewhere, so every pair rescans; an `Ok` event is routed path by
-    /// path to the pairs that own it; a `Rescan`-flagged one also re-registers the watch (#428).
-    fn route(&mut self, event: notify::Result<Event>, watcher: &mut dyn RootWatcher) {
-        let event = match event {
-            Ok(event) => event,
-            Err(error) => {
-                self.note_watch_error(&error);
-                return;
+    /// The watcher's one entry point, called from [`Self::drain_inputs`] alone. An `Err` loses
+    /// events somewhere; an `Ok` event is routed path by path to the pairs that own it, and a
+    /// `Rescan`-flagged one loses events too. Losses are only *noted* here and settled once per
+    /// drain ([`Self::settle_lost_events`]).
+    fn route(&mut self, event: notify::Result<Event>, lost: &mut LostEvents) {
+        match event {
+            Ok(event) => {
+                if let Err(error) = self.route_event(event, lost) {
+                    warn!(%error, "failed to process filesystem event");
+                }
             }
-        };
-        let rescan_paths = event.need_rescan().then(|| event.paths.clone());
-        if let Err(error) = self.handle_fs_event(event) {
-            warn!(%error, "failed to process filesystem event");
+            Err(error) => lost.note_error(&error),
         }
-        if let Some(paths) = rescan_paths {
-            self.rewatch_after_rescan(&paths, watcher);
+    }
+
+    /// Latches the rescan once and registers the named roots again once, however many notices the
+    /// drain saw (#423, #428). Before the pop, so the flag is up when the pass that needs it starts.
+    fn settle_lost_events(&mut self, lost: &LostEvents, watcher: &mut dyn RootWatcher) {
+        self.latch_lost_events(lost);
+        self.rewatch_after_rescan(lost, watcher);
+    }
+
+    fn latch_lost_events(&mut self, lost: &LostEvents) {
+        if let Some(cause) = &lost.cause {
+            self.latch_local_rescan(cause);
         }
+    }
+
+    /// Test-only: one event routed and its loss latched at once, as a drain of one would. Production
+    /// reaches [`Self::route_event`] through [`Self::route`] and settles per drain.
+    #[cfg(test)]
+    fn handle_fs_event(&mut self, event: Event) -> AppResult<()> {
+        let mut lost = LostEvents::default();
+        let result = self.route_event(event, &mut lost);
+        self.latch_lost_events(&lost);
+        result
     }
 
     /// Routes a filesystem event to the pairs that own its paths, **before** any pair's filters run:
@@ -2520,12 +2627,18 @@ impl<C: ProtonClient> Daemon<C> {
     /// straddles two roots therefore queues each side on its own pair.
     ///
     /// Returns the first handler error; every other pair's paths are still handled.
-    fn handle_fs_event(&mut self, event: Event) -> AppResult<()> {
-        // #423: notify's inotify overflow is `Ok(Other + Flag::Rescan)` with no paths. Latched
-        // before the per-path handlers, which return early on error and would skip a later latch.
-        // A notice that also carries paths still has them processed below.
+    fn route_event(&mut self, event: Event, lost: &mut LostEvents) -> AppResult<()> {
+        // #423: notify's inotify overflow is `Ok(Other + Flag::Rescan)` with no paths. Noted before
+        // the per-path handlers, which return early on error and would skip a later note. A notice
+        // that also carries paths still has them processed below.
         if event.need_rescan() {
-            self.latch_local_rescan("filesystem watcher flagged the event stream for rescan");
+            lost.note_rescan(
+                event
+                    .paths
+                    .iter()
+                    .filter_map(|path| self.owning_pair(path))
+                    .collect(),
+            );
         }
         let Event { kind, paths, attrs } = event;
         let mut groups: Vec<(usize, Vec<PathBuf>)> = Vec::new();
@@ -2540,7 +2653,7 @@ impl<C: ProtonClient> Daemon<C> {
         }
         let mut first_error = None;
         for (pair, group) in groups {
-            let _span = info_span!("pair", name = %self.pair_config(pair).name).entered();
+            let _span = pair_span(&self.pair_config(pair).name).entered();
             let result = {
                 // A slot that is not ready is not watched; nothing of its can be queued.
                 let Some(mut pass) = self.pass_for(pair) else {
@@ -2561,7 +2674,7 @@ impl<C: ProtonClient> Daemon<C> {
                 // The per-path handler returns at its first failure, so that path and every later
                 // one in its group were never queued: a change the watcher saw and we could not
                 // record.
-                self.latch_local_rescan(&format!("filesystem event could not be queued: {error}"));
+                lost.note(format!("filesystem event could not be queued: {error}"));
                 first_error.get_or_insert(error);
             }
         }
@@ -2591,24 +2704,20 @@ impl<C: ProtonClient> Daemon<C> {
     /// re-walk then failed (`MaxFilesWatch`), the root would be left with fewer watches than before
     /// — with nothing in phase 4a to retry it.
     ///
-    /// The owning root(s) when the notice carries paths (macOS can attach one), every ready root
-    /// when it carries none (Linux always). The rescan latch set by `handle_fs_event` makes the next
-    /// pass scan whatever changed meanwhile.
-    fn rewatch_after_rescan(&mut self, paths: &[PathBuf], watcher: &mut dyn RootWatcher) {
-        let owners: BTreeSet<usize> = paths
-            .iter()
-            .filter_map(|path| self.owning_pair(path))
-            .collect();
-        let targets: Vec<usize> = if owners.is_empty() {
+    /// The owning root(s) when a notice carries paths (macOS can attach one), every ready root when
+    /// one carries none (Linux always) — **once per root per drain**, whatever the notice count. The
+    /// rescan latch makes the next pass scan whatever changed meanwhile.
+    fn rewatch_after_rescan(&mut self, lost: &LostEvents, watcher: &mut dyn RootWatcher) {
+        let targets: Vec<usize> = if lost.rewatch_every_root {
             (0..self.pairs.len()).collect()
         } else {
-            owners.into_iter().collect()
+            lost.rewatch_roots.iter().copied().collect()
         };
         for pair in targets {
             let Some(runtime) = self.runtime(pair) else {
                 continue;
             };
-            let _span = info_span!("pair", name = %runtime.config.name).entered();
+            let _span = pair_span(&runtime.config.name).entered();
             let root = &runtime.config.local_root;
             match watcher.watch_root(root) {
                 Ok(()) => info!(
@@ -2862,8 +2971,8 @@ fn slot_config(slot: &PairSlot) -> &PairConfig {
     }
 }
 
-/// THE cadence rule (brief §2.5): `min(poll, scan_interval)` while the pair's events are live —
-/// `events_driven` and a session — else `scan_interval`. Today's two run-loop arms, per pair.
+/// THE cadence rule (ADR 0005 §5, rule 1): `min(poll, scan_interval)` while the pair's events are
+/// live — `events_driven` and a session — else `scan_interval`. Today's two run-loop arms, per pair.
 fn pair_cadence(
     config: &PairConfig,
     session_live: bool,
@@ -3541,10 +3650,11 @@ impl<C: ProtonClient> PairPass<'_, C> {
         }
     }
 
-    /// Forces one full walk on the first steady-state pass after the session came back (brief
-    /// §10.3). Steady-state incremental has no cursor-age gate, so without this a pair would replay
-    /// the cursor persisted before the degraded window — which the degraded snapshots never advanced
-    /// past — and miss everything since; a full walk captures a fresh cursor to stream from.
+    /// Forces one full walk on the first steady-state pass after the session came back (ADR 0005,
+    /// phase 4a departure 6). Steady-state incremental has no cursor-age gate, so without this a
+    /// pair would replay the cursor persisted before the degraded window — which the degraded
+    /// snapshots never advanced past — and miss everything since; a full walk captures a fresh
+    /// cursor to stream from.
     ///
     /// Per pair, keyed on a generation rather than done once by whichever pass reacquired: the
     /// session is process-wide, so EVERY events-driven pair's cursor went stale in that window, not
@@ -6244,13 +6354,9 @@ async fn serve_control_socket<C: ProtonClient + 'static>(
     }
 }
 
-/// A wire selector that did not resolve to any configured pair (#102 phase 3, ADR 0005 §4).
-/// `message` names the configured pairs; the caller's response carries `pair: None` and does
-/// nothing else. The echoed selector is bounded by [`truncate_selector`] (#422): display only,
-/// resolution has already compared the full value.
 /// What `approve`/`deny`/`keep`/`activity` answer for a pair that is not ready, which has no
 /// index connection on this task: the reason the pair published, as an answer rather than a
-/// dropped connection (#102 phase 4a, brief §6.2).
+/// dropped connection (#102 phase 4a).
 fn unavailable_pair_message(pair: &PairShared) -> String {
     let reason = pair
         .snapshot
@@ -6262,6 +6368,10 @@ fn unavailable_pair_message(pair: &PairShared) -> String {
     format!("folder pair '{}' is unavailable: {reason}", pair.name)
 }
 
+/// A wire selector that did not resolve to any configured pair (#102 phase 3, ADR 0005 §4).
+/// `message` names the configured pairs; the caller's response carries `pair: None` and does
+/// nothing else. The echoed selector is bounded by [`truncate_selector`] (#422): display only,
+/// resolution has already compared the full value.
 fn unknown_pair_message(shared: &ControlShared, selector: &str) -> String {
     format!(
         "no such folder pair '{}'; configured pairs: {}",
@@ -7572,7 +7682,7 @@ fn open_cli_keyring_event_source() -> Option<Box<dyn EventSource>> {
 }
 
 /// The default [`Daemon::event_source_factory`]. `events_wanted` is whether ANY pair is
-/// events-driven (brief §10.2): the session is process-wide, so one pair opting out must not stop
+/// events-driven: the session is process-wide, so one pair opting out must not stop
 /// it for the others. Quiet on failure (unlike the startup `build_event_source`, which warns once):
 /// this runs every degraded pass.
 fn event_source_factory(
@@ -15386,10 +15496,11 @@ mod tests {
         );
     }
 
-    /// #102 phase 3: the one genuinely new design question in the brief. A `SharedProgressSink`
-    /// callback must land on the pair whose pass is running, and must never land on a *different*
-    /// pair's activity when that pair is idle — pinned directly against the sink rather than
-    /// against `active_pair` alone, so a future change to either cannot drift apart unnoticed.
+    /// #102 phase 3: the one design question the ADR left open (its phase 3 departure 3). A
+    /// `SharedProgressSink` callback must land on the pair whose pass is running, and must never
+    /// land on a *different* pair's activity when that pair is idle — pinned directly against the
+    /// sink rather than against `active_pair` alone, so a future change to either cannot drift
+    /// apart unnoticed.
     #[test]
     fn the_progress_sink_routes_to_the_running_pairs_activity_and_never_an_idle_pairs() {
         let shared = Arc::new(two_pair_shared());
@@ -18906,7 +19017,9 @@ mod tests {
         // Deliberately no `handle_fs_event`: this is the event the overflow dropped.
         assert!(daemon.pair().pending_changes.is_empty());
 
-        daemon.note_watch_error(&notify::Error::generic("watch descriptor limit reached"));
+        let mut lost = LostEvents::default();
+        lost.note_error(&notify::Error::generic("watch descriptor limit reached"));
+        daemon.latch_lost_events(&lost);
         daemon
             .reconcile_blocking()
             .expect_clean("incremental reconcile after the watcher error");
@@ -21514,7 +21627,7 @@ mod tests {
 
     // ---------------------------------------------------------------------------------------
     // #102 phase 4a: N pairs through one due queue, driven by the ONE step function `run()` calls
-    // (brief E18). Every test below feeds `step_blocking` real channels and a fake clock, so the
+    // Every test below feeds `step_blocking` real channels and a fake clock, so the
     // ordering it asserts is the loop's own, not a seam's.
     // ---------------------------------------------------------------------------------------
 
@@ -21546,6 +21659,8 @@ mod tests {
     /// Records every root the router asks to (re-)watch (#428).
     struct RecordingWatcher {
         roots: Arc<Mutex<Vec<PathBuf>>>,
+        /// Answers every request with an error.
+        fail: Arc<AtomicBool>,
     }
 
     impl RootWatcher for RecordingWatcher {
@@ -21554,6 +21669,9 @@ mod tests {
                 .lock()
                 .expect("watched roots lock")
                 .push(root.to_path_buf());
+            if self.fail.load(Ordering::SeqCst) {
+                return Err(notify::Error::generic("watch descriptor limit reached"));
+            }
             Ok(())
         }
     }
@@ -21565,6 +21683,7 @@ mod tests {
         watch_tx: mpsc::UnboundedSender<notify::Result<Event>>,
         clock: FakeClock,
         rewatched: Arc<Mutex<Vec<PathBuf>>>,
+        watcher_fails: Arc<AtomicBool>,
     }
 
     impl Stepper {
@@ -21586,18 +21705,22 @@ mod tests {
             let (loop_tx, loop_rx) = mpsc::unbounded_channel();
             let (watch_tx, watch_rx) = mpsc::unbounded_channel();
             let rewatched = Arc::new(Mutex::new(Vec::new()));
+            let watcher_fails = Arc::new(AtomicBool::new(false));
             Self {
                 inputs: LoopInputs {
                     loop_rx,
                     watch_rx,
                     watcher: Box::new(RecordingWatcher {
                         roots: Arc::clone(&rewatched),
+                        fail: Arc::clone(&watcher_fails),
                     }),
+                    carried: None,
                 },
                 loop_tx,
                 watch_tx,
                 clock,
                 rewatched,
+                watcher_fails,
             }
         }
 
@@ -21629,6 +21752,8 @@ mod tests {
         trees: Arc<Mutex<HashMap<PathBuf, HashMap<PathBuf, RemoteEntity>>>>,
         walks: Arc<Mutex<Vec<PathBuf>>>,
         uploads: Arc<Mutex<Vec<(PathBuf, PathBuf)>>>,
+        /// Every remote directory a pass asked for, `(remote root, relative path)`.
+        directories: Arc<Mutex<Vec<(PathBuf, PathBuf)>>>,
         /// Runs on every full walk, after it is recorded: how something happens "mid-pass".
         on_walk: Arc<Mutex<Option<WalkHook>>>,
         /// Each of these roots' next walk fails, once.
@@ -21680,6 +21805,10 @@ mod tests {
 
         fn uploads(&self) -> Vec<(PathBuf, PathBuf)> {
             self.uploads.lock().expect("uploads lock").clone()
+        }
+
+        fn directories(&self) -> Vec<(PathBuf, PathBuf)> {
+            self.directories.lock().expect("directories lock").clone()
         }
 
         fn cancelled(&self) -> bool {
@@ -21738,7 +21867,11 @@ mod tests {
             Ok(())
         }
 
-        fn ensure_directory(&self, _remote_root: &Path, _relative_path: &Path) -> AppResult<()> {
+        fn ensure_directory(&self, remote_root: &Path, relative_path: &Path) -> AppResult<()> {
+            self.directories
+                .lock()
+                .expect("directories lock")
+                .push((remote_root.to_path_buf(), relative_path.to_path_buf()));
             Ok(())
         }
 
@@ -21940,8 +22073,9 @@ mod tests {
 
     #[test]
     fn a_syncnow_sent_through_the_channel_jumps_a_timer_due_pair() {
-        // ADR 0005 §5, Q1: does a `syncnow` on pair B jump a timer-due pair A? Sent through
-        // `loop_rx` itself, so the answer depends on the step draining the channel before it pops.
+        // ADR 0005's phase 4 questions, the first: does a `syncnow` on pair B jump a timer-due pair
+        // A? Sent through `loop_rx` itself, so the answer depends on the step draining the channel
+        // before it pops.
         let directory = tempdir().expect("tempdir");
         let mut configs = pair_configs(directory.path(), &["a", "b"]);
         configs[0].scan_interval = Duration::from_secs(30);
@@ -21965,7 +22099,7 @@ mod tests {
 
     #[test]
     fn a_long_pass_on_pair_a_does_not_starve_pair_bs_watcher_driven_pass() {
-        // ADR 0005 §5, Q2: does a 30-minute pass on pair A starve pair B's watcher-driven pass? `a`
+        // The second: does a 30-minute pass on pair A starve pair B's watcher-driven pass? `a`
         // (30s cadence) starts a pass that runs 30 minutes; `b` falls due inside it, and a file lands
         // in `b`'s root during it. When `a` ends, `b` must run — and upload — before `a` again.
         let directory = tempdir().expect("tempdir");
@@ -22031,7 +22165,7 @@ mod tests {
 
     #[test]
     fn a_shutdown_mid_pair_two_leaves_pair_one_committed_and_pair_three_untouched() {
-        // ADR 0005 §5, Q3, at the step: a shutdown landing during pair two's pass (here: during its
+        // The third, at the step: a shutdown landing during pair two's pass (here: during its
         // first upload) fails that pass at the executor's next check, and the step never starts pair
         // three — the flag is read before every pop.
         let directory = tempdir().expect("tempdir");
@@ -22086,7 +22220,7 @@ mod tests {
 
     #[test]
     fn a_reset_requested_for_one_pair_never_truncates_another() {
-        // R1, the hazard named first: with an index-0 `pair_shared`, pair `b`'s pass would swap pair
+        // A pass on the wrong pair: with an index-0 `pair_shared`, pair `b`'s pass would swap pair
         // `a`'s `reset_index` latch — and truncate `b`'s OWN index with it.
         let directory = tempdir().expect("tempdir");
         let (mut daemon, client, mut stepper) = steady_two_pair_daemon(directory.path());
@@ -22283,7 +22417,7 @@ mod tests {
 
     #[test]
     fn a_paused_pair_costs_no_pass_and_does_not_spin() {
-        // R5: a paused pair popped and skipped must still be re-armed, or it stays due and the step
+        // A paused pair popped and skipped must still be re-armed, or it stays due and the step
         // never returns. Run on a thread with a deadline, so a spin fails the test instead of
         // hanging the suite.
         let directory = tempdir().expect("tempdir");
@@ -22719,10 +22853,13 @@ mod tests {
             .unwrap_or(16_384);
         // Each written file costs four events (CREATE, OPEN, MODIFY, CLOSE_WRITE): twice the queue.
         let files = limit / 2 + 64;
-        assert!(
-            files <= 200_000,
-            "max_queued_events is {limit}: too large to overflow from a test"
-        );
+        if files > 200_000 {
+            // A host tuned for heavy inotify use: writing that many files from a test is not a test.
+            eprintln!(
+                "skipped: fs.inotify.max_queued_events is {limit}, too large to overflow from a test"
+            );
+            return;
+        }
         let directory = tempdir().expect("tempdir");
         let root = directory.path().join("root");
         fs::create_dir(&root).expect("root");
@@ -22821,7 +22958,7 @@ mod tests {
 
     #[test]
     fn the_event_source_is_built_when_any_pair_is_events_driven() {
-        // §10.2: the default factory used to capture the one pair's `events_driven`. With N pairs it
+        // The default factory used to capture the one pair's `events_driven`. With N pairs it
         // must capture whether ANY pair wants events, or a daemon whose first pair opts out never
         // streams for the others. NOT pinned: the factory under test is the constructor's own, with
         // only its session opener swapped off the keyring.
@@ -22844,7 +22981,7 @@ mod tests {
 
     #[test]
     fn an_event_source_reacquired_on_one_pairs_pass_forces_every_other_pair_to_full_walk_once() {
-        // §10.3: both pairs hold a cursor from a previous process that the degraded snapshots never
+        // Both pairs hold a cursor from a previous process that the degraded snapshots never
         // advanced. Whichever pass reacquires the session, EVERY events-driven pair must full-walk
         // once before streaming, or the one that did not reacquire replays the stale cursor and
         // misses everything since.
@@ -22911,7 +23048,7 @@ mod tests {
 
     #[test]
     fn an_unavailable_slot_seals_syncnow_plan_and_apply() {
-        // R2: every request consumed on a pair that is not ready is answered. A plan or apply
+        // Every request consumed on a pair that is not ready is answered. A plan or apply
         // poller has no deadline, so a dropped one hangs its client for ever.
         let directory = tempdir().expect("tempdir");
         let client = MultiRootClient::default();
@@ -23122,10 +23259,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn every_per_pair_log_line_names_its_pair() {
-        // E26: with N pairs, "starting reconciliation" — or a scope decline, or a fallback — is
-        // unattributable unless the line carries its pair. One span at the dispatcher does it.
+    /// Everything `run` logged, under an `EnvFilter` built from `filter` — the directive a person
+    /// sets in `RUST_LOG`.
+    fn capture_log(filter: &str, run: impl FnOnce()) -> String {
         #[derive(Clone, Default)]
         struct Captured(Arc<Mutex<Vec<u8>>>);
         impl std::io::Write for Captured {
@@ -23147,15 +23283,17 @@ mod tests {
         let subscriber = tracing_subscriber::fmt()
             .with_writer(captured.clone())
             .with_ansi(false)
-            .with_max_level(tracing::Level::INFO)
+            .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
             .finish();
-        let directory = tempdir().expect("tempdir");
-        let mut daemon = multi_pair_daemon(
-            pair_configs(directory.path(), &["a", "b"]),
-            MultiRootClient::default(),
-            None,
-        );
-        let mut stepper = Stepper::new(&mut daemon);
+        with_subscriber(subscriber, run);
+        String::from_utf8(captured.0.lock().expect("log lock").clone()).expect("utf-8")
+    }
+
+    /// Runs `run` with `subscriber` as this thread's default.
+    fn with_subscriber(
+        subscriber: impl tracing::Subscriber + Send + Sync + 'static,
+        run: impl FnOnce(),
+    ) {
         // tracing-core caches each callsite's interest process-wide, and while exactly ONE
         // dispatcher is registered it computes that interest from the *registering thread's* own
         // default — so a callsite another test thread hits first, during this test, is cached
@@ -23166,10 +23304,24 @@ mod tests {
             tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
         tracing::subscriber::with_default(subscriber, || {
             tracing::callsite::rebuild_interest_cache();
+            run();
+        });
+    }
+
+    #[test]
+    fn every_per_pair_log_line_names_its_pair() {
+        // With N pairs, "starting reconciliation" — or a scope decline, or a fallback — is
+        // unattributable unless the line carries its pair. One span at the dispatcher does it.
+        let directory = tempdir().expect("tempdir");
+        let mut daemon = multi_pair_daemon(
+            pair_configs(directory.path(), &["a", "b"]),
+            MultiRootClient::default(),
+            None,
+        );
+        let mut stepper = Stepper::new(&mut daemon);
+        let log = capture_log("info", || {
             assert_eq!(stepper.step(&mut daemon), Step::Idle);
         });
-
-        let log = String::from_utf8(captured.0.lock().expect("log lock").clone()).expect("utf-8");
         let starts: Vec<&str> = log
             .lines()
             .filter(|line| line.contains("starting reconciliation"))
@@ -23226,7 +23378,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn a_cancel_set_while_the_loop_is_idle_ends_run_promptly() {
-        // E19: the flag is the one shutdown fact, and the `Notify` is what wakes an idle loop to
+        // The flag is the one shutdown fact, and the `Notify` is what wakes an idle loop to
         // read it. Without it the loop sleeps out the next deadline — here an hour.
         let directory = tempdir().expect("tempdir");
         let local_root = directory.path().join("local");
@@ -23261,7 +23413,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn a_boot_sequence_is_cut_at_a_pair_boundary() {
-        // ADR 0005 §5, Q3, through `run` and real time: three pairs boot through the queue; pair two
+        // The third again, through `run` and real time: three pairs boot through the queue; pair two
         // blocks mid-upload until shutdown is signalled. Pair one stays committed, pair two fails,
         // pair three never starts — not even its walk.
         let directory = tempdir().expect("tempdir");
@@ -23307,7 +23459,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn a_degraded_pair_rides_its_scan_interval_while_a_live_pair_polls() {
-        // Cadence is per pair (§2.5), never a process-wide minimum. With one live session, a pair
+        // Cadence is per pair, never a process-wide minimum. With one live session, a pair
         // whose events are off is not live — its only per-pair way to be "degraded" — so it stays
         // on its own scan interval while the live pair polls at the fast cadence (#50 per pair).
         let directory = tempdir().expect("tempdir");
@@ -23363,6 +23515,770 @@ mod tests {
         assert!(
             error.to_string().contains("two folder pairs are named 'a'"),
             "{error}"
+        );
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // PR #430 review fixes (#102 phase 4a): the bounded drain, one route site, the sweep fold.
+    // ---------------------------------------------------------------------------------------
+
+    /// Calls `then` for each WARN event logged on the thread whose message contains `needle`, at
+    /// most `budget` times: how a test makes "handling one input causes the next to arrive" without
+    /// a timing assumption. The budget is shared, so a test can read what is left. Install it with
+    /// [`with_subscriber`] over `tracing_subscriber::registry()`.
+    struct OnWarn {
+        needle: &'static str,
+        budget: Arc<AtomicUsize>,
+        then: Box<dyn Fn() + Send + Sync>,
+    }
+
+    impl OnWarn {
+        fn new(
+            needle: &'static str,
+            budget: &Arc<AtomicUsize>,
+            then: impl Fn() + Send + Sync + 'static,
+        ) -> Self {
+            Self {
+                needle,
+                budget: Arc::clone(budget),
+                then: Box::new(then),
+            }
+        }
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for OnWarn {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _context: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            struct Message(String);
+            impl tracing::field::Visit for Message {
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    if field.name() == "message" {
+                        self.0 = format!("{value:?}");
+                    }
+                }
+            }
+            if *event.metadata().level() != tracing::Level::WARN {
+                return;
+            }
+            let mut message = Message(String::new());
+            event.record(&mut message);
+            if message.0.contains(self.needle)
+                && self
+                    .budget
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                        left.checked_sub(1)
+                    })
+                    .is_ok()
+            {
+                (self.then)();
+            }
+        }
+    }
+
+    /// notify's inotify queue overflow, as `route` receives it: a `Rescan` flag and no path.
+    fn rescan_notice() -> Event {
+        Event::new(EventKind::Other).set_flag(notify::event::Flag::Rescan)
+    }
+
+    /// The same notice carrying a path, as FSEvents may deliver it.
+    fn rescan_notice_under(root: &Path) -> Event {
+        rescan_notice().add_path(root.to_path_buf())
+    }
+
+    /// A watcher that outpaces the step: `quota` file-create events under `root`, in bursts, until
+    /// stopped. Distinct paths, so every one that is routed shows up in `pending_changes`.
+    struct EventFlood {
+        stop: Arc<AtomicBool>,
+        handle: std::thread::JoinHandle<()>,
+    }
+
+    impl EventFlood {
+        fn start(
+            tx: mpsc::UnboundedSender<notify::Result<Event>>,
+            root: PathBuf,
+            quota: usize,
+        ) -> Self {
+            let stop = Arc::new(AtomicBool::new(false));
+            let halt = Arc::clone(&stop);
+            let handle = std::thread::spawn(move || {
+                let mut sent = 0;
+                while !halt.load(Ordering::SeqCst) && sent < quota {
+                    for _ in 0..500 {
+                        let event = Event::new(EventKind::Create(CreateKind::File))
+                            .add_path(root.join(format!("f{sent}")));
+                        if tx.send(Ok(event)).is_err() {
+                            return;
+                        }
+                        sent += 1;
+                    }
+                    std::thread::sleep(Duration::from_micros(200));
+                }
+            });
+            Self { stop, handle }
+        }
+
+        fn stop(self) {
+            self.stop.store(true, Ordering::SeqCst);
+            self.handle.join().expect("the flood thread ends");
+        }
+    }
+
+    #[test]
+    fn a_set_cancel_flag_ends_the_step_while_the_watcher_keeps_producing() {
+        // The drain used to run until the watcher channel was EMPTY, before it looked at the cancel
+        // flag: a busy tree starved shutdown for as long as events outpaced routing (4.2 s at 50k
+        // events/s with the flag already set, as measured in review). Only the backlog present at
+        // entry is routed, and the flag is read between events.
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a"]);
+        let root = configs[0].local_root.clone();
+        let mut daemon = multi_pair_daemon(configs, MultiRootClient::default(), None);
+        let stepper = Stepper::quiet(&mut daemon);
+        // A backlog already queued when the step starts, so the between-events check is what stops
+        // it; then a producer that keeps the channel replenished while it runs.
+        for index in 0..5_000 {
+            stepper.event(
+                Event::new(EventKind::Create(CreateKind::File))
+                    .add_path(root.join(format!("queued{index}"))),
+            );
+        }
+        let flood = EventFlood::start(stepper.watch_tx.clone(), root, 20_000);
+        daemon.cancel_flag.store(true, Ordering::SeqCst);
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut stepper = stepper;
+            let started = Instant::now();
+            let step = stepper.step(&mut daemon);
+            let routed = daemon.runtime(0).expect("ready").pending_changes.len();
+            let _ = done_tx.send((step, routed, started.elapsed()));
+        });
+        let outcome = done_rx.recv_timeout(Duration::from_secs(20));
+        flood.stop();
+        let (step, routed, took) =
+            outcome.expect("a set cancel flag must end the step while events keep arriving");
+        assert_eq!(step, Step::Stop);
+        assert!(took < Duration::from_secs(1), "took {took:?}");
+        assert!(
+            routed < 100,
+            "{routed} events were routed after shutdown was asked for"
+        );
+    }
+
+    #[test]
+    fn control_commands_that_arrive_during_the_drain_wait_for_the_next_step() {
+        // The bound on the control channel. A command for a pair this daemon does not have is warned
+        // about and dropped; here that warning makes the next such command arrive (up to a budget),
+        // standing in for a client that keeps sending as fast as it is answered. Drained until
+        // empty, the step takes all of them; drained to the entry backlog, it takes one and leaves
+        // the one its own work caused.
+        use tracing_subscriber::layer::SubscriberExt;
+        let directory = tempdir().expect("tempdir");
+        let mut daemon = multi_pair_daemon(
+            pair_configs(directory.path(), &["a"]),
+            MultiRootClient::default(),
+            None,
+        );
+        let mut stepper = Stepper::quiet(&mut daemon);
+        stepper.send(LoopCommand::SyncNow(99));
+        let tx = stepper.loop_tx.clone();
+        let resend = OnWarn::new(
+            "ignored a request",
+            &Arc::new(AtomicUsize::new(200)),
+            move || {
+                let _ = tx.send(LoopCommand::SyncNow(99));
+            },
+        );
+        with_subscriber(tracing_subscriber::registry().with(resend), || {
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        });
+        assert_eq!(
+            stepper.inputs.loop_rx.len(),
+            1,
+            "the command the drain itself caused is the next step's"
+        );
+    }
+
+    #[test]
+    fn events_that_arrive_while_events_are_routed_wait_for_the_next_step() {
+        // The same bound on the watcher channel, with a due pair behind it. `b`'s index refuses to
+        // update the one file it holds, so every event for that file fails to queue and the router
+        // warns; here each warning makes the next such event arrive (up to a budget), as a busy tree
+        // does while its events are being routed. Drained until empty, the step took the whole chain
+        // before it popped anything; drained to the entry backlog, the due pair `a` runs after ONE
+        // event and the one its routing caused is left for the next step.
+        use tracing_subscriber::layer::SubscriberExt;
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a", "b"]);
+        let b_file = configs[1].local_root.join("a.txt");
+        let client = MultiRootClient::default();
+        let mut daemon = multi_pair_daemon(configs, client.clone(), None);
+        let mut stepper = Stepper::quiet(&mut daemon);
+        daemon.schedule.tighten(0, stepper.clock.now()); // `a` is due now; `b` is an hour out
+        {
+            let connection = &daemon.runtime(1).expect("ready").connection;
+            upsert_record(connection, &base_record("a.txt", None, &sha1_bytes(b"a")))
+                .expect("seed b's record");
+            connection
+                .execute_batch(
+                    "CREATE TRIGGER refuse_update BEFORE UPDATE ON file_index \
+                     BEGIN SELECT RAISE(ABORT, 'boom'); END;",
+                )
+                .expect("install failing trigger");
+        }
+        let modify = |path: &Path| {
+            Event::new(EventKind::Modify(ModifyKind::Any)).add_path(path.to_path_buf())
+        };
+        let tx = stepper.watch_tx.clone();
+        let remaining = Arc::new(AtomicUsize::new(200));
+        let resent = b_file.clone();
+        let resend = OnWarn::new(
+            "failed to process filesystem event",
+            &remaining,
+            move || {
+                let _ = tx.send(Ok(modify(&resent)));
+            },
+        );
+        let at_a_walk = Arc::new(AtomicUsize::new(usize::MAX));
+        let seen = Arc::clone(&at_a_walk);
+        *client.on_walk.lock().expect("hook lock") = Some(Box::new(move |root: &Path| {
+            if root == Path::new("/Drive/a") {
+                seen.store(remaining.load(Ordering::SeqCst), Ordering::SeqCst);
+            }
+        }));
+        stepper.event(modify(&b_file));
+        with_subscriber(tracing_subscriber::registry().with(resend), || {
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        });
+
+        assert_eq!(client.walks(), [remote_root_of("a")], "the due pair ran");
+        assert_eq!(
+            at_a_walk.load(Ordering::SeqCst),
+            199,
+            "`a` ran after the one event that was queued when the step began"
+        );
+        assert_eq!(
+            stepper.inputs.watch_rx.len(),
+            1,
+            "the event its routing caused is the next step's"
+        );
+    }
+
+    #[test]
+    fn a_burst_of_rescan_notices_latches_once_and_registers_each_root_once() {
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a", "b"]);
+        let roots = vec![configs[0].local_root.clone(), configs[1].local_root.clone()];
+        let mut daemon = multi_pair_daemon(configs, MultiRootClient::default(), None);
+        let mut stepper = Stepper::quiet(&mut daemon);
+        for _ in 0..3 {
+            stepper.event(rescan_notice());
+        }
+        let log = capture_log("warn", || {
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        });
+
+        assert_eq!(
+            stepper.rewatched(),
+            roots,
+            "three notices, two roots: one registration each"
+        );
+        assert_eq!(
+            log.matches("forcing a local rescan").count(),
+            1,
+            "one latch for the whole backlog:\n{log}"
+        );
+        for pair in 0..2 {
+            assert!(daemon.runtime(pair).expect("ready").force_local_rescan);
+        }
+    }
+
+    #[test]
+    fn a_burst_of_notices_naming_one_root_registers_only_that_root_once() {
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a", "b"]);
+        let b_root = configs[1].local_root.clone();
+        let mut daemon = multi_pair_daemon(configs, MultiRootClient::default(), None);
+        let mut stepper = Stepper::quiet(&mut daemon);
+        for _ in 0..3 {
+            stepper.event(rescan_notice_under(&b_root));
+        }
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(stepper.rewatched(), [b_root]);
+        for pair in 0..2 {
+            assert!(
+                daemon.runtime(pair).expect("ready").force_local_rescan,
+                "every pair still rescans"
+            );
+        }
+    }
+
+    #[test]
+    fn a_burst_of_watcher_errors_latches_once_and_registers_nothing() {
+        let directory = tempdir().expect("tempdir");
+        let mut daemon = multi_pair_daemon(
+            pair_configs(directory.path(), &["a", "b"]),
+            MultiRootClient::default(),
+            None,
+        );
+        let mut stepper = Stepper::quiet(&mut daemon);
+        for _ in 0..3 {
+            stepper
+                .watch_tx
+                .send(Err(notify::Error::generic(
+                    "watch descriptor limit reached",
+                )))
+                .expect("watch channel open");
+        }
+        let log = capture_log("warn", || {
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        });
+        assert_eq!(log.matches("forcing a local rescan").count(), 1, "{log}");
+        assert!(stepper.rewatched().is_empty());
+        for pair in 0..2 {
+            assert!(daemon.runtime(pair).expect("ready").force_local_rescan);
+        }
+    }
+
+    #[test]
+    fn a_failed_re_registration_warns_once_per_root_not_once_per_notice() {
+        let directory = tempdir().expect("tempdir");
+        let mut daemon = multi_pair_daemon(
+            pair_configs(directory.path(), &["a", "b"]),
+            MultiRootClient::default(),
+            None,
+        );
+        let mut stepper = Stepper::quiet(&mut daemon);
+        stepper.watcher_fails.store(true, Ordering::SeqCst);
+        for _ in 0..3 {
+            stepper.event(rescan_notice());
+        }
+        let log = capture_log("warn", || {
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        });
+        assert_eq!(
+            log.matches("could not re-register the watch").count(),
+            2,
+            "{log}"
+        );
+    }
+
+    #[test]
+    fn a_warn_or_error_line_still_names_its_pair() {
+        // `info_span!` is disabled below INFO, so at `RUST_LOG=warn` — which `ipc_cli` runs the daemon
+        // under — the lines that matter most lost the pair they belong to.
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a", "b"]);
+        let b_root = configs[1].local_root.clone();
+        let client = MultiRootClient::default();
+        client
+            .fail_walk_once
+            .lock()
+            .expect("lock")
+            .insert(remote_root_of("b"));
+        let mut daemon = multi_pair_daemon(configs, client, None);
+        let mut stepper = Stepper::new(&mut daemon);
+        stepper.watcher_fails.store(true, Ordering::SeqCst);
+        stepper.event(rescan_notice_under(&b_root));
+        let log = capture_log("warn", || {
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        });
+
+        let warning = log
+            .lines()
+            .find(|line| line.contains("could not re-register the watch"))
+            .unwrap_or_else(|| panic!("no re-registration warning:\n{log}"));
+        assert!(warning.contains("pair{name=b}"), "{warning}");
+        let error = log
+            .lines()
+            .find(|line| line.contains("scheduled reconciliation failed"))
+            .unwrap_or_else(|| panic!("no failed-pass error:\n{log}"));
+        assert!(error.contains("pair{name=b}"), "{error}");
+    }
+
+    /// An events-driven pair `a` on a live fake session, past boot, one file in step on both sides,
+    /// and a REAL `full_scan_schedule` about twelve hours of wall clock away — so the sweep is armed
+    /// by the daemon's own `seed_schedule`/`arm_sweep`, never by a hand-set deadline.
+    fn scheduled_steady_daemon(
+        directory: &Path,
+    ) -> (
+        Daemon<MultiRootClient>,
+        MultiRootClient,
+        Stepper,
+        FullScanSchedule,
+    ) {
+        let later = Local::now().naive_local() + chrono::Duration::hours(12);
+        let schedule = FullScanSchedule::Weekly {
+            day: chrono::Datelike::weekday(&later),
+            at: later.time(),
+        };
+        let mut configs = pair_configs(directory, &["a"]);
+        configs[0].events_driven = true;
+        configs[0].full_scan_schedule = Some(schedule);
+        fs::write(configs[0].local_root.join("a.txt"), b"a").expect("local file");
+        let client = MultiRootClient::default().with_tree(
+            &configs[0].remote_root,
+            vec![remote_file_entity("a.txt", "vola~na", &sha1_bytes(b"a"))],
+        );
+        let mut daemon = multi_pair_daemon(
+            configs,
+            client.clone(),
+            Some(Box::new(FakeEventSource::new("cursor-0"))),
+        );
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        assert!(
+            load_event_cursor(&daemon.runtime(0).expect("ready").connection, "vola")
+                .expect("cursor read")
+                .is_some(),
+            "precondition: `a` streams from here on, so only a latch makes it walk"
+        );
+        client.clear_walks();
+        (daemon, client, stepper, schedule)
+    }
+
+    /// How far off the schedule's next occurrence is, by the wall clock the daemon reads.
+    fn delay_to_next_due(schedule: FullScanSchedule) -> Duration {
+        let now = Local::now();
+        let due = Local
+            .from_local_datetime(&schedule.next_due(now.naive_local()))
+            .earliest()
+            .expect("a resolvable local time");
+        (due - now).to_std().expect("in the future")
+    }
+
+    fn assert_within(actual: Duration, expected: Duration, what: &str) {
+        let tolerance = Duration::from_secs(5);
+        assert!(
+            actual.abs_diff(expected) <= tolerance,
+            "{what}: {actual:?}, expected about {expected:?}"
+        );
+    }
+
+    #[test]
+    fn a_configured_schedule_is_armed_at_boot_and_re_armed_after_each_sweep() {
+        // #193's wiring, through the step function with the real `full_scan_schedule`: the deadline
+        // is `schedule.next_due(now)` after `seed_schedule`, and again — from the moment the pass
+        // ENDED — after a `Cause::Sweep` job. The wall clock is real; only the `Instant` clock is
+        // faked, so the re-armed deadline is the fake now plus the same delay.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper, schedule) = scheduled_steady_daemon(directory.path());
+        let delay = delay_to_next_due(schedule);
+        let armed = daemon
+            .schedule
+            .sweep_at(0)
+            .expect("`seed_schedule` arms a configured schedule");
+        assert_within(
+            armed - stepper.clock.now(),
+            delay,
+            "armed by seed_schedule at schedule.next_due",
+        );
+
+        // The sweep falls due: the step pops it as a sweep, walks the tree, and arms the next one.
+        stepper.clock.advance(delay + Duration::from_secs(1));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(client.walks(), [remote_root_of("a")], "the sweep walked");
+        let rearmed = daemon
+            .schedule
+            .sweep_at(0)
+            .expect("a sweep job arms the next one");
+        assert_within(
+            rearmed - stepper.clock.now(),
+            delay_to_next_due(schedule),
+            "re-armed from the end of the sweep pass",
+        );
+        assert!(rearmed > armed);
+    }
+
+    #[test]
+    fn a_resync_and_an_overdue_sweep_are_one_full_walk_and_the_sweep_is_re_armed() {
+        // #193: all three triggers say "the next pass is a full one", so they compose into ONE walk.
+        // `resync` arrives as an explicit `Sync` beside a sweep that is already overdue; popped as
+        // `Explicit` it walked once for the latch and left the sweep overdue for a second walk.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper, schedule) = scheduled_steady_daemon(directory.path());
+        let delay = delay_to_next_due(schedule);
+        stepper.clock.advance(delay + Duration::from_secs(1));
+        daemon.shared.pairs[0]
+            .force_full_walk
+            .store(true, Ordering::SeqCst);
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(
+            client.walks(),
+            [remote_root_of("a")],
+            "one full walk for the resync and the sweep together"
+        );
+
+        stepper.clock.advance(Duration::from_secs(1));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(client.walks().len(), 1, "no second walk follows");
+        let rearmed = daemon
+            .schedule
+            .sweep_at(0)
+            .expect("the sweep was consumed by that pass and armed again");
+        assert_within(
+            rearmed - stepper.clock.now(),
+            delay,
+            "re-armed to the next scheduled time",
+        );
+    }
+
+    #[test]
+    fn an_explicit_plan_beside_an_overdue_sweep_leaves_the_sweep_to_run_on_its_own() {
+        // A plan-only pass observes and consumes nothing, the sweep included: folded into it, the
+        // sweep would be cleared by a pass that latches nothing, and `run_job` re-arms only a `Sync`
+        // sweep — so the weekly sweep would stop for the life of the process.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper, schedule) = scheduled_steady_daemon(directory.path());
+        let delay = delay_to_next_due(schedule);
+        stepper.clock.advance(delay + Duration::from_secs(1));
+        daemon.shared.pairs[0].book_plan_request();
+        stepper.send(LoopCommand::PlanNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert_eq!(
+            client.walks(),
+            [remote_root_of("a"), remote_root_of("a")],
+            "the rehearsal's walk, then the sweep's own pass"
+        );
+        match daemon.shared.pairs[0].plan_outcome(None) {
+            PlanOutcome::Computed(_) => {}
+            other => panic!("the plan ran, got {other:?}"),
+        }
+        assert!(
+            daemon.schedule.sweep_at(0).is_some(),
+            "the sweep ran as a sweep and was armed again"
+        );
+    }
+
+    #[test]
+    fn a_paused_unavailable_pair_seals_a_queued_apply_and_costs_no_attempt() {
+        // The `(Sync, Unavailable, paused)` arm of `run_job`'s table: no pass is coming, so the apply
+        // booked against the plan the pair reviewed while it was ready is sealed here — as it is for
+        // a paused ready pair — and nothing else happens (no history entry, no `reconcile_seq`).
+        let directory = tempdir().expect("tempdir");
+        let mut daemon = multi_pair_daemon(
+            pair_configs(directory.path(), &["a", "b"]),
+            MultiRootClient::default(),
+            None,
+        );
+        make_unavailable(&mut daemon, 1, "the folder /media/usb/b is missing");
+        daemon.shared.pairs[1].replace_stored_plan(StoredPlan {
+            token: "reviewed".to_owned(),
+            computed_epoch_secs: 1,
+            summary: PlanSummary::default(),
+            actions: Vec::new(),
+            cannot_sync: Vec::new(),
+            local_disposal: LocalDisposal::Permanent,
+        });
+        let apply_seq = daemon.shared.pairs[1]
+            .book_apply_request("reviewed", false)
+            .expect("token accepted");
+        daemon.shared.pairs[1].paused.store(true, Ordering::SeqCst);
+        let history_before = daemon.shared.pairs[1]
+            .snapshot
+            .lock()
+            .expect("snapshot lock")
+            .status_history
+            .len();
+        let mut stepper = Stepper::quiet(&mut daemon);
+        stepper.send(LoopCommand::SyncNow(1));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        match daemon.shared.pairs[1].apply_outcome() {
+            Some(ApplyOutcome::Failed {
+                apply_seq: sealed,
+                error,
+            }) => {
+                assert_eq!(sealed, apply_seq);
+                assert!(error.contains("paused"), "{error}");
+            }
+            other => panic!("the apply is sealed by the paused arm, got {other:?}"),
+        }
+        assert_eq!(
+            daemon.shared.pairs[1].reconcile_seq.load(Ordering::SeqCst),
+            0,
+            "a paused pair records no attempt"
+        );
+        assert_eq!(
+            daemon.shared.pairs[1]
+                .snapshot
+                .lock()
+                .expect("snapshot lock")
+                .status_history
+                .len(),
+            history_before
+        );
+    }
+
+    #[test]
+    fn a_pair_still_on_its_first_pass_is_not_reseeded_by_the_session_generation_catch_up() {
+        // Pair `a`'s pass reacquires the event session while pair `b` is still on its first pass.
+        // `b` already full-scans locally by the first-pass rule and chose warm start against its own
+        // cursor-age gate, so the catch-up must not also force a full walk on its NEXT pass.
+        let directory = tempdir().expect("tempdir");
+        let mut configs = pair_configs(directory.path(), &["a", "b"]);
+        let mut client = MultiRootClient::default();
+        for config in &mut configs {
+            config.events_driven = true;
+            config.scan_interval = Duration::from_secs(3600);
+            fs::write(config.local_root.join("a.txt"), b"a").expect("local file");
+            client = client.with_tree(
+                &config.remote_root,
+                vec![remote_file_entity(
+                    "a.txt",
+                    &format!("vol{}~na", config.name),
+                    &sha1_bytes(b"a"),
+                )],
+            );
+        }
+        configs[1].warm_start.enabled = true;
+        let mut daemon = multi_pair_daemon(configs, client.clone(), None); // degraded at boot
+        daemon.event_source_factory =
+            Box::new(|| Some(Box::new(FakeEventSource::new("cursor-0")) as Box<dyn EventSource>));
+        {
+            let runtime = daemon.runtime(1).expect("ready");
+            upsert_record(
+                &runtime.connection,
+                &base_record("a.txt", Some("volb~na"), &sha1_bytes(b"a")),
+            )
+            .expect("seed baseline");
+            store_event_cursor(
+                &runtime.connection,
+                "volb",
+                "cursor-0",
+                current_epoch_secs() as i64,
+            )
+            .expect("seed fresh cursor");
+        }
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        assert_eq!(
+            daemon.event_source_generation, 1,
+            "precondition: `a`'s first pass reacquired the session"
+        );
+        assert_eq!(
+            client.walks(),
+            [remote_root_of("a")],
+            "`a` bootstrapped and `b` warm-started"
+        );
+        assert!(!daemon.runtime(1).expect("ready").is_first_reconcile);
+        assert_eq!(
+            daemon
+                .runtime(1)
+                .expect("ready")
+                .seen_event_source_generation,
+            1,
+            "`b` has seen the session it started under"
+        );
+
+        // `b`'s next pass streams: the catch-up did not turn its warm start into a reseed.
+        stepper.send(LoopCommand::SyncNow(1));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(
+            client.walks(),
+            [remote_root_of("a")],
+            "`b`'s second pass is an ordinary incremental one"
+        );
+
+        // …and a LATER session change still catches `b` up, because it is no longer on a first pass.
+        daemon.event_source_generation += 1;
+        stepper.send(LoopCommand::SyncNow(1));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(
+            client.walks(),
+            [remote_root_of("a"), remote_root_of("b")],
+            "a new session generation forces one full walk on a pair past its first pass"
+        );
+    }
+
+    #[test]
+    fn the_n_pair_constructor_compares_names_the_way_the_config_does() {
+        // One definition of "the same pair name" (ADR 0005 §2 rule 3): case-insensitive, as
+        // `config::validate_pair_names` has it. `Photos` and `photos` are one name to a person.
+        let directory = tempdir().expect("tempdir");
+        let mut configs = pair_configs(directory.path(), &["a", "b"]);
+        configs[0].name = "Photos".to_owned();
+        configs[1].name = "photos".to_owned();
+        let error = Daemon::from_pairs(configs, MultiRootClient::default(), None)
+            .err()
+            .expect("refused");
+        let message = error.to_string();
+        assert!(
+            message.contains("'photos'") && message.contains("'Photos'"),
+            "{message}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_local_change_that_arrives_while_run_is_idle_is_routed_and_mirrored() {
+        // The one place `run` meets the watcher is its idle wait, and that wait must hand the event
+        // to the step function rather than route it itself: a second `route` call site is a path no
+        // step-driven test reaches. Real inotify, real `run`, a live fake session: with the pair
+        // streaming, only a QUEUED change makes its pass plan anything, and a new empty folder is
+        // ONE event — so it is mirrored only if the event the idle wait received reached `route`.
+        let directory = tempdir().expect("tempdir");
+        let mut configs = pair_configs(directory.path(), &["a"]);
+        configs[0].events_driven = true;
+        configs[0].scan_interval = Duration::from_secs(3600);
+        // No periodic safety resync (the default): with it on, a full walk would find the folder a
+        // few seconds later whether or not the event was routed.
+        configs[0].events_full_scan_every = 0;
+        let root = configs[0].local_root.clone();
+        fs::write(root.join("a.txt"), b"a").expect("local file");
+        let client = MultiRootClient::default().with_tree(
+            "/Drive/a",
+            vec![remote_file_entity("a.txt", "vola~na", &sha1_bytes(b"a"))],
+        );
+        let mut daemon = multi_pair_daemon(
+            configs,
+            client.clone(),
+            Some(Box::new(FakeEventSource::new("cursor-0"))),
+        );
+        daemon.events_poll_interval = Duration::from_millis(150);
+        let shared = Arc::clone(&daemon.shared);
+        let cancel = Arc::clone(&daemon.cancel_flag);
+        let notify = Arc::clone(&daemon.shutdown_notify);
+        let handle = tokio::spawn(daemon.run());
+        for _ in 0..200 {
+            if shared.pairs[0].reconcile_seq.load(Ordering::SeqCst) >= 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(
+            shared.pairs[0].reconcile_seq.load(Ordering::SeqCst) >= 2,
+            "precondition: past the first pass, polling an idle stream"
+        );
+
+        fs::create_dir(root.join("photos")).expect("a folder made while the loop is idle");
+        let mirrored = (PathBuf::from("/Drive/a"), PathBuf::from("photos"));
+        let mut seen = false;
+        for _ in 0..160 {
+            if client.directories().contains(&mirrored) {
+                seen = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        cancel.store(true, Ordering::SeqCst);
+        notify.notify_one();
+        tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("run() returns once shutdown is signalled")
+            .expect("join")
+            .expect("a clean exit");
+        assert!(
+            seen,
+            "the event the idle wait received was never routed: {:?}",
+            client.directories()
         );
     }
 }

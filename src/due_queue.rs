@@ -6,9 +6,10 @@
 //!
 //! `pop` order: the explicit FIFO first (`syncnow`, `resync`, `reset-index`, `keep` and `apply`
 //! arrive as [`JobKind::Sync`], `plan` as [`JobKind::Plan`]), not gated on time; otherwise the due
-//! pair with the earliest deadline, exact ties broken by a cursor rotating over config order.
+//! pair with the earliest deadline, exact ties broken by a cursor rotating over config order. An
+//! explicit `Sync` for a pair whose sweep is overdue pops as that sweep (one full pass, #193).
 //!
-//! **No spin, by construction** (brief R5): a timer or sweep pop re-arms provisionally before it
+//! **No spin, by construction**: a timer or sweep pop re-arms provisionally before it
 //! returns, so a caller that never reaches its own `rearm` cannot leave a pair due; `pop` and
 //! `next_wake` read one deadline ([`DueQueue::deadline`]), so `pop(now) == None` implies
 //! `next_wake() > now`; and a zero cadence, which would make every provisional re-arm "due now",
@@ -33,7 +34,8 @@ pub(crate) enum Cause {
     Explicit,
     /// The pair's cadence elapsed.
     Timer,
-    /// The pair's scheduled full sweep (#193) came due. Cleared on pop; the daemon re-arms it.
+    /// The pair's scheduled full sweep (#193) came due — alone, or beside an explicit `Sync` for the
+    /// same pair, which it absorbs. Cleared on pop; the daemon re-arms it for this cause only.
     Sweep,
 }
 
@@ -104,11 +106,17 @@ impl DueQueue {
     /// The next job, or `None` when nothing is due at `now`.
     pub(crate) fn pop(&mut self, now: Instant) -> Option<Job> {
         if let Some((pair, kind)) = self.explicit.pop_front() {
-            return Some(Job {
-                pair,
-                kind,
-                cause: Cause::Explicit,
-            });
+            // An explicit `Sync` popped beside an overdue sweep IS that sweep (#193): both mean "the
+            // next pass is a full one", so they are one pass. Left as `Explicit` it would leave
+            // `sweep_at` overdue and the next pop would walk the tree a second time — and the daemon
+            // re-arms a sweep only for `Cause::Sweep`, so the cause cannot stay `Explicit` either.
+            // Never a `Plan`: that pass is inert and consumes nothing, so the sweep stays pending.
+            let cause = if kind == JobKind::Sync && self.take_overdue_sweep(pair, now) {
+                Cause::Sweep
+            } else {
+                Cause::Explicit
+            };
+            return Some(Job { pair, kind, cause });
         }
         let pairs = self.next_due.len();
         let mut chosen: Option<(usize, Instant)> = None;
@@ -125,8 +133,7 @@ impl DueQueue {
         }
         let (pair, _) = chosen?;
         self.cursor = (pair + 1) % pairs;
-        let cause = if self.sweep_at[pair].is_some_and(|at| at <= now) {
-            self.sweep_at[pair] = None;
+        let cause = if self.take_overdue_sweep(pair, now) {
             Cause::Sweep
         } else {
             Cause::Timer
@@ -141,6 +148,17 @@ impl DueQueue {
         })
     }
 
+    /// Clears and reports the pair's sweep when it is due at `now`. The one place a sweep is
+    /// consumed, so a timer pop and an explicit pop cannot disagree about what consuming means.
+    fn take_overdue_sweep(&mut self, pair: usize, now: Instant) -> bool {
+        if self.sweep_at[pair].is_some_and(|at| at <= now) {
+            self.sweep_at[pair] = None;
+            true
+        } else {
+            false
+        }
+    }
+
     /// `next_due = from + cadence`. Called with the moment a pass ENDED, which is what makes the
     /// order starvation-free between timer-due pairs: a pair that just ran is due after every pair
     /// that was already overdue, whatever the two cadences are.
@@ -148,7 +166,7 @@ impl DueQueue {
         self.next_due[pair] = later(from, self.cadence[pair]);
     }
 
-    /// Moves a pair's timer earlier, never later (an event session came back, §10.3).
+    /// Moves a pair's timer earlier, never later (an event session came back).
     pub(crate) fn tighten(&mut self, pair: usize, at: Instant) {
         if at < self.next_due[pair] {
             self.next_due[pair] = at;
@@ -180,6 +198,11 @@ impl DueQueue {
     #[cfg(test)]
     pub(crate) fn next_due(&self, pair: usize) -> Instant {
         self.next_due[pair]
+    }
+
+    #[cfg(test)]
+    pub(crate) fn sweep_at(&self, pair: usize) -> Option<Instant> {
+        self.sweep_at[pair]
     }
 
     #[cfg(test)]
@@ -445,6 +468,89 @@ mod tests {
             "a popped sweep is cleared; only the daemon re-arms it"
         );
         assert_eq!(queue.next_wake(), t0 + secs(61) + secs(3600));
+    }
+
+    fn sweep(pair: usize) -> Option<Job> {
+        Some(Job {
+            pair,
+            kind: JobKind::Sync,
+            cause: Cause::Sweep,
+        })
+    }
+
+    #[test]
+    fn an_explicit_sync_popped_beside_an_overdue_sweep_is_that_sweep() {
+        // #193: a `resync` and a due sweep are one full pass. Popped as `Explicit`, the request would
+        // walk the tree and leave `sweep_at` overdue, so the very next pop would walk it again.
+        let t0 = Instant::now();
+        let mut queue = DueQueue::new(vec![secs(3600)], t0);
+        assert_eq!(queue.pop(t0), timer(0));
+        queue.rearm(0, t0);
+        queue.set_sweep(0, Some(t0 + secs(60)));
+        queue.request(0, JobKind::Sync);
+        assert_eq!(
+            queue.pop(t0 + secs(61)),
+            sweep(0),
+            "`Cause::Sweep`, not `Explicit`: the daemon re-arms the sweep only for that cause"
+        );
+        assert_eq!(queue.sweep_at(0), None, "consumed by the one pop");
+        assert_eq!(
+            queue.pop(t0 + secs(61)),
+            None,
+            "no second full walk follows"
+        );
+    }
+
+    #[test]
+    fn an_explicit_sync_before_the_sweep_is_due_leaves_the_sweep_armed() {
+        let t0 = Instant::now();
+        let mut queue = DueQueue::new(vec![secs(3600)], t0);
+        assert_eq!(queue.pop(t0), timer(0));
+        queue.rearm(0, t0);
+        queue.set_sweep(0, Some(t0 + secs(60)));
+        queue.request(0, JobKind::Sync);
+        assert_eq!(queue.pop(t0 + secs(59)), explicit(0, JobKind::Sync));
+        assert_eq!(queue.sweep_at(0), Some(t0 + secs(60)));
+    }
+
+    #[test]
+    fn an_explicit_plan_never_consumes_an_overdue_sweep() {
+        // A plan-only pass observes and consumes nothing. Folding the sweep into it would clear
+        // `sweep_at` for a pass that walks the remote and changes no latch, so the sweep would be
+        // lost: `run_job` re-arms on a `Sync` sweep only.
+        let t0 = Instant::now();
+        let mut queue = DueQueue::new(vec![secs(3600)], t0);
+        assert_eq!(queue.pop(t0), timer(0));
+        queue.rearm(0, t0);
+        queue.set_sweep(0, Some(t0 + secs(60)));
+        queue.request(0, JobKind::Plan);
+        assert_eq!(queue.pop(t0 + secs(61)), explicit(0, JobKind::Plan));
+        assert_eq!(queue.sweep_at(0), Some(t0 + secs(60)), "still pending");
+        assert_eq!(
+            queue.pop(t0 + secs(61)),
+            sweep(0),
+            "and it fires on the next pop"
+        );
+    }
+
+    #[test]
+    fn an_explicit_sync_consumes_only_its_own_pairs_sweep() {
+        let t0 = Instant::now();
+        let mut queue = DueQueue::new(vec![secs(3600), secs(3600)], t0);
+        assert_eq!(queue.pop(t0), timer(0));
+        assert_eq!(queue.pop(t0), timer(1));
+        queue.rearm(0, t0);
+        queue.rearm(1, t0);
+        queue.set_sweep(0, Some(t0 + secs(60)));
+        queue.set_sweep(1, Some(t0 + secs(60)));
+        queue.request(1, JobKind::Sync);
+        assert_eq!(queue.pop(t0 + secs(61)), sweep(1));
+        assert_eq!(
+            queue.sweep_at(0),
+            Some(t0 + secs(60)),
+            "pair 0's is untouched"
+        );
+        assert_eq!(queue.pop(t0 + secs(61)), sweep(0));
     }
 
     #[test]
