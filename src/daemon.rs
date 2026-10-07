@@ -1702,14 +1702,17 @@ struct LoopInputs {
 }
 
 /// The most rounds one watcher drain takes ([`Daemon::drain_inputs`]). Each round routes the
-/// backlog counted when it began, so a drain ends after at most this many backlogs however fast
-/// events keep arriving.
+/// backlog counted when it began, so a drain ends after at most this many rounds however fast
+/// events keep arriving; a round is sized by what arrived during the one before, so a producer
+/// r times faster than routing delays the pop by about (1 + r + r²) entry backlogs — finite,
+/// and the cancel flag is read between events.
 ///
 /// Two rounds already close the case that needed more than one: an echo of the pair's own write
 /// (#49) that arrives while the backlog ahead of it is routed is routed by the second. The third is
 /// slack for what arrives while *that* one is routed. It is a judgement, not a measurement: large
 /// enough that a burst the router can keep up with is taken whole, small enough that a tree
-/// outpacing the router still reaches the pop and the shutdown check after three backlogs.
+/// outpacing the router still reaches the pop after three rounds, and the shutdown check between
+/// any two events.
 const MAX_DRAIN_ROUNDS: usize = 3;
 
 impl LoopInputs {

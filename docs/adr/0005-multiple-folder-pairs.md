@@ -949,8 +949,10 @@ Expect this phase to be as large as phase 2 and riskier. Closes: the feature, he
 > round's count, so the pop ran first, the pair's pass cleared `authored_writes`, and the next
 > drain routed the echo as a user's edit — flipping the fresh `Synced` record to `Modified`, which
 > uploads the stale file over a newer remote edit. A further round routes it before the pop; the
-> cap keeps the starvation bound (a producer that outpaces the router delays the pop by at most
-> three backlogs). What arrives after the last round waits for the next **drain**, which the step
+> cap keeps the starvation bound (at most three rounds; since each round is sized by what
+> arrived during the one before, a producer that outpaces the router delays the pop by a finite
+> but growing multiple of the backlog, and the shutdown flag is read between events). What
+> arrives after the last round waits for the next **drain**, which the step
 > reaches as soon as the job it popped has run — a step loops drain, pop, run, drain. An echo
 > still in notify's own thread when the last round ends is routed after the pair's next pass has
 > cleared `authored_writes`; that residual stays #425. The idle wait hands the event it received
