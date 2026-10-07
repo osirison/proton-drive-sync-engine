@@ -45,9 +45,21 @@ cadence. The reason says which of these it is:
 
 - **The folder doesn't exist** — it couldn't be created when the daemon started, or it went
   away since (an unplugged or unmounted drive, a deleted folder). Put it back and the next
-  attempt picks it up. The daemon creates the folder only when it *starts*, never while it
-  runs, so a folder that could not be created at startup stays missing until you create it
-  or restart the daemon.
+  attempt picks it up; if the folder is on a drive, mount the drive. The daemon creates the
+  folder only when it *starts*, never while it runs. **Don't restart the daemon to fix a
+  missing folder on a drive**: a restart creates a missing folder, and a mount point whose
+  drive isn't mounted would be created as an empty folder on the wrong disk and then
+  treated as your sync folder
+  ([#426](https://github.com/osirison/proton-drive-sync-engine/issues/426)). Restart only
+  when the folder is truly gone and should be created empty.
+- **Replaced by an empty folder** — the folder is there, but it is a different, empty
+  directory while files are recorded as synced for it (typically an unmounted drive's empty
+  mount point, or a folder deleted and made again). Reconciled as it stands, that reads as
+  "delete everything", so the daemon holds the pair unavailable instead and deletes
+  nothing. Mount the drive or restore the files and the next attempt picks it up.
+- **Its state was removed along with the folder** — the folder was deleted and made again,
+  and the index and lock inside it went with it. The daemon prepares the pair again from
+  the new folder on its next attempt; you don't need to do anything.
 - **Locked by another process** — something else holds the folder's lock (a second
   `proton-syncd`, or another account's daemon syncing the same folder). A daemon that is
   *starting* refuses to start, naming the pair; one that is already running leaves that pair

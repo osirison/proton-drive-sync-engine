@@ -71,8 +71,24 @@ deleted tree — the daemon **keeps running** instead of exiting: that folder pa
 reason as its error (`proton-sync status`, and the desktop app's error state rather than its
 first-run wizard), any other pair keeps syncing, and the pair is tried again on its normal
 cadence. A folder that disappears *while the daemon runs* is never created again: put it back
-(re-mount the drive, restore the folder) and the next attempt picks it up. To have a folder
-that could not be created at startup created, restart the daemon.
+(re-mount the drive, restore the folder) and the next attempt picks it up.
+
+**If the folder lives on a drive, mount the drive — don't restart the daemon.** A restart
+creates a missing folder, and a mount point that is missing only because its drive isn't
+mounted would be created as an empty folder on the wrong disk and then treated as your sync
+folder ([#426](https://github.com/osirison/proton-drive-sync-engine/issues/426)). Restart the
+daemon only when the folder is truly gone and should be created empty.
+
+Two cases are held on purpose, so nothing is deleted on a guess:
+
+- A folder **replaced by an empty one** while files are recorded as synced for it (an
+  unmounted drive's empty mount point, or a folder deleted and made again) leaves the pair
+  unavailable, saying so in its status, until the folder holds something again. Nothing is
+  deleted in the meantime.
+- A folder deleted and made again **with the pair's state inside it** (the default `.sync`
+  directory holds the index and the lock) is prepared again from scratch on the next
+  attempt: the index is new, so the pair adopts what is there, downloads what is missing and
+  deletes nothing.
 
 ### `--include` / `--exclude`
 

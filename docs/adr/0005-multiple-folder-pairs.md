@@ -1011,9 +1011,10 @@ Expect this phase to be as large as phase 2 and riskier. Closes: the feature, he
 > fast-path cannot report `Clean` and move the cursor over it. It writes no `sync_passes` row,
 > spawns no child, and writes **no sidecar** — `write_atomically` creates its directory, which
 > with the default layout is inside the root, so a status write would make the missing folder
-> again. Demotion (`demote_pair`) exists and has one production caller: the first metrics write,
-> which is part of preparing a pair, at boot and on a retry. A vanished folder with the default
-> layout still leaves an index and lock on an unlinked inode (§6.7, unchanged and out of scope).
+> again. Demotion (`demote_pair`) exists and had one production caller, the first metrics write,
+> which is part of preparing a pair, at boot and on a retry; review added two more causes, (8) and
+> (9) below. A vanished folder with the default layout leaves an index and lock on an unlinked
+> inode until the folder returns, and (8) is what happens then.
 >
 > (3) **A retry never creates the folder; only boot does.** `RootMode::Create` at boot, `MustExist`
 > on a retry: a mount point that disappears and is re-created empty by the daemon would be
@@ -1050,10 +1051,74 @@ Expect this phase to be as large as phase 2 and riskier. Closes: the feature, he
 > filesystem that reports it on one `stat` and not the next cannot read as a replaced folder on
 > every pass. A remount of the same device over the same path is still not caught (P5).
 >
-> **Still not done**, deliberately: the empty mount point and the unmounted-at-boot root (#426); the
-> index and lock unlinked with a deleted default-layout root (§6.7); a watcher that cannot be built
-> at all is still fatal (it is process-wide, not per root); `fs::metadata(root)` on a hung network
-> mount blocks the one main task, as the scan already does; and the lift itself (4c).
+> (8) **State that went with the folder is detected, and the pair is prepared again** (§6.7; found
+> in review). The default layout keeps the index and the per-root lock inside the folder, so a
+> folder deleted and made again left the pair `Ready` on a connection to a file with no name: every
+> pass failed to write its history, a new file was uploaded again on each pass, and `last_error`
+> stuck until a restart. Each `Sync` job of a ready, unpaused pair now compares what it holds open
+> with what its paths name before anything else (`demote_if_state_removed`): the index by the
+> `(device, inode)` recorded when it was opened (`PairRuntime::db_identity`), the lock by the held
+> file's own (`LockGuard::is_the_file_at`). A mismatch, or a missing file, demotes the pair
+> (`PairRuntime::removed_state`) and the retry **in the same job** reopens both with
+> `RootMode::MustExist` — it still never creates the folder. The new runtime has an empty baseline
+> when the index went with the folder, so its first pass is a bootstrap: it adopts, downloads, and
+> has nothing to plan a deletion from. Three consequences. It runs **only while the folder is
+> there**: a folder that is not a directory is the typed pass error's, once, and demoting too would
+> write two history entries for one condition. A plan **refuses** rather than demotes (`plan_only_blocking`
+> shares `removed_state`), because a plan observes and consumes nothing. And the IPC task's own
+> approvals connection is replaced when the pair is prepared again (`PairShared::runtime_generation`,
+> `ControlPlanePair::opened_under`): `has_runtime` goes false and true inside one job, so the flag
+> alone cannot tell that task its connection is on an index the daemon let go of, and an approval
+> written there would be accepted and applied to nothing. A filesystem that names one file
+> differently on two looks (FUSE without stable inode numbers) cannot support the comparison; the
+> index's identity is then `None` and the lock's `comparable` false, and only presence is checked,
+> or every attempt would prepare the pair again, a full first pass each time.
+>
+> (9) **A folder replaced by an empty one, over a baseline that records files, is held** (found in
+> review). 4b made a replaced folder scan at once, and an empty directory over a surviving
+> baseline (an external `db_path`, or an index that outlived the folder) plans the remote deletion
+> of everything it recorded — held by the approval guard by default, executed outright where the
+> guard is off. In `maintain_root_watch`'s replaced path the pair is now demoted instead, with a
+> **standing** cause (`StandingCause::ReplacedByEmptyFolder`): the folder holds nothing the pair's
+> own `ScanOptions` would keep (`index::local_tree_holds_syncable_entry`, which shares
+> `visit_directory`'s predicates, so `.sync`, a trash directory, `.proton-sync.toml`, a conflict
+> sidecar and anything an exclude rule hides do not count) **and** the baseline, as the planner sees
+> it (`filter_base_index`), records items. Nothing is deleted. A retry re-checks the folder rather
+> than only its existence: still empty means stay unavailable, restating one reason and moving one
+> history entry; content means ready again, watched, and a first pass. The cause stands through the
+> folder going away and an empty one coming back. The same guard runs when only the lockfile went
+> with a replaced folder and the index survived elsewhere (`demote_if_state_removed`): preparing
+> the pair again would open that baseline over an empty folder. Boundaries: **a replaced folder that holds
+> content, or a pair that records nothing, takes the old path** (re-watch, rescan), so an identity
+> that changes with no real change — a filesystem with unstable inode numbers — costs one rescan and
+> never a stuck pair; a directory entry alone counts as content (this guard is about a tree that is
+> *empty*, not one that is much smaller); and boot has no identity to compare, so the same state at
+> startup is #426. The replaced check compares against the directory the last complete
+> registration was on (`PairRuntime::last_watched`), kept through a failed registration, a folder
+> that was gone for a pass and an overflow re-registration — the last of which does not record a
+> different directory as the watched one, or an overflow notice would launder the replacement.
+>
+> (10) **A folder that vanishes during a pass ends the pass unavailable** (§6.4; found in review).
+> `ensure_root_available` runs again before the final commit of `execute_plan_and_commit`. The
+> top-of-pass check cannot see a vanish after it: every later download is refused (its destination
+> has no root) with a warning, and the pass used to end `Clean` and claim the newer event cursor, so
+> the files it skipped were never asked for. Now the typed `RootUnavailable` is returned before
+> that transaction: the cursor is held (the fifth cause of the one cursor policy), as are the
+> index-only tail and the history rows, and the next pass takes the missing-folder path.
+> Checkpoints that already landed stay, and the row they opened is sealed `failed` rather than left
+> `interrupted`, which only a crash is supposed to leave.
+>
+> (11) **Smaller things review found.** A retry that finds the same OS error behind the folder as
+> boot did keeps boot's reason (`FolderError`, `PrepareFailure::Folder`) instead of rewording it and
+> adding a second history entry for one condition; the retry's own wording no longer tells the user
+> to restart the daemon, which creates the folder even when it is an unmounted drive's mount point
+> (#426). A plan on a missing folder answers with the sync's message (`root_availability` is the one
+> definition), not a bare OS error.
+>
+> **Still not done**, deliberately: the empty mount point and the unmounted-at-boot root (#426); a
+> watcher that cannot be built at all is still fatal (it is process-wide, not per root);
+> `fs::metadata(root)` on a hung network mount blocks the one main task, as the scan already does;
+> and the lift itself (4c).
 
 **Phase 5 — GUI (large, and larger than the issue assumes).** Splits into three, and they are worth
 tracking separately because only the first is mechanical: (5a) pair-index `RuntimePaths` and the
