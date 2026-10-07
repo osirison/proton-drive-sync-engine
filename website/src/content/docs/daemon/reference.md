@@ -84,11 +84,16 @@ Two cases are held on purpose, so nothing is deleted on a guess:
 - A folder **replaced by an empty one** while files are recorded as synced for it (an
   unmounted drive's empty mount point, or a folder deleted and made again) leaves the pair
   unavailable, saying so in its status, until the folder holds something again. Nothing is
-  deleted in the meantime.
+  deleted, created or downloaded in the meantime, whether the pair's state lives in the
+  default `.sync` directory or elsewhere. To start the folder over from Proton instead, run
+  `proton-sync reset-index --yes`: it downloads everything and deletes nothing. Restoring only
+  part of the folder ends the hold, and with delete approval turned off the files not yet
+  restored are then deleted remotely, so keep delete approval on for removable or network
+  drives.
 - A folder deleted and made again **with the pair's state inside it** (the default `.sync`
-  directory holds the index and the lock) is prepared again from scratch on the next
-  attempt: the index is new, so the pair adopts what is there, downloads what is missing and
-  deletes nothing.
+  directory holds the index and the lock) and **with files in it** is prepared again from
+  scratch on the next attempt: the index is new, so the pair adopts what is there, downloads
+  what is missing and deletes nothing. (If the new folder is empty, the case above applies.)
 
 ### `--include` / `--exclude`
 

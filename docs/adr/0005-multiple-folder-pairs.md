@@ -1056,7 +1056,7 @@ Expect this phase to be as large as phase 2 and riskier. Closes: the feature, he
 > folder deleted and made again left the pair `Ready` on a connection to a file with no name: every
 > pass failed to write its history, a new file was uploaded again on each pass, and `last_error`
 > stuck until a restart. Each `Sync` job of a ready, unpaused pair now compares what it holds open
-> with what its paths name before anything else (`demote_if_state_removed`): the index by the
+> with what its paths name before anything else (`examine_ready_pair`, item 12): the index by the
 > `(device, inode)` recorded when it was opened (`PairRuntime::db_identity`), the lock by the held
 > file's own (`LockGuard::is_the_file_at`). A mismatch, or a missing file, demotes the pair
 > (`PairRuntime::removed_state`) and the retry **in the same job** reopens both with
@@ -1078,8 +1078,8 @@ Expect this phase to be as large as phase 2 and riskier. Closes: the feature, he
 > review). 4b made a replaced folder scan at once, and an empty directory over a surviving
 > baseline (an external `db_path`, or an index that outlived the folder) plans the remote deletion
 > of everything it recorded — held by the approval guard by default, executed outright where the
-> guard is off. In `maintain_root_watch`'s replaced path the pair is now demoted instead, with a
-> **standing** cause (`StandingCause::ReplacedByEmptyFolder`): the folder holds nothing the pair's
+> guard is off. In `examine_ready_pair` (item 12), before `maintain_root_watch` registers anything,
+> the pair is now demoted instead, with a **standing** cause (`StandingCause::ReplacedByEmptyFolder`): the folder holds nothing the pair's
 > own `ScanOptions` would keep (`index::local_tree_holds_syncable_entry`, which shares
 > `visit_directory`'s predicates, so `.sync`, a trash directory, `.proton-sync.toml`, a conflict
 > sidecar and anything an exclude rule hides do not count) **and** the baseline, as the planner sees
@@ -1087,16 +1087,20 @@ Expect this phase to be as large as phase 2 and riskier. Closes: the feature, he
 > than only its existence: still empty means stay unavailable, restating one reason and moving one
 > history entry; content means ready again, watched, and a first pass. The cause stands through the
 > folder going away and an empty one coming back. The same guard runs when only the lockfile went
-> with a replaced folder and the index survived elsewhere (`demote_if_state_removed`): preparing
-> the pair again would open that baseline over an empty folder. Boundaries: **a replaced folder that holds
+> with a replaced folder and the index survived elsewhere: preparing the pair again would open that
+> baseline over an empty folder. The first round placed it in `maintain_root_watch`'s replaced path
+> and in `demote_if_state_removed`, which left two holes (item 12). Boundaries: **a replaced folder that holds
 > content, or a pair that records nothing, takes the old path** (re-watch, rescan), so an identity
 > that changes with no real change — a filesystem with unstable inode numbers — costs one rescan and
 > never a stuck pair; a directory entry alone counts as content (this guard is about a tree that is
 > *empty*, not one that is much smaller); and boot has no identity to compare, so the same state at
-> startup is #426. The replaced check compares against the directory the last complete
-> registration was on (`PairRuntime::last_watched`), kept through a failed registration, a folder
-> that was gone for a pass and an overflow re-registration — the last of which does not record a
-> different directory as the watched one, or an overflow notice would launder the replacement.
+> startup is #426. The replaced check compares against the directory the pair accepted as its
+> folder (`PairRuntime::known_root`, item 12; the first round used the directory the last complete
+> registration was on, which a registration that never completed left empty), kept through a failed
+> registration, a folder that was gone for a pass and an overflow re-registration. The first round
+> had to keep an overflow re-registration from recording a replaced directory as the watched one,
+> or the notice would launder the replacement; with the judgement against `known_root` the watch
+> state cannot launder anything, and the re-registration simply records what it watched.
 >
 > (10) **A folder that vanishes during a pass ends the pass unavailable** (§6.4; found in review).
 > `ensure_root_available` runs again before the final commit of `execute_plan_and_commit`. The
@@ -1114,6 +1118,59 @@ Expect this phase to be as large as phase 2 and riskier. Closes: the feature, he
 > to restart the daemon, which creates the folder even when it is an unmounted drive's mount point
 > (#426). A plan on a missing folder answers with the sync's message (`root_availability` is the one
 > definition), not a bare OS error.
+>
+> (12) **The second review round: a replaced or emptied folder never makes the daemon delete or
+> download without an explicit user action.** The rule the round is held to, and every change
+> below is that rule applied to a hole the first round left.
+>
+> - **One examination, before the pass, for every way a folder stops being the one the pair ran
+>   on** (`Daemon::examine_ready_pair`, `PairRuntime::examine`; first in every unpaused `Sync` job
+>   of a ready pair). The directory at the path is a different one (`PairRuntime::known_root`), or
+>   the index or the lock went with it. Either, with a folder that holds nothing the pair's rules
+>   would keep and a baseline that records items, **holds the pair** and creates, opens, locks and
+>   downloads nothing. This is item 9 made true for the default layout: the first round demoted the
+>   state first (item 8), and the same-job retry created `.sync`, a fresh index and a lock in the
+>   empty folder and bootstrapped, downloading the whole remote into it, with the guard on or off.
+>   The baseline is read through the connection the pair still holds, which works on an unlinked
+>   file. A folder emptied **in place** with its state intact is not held; that is a deletion the
+>   user made, and the guard treats it like any other. A state that went with a folder that has
+>   content still demotes and is prepared again in the same job.
+> - **The pair records its folder when its runtime is opened**, not when a watch registration
+>   completes. A watcher refused from boot (`ENOSPC`) used to leave the pair with no record and no
+>   hold. `last_watched` is gone; `RootWatch` is about registration and nothing else, and
+>   `maintain_root_watch` no longer judges.
+> - **Nothing makes the root mid-life, and nothing runs on another directory.** The executor makes
+>   directories in one place (`ensure_directory_below`): the root is checked first, then the levels
+>   are made one at a time and the walk stops at the root. `create_dir_all` made every ancestor, so a
+>   tree deleted during a pass came back from the next download's destination holding one folder,
+>   and the next pass planned the rest as deletions. The availability check compares the directory's
+>   identity with the pair's (`root_availability(root, expected)`), at the top of the pass and again
+>   before the final commit, so a directory swapped in during a pass, or an unmounted drive's mount
+>   point that stays a directory, ends the pass `RootUnavailable` with the cursor held. A typed
+>   `RootUnavailable` from an action ends the pass at once instead of counting as one failed item
+>   among twenty (which ends it "abandoned").
+> - **Only "not found" says something is gone.** Any other `stat` error (`EIO`, `ESTALE`,
+>   `EACCES`) is `Look::Unreadable`: no demotion, no hold, no watch change, no acceptance, said once
+>   per cause. A replaced folder whose content or baseline could not be read is neither accepted nor
+>   held and **its pass does not start**.
+> - **The advice no longer offers a restart.** With the guard off, a restart over an empty mount
+>   point deletes everything remote (#426), which is exactly the case the hold exists for. A hold
+>   ends when the folder holds content again (mount the drive, put the folder back), or when the
+>   user runs `proton-sync reset-index --yes`: `retry_unavailable` releases the cause, the pair is
+>   prepared (a fresh index where the state went with the folder, the surviving one otherwise), and
+>   the pass consumes the existing `reset_index` latch before it loads the baseline. The baseline
+>   is then empty, so the pass is a bootstrap: it downloads, adopts and has nothing to delete from.
+>   `resync` does not release the hold.
+> - **A `resync` latch is not spent by a pass that ends `RootUnavailable`.** It is latched again,
+>   so the walk the user asked for still happens.
+>
+> **Known consequences, not fixed.** With the delete guard off, a *partly* restored folder
+> (content, but not all of it) ends the hold, and the files not yet restored are then deleted
+> remotely: keep delete approval on for removable or network roots. An apply cut short by
+> `RootUnavailable` is sealed `Failed` even though the deletions it had already checkpointed ran.
+> `write_atomically` still creates its own directory, so a status write that races a deletion can
+> make a missing folder again; the pass-level status writes are skipped for a missing folder, which
+> closes it except for a deletion landing in the instant between the last check and the write.
 >
 > **Still not done**, deliberately: the empty mount point and the unmounted-at-boot root (#426); a
 > watcher that cannot be built at all is still fatal (it is process-wide, not per root);

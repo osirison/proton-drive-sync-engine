@@ -53,13 +53,25 @@ cadence. The reason says which of these it is:
   ([#426](https://github.com/osirison/proton-drive-sync-engine/issues/426)). Restart only
   when the folder is truly gone and should be created empty.
 - **Replaced by an empty folder** — the folder is there, but it is a different, empty
-  directory while files are recorded as synced for it (typically an unmounted drive's empty
-  mount point, or a folder deleted and made again). Reconciled as it stands, that reads as
-  "delete everything", so the daemon holds the pair unavailable instead and deletes
-  nothing. Mount the drive or restore the files and the next attempt picks it up.
-- **Its state was removed along with the folder** — the folder was deleted and made again,
-  and the index and lock inside it went with it. The daemon prepares the pair again from
-  the new folder on its next attempt; you don't need to do anything.
+  directory (or it was emptied together with its `.sync` state directory) while files are
+  recorded as synced for it. Typically that is an unmounted drive's empty mount point, or a
+  folder deleted and made again. Reconciled as it stands, that reads as "delete everything",
+  and starting over in it would download everything into it, so the daemon holds the pair
+  unavailable instead: nothing is deleted, created or downloaded. That holds for every state
+  layout, the default `.sync` directory inside the folder included. There are two ways out:
+  - **Mount the drive, or put the folder back.** The next attempt picks it up once the folder
+    holds something again. If you restore only part of it, the daemon takes it from there and,
+    with delete approval turned off, deletes the remote copies of the files you have not
+    restored yet. Keep delete approval on for folders on removable or network drives.
+  - **Start this folder over from Proton** with `proton-sync reset-index --yes`. It downloads
+    everything into the folder and deletes nothing. Don't restart the daemon to accept an
+    empty folder: with delete approval turned off, a restart over an empty mount point
+    deletes everything remote
+    ([#426](https://github.com/osirison/proton-drive-sync-engine/issues/426)).
+- **Its state was removed along with the folder** — the folder was deleted and made again
+  with files in it, and the index and lock inside it went with it. The daemon prepares the
+  pair again from the new folder on its next attempt; you don't need to do anything. (If the
+  new folder is empty, it is the case above.)
 - **Locked by another process** — something else holds the folder's lock (a second
   `proton-syncd`, or another account's daemon syncing the same folder). A daemon that is
   *starting* refuses to start, naming the pair; one that is already running leaves that pair
