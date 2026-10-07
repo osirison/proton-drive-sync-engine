@@ -1701,10 +1701,22 @@ struct LoopInputs {
     carried: Option<notify::Result<Event>>,
 }
 
+/// The most rounds one watcher drain takes ([`Daemon::drain_inputs`]). Each round routes the
+/// backlog counted when it began, so a drain ends after at most this many backlogs however fast
+/// events keep arriving.
+///
+/// Two rounds already close the case that needed more than one: an echo of the pair's own write
+/// (#49) that arrives while the backlog ahead of it is routed is routed by the second. The third is
+/// slack for what arrives while *that* one is routed. It is a judgement, not a measurement: large
+/// enough that a burst the router can keep up with is taken whole, small enough that a tree
+/// outpacing the router still reaches the pop and the shutdown check after three backlogs.
+const MAX_DRAIN_ROUNDS: usize = 3;
+
 impl LoopInputs {
-    /// The next watcher event of this drain: the carried one, then at most `remaining` queued ones —
-    /// the backlog counted when the drain began, so events that arrive while it runs wait for the
-    /// next step instead of extending this one for as long as they keep coming.
+    /// The next watcher event of this round: the carried one first (the oldest — it arrived while
+    /// the loop was idle, before anything now queued), then at most `remaining` queued ones — the
+    /// backlog counted when the round began, so events that arrive while it runs wait for the next
+    /// round instead of extending this one for as long as they keep coming.
     fn next_event(&mut self, remaining: &mut usize) -> Option<notify::Result<Event>> {
         if let Some(event) = self.carried.take() {
             return Some(event);
@@ -2173,15 +2185,32 @@ impl<C: ProtonClient> Daemon<C> {
     /// Moves what is queued **now** from the two channels into the daemon: control commands into the
     /// queue, watcher events into the pairs. `Break` means shut down.
     ///
-    /// **Bounded by the backlog at entry**, for both channels. Draining until a channel is empty let
-    /// a busy tree starve everything after it — the pop and the shutdown check — for as long as
-    /// events arrived faster than they were routed (a reviewer measured 4.2 s with the cancel flag
-    /// already set, at 50k events/s). What arrives during the drain is the next step's, and the
-    /// flag is read between events so a shutdown does not wait for the rest of the backlog either.
+    /// **Bounded, on both channels.** Draining until a channel is empty let a busy tree starve
+    /// everything after it — the pop and the shutdown check — for as long as events arrived faster
+    /// than they were routed (a reviewer measured 4.2 s with the cancel flag already set, at 50k
+    /// events/s). The cancel flag is read between events, so a shutdown does not wait for the rest
+    /// of a backlog either.
     ///
-    /// Before the pop, so a pair's events — the echo of its own last write included (#49) — are
-    /// routed before its next pass. That narrows the echo window rather than closing it: notify
-    /// sends from its own thread, so an echo can still be in flight here (#425).
+    /// - **Control channel: once**, the backlog counted at entry. A command that arrives during the
+    ///   drain is taken by the next drain; nothing is lost by that, because a command only decides
+    ///   which job is popped and the queue already orders an explicit job ahead of a timer one.
+    /// - **Watcher channel: at most [`MAX_DRAIN_ROUNDS`] rounds**, each bounded by the backlog
+    ///   counted when *it* begins (the event the idle wait carried in is routed first). A round
+    ///   that finds the channel empty ends the drain. One round was not enough: an echo of the
+    ///   pair's own download (#49) that arrives *while the backlog ahead of it is routed* is not in
+    ///   that round's count, so the pop ran first, the pair's pass cleared `authored_writes`, and
+    ///   the next drain routed the echo as a user's edit — flipping the fresh `Synced` record to
+    ///   `Modified`, and uploading the stale local file over a newer remote edit. A further round
+    ///   routes it before the pop. The cap is what keeps the starvation bound: a producer that
+    ///   outpaces the router delays the pop by at most that many rounds, each sized by what
+    ///   arrived during the one before, instead of for as long as it keeps producing.
+    ///
+    /// Lost-event notices are gathered across **all** rounds and settled once, before the pop.
+    ///
+    /// What arrives after the last round waits for the next drain, which [`Self::step_blocking`]
+    /// reaches as soon as the job it pops has run — not at the next step. Routing before the pop
+    /// narrows the echo window rather than closing it: notify sends from its own thread, so an
+    /// echo can still be in flight when the last round ends (#425).
     fn drain_inputs(&mut self, inputs: &mut LoopInputs) -> std::ops::ControlFlow<()> {
         // `Disconnected` (the IPC task died) ends the drain, not the daemon, and cannot spin.
         for _ in 0..inputs.loop_rx.len() {
@@ -2192,13 +2221,18 @@ impl<C: ProtonClient> Daemon<C> {
                 return std::ops::ControlFlow::Break(());
             }
         }
-        let mut remaining = inputs.watch_rx.len();
         let mut lost = LostEvents::default();
-        while let Some(event) = inputs.next_event(&mut remaining) {
-            if self.cancel_flag.load(Ordering::SeqCst) {
-                return std::ops::ControlFlow::Break(());
+        for _ in 0..MAX_DRAIN_ROUNDS {
+            let mut remaining = inputs.watch_rx.len();
+            if remaining == 0 && inputs.carried.is_none() {
+                break;
             }
-            self.route(event, &mut lost);
+            while let Some(event) = inputs.next_event(&mut remaining) {
+                if self.cancel_flag.load(Ordering::SeqCst) {
+                    return std::ops::ControlFlow::Break(());
+                }
+                self.route(event, &mut lost);
+            }
         }
         self.settle_lost_events(&lost, inputs.watcher.as_mut());
         std::ops::ControlFlow::Continue(())
@@ -2375,39 +2409,7 @@ impl<C: ProtonClient> Daemon<C> {
     /// and for one whose next eight occurrences have all already passed in real time. The queue
     /// arms nothing for `None`, so it really is the same inert state a pair with no schedule is in.
     fn next_full_sweep_in(&self, pair: usize) -> Option<Duration> {
-        let schedule = self.pair_config(pair).full_scan_schedule?;
-        let now = Local::now();
-        let mut cursor = now.naive_local();
-        // AN OCCURRENCE THAT IS LATER ON THE CLOCK CAN BE EARLIER IN REAL TIME, and this loop is
-        // the whole reason there is no "fire immediately" fallback here.
-        //
-        // `next_due` is strictly after `cursor` in NAIVE time, which is what a schedule is written
-        // in. The map from naive to instant is not monotonic across a daylight-saving fold: during
-        // the repeated hour, `Local::now()` may already be past the earlier mapping of a naive time
-        // that is still in the clock's future. Subtracting then gives a negative duration.
-        //
-        // The obvious fallback — clamp to zero and let it fire — is a **spin**: the sweep re-arms by
-        // calling this again, the mapping is still non-monotonic, and it recomputes the same zero
-        // for the rest of the window. Each turn latches `force_full_walk` and runs an O(folders)
-        // sweep; with the pair paused, the job does nothing and it is a bare 100%-CPU loop. Found by
-        // adversarial review, latent rather than live only because `chrono 0.4.45` orders its
-        // ambiguous fields the opposite way to its own documentation — so a chrono upgrade would
-        // have switched it on.
-        //
-        // Instead: if an occurrence has already passed in real time, ask for the one after it. The
-        // bound is a backstop rather than a limit the arithmetic needs — one fold can swallow at
-        // most one occurrence — and answering `None` there is the same "not armed" state as an
-        // unresolvable schedule, which the caller checks rather than assumes.
-        for _ in 0..8 {
-            let due = schedule.next_due(cursor);
-            let instant =
-                crate::schedule::resolve_local(due, |naive| Local.from_local_datetime(&naive))?;
-            if let Ok(delay) = (instant - now).to_std() {
-                return Some(delay);
-            }
-            cursor = due;
-        }
-        None
+        delay_until_next_sweep(self.pair_config(pair).full_scan_schedule?, Local::now())
     }
 
     /// A scheduled moment arrived: pair `pair`'s next pass is a full sweep.
@@ -2989,6 +2991,46 @@ fn pair_cadence(
     }
 }
 
+/// How long after `now` a scheduled full sweep falls due, or `None` when nothing resolves — **the
+/// one definition** behind `Daemon::next_full_sweep_in`, and what the tests ask too, so a fold day
+/// is the same day to both.
+fn delay_until_next_sweep(
+    schedule: FullScanSchedule,
+    now: chrono::DateTime<Local>,
+) -> Option<Duration> {
+    let mut cursor = now.naive_local();
+    // AN OCCURRENCE THAT IS LATER ON THE CLOCK CAN BE EARLIER IN REAL TIME, and this loop is
+    // the whole reason there is no "fire immediately" fallback here.
+    //
+    // `next_due` is strictly after `cursor` in NAIVE time, which is what a schedule is written
+    // in. The map from naive to instant is not monotonic across a daylight-saving fold: during
+    // the repeated hour, `Local::now()` may already be past the earlier mapping of a naive time
+    // that is still in the clock's future. Subtracting then gives a negative duration.
+    //
+    // The obvious fallback — clamp to zero and let it fire — is a **spin**: the sweep re-arms by
+    // calling this again, the mapping is still non-monotonic, and it recomputes the same zero
+    // for the rest of the window. Each turn latches `force_full_walk` and runs an O(folders)
+    // sweep; with the pair paused, the job does nothing and it is a bare 100%-CPU loop. Found by
+    // adversarial review, latent rather than live only because `chrono 0.4.45` orders its
+    // ambiguous fields the opposite way to its own documentation — so a chrono upgrade would
+    // have switched it on.
+    //
+    // Instead: if an occurrence has already passed in real time, ask for the one after it. The
+    // bound is a backstop rather than a limit the arithmetic needs — one fold can swallow at
+    // most one occurrence — and answering `None` there is the same "not armed" state as an
+    // unresolvable schedule, which the caller checks rather than assumes.
+    for _ in 0..8 {
+        let due = schedule.next_due(cursor);
+        let instant =
+            crate::schedule::resolve_local(due, |naive| Local.from_local_datetime(&naive))?;
+        if let Ok(delay) = (instant - now).to_std() {
+            return Some(delay);
+        }
+        cursor = due;
+    }
+    None
+}
+
 /// The first daemon-wide key two pair configs disagree on (#102 phase 4a). **Exhaustive, no `..`**:
 /// a new `DaemonConfig` field must be placed on one side of this line before anything compiles.
 fn daemon_wide_mismatch(first: &DaemonConfig, other: &DaemonConfig) -> Option<&'static str> {
@@ -3428,12 +3470,14 @@ impl<C: ProtonClient> PairPass<'_, C> {
         // naming exactly one cause.
         self.note_degraded_session_if_needed();
         // Start each pass with an empty authored-writes set: it only needs to survive from a
-        // download/move to the watcher echo of that same write, which the step function routes
-        // before its next pop — usually before this pair's next pass, but not by guarantee: notify
-        // sends from its own thread, so an echo can still be in flight then (#425). Clearing here
-        // bounds the `mark_modified` suppression in `handle_fs_event` to a single echo window, so a
-        // genuine user edit that arrives in any later pass is never mistaken for the daemon's own
-        // echo.
+        // download/move to the watcher echo of that same write. The step function drains the
+        // watcher channel before every pop, in up to `MAX_DRAIN_ROUNDS` rounds — so an echo already
+        // queued, or one that arrives while the backlog ahead of it is routed, reaches
+        // `handle_fs_event` while this set still holds its path. Not by guarantee: notify sends
+        // from its own thread, so an echo can still be in flight when the last round ends, and then
+        // it is routed without the suppression (#425, the remaining residual). Clearing here bounds
+        // the `mark_modified` suppression in `handle_fs_event` to a single echo window, so a genuine
+        // user edit that arrives in any later pass is never mistaken for the daemon's own echo.
         self.pair.authored_writes.clear();
         // This pass's failures start empty (#136), and they are cleared HERE rather than in the
         // executor so a pass that dies before planning — a failed scan, a failed listing — cannot
@@ -22851,6 +22895,12 @@ mod tests {
         // the kernel queue overflows; a folder made after that has its IN_CREATE dropped, so notify
         // never watches it (overflow -> one `Rescan`, nothing re-walked). `watch_root` on the root
         // again — the router's answer — re-walks the tree and watches it.
+        //
+        // **This test can pass without testing anything.** On a host whose
+        // `fs.inotify.max_queued_events` is too large to overflow from a test it returns early and
+        // is reported green: libtest has no runtime "skipped". It says so, once, on stderr —
+        // `SKIPPED` and the sysctl value — written straight to the stream because `eprintln!` is
+        // captured and hidden for a passing test, which is exactly when the line is needed.
         let limit: usize = fs::read_to_string("/proc/sys/fs/inotify/max_queued_events")
             .ok()
             .and_then(|value| value.trim().parse().ok())
@@ -22859,8 +22909,11 @@ mod tests {
         let files = limit / 2 + 64;
         if files > 200_000 {
             // A host tuned for heavy inotify use: writing that many files from a test is not a test.
-            eprintln!(
-                "skipped: fs.inotify.max_queued_events is {limit}, too large to overflow from a test"
+            use std::io::Write as _;
+            let _ = writeln!(
+                std::io::stderr(),
+                "SKIPPED (reported as passed, nothing was tested): a_folder_created_during_an_inotify_overflow_is_watched_once_its_root_is_registered_again — \
+                 fs.inotify.max_queued_events is {limit}, too large to overflow from a test"
             );
             return;
         }
@@ -22957,6 +23010,107 @@ mod tests {
             status(&daemon),
             SyncStatus::Synced,
             "the echo was routed while the write was still the daemon's own"
+        );
+    }
+
+    #[test]
+    fn an_echo_that_arrives_while_the_backlog_is_routed_still_reaches_its_pair_before_the_pop() {
+        // #49 across the bound on the drain. `a`'s pass downloads a file; routing an EARLIER event
+        // (`b`'s, which fails to queue and warns) is what makes the echo of that write arrive — the
+        // warning stands in for notify's thread delivering it while the drain runs. A drain that
+        // took only the backlog counted at entry left the echo in the channel and popped `a`; `a`'s
+        // pass cleared `authored_writes` and the next drain routed the echo as a user's edit, which
+        // flipped the fresh `Synced` record to `Modified` — so, with the remote edited meanwhile,
+        // the pass after that uploaded the stale local copy over it.
+        use tracing_subscriber::layer::SubscriberExt;
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a", "b"]);
+        let a_echo = configs[0].local_root.join("remote.txt");
+        let b_file = configs[1].local_root.join("a.txt");
+        let client = MultiRootClient::default().with_tree(
+            "/Drive/a",
+            vec![remote_file_entity(
+                "remote.txt",
+                "vola~nr",
+                &sha1_bytes(b"downloaded"),
+            )],
+        );
+        let mut daemon = multi_pair_daemon(configs, client.clone(), None);
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot: `a` downloads");
+        assert!(
+            daemon
+                .runtime(0)
+                .expect("ready")
+                .authored_writes
+                .contains(Path::new("remote.txt")),
+            "precondition: the download is still the daemon's own write"
+        );
+        {
+            // `b` is the earlier event's pair: its record cannot be updated, so routing it warns.
+            let connection = &daemon.runtime(1).expect("ready").connection;
+            upsert_record(connection, &base_record("a.txt", None, &sha1_bytes(b"a")))
+                .expect("seed b's record");
+            connection
+                .execute_batch(
+                    "CREATE TRIGGER refuse_update BEFORE UPDATE ON file_index \
+                     BEGIN SELECT RAISE(ABORT, 'boom'); END;",
+                )
+                .expect("install failing trigger");
+        }
+        let status = |daemon: &Daemon<MultiRootClient>| {
+            get_record(
+                &daemon.runtime(0).expect("ready").connection,
+                Path::new("remote.txt"),
+            )
+            .expect("index read")
+            .expect("recorded")
+            .sync_status
+        };
+
+        let tx = stepper.watch_tx.clone();
+        let echo = a_echo.clone();
+        let deliver_echo = OnWarn::new(
+            "failed to process filesystem event",
+            &Arc::new(AtomicUsize::new(1)),
+            move || {
+                let _ = tx.send(Ok(Event::new(EventKind::Modify(ModifyKind::Data(
+                    DataChange::Any,
+                )))
+                .add_path(echo.clone())));
+            },
+        );
+        stepper.event(Event::new(EventKind::Modify(ModifyKind::Any)).add_path(b_file.clone()));
+        stepper.send(LoopCommand::SyncNow(0));
+        with_subscriber(tracing_subscriber::registry().with(deliver_echo), || {
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        });
+        assert_eq!(
+            status(&daemon),
+            SyncStatus::Synced,
+            "the echo was routed while the write was still the daemon's own"
+        );
+        assert_eq!(
+            stepper.inputs.watch_rx.len(),
+            0,
+            "nothing is left in the channel for a later drain to misread"
+        );
+
+        // The remote moves on; the pair's next pass must take it, not overwrite it.
+        client.clone().with_tree(
+            "/Drive/a",
+            vec![remote_file_entity(
+                "remote.txt",
+                "vola~nr",
+                &sha1_bytes(b"a newer remote edit"),
+            )],
+        );
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(
+            client.uploads().is_empty(),
+            "a stale upload over the newer remote edit: {:?}",
+            client.uploads()
         );
     }
 
@@ -23644,8 +23798,8 @@ mod tests {
     fn a_set_cancel_flag_ends_the_step_while_the_watcher_keeps_producing() {
         // The drain used to run until the watcher channel was EMPTY, before it looked at the cancel
         // flag: a busy tree starved shutdown for as long as events outpaced routing (4.2 s at 50k
-        // events/s with the flag already set, as measured in review). Only the backlog present at
-        // entry is routed, and the flag is read between events.
+        // events/s with the flag already set, as measured in review). The drain is bounded in
+        // rounds, and the flag is read between events — so with it already set, nothing is routed.
         let directory = tempdir().expect("tempdir");
         let configs = pair_configs(directory.path(), &["a"]);
         let root = configs[0].local_root.clone();
@@ -23682,12 +23836,12 @@ mod tests {
     }
 
     #[test]
-    fn control_commands_that_arrive_during_the_drain_wait_for_the_next_step() {
-        // The bound on the control channel. A command for a pair this daemon does not have is warned
-        // about and dropped; here that warning makes the next such command arrive (up to a budget),
-        // standing in for a client that keeps sending as fast as it is answered. Drained until
-        // empty, the step takes all of them; drained to the entry backlog, it takes one and leaves
-        // the one its own work caused.
+    fn control_commands_that_arrive_during_the_drain_wait_for_the_next_drain() {
+        // The bound on the control channel, which is taken once (only the watcher channel re-drains).
+        // A command for a pair this daemon does not have is warned about and dropped; here that
+        // warning makes the next such command arrive (up to a budget), standing in for a client that
+        // keeps sending as fast as it is answered. Drained until empty, the step takes all of them;
+        // drained to the entry backlog, it takes one and leaves the one its own work caused.
         use tracing_subscriber::layer::SubscriberExt;
         let directory = tempdir().expect("tempdir");
         let mut daemon = multi_pair_daemon(
@@ -23711,18 +23865,20 @@ mod tests {
         assert_eq!(
             stepper.inputs.loop_rx.len(),
             1,
-            "the command the drain itself caused is the next step's"
+            "the command the drain itself caused is the next drain's"
         );
     }
 
     #[test]
-    fn events_that_arrive_while_events_are_routed_wait_for_the_next_step() {
-        // The same bound on the watcher channel, with a due pair behind it. `b`'s index refuses to
-        // update the one file it holds, so every event for that file fails to queue and the router
-        // warns; here each warning makes the next such event arrive (up to a budget), as a busy tree
-        // does while its events are being routed. Drained until empty, the step took the whole chain
-        // before it popped anything; drained to the entry backlog, the due pair `a` runs after ONE
-        // event and the one its routing caused is left for the next step.
+    fn events_that_arrive_beyond_the_drain_round_cap_wait_for_the_next_drain() {
+        // The starvation bound on the watcher channel, with a due pair behind it. `b`'s index
+        // refuses to update the one file it holds, so every event for that file fails to queue and
+        // the router warns; here each warning makes the next such event arrive (up to a budget), as
+        // a busy tree does while its events are being routed — each round's routing causes the next
+        // round's backlog. Drained until empty, the step took the whole chain before it popped
+        // anything. Drained in rounds, the due pair `a` runs after at most `MAX_DRAIN_ROUNDS` of
+        // them (one event each here), and the event the last round's routing caused is left for the
+        // next drain — which the step reaches after `a`'s pass, not at the next step.
         use tracing_subscriber::layer::SubscriberExt;
         let directory = tempdir().expect("tempdir");
         let configs = pair_configs(directory.path(), &["a", "b"]);
@@ -23770,14 +23926,45 @@ mod tests {
         assert_eq!(client.walks(), [remote_root_of("a")], "the due pair ran");
         assert_eq!(
             at_a_walk.load(Ordering::SeqCst),
-            199,
-            "`a` ran after the one event that was queued when the step began"
+            200 - MAX_DRAIN_ROUNDS,
+            "`a` ran after MAX_DRAIN_ROUNDS rounds, not after the whole chain"
         );
         assert_eq!(
             stepper.inputs.watch_rx.len(),
             1,
-            "the event its routing caused is the next step's"
+            "the event the last round's routing caused is the next drain's"
         );
+    }
+
+    #[test]
+    fn the_event_the_idle_wait_carried_is_routed_before_the_backlog() {
+        // The idle wait receives the OLDEST event and leaves it in `LoopInputs::carried`; the
+        // channel holds what came after. Routing is order-blind for paths (`pending_changes` is a
+        // set and `mark_modified` is idempotent), so the one thing that depends on the order is
+        // which cause a drain reports for lost events: the FIRST it saw. Carried last, it would
+        // name the newer cause and hide the one that actually came first.
+        let directory = tempdir().expect("tempdir");
+        let mut daemon = multi_pair_daemon(
+            pair_configs(directory.path(), &["a"]),
+            MultiRootClient::default(),
+            None,
+        );
+        let mut stepper = Stepper::quiet(&mut daemon);
+        stepper.inputs.carried = Some(Err(notify::Error::generic("the carried event")));
+        stepper
+            .watch_tx
+            .send(Err(notify::Error::generic("the queued event")))
+            .expect("watch channel open");
+        let log = capture_log("warn", || {
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        });
+
+        assert_eq!(log.matches("forcing a local rescan").count(), 1, "{log}");
+        assert!(
+            log.contains("the carried event") && !log.contains("the queued event"),
+            "the drain reports the cause it saw first, which is the carried event's:\n{log}"
+        );
+        assert!(stepper.inputs.carried.is_none() && stepper.inputs.watch_rx.is_empty());
     }
 
     #[test]
@@ -23996,15 +24183,10 @@ mod tests {
         (daemon, client, stepper, schedule)
     }
 
-    /// How far off the schedule's next occurrence is, by the wall clock the daemon reads.
+    /// How far off the schedule's next occurrence is, by the wall clock the daemon reads — the
+    /// daemon's own function, not a second copy of it, so a fold day is the same day to both.
     fn delay_to_next_due(schedule: FullScanSchedule) -> Duration {
-        let now = Local::now();
-        // The production resolver, so a gap or fold day gets the production policy.
-        let due = crate::schedule::resolve_local(schedule.next_due(now.naive_local()), |naive| {
-            Local.from_local_datetime(&naive)
-        })
-        .expect("a resolvable local time");
-        (due - now).to_std().expect("in the future")
+        delay_until_next_sweep(schedule, Local::now()).expect("a resolvable local time")
     }
 
     fn assert_within(actual: Duration, expected: Duration, what: &str) {
@@ -24048,6 +24230,41 @@ mod tests {
             "re-armed from the end of the sweep pass",
         );
         assert!(rearmed > armed);
+    }
+
+    #[test]
+    fn a_sweep_is_re_armed_from_the_moment_its_pass_ended() {
+        // The fake clock does not move inside a step on its own, so a re-arm from the pass START
+        // passes every other sweep test. A walk hook moves it, as a long full-tree walk does: the
+        // next sweep is then due `delay` after the pass END, and the start-relative deadline would
+        // be half an hour early.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper, schedule) = scheduled_steady_daemon(directory.path());
+        let delay = delay_to_next_due(schedule);
+        let pass_length = Duration::from_secs(1800);
+        let clock = stepper.clock.clone();
+        *client.on_walk.lock().expect("hook lock") =
+            Some(Box::new(move |_root: &Path| clock.advance(pass_length)));
+        stepper.clock.advance(delay + Duration::from_secs(1));
+        let started = stepper.clock.now();
+
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(client.walks(), [remote_root_of("a")], "the sweep walked");
+        let ended = stepper.clock.now();
+        assert_eq!(
+            ended - started,
+            pass_length,
+            "precondition: the clock moved during the pass"
+        );
+        let rearmed = daemon
+            .schedule
+            .sweep_at(0)
+            .expect("a sweep job arms the next one");
+        assert_within(
+            rearmed.saturating_duration_since(ended),
+            delay_to_next_due(schedule),
+            "re-armed from the END of the sweep pass, not from its start",
+        );
     }
 
     #[test]

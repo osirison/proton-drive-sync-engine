@@ -938,17 +938,28 @@ Expect this phase to be as large as phase 2 and riskier. Closes: the feature, he
 > cadence, so there is no second pass at each `scan_interval`; and a signal wakes an idle loop at
 > once. Every per-pair log line also gains a `pair{name=default}:` prefix.
 >
-> (8) **A step drains the backlog present when it starts, on both channels, and the run loop's idle
-> wait routes nothing.** The first version drained each channel until it was empty before it looked
-> at the cancel flag or popped a job, so a tree producing events faster than they were routed held
-> off every pass and every shutdown (4.2 s with the flag already set, at 50k events/s, as measured in review).
-> Now only the entry backlog is taken, the flag is read between events, and what arrives meanwhile
-> belongs to the next step. The idle wait hands the event it received to the next step
-> (`LoopInputs::carried`) instead of calling the router itself, so the router has one call site.
-> Lost-event handling is per drain, not per notice: a rescan notice or watcher error is noted
-> while events are routed and settled after the drain — one latch, one re-registration per
-> affected root — where an overflow's thousands of notices each used to latch, warn and walk every
-> root again.
+> (8) **A drain is bounded on both channels, and the run loop's idle wait routes nothing.** The
+> first version drained each channel until it was empty before it looked at the cancel flag or
+> popped a job, so a tree producing events faster than they were routed held off every pass and
+> every shutdown (4.2 s with the flag already set, at 50k events/s, as measured in review). Now the
+> control channel's backlog at entry is taken once, and the watcher channel is taken in at most
+> `MAX_DRAIN_ROUNDS` (3) rounds, each sized by the backlog counted when it begins; the flag is read
+> between events. One round was the first bound and it was too tight: an echo of a pair's own
+> download (#49) that arrived while the backlog ahead of it was being routed was not in that
+> round's count, so the pop ran first, the pair's pass cleared `authored_writes`, and the next
+> drain routed the echo as a user's edit — flipping the fresh `Synced` record to `Modified`, which
+> uploads the stale file over a newer remote edit. A further round routes it before the pop; the
+> cap keeps the starvation bound (a producer that outpaces the router delays the pop by at most
+> three backlogs). What arrives after the last round waits for the next **drain**, which the step
+> reaches as soon as the job it popped has run — a step loops drain, pop, run, drain. An echo
+> still in notify's own thread when the last round ends is routed after the pair's next pass has
+> cleared `authored_writes`; that residual stays #425. The idle wait hands the event it received
+> to the next step (`LoopInputs::carried`) instead of calling the router itself, so the router has
+> one call site; it is the oldest event, routed first, so it is the cause a drain reports for
+> lost events. Lost-event handling is per drain, not per notice or per round: a rescan notice or
+> watcher error is noted while events are routed and settled once after the last round — one
+> latch, one re-registration per affected root — where an overflow's thousands of notices each
+> used to latch, warn and walk every root again.
 >
 > (9) **A due sweep and an explicit `Sync` for the same pair are one pass** (#193). `resync` popped
 > beside an overdue scheduled sweep returns as the sweep (`Cause::Sweep`), because the daemon
