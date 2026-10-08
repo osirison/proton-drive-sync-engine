@@ -148,9 +148,19 @@ default_config_path() {
 # Read a top-level string value out of a TOML file (best-effort; empty if absent). Used only to warn
 # about a folder-pair mismatch on re-run, not to parse config for real.
 config_value() {
+  # `|| true`: on a multi-pair file `head` leaves after the first line, the writer gets SIGPIPE, and
+  # `set -o pipefail` would turn that into a failed command substitution in the caller. It is not an
+  # error here; the first value is the answer.
+  config_values "$1" "$2" | head -n1 || true
+}
+
+# Every `key = "value"` line of a TOML file, one value per line, in file order. A config with several
+# `[[pair]]` tables has one `local_root` line per pair (#102), and a caller that has to act on each
+# pair (uninstall.sh purges every pair's `.sync`) must not stop at the first match the way
+# `config_value` does. Same best-effort reading, same caveat: it knows nothing of table boundaries.
+config_values() {
   local file="$1" key="$2"
   grep -E "^[[:space:]]*${key}[[:space:]]*=" "${file}" 2>/dev/null \
-    | head -n1 \
     | sed -E "s/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*\"?([^\"#]*[^\"# ])\"?.*/\1/" || true
 }
 
@@ -292,6 +302,9 @@ write_config() {
     note "Keeping existing config: ${target} (pass --force-config to overwrite)"
     # A silent keep here would strand a user who re-ran with a *different* folder pair: the service
     # would keep syncing the old one. Surface the mismatch loudly.
+    # With a hand-written multi-pair config (`[[pair]]` tables, #102) this reads, and so names,
+    # only the FIRST pair — the default one. Acceptable: setup.sh writes single-pair configs, so a
+    # multi-pair file is one a person made, and "your existing config is kept" is what this says.
     local existing_local existing_remote
     existing_local="$(config_value "${target}" local_root)"
     existing_remote="$(config_value "${target}" remote_root)"
