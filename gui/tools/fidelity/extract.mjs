@@ -351,7 +351,7 @@ console.log(
       .map(([k, n]) => `${n} ${k}`)
       .join(", ")}) -> ${readdirSync(OUT_DIR).length} files`,
 );
-if (index.length !== 51) {
-  console.error(`fidelity:extract: expected 51 in-scope frames, got ${index.length}`);
+if (index.length !== 55) {
+  console.error(`fidelity:extract: expected 55 in-scope frames, got ${index.length}`);
   process.exit(1);
 }
