@@ -54,7 +54,7 @@ the tray icon, and whether counters are shown:
 | --- | --- | --- |
 | **Running** | Reachable, not paused, changes pending — actively syncing. | Pause (Sync now disappears mid-sync — it would do nothing) |
 | **Idle** | Reachable, not paused, nothing pending — up to date. | Sync now, Pause |
-| **Paused** | Sync is paused. The daemon remembers it, so a restart (including the one after saving settings) keeps the pair paused, unless the pause was made while the pair was unavailable and not yet saved. | Resume |
+| **Paused** | Sync is paused. The daemon remembers it, so a restart (including the one after saving settings) keeps the pair paused, unless the pause was made while the pair was unavailable: that pause is kept in memory only. To make it stick, resume the pair once its folder is back and pause it again. | Resume |
 | **Auth expired** | The daemon's own sign-in verdict says the Proton session is gone — or, only while it has no verdict yet, a fallback match against the last error's wording. | Try again now |
 | **Failed** | Reachable, but the last pass failed for some other reason — a timeout, a missing `proton-drive` binary, a transfer error. | Try again now |
 | **Unreachable** | The control socket can't be reached, or the reply couldn't be trusted. | Start the sync service |

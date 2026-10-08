@@ -1717,8 +1717,8 @@ impl PairShared {
         let mut record = self.pause_record.lock().expect("pause record lock");
         self.paused.store(paused, Ordering::SeqCst);
         let failure = match index {
-            None => "the folder pair is not ready, so its index is not open; the pause is saved \
-                     as soon as it is"
+            None => "the folder pair is not ready, so its index is not open; a restart loses \
+                     the pause; resume the pair once its folder is back and pause it again"
                 .to_owned(),
             Some(connection) => match store_pair_paused(connection, paused) {
                 Ok(()) => {
@@ -25940,6 +25940,50 @@ mod tests {
 
         let daemon = multi_pair_daemon(configs, client, None);
         assert!(daemon.shared.pairs[1].is_paused(), "and a restart keeps it");
+    }
+
+    #[test]
+    fn the_flush_writes_the_current_pause_flag_not_the_one_that_failed_to_save() {
+        let directory = tempdir().expect("tempdir");
+        let client = MultiRootClient::default();
+        let mut daemon =
+            multi_pair_daemon(pair_configs(directory.path(), &["a", "b"]), client, None);
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+
+        let connection = &daemon.runtime(1).expect("ready").connection;
+        connection
+            .execute_batch(
+                "CREATE TRIGGER refuse_pause_insert BEFORE INSERT ON pair_pause \
+                 BEGIN SELECT RAISE(ABORT, 'pause refused'); END; \
+                 CREATE TRIGGER refuse_pause_update BEFORE UPDATE ON pair_pause \
+                 BEGIN SELECT RAISE(ABORT, 'pause refused'); END;",
+            )
+            .expect("triggers");
+        let pair = &daemon.shared.pairs[1];
+        pair.set_paused(true, Some(connection))
+            .expect_err("the pause is refused");
+        pair.set_paused(false, Some(connection))
+            .expect_err("the resume is refused too");
+        assert!(!pair.is_paused(), "the pair is resumed in memory");
+        assert_eq!(
+            *pair.pause_record.lock().expect("lock"),
+            PauseRecord::Unsaved
+        );
+
+        connection
+            .execute_batch("DROP TRIGGER refuse_pause_insert; DROP TRIGGER refuse_pause_update;")
+            .expect("drop triggers");
+        stepper.clock.advance(Duration::from_secs(300));
+        stepper.step(&mut daemon);
+        assert_eq!(
+            *daemon.shared.pairs[1].pause_record.lock().expect("lock"),
+            PauseRecord::Saved
+        );
+        assert!(
+            !load_pair_paused(&daemon.runtime(1).expect("ready").connection).expect("read"),
+            "the index holds the current flag (not paused), not the refused pause"
+        );
     }
 
     #[test]
