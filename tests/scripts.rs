@@ -160,6 +160,31 @@ fn the_number_of_pair_tables_is_counted_for_the_setup_preview_note() {
     );
 }
 
+#[test]
+fn the_pair_table_count_and_the_inline_check_read_a_quoted_key_the_same_way() {
+    // PR #434 third review, L6. `config_has_inline_pairs` accepted a quoted `pair` key and
+    // `count_pair_tables` did not, so `[["pair"]]` tables counted as none: the preview note about
+    // several pairs would not be said, and an inline check would call the same file inline-free.
+    let directory = tempdir().expect("tempdir");
+    let file = directory.path().join("quoted.toml");
+    fs::write(
+        &file,
+        "[[pair]]\nname = \"a\"\n[[ pair ]]\nname = \"b\"\n[[\"pair\"]]\nname = \"c\"\n\
+         [['pair']]\nname = \"d\"\n[[ \"pair\" ]] # a comment\nname = \"e\"\n\
+         # [[\"pair\"]]\n[[pairs]]\n[[\"pair]]\n",
+    )
+    .expect("write");
+    let script = format!("count_pair_tables '{}'", file.display());
+    assert_eq!(
+        bash_with_setup(directory.path(), &script).trim(),
+        "5",
+        "plain, spaced, double-quoted, single-quoted and quoted-with-a-comment tables; not a \
+         comment, not `pairs`, not an unterminated quote"
+    );
+    assert!(has_inline_pairs(directory.path(), "'pair' = []\n"));
+    assert!(has_inline_pairs(directory.path(), "\"pair\" = []\n"));
+}
+
 /// `setup.sh`'s start-up preview over `config`, with a stub in place of the daemon (it prints a
 /// canned plan and starts nothing) and `--no-start` set, so the function ends at the preview.
 /// Returns what it printed on both streams.
@@ -466,11 +491,17 @@ fn uninstall_dry_run_says_which_pairs_it_could_not_read_and_does_not_guess() {
 }
 
 #[test]
-fn uninstall_never_lists_a_dot_sync_directly_under_home_or_an_unsafe_root() {
-    // PR #434 second review, H4. The guard in `validated_sync_state_dir` that refuses `/` and `$HOME`
-    // as a pair root had no test: removing it still passed, and a hand-edited `local_root = "~"`
-    // (or the absolute home directory) with a `.sync` in it would then be planned for removal. A
-    // dry run is enough to prove it, and nothing is removed.
+fn uninstall_never_lists_a_dot_sync_directly_under_home() {
+    // PR #434 second review, H4; third review, L3. What this pins is the `$HOME` arm of the guard
+    // in `validated_sync_state_dir`: removing it still passed, and a hand-edited
+    // `local_root = "~"` (or the absolute home directory) with a `.sync` in it would then be
+    // planned for removal. A dry run is enough to prove it, and nothing is removed.
+    //
+    // The `/` arm is NOT pinned and cannot be without a `.sync` at the real `/`: the guard compares
+    // the lexical path after `cd && pwd`, which keeps a symlink's own name, so no sandbox path
+    // resolves to `/`; and with that arm removed the later `[[ -d /.sync ]]` test refuses it on any
+    // machine that has no `/.sync`. The `slash` pair below is kept as a smoke test, not a pin:
+    // a root of `/` must not break the run or put a line for `/.sync` in the plan.
     let sandbox = UninstallSandbox::new();
     let home = sandbox.path().join("home");
     fs::create_dir(home.join(".sync")).expect("a .sync directly under HOME");
@@ -498,6 +529,10 @@ fn uninstall_never_lists_a_dot_sync_directly_under_home_or_an_unsafe_root() {
     assert!(
         !text.contains(&format!("{}", home.join(".sync").display())),
         "a `.sync` directly under HOME is not engine state and is not planned: {text}"
+    );
+    assert!(
+        !text.lines().any(|line| line.ends_with(": /.sync")),
+        "and a root of `/` did not put `/.sync` in the plan: {text}"
     );
     assert!(
         home.join(".sync").join("precious").exists(),

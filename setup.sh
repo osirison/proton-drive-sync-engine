@@ -179,10 +179,12 @@ config_has_inline_pairs() {
   grep -qE "^[[:space:]]*(pair|\"pair\"|'pair')[[:space:]]*=" "$1" 2>/dev/null
 }
 
-# How many `[[pair]]` tables the file declares (0 for a file with none, or no file).
+# How many `[[pair]]` tables the file declares (0 for a file with none, or no file). The key may be
+# quoted, as in `config_has_inline_pairs` (`[["pair"]]`, `[['pair']]` are the same table in TOML), so
+# the two helpers agree on what a `pair` key is.
 count_pair_tables() {
   local count
-  count="$(grep -cE "^[[:space:]]*\[\[[[:space:]]*pair[[:space:]]*\]\]" "$1" 2>/dev/null || true)"
+  count="$(grep -cE "^[[:space:]]*\[\[[[:space:]]*(pair|\"pair\"|'pair')[[:space:]]*\]\]" "$1" 2>/dev/null || true)"
   printf '%s\n' "${count:-0}"
 }
 
