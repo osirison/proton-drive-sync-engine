@@ -483,6 +483,16 @@ struct PairRuntime {
     /// state and not an absence, because a count nobody could read is not a count of nothing
     /// (item 15).
     carried_recorded_items: CarriedCount,
+    /// How many synced or adopted items the last pass that planned knew about **in memory**: the
+    /// baseline it loaded (as the planner sees it) plus the adoptions it planned, whether or not
+    /// they could be committed (`items_known_to_a_pass`). Written when a plan exists, cleared when
+    /// a pass completes and by a `reset-index`, and read by one thing: a demotion
+    /// ([`Self::recorded_items_to_carry`]) takes the **greater** of this and what the database
+    /// reports. It exists for the default layout, where a folder swapped for an empty one takes the
+    /// index with it: the adoptions a first sync had accumulated cannot land in an index that is no
+    /// longer the file at its path, the database then reports nothing, and an empty replacement
+    /// would read as having nothing to lose. `0` when no pass has planned since the last completion.
+    items_known_in_memory: usize,
     /// The last reason a look at this pair's folder or state failed with something other than "not
     /// found" ([`Look::Unreadable`]), so a standing failure is logged once per cause instead of at
     /// every attempt. `None` while every look answers.
@@ -4731,6 +4741,7 @@ impl PairRuntime {
             known_root,
             force_delete_approval,
             carried_recorded_items: CarriedCount::Absent,
+            items_known_in_memory: 0,
             unreadable: None,
             unjudged: None,
             watch_declined: None,
@@ -4774,9 +4785,13 @@ impl PairRuntime {
     /// cannot be counted is carried as such** ([`CarriedCount::Unreadable`]), never as zero: a
     /// positive count that is known stands, and anything else that is not known is unknown.
     fn recorded_items_to_carry(&self) -> CarriedCount {
+        // The greater of what the database reports and what the last pass knew in memory: with the
+        // default layout the database may have gone with the folder, and the adoptions the pass
+        // kept never reached it. A database that cannot be read is still `Unreadable` below.
         let own = recorded_item_count(&self.connection, &self.scan_options)
             .map_err(|error| warn!(%error, "could not read how many items the baseline records"))
-            .ok();
+            .ok()
+            .map(|reported| reported.max(self.items_known_in_memory));
         match (own, self.carried_recorded_items) {
             (Some(own), CarriedCount::Absent) => CarriedCount::Items(own),
             (Some(own), CarriedCount::Items(carried)) => CarriedCount::Items(own.max(carried)),
@@ -4957,6 +4972,23 @@ impl PairRuntime {
 /// examination and by the demotion that carries it.
 fn recorded_item_count(connection: &Connection, scan_options: &ScanOptions) -> AppResult<usize> {
     Ok(filter_base_index(load_index(connection)?, scan_options).len())
+}
+
+/// How many synced or adopted items a pass knows about once it has planned: the baseline as the
+/// planner sees it (`base_index` is already filtered) plus the adoptions the plan makes at paths
+/// the baseline does not hold. **The same unit as [`recorded_item_count`]** — a record per path —
+/// so the two compare, and a demotion takes the greater of them.
+fn items_known_to_a_pass(
+    base_index: &HashMap<PathBuf, FileRecord>,
+    plan: &[PlannedAction],
+) -> usize {
+    base_index.len()
+        + plan
+            .iter()
+            .filter(|action| {
+                action.action == SyncAction::AutoLink && !base_index.contains_key(&action.path)
+            })
+            .count()
 }
 
 /// What one look at a ready pair's index and lockfile found ([`PairRuntime::state_status`]).
@@ -5288,9 +5320,13 @@ impl<C: ProtonClient> PairPass<'_, C> {
     /// come next: adoptions and purges derived from the scan that the post-scan identity check
     /// validated. A first sync's adoptions are all of that kind, so a large one on a mount whose
     /// `stat` fails now and then no longer starts over from the scan each time — and a first sync
-    /// whose folder is then replaced by an empty one has a baseline that records what it adopted,
-    /// which is what holds the replacement. **Best effort**: a commit that fails is said and the
-    /// pass ends with the cause it already had, since the next pass derives the work again.
+    /// whose folder is then replaced by an empty one, with the state outside the folder, has a
+    /// baseline that records what it adopted, which is what holds the replacement. **With the
+    /// default layout it cannot**: the index went with the folder, so this commit has nowhere to
+    /// land; the replacement is held by the count the pass knew in memory instead
+    /// ([`PairRuntime::items_known_in_memory`], which the demotion carries beside the database's).
+    /// **Best effort**: a commit that fails is said and the pass ends with the cause it already
+    /// had, since the next pass derives the work again.
     fn keep_accumulated_work(
         &mut self,
         index_mutations: &mut Vec<IndexMutation>,
@@ -5554,6 +5590,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
             // rest (the persisted force went with the truncation; the in-memory one is spent by
             // this pass, which plans no deletion).
             self.pair.carried_recorded_items = CarriedCount::Absent;
+            self.pair.items_known_in_memory = 0;
             warn!("index reset: baseline, event cursors and delete approvals discarded");
         }
 
@@ -6572,6 +6609,12 @@ impl<C: ProtonClient> PairPass<'_, C> {
         // can take minutes) is not the one this plan describes. Typed, so the pass ends with the
         // cursor held and every latch where it was, and the next job judges the replacement. The
         // side effects themselves are guarded one by one, at the top of the loop below.
+        //
+        // **What this pass knows, noted first**: a pass that ends `RootUnavailable` from here on —
+        // this look included — leaves the pair with a baseline that may not record what the pass
+        // had adopted (the default layout's index went with the folder), and the demotion reads
+        // this figure beside the database's.
+        self.pair.items_known_in_memory = items_known_to_a_pass(base_index, &plan);
         self.ensure_root_available()?;
         let plan_summary = PlanSummary::from_outcome(&plan, matched_files);
         // Only a planned action mutates the index, so an empty plan provably cannot move the
@@ -7483,7 +7526,9 @@ impl<C: ProtonClient> PairPass<'_, C> {
         // every action (item 15): it was derived from the scan the post-scan check validated, and
         // dropping it only made a large adoption start over from the scan — or, worse, left an empty
         // replacement of a first sync's folder with a baseline that recorded nothing to hold it
-        // by. The next pass takes the missing-folder path and the pair's `force_local_rescan` is
+        // by (with the state outside the folder; with the default layout the index went with the
+        // folder and this commit cannot land, so the count the pass planned with, noted in memory
+        // when the plan existed, holds the replacement instead). The next pass takes the missing-folder path and the pair's `force_local_rescan` is
         // still owed.
         if let Err(error) = self.ensure_root_available() {
             self.keep_accumulated_work(&mut index_mutations, &mut pending_approval_consumptions);
@@ -7568,6 +7613,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
         // A pass completed on this runtime, so its baseline is the real one and the count carried
         // from before the demotion has nothing left to stand in for.
         self.pair.carried_recorded_items = CarriedCount::Absent;
+        self.pair.items_known_in_memory = 0;
         // `pending_changes` is a wake-up/status hint, not a plan input, and every pass that
         // reaches this commit ran the local stat-walk (the events-mode idle fast-path returns
         // before `execute_plan_and_commit`), so clearing the whole set here cannot lose work: the
@@ -32791,8 +32837,10 @@ mod tests {
         // left the suite green: the arms without a look of their own — `RemoteDelete`,
         // `CreateRemoteDirectory`, `MoveRemote` — were pinned by nothing, and the rest are
         // protected by their directory primitive today and by nothing the day that changes. One
-        // row per arm kind: a folder swapped during the first action, and the arm that follows
-        // must leave the replacement exactly as it was.
+        // row per remaining side-effecting arm (`Upload` and `LocalDelete` are the V1 tests' own;
+        // `AutoLink`, `Purge` and `SkipUnsupported` are index-only and have nothing to guard): a
+        // folder swapped during the first action, and the arm that follows must leave the
+        // replacement exactly as it was.
         let own: &[(&str, &[u8])] = &[("a.txt", b"the replacement's own")];
         let sidecar_free = |client: &MultiRootClient, _: &Path| {
             assert!(client.downloads().is_empty(), "{:?}", client.downloads());
@@ -33078,6 +33126,16 @@ mod tests {
             CarriedCount::Items(1),
             "a positive count is known whatever the carried one was"
         );
+        // F-1: what the last pass knew in memory counts beside the database's, so a baseline the
+        // default layout lost with its folder cannot read as smaller than the pass that planned.
+        runtime.carried_recorded_items = CarriedCount::Absent;
+        runtime.items_known_in_memory = 7;
+        assert_eq!(
+            runtime.recorded_items_to_carry(),
+            CarriedCount::Items(7),
+            "the greater of the database and the pass's own figure"
+        );
+        runtime.items_known_in_memory = 0;
 
         runtime
             .connection
@@ -33094,6 +33152,11 @@ mod tests {
         runtime.carried_recorded_items = CarriedCount::Items(4);
         assert_eq!(runtime.recorded_items_to_carry(), CarriedCount::Items(4));
         runtime.carried_recorded_items = CarriedCount::Unreadable;
+        assert_eq!(runtime.recorded_items_to_carry(), CarriedCount::Unreadable);
+        // The in-memory figure does not turn an unreadable database into a count: that stays
+        // unknown, as before.
+        runtime.carried_recorded_items = CarriedCount::Absent;
+        runtime.items_known_in_memory = 7;
         assert_eq!(runtime.recorded_items_to_carry(), CarriedCount::Unreadable);
     }
 
@@ -33290,6 +33353,22 @@ mod tests {
             "precondition: promoted, and its first pass completed: {:?}",
             published_error(&daemon, 0)
         );
+        // A pass that plans something notes what it knew (the idle fast-path never reaches the
+        // executor), and completing spends it.
+        fs::write(root.join("fresh.txt"), b"fresh").expect("a new file to upload");
+        daemon.runtime_mut(0).expect("ready").force_local_rescan = true;
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(
+            published_error(&daemon, 0).is_none() && daemon.runtime(0).is_some(),
+            "precondition: the pass that planned an upload completed: {:?}",
+            published_error(&daemon, 0)
+        );
+        assert_eq!(
+            daemon.runtime(0).expect("ready").items_known_in_memory,
+            0,
+            "the figure the pass planned with is spent when the pass completes"
+        );
         // Everything that was recorded is gone from both sides, as a tree emptied by its owner
         // looks to the baseline once the passes have followed.
         daemon
@@ -33345,6 +33424,11 @@ mod tests {
         );
 
         // The user starts over, and that pass fails on the listing too — after the truncation.
+        // A figure a failed pass had planned with is discarded with the baseline it described.
+        daemon
+            .runtime_mut(0)
+            .expect("promoted")
+            .items_known_in_memory = 5;
         daemon.shared.pairs[0]
             .reset_index
             .store(true, Ordering::SeqCst);
@@ -33362,6 +33446,14 @@ mod tests {
                 .carried_recorded_items,
             CarriedCount::Absent,
             "the reset left a count standing for a baseline it emptied"
+        );
+        assert_eq!(
+            daemon
+                .runtime(0)
+                .expect("still ready")
+                .items_known_in_memory,
+            0,
+            "the reset left the planned figure standing for a baseline it emptied"
         );
 
         replace_directory(&root, &[]);
@@ -33612,5 +33704,143 @@ mod tests {
             "content returning released the hold: {:?}",
             published_error(&daemon, 0)
         );
+    }
+
+    // ---- Item 15, F-1: a first sync whose folder is swapped for an empty one, in both layouts ----
+
+    /// A first sync adopts 31 items and plans one upload (its parent already on Proton, so
+    /// `ensure_directory` runs); that call swaps the folder for an EMPTY one. With the state inside
+    /// the folder (the default layout) the index went with it, so the adoptions the pass kept cannot
+    /// land anywhere; with the state outside they land. Returns the daemon, the client and the
+    /// stepper after the pass that met the swap, with the hook removed.
+    fn first_sync_with_an_upload_time_swap(
+        directory: &Path,
+        default_layout: bool,
+    ) -> (Daemon<MultiRootClient>, MultiRootClient, Stepper) {
+        let mut configs = pair_configs(directory, &["a"]);
+        if default_layout {
+            state_inside_root(&mut configs[0]);
+        }
+        let root = configs[0].local_root.clone();
+        let mut tree = vec![remote_dir("sub", "vola~dsub")];
+        for index in 0..30 {
+            let name = format!("f{index:02}.txt");
+            fs::write(root.join(&name), b"x").expect("a local file");
+            tree.push(remote_file_entity(
+                &name,
+                &format!("vola~n{index}"),
+                &sha1_bytes(b"x"),
+            ));
+        }
+        fs::create_dir_all(root.join("sub")).expect("sub");
+        fs::write(root.join("sub/old.txt"), b"old").expect("old");
+        tree.push(remote_file_entity(
+            "sub/old.txt",
+            "vola~nold",
+            &sha1_bytes(b"old"),
+        ));
+        fs::write(root.join("sub/new.txt"), b"new").expect("new, local only");
+        let client = MultiRootClient::default().with_tree(&configs[0].remote_root, tree);
+        let swapped = root.clone();
+        *client.on_ensure_directory.lock().expect("hook lock") = Some(Box::new(move |_| {
+            replace_directory(&swapped, &[]);
+        }));
+        let mut daemon = multi_pair_daemon(configs, client.clone(), None);
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        assert!(
+            published_error(&daemon, 0).is_some_and(|error| error.contains("is not available")),
+            "the upload's look ended the pass: {:?}",
+            published_error(&daemon, 0)
+        );
+        assert!(
+            client.uploads().is_empty(),
+            "nothing uploaded from the empty folder"
+        );
+        *client.on_ensure_directory.lock().expect("hook lock") = None;
+        (daemon, client, stepper)
+    }
+
+    /// What the next job does about the empty replacement: held, and nothing downloaded into it.
+    fn assert_the_empty_replacement_is_held(
+        daemon: &mut Daemon<MultiRootClient>,
+        client: &MultiRootClient,
+        stepper: &mut Stepper,
+    ) -> Option<StandingCause> {
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(daemon), Step::Idle);
+        assert!(
+            client.downloads().is_empty(),
+            "the remote was downloaded into the empty replacement: {} files",
+            client.downloads().len()
+        );
+        let standing = daemon.unavailable(0).map(|pair| pair.standing);
+        assert!(
+            standing.is_some_and(|standing| standing.is_some()),
+            "held: {standing:?} {:?}",
+            published_error(daemon, 0)
+        );
+        standing.flatten()
+    }
+
+    #[test]
+    fn a_first_sync_swapped_for_an_empty_folder_is_held_with_the_state_outside_the_folder() {
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) =
+            first_sync_with_an_upload_time_swap(directory.path(), false);
+        let adopted = load_index(&daemon.runtime(0).expect("not demoted").connection)
+            .expect("baseline")
+            .len();
+        assert!(adopted >= 31, "the adoptions landed: {adopted}");
+        let standing = assert_the_empty_replacement_is_held(&mut daemon, &client, &mut stepper);
+        assert_eq!(
+            standing,
+            Some(StandingCause::ReplacedByEmptyFolder { recorded: adopted })
+        );
+    }
+
+    #[test]
+    fn a_first_sync_swapped_for_an_empty_folder_is_held_with_the_state_inside_the_folder() {
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) =
+            first_sync_with_an_upload_time_swap(directory.path(), true);
+        // The index went with the folder: the adoptions the pass kept have nowhere to land, so the
+        // baseline cannot be what holds the replacement. The count the pass knew in memory is: the
+        // 32 adoptions its plan made (30 files, `sub`, `sub/old.txt` — the last one planned after
+        // the upload that met the swap, so it is counted though it was never accumulated).
+        let standing = assert_the_empty_replacement_is_held(&mut daemon, &client, &mut stepper);
+        assert_eq!(
+            standing,
+            Some(StandingCause::ReplacedByEmptyFolder { recorded: 32 })
+        );
+    }
+
+    #[test]
+    fn a_failed_look_with_the_folder_intact_keeps_a_first_syncs_adoptions_in_the_default_layout() {
+        let directory = tempdir().expect("tempdir");
+        let mut configs = pair_configs(directory.path(), &["a"]);
+        state_inside_root(&mut configs[0]);
+        let root = configs[0].local_root.clone();
+        let mut tree = Vec::new();
+        for index in 0..100 {
+            let name = format!("f{index:03}.txt");
+            fs::write(root.join(&name), b"x").expect("a local file");
+            tree.push(remote_file_entity(
+                &name,
+                &format!("vola~n{index}"),
+                &sha1_bytes(b"x"),
+            ));
+        }
+        let client = MultiRootClient::default().with_tree(&configs[0].remote_root, tree);
+        *client.on_walk.lock().expect("hook lock") = Some(Box::new(|_| {
+            test_root_look_fault::arm(50);
+        }));
+        let mut daemon = multi_pair_daemon(configs, client, None);
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        let adopted = load_index(&daemon.runtime(0).expect("not demoted").connection)
+            .expect("baseline")
+            .len();
+        assert!((40..100).contains(&adopted), "{adopted}");
     }
 }

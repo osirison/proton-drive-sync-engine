@@ -1365,13 +1365,26 @@ Expect this phase to be as large as phase 2 and riskier. Closes: the feature, he
 >   identity check validated, with no side effect behind it — and a swap between two actions
 >   already committed it through the previous action's checkpoint. The check after the loop used
 >   to drop its tail as describing "a tree that is not there"; it keeps it now, which also means a
->   first sync whose folder is then replaced by an empty one has a baseline that records what it
->   adopted, and *that* is what holds the replacement (a baseline that recorded nothing accepted
->   it, and the bootstrap populated it). The failed action's own queue is discarded like any
->   failed action's; a commit that fails is said, and the pass ends with the cause it already had.
+>   first sync whose folder is then replaced by an empty one, **with the state outside the folder**,
+>   has a baseline that records what it adopted, and *that* is what holds the replacement (a
+>   baseline that recorded nothing accepted it, and the bootstrap populated it). **With the
+>   default layout the index goes with the folder** and the commit has nowhere to land (F-1, found
+>   in the sixth round of review): the next job demoted with a carried count of zero and the
+>   bootstrap downloaded the whole remote into the empty replacement. So a pass notes in memory,
+>   when its plan exists, how many items it knew about — the baseline as the planner sees it plus
+>   the adoptions it planned at paths the baseline does not hold, committed or not
+>   (`PairRuntime::items_known_in_memory`) — and a demotion carries the **greater** of that and
+>   what the database reports, under the same `CarriedCount` rules (a database that cannot be read
+>   is still `Unreadable`, whatever the memory says). The figure is spent when a pass completes and
+>   by a `reset-index`. It counts what the plan adopts, including an adoption planned after the
+>   action that met the swap, so the number a held pair publishes can exceed what could have
+>   landed by those. The failed action's own queue is discarded like any failed action's; a
+>   commit that fails is said, and the pass ends with the cause it already had.
 > - **The guards poisoning found nothing pinning each have a test that fails under their
 >   mutation.** The loop-top look removed from every arm but two (`a_swap_before_an_arm_runs_nothing_of_it`,
->   one row per arm kind, every row run so a mutation names the arms it blinded); a promotion
+>   one row per remaining side-effecting arm, every row run so a mutation names the arms it blinded:
+>   `Upload` and `LocalDelete` are pinned by the round-4 tests, and the index-only arms have no side
+>   effect to guard); a promotion
 >   judged over a baseline that recorded nothing; a `PresenceOnly` open overwritten by the carried
 >   identity (through a one-shot root-look seam on `PairRuntime::open`); the judgement's three
 >   fail-closed arms; an unreadable force record spending the force; a carried count left standing
