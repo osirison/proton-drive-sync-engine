@@ -77,15 +77,23 @@ cadence. The reason says which of these it is:
 - **Its state was removed along with the folder** — the folder was deleted and made again
   with files in it, and the index and lock inside it went with it. The daemon prepares the
   pair again from the new folder on its next attempt; you don't need to do anything. (If the
-  new folder is empty, it is the case above — also if it is emptied before that next attempt:
-  the daemon remembers how many items the old folder had recorded and holds it rather than
-  starting over in it.)
+  new folder is empty, it is the case above — also if it is emptied before that next attempt,
+  replaced or emptied in place: the daemon remembers how many items the old folder had
+  recorded, assumes there were items if it could not read that, and holds the folder rather
+  than starting over in it. The message then says the number "could not be counted"; the two
+  ways out are the same.)
 - **The filesystem names the folder differently on each look** (logged once at start) — the
   filesystem, typically a FUSE mount, reports a different identity for the folder each time it
   is asked, so a folder replaced while the daemon runs cannot be told from the same one. For
   that folder the daemon only checks that it is there: nothing is held or withheld for a
   replacement, and your delete-approval setting applies as it is. Keep delete approval on for
   such a folder, or move it to a filesystem with stable inode numbers.
+- **The folder is not available: an I/O error** — a check of the folder failed with
+  something other than "not found" (an `Input/output error` or a stale handle on a network
+  mount). The daemon cannot tell what folder it would be working on, so the pass ends and is
+  tried again at the pair's next turn; nothing further is done to the folder, and the
+  adoptions the pass had already worked out are kept, so a large first sync does not start
+  over each time. It clears by itself once the mount answers.
 - **Locked by another process** — something else holds the folder's lock (a second
   `proton-syncd`, or another account's daemon syncing the same folder). A daemon that is
   *starting* refuses to start, naming the pair; one that is already running leaves that pair

@@ -1243,7 +1243,7 @@ Expect this phase to be as large as phase 2 and riskier. Closes: the feature, he
 > local), upload a swapped-in folder's content, or populate the folder from Proton, without an
 > explicit user action.
 >
-> - **Nothing executes on another directory — per action, literally.** The executor checked the
+> - **Nothing executes on another directory — before each action.** The executor checked the
 >   root before its loop and before every download chunk, and every other arm ran on whatever
 >   directory was at the path by then. A `LocalDelete` landing after a swap disposed of the
 >   replacement's own files at the planned paths (for good in `permanent` mode, a whole subtree
@@ -1256,8 +1256,9 @@ Expect this phase to be as large as phase 2 and riskier. Closes: the feature, he
 >   withheld ages, the pending list); the per-chunk check stays, because a batched run is one
 >   action whose chunks are its side effects; and the arms' directory creation keeps its own
 >   check because `ensure_directory_below` is the one place a directory is made and must not make
->   the root — the creation primitive's rule, not a second statement of this one. Nothing else in
->   the executor checks.
+>   the root — the creation primitive's rule, not a second statement of this one. (Item 15 adds
+>   two looks, immediately before an upload's and a remote move's CLI child, and withdraws "per
+>   action, literally": the look is at the start of each action.)
 > - **The plan verb uses the pair's own verdict.** `examine_ready_pair` runs on `Sync` jobs only,
 >   and `plan_only_blocking` asked `root_availability(root, None)` — whether *a* directory was
 >   there — so a plan on a ready pair whose folder had been replaced scanned the replacement and
@@ -1295,14 +1296,15 @@ Expect this phase to be as large as phase 2 and riskier. Closes: the feature, he
 >   index as "nothing recorded" and accepted the folder, after which the bootstrap downloaded the
 >   whole remote into it. `UnavailablePair::recorded_items` is the baseline's count as the planner
 >   sees it, read by `UnavailablePair::demoted` through the connection the runtime still holds
->   (which works on an unlinked file); `judge_carried_replacement` compares the directory at the
->   path with the carried identity and, for a different one over a non-zero count, holds the pair
->   (`ReplacedByEmptyFolder`) when it holds nothing the pair's rules would keep — **before**
+>   (which works on an unlinked file); `judge_carried_replacement` held the pair
+>   (`ReplacedByEmptyFolder`) when the directory at the path was a different one from the carried
+>   identity, over a non-zero count, and held nothing the pair's rules would keep — **before**
 >   `prepare_pair_state`, so nothing is created, opened, locked or downloaded. A look that fails
->   prepares nothing either. The count rides on the promoted runtime
->   (`PairRuntime::carried_recorded_items`) and is read beside the fresh index's own by
->   `recorded_under_an_empty_folder`, until a pass completes on it or a reset discards it; a
->   second demotion carries the larger of the two.
+>   prepares nothing either. (Item 15 removes the "different directory" and "recorded identity"
+>   requirements, which three paths went around, and makes the count a `CarriedCount`.) The count
+>   rides on the promoted runtime (`PairRuntime::carried_recorded_items`) and is read beside the
+>   fresh index's own by `recorded_under_an_empty_folder`, until a pass completes on it or a reset
+>   discards it; a second demotion carries the larger of the two.
 > - **The root gets the index's two-look rule.** `known_root` came from one `stat` while the
 >   index's identity took two: on a filesystem that names the folder differently on each look,
 >   every job was `Replaced`, `force_delete_approval` was set on every pass, and with the guard
@@ -1315,11 +1317,80 @@ Expect this phase to be as large as phase 2 and riskier. Closes: the feature, he
 >   work, so a replacement that took the state with it is still judged. The watch still
 >   re-registers on such a filesystem every pass, the cost it always had.
 >
+> (15) **The fifth review round: the promotion's judgement, a second look before two transfers, the
+> work a failed look used to discard, and the guards nothing pinned.** The rule is item 14's. The
+> review reproduced three ways a promoted pair was prepared in an emptied folder and populated from
+> Proton, found a window the per-action look leaves open and a cost it adds, and — by poisoning the
+> code one line at a time — found guards that no test pinned.
+>
+> - **The judgement asks about the folder and nothing else.** Item 14's `judge_carried_replacement`
+>   ran for a pair that had recorded an identity, over a count above zero, for a folder that was a
+>   *different directory*. Three paths went around it, each ending in `prepare_pair_state` making
+>   `.sync` and a fresh index in an emptied folder and the bootstrap downloading the whole remote
+>   into it: the folder **emptied in place** after a state-removed demotion whose same-job retry
+>   had failed (the same directory, so "proceed") — C1; a count that **could not be read**, which
+>   was `None` and was filtered out together with "never ready" — C2; and a pair whose root is
+>   **`PresenceOnly`**, which was never asked at all — C3. The judgement now is: does the folder
+>   hold nothing the pair's rules would keep, over a baseline that recorded items or could not be
+>   counted. `CarriedCount` is `Absent` (never ready in this process, or settled since: nothing to
+>   lose), `Items(n)` or `Unreadable`, so the two meanings `None` shared differ by construction — a
+>   first attempt that read `None` as "assume items" held two existing tests' pairs that were
+>   merely unavailable at boot. An unreadable count is held as
+>   `StandingCause::ReplacedByEmptyFolderUncounted`: the same two ways out, worded without a
+>   number it does not have. A count of `0` and a pair that was never ready are not judged; a look
+>   that fails, a folder that cannot be searched and rules that cannot be built each prepare
+>   nothing, and say so. The examination reads the same type
+>   (`PairRuntime::carried_recorded_items`; `Recorded::Uncounted`), so a promoted pair whose folder
+>   is emptied before its first pass completes is held by the examination itself.
+> - **Before each action, and again immediately before an upload or a remote move.** Item 14's
+>   "per action, literally" was the start of each action. `Upload` runs `ensure_directory` — a CLI
+>   child that takes about a second — between that look and the child that reads the file, and a
+>   swap inside it uploaded the replacement's bytes under the planned path; `MoveRemote` runs the
+>   same call before `rename_or_move`. Both look again after it. The audit of the other arms:
+>   `CreateRemoteDirectory` and `RemoteDelete` make their one CLI call straight after the top
+>   look; the local arms go through `ensure_directory_below`, which looks; `Download`, `Conflict`
+>   and `TypeConflict` reach their one CLI call through `ensure_parent_directory`, which looks too.
+>   A swap *during* a transfer's own call cannot be closed by any look: the next action's look and
+>   the check before the final commit hold the cursor for it, and the next sync judges the
+>   replacement. Item 14's "nothing else in the executor checks" is withdrawn.
+> - **A look that fails ends the pass, and the work before it is kept.** The per-action look is
+>   one `stat`, and any error other than "not found" is no answer (item 8): the pass ends
+>   `RootUnavailable`, fail closed, because carrying on would mean working on a folder nobody
+>   could name. At about four looks a pass that cost nothing; at one per action an `EIO`, `ESTALE`
+>   or timeout on a network mount discarded the index-only work accumulated since the last
+>   checkpoint, and a first sync's adoptions are all of that kind, so a large one started over from
+>   the scan. `keep_accumulated_work` commits it first, at every exit of the loop for that cause
+>   (the top-of-action look, an arm that met the cause, a download run, and the check after the
+>   loop). It is what the next checkpoint would have carried — derived from the scan the post-scan
+>   identity check validated, with no side effect behind it — and a swap between two actions
+>   already committed it through the previous action's checkpoint. The check after the loop used
+>   to drop its tail as describing "a tree that is not there"; it keeps it now, which also means a
+>   first sync whose folder is then replaced by an empty one has a baseline that records what it
+>   adopted, and *that* is what holds the replacement (a baseline that recorded nothing accepted
+>   it, and the bootstrap populated it). The failed action's own queue is discarded like any
+>   failed action's; a commit that fails is said, and the pass ends with the cause it already had.
+> - **The guards poisoning found nothing pinning each have a test that fails under their
+>   mutation.** The loop-top look removed from every arm but two (`a_swap_before_an_arm_runs_nothing_of_it`,
+>   one row per arm kind, every row run so a mutation names the arms it blinded); a promotion
+>   judged over a baseline that recorded nothing; a `PresenceOnly` open overwritten by the carried
+>   identity (through a one-shot root-look seam on `PairRuntime::open`); the judgement's three
+>   fail-closed arms; an unreadable force record spending the force; a carried count left standing
+>   after a completed pass or after a reset whose pass failed; and the force carried through a
+>   demotion, which is *not* redundant with its persisted copy when the state is inside the folder.
+>   One mutation is equivalent today and said so: the arm-level branch's truncation of the failed
+>   action's own queue, because no arm queues an index mutation before a call that can raise
+>   `RootUnavailable`; it stays as the commit-after-side-effects invariant's structural guard.
+>
 > **Known consequences, kept.** On a filesystem that cannot name the folder consistently, an empty
 > replacement over an index that survived outside the folder is reconciled as the user's own
 > deletion of everything — held by the guard by default, executed where it is off — because that
 > is what "the configured policy applies" means there, and the warning at open names it. A plan
-> refused for a replaced folder stays refused until the next `Sync` job judges the replacement.
+> refused for a replaced folder stays refused until the next `Sync` job judges the replacement. A
+> pair demoted for any cause (a metrics write that failed, say) and promoted over a folder that
+> holds nothing, with items recorded for it, is held even when its index survived outside the
+> folder and the emptying was the user's own: the judgement runs before the index is opened, so it
+> cannot tell, and `reset-index` releases it. A look that fails with an I/O error ends the pass
+> at that look, once per cause in the log, and the pair is tried again at its next turn.
 >
 > **Still not done**, deliberately: the empty mount point and the unmounted-at-boot root (#426); a
 > watcher that cannot be built at all is still fatal (it is process-wide, not per root);
