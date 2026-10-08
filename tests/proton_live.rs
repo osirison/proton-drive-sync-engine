@@ -1,3 +1,5 @@
+mod common;
+
 use proton_drive_sync_engine::index::{
     FileRecord, SyncStatus, compute_sha1, local_file_state, scan_local_entities,
 };
@@ -85,15 +87,15 @@ fn live_wrapped_value_shapes_for_the_undecodable_node_guard() {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("proton-drive"));
 
-    let output = std::process::Command::new(&executable)
-        .args([
-            OsString::from("filesystem"),
-            OsString::from("list"),
-            OsString::from("--json"),
-        ])
-        .arg(remote_root.as_os_str())
-        .output()
-        .expect("run proton-drive filesystem list");
+    let output = common::run_other_tool(
+        std::process::Command::new(&executable)
+            .args([
+                OsString::from("filesystem"),
+                OsString::from("list"),
+                OsString::from("--json"),
+            ])
+            .arg(remote_root.as_os_str()),
+    );
     assert!(
         output.status.success(),
         "proton-drive list failed: {}",

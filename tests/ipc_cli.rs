@@ -323,6 +323,9 @@ mod unix_tests {
         let db_path = directory.path().join("sync_index.db");
         let fake_proton_drive =
             write_blocking_upload_proton_drive(directory.path(), "/Drive/RemoteFolder");
+        let _reaper = KillBlockingUploadGroup {
+            script: fake_proton_drive.clone(),
+        };
 
         // Keep the CLI's own timeout short: it bounds how long the daemon's
         // reconcile call can stay blocked before it forcibly kills the stuck
@@ -343,12 +346,8 @@ mod unix_tests {
         let started_marker = PathBuf::from(format!("{}.started", fake_proton_drive.display()));
         wait_for_marker(&started_marker, &mut daemon);
 
-        let status = Command::new("kill")
-            .arg("-INT")
-            .arg(pid.to_string())
-            .status()
-            .expect("send SIGINT to daemon");
-        assert!(status.success(), "kill -INT should succeed");
+        let sent = common::run_other_tool(Command::new("kill").arg("-INT").arg(pid.to_string()));
+        assert!(sent.status.success(), "kill -INT should succeed: {sent:?}");
 
         let exit_status = wait_for_exit(&mut daemon.child, Duration::from_secs(4))
             .expect("daemon should exit promptly once it re-observes the already-delivered SIGINT");
@@ -394,6 +393,9 @@ mod unix_tests {
         let db_path = directory.path().join("sync_index.db");
         let fake_proton_drive =
             write_blocking_upload_proton_drive(directory.path(), "/Drive/RemoteFolder");
+        let _reaper = KillBlockingUploadGroup {
+            script: fake_proton_drive.clone(),
+        };
 
         let mut daemon = DaemonProcess::spawn_with_proton_timeout(
             &local_root,
@@ -1521,12 +1523,8 @@ exit 64
             &PathBuf::from(format!("{}.started", fake.display())),
             &mut daemon,
         );
-        let status = Command::new("kill")
-            .arg("-INT")
-            .arg(pid.to_string())
-            .status()
-            .expect("send SIGINT to daemon");
-        assert!(status.success(), "kill -INT should succeed");
+        let sent = common::run_other_tool(Command::new("kill").arg("-INT").arg(pid.to_string()));
+        assert!(sent.status.success(), "kill -INT should succeed: {sent:?}");
         let exit_status = wait_for_exit(&mut daemon.child, Duration::from_secs(6))
             .expect("the daemon exits once it re-observes the signal");
         assert!(exit_status.success(), "a clean shutdown: {exit_status:?}");
@@ -1689,7 +1687,7 @@ exit 64
     }
 
     struct DaemonProcess {
-        child: Child,
+        child: common::LoggedChild,
         /// Where this daemon's stderr is captured. It used to be `Stdio::null()`, which is why
         /// the CI run behind #327 kept no evidence of *why* its startup pass failed its download
         /// — the one line that would have explained it. Every wait helper's timeout panic tails
@@ -2236,19 +2234,197 @@ exit 64
         path
     }
 
+    /// Kills the process group of the fake blocking CLI when the test ends (PR #434 third review,
+    /// L7). The daemon starts the fake in a group of its own (`run_once`), so killing the daemon
+    /// does not reach it, and the fake used to wait for a release file that never came: 59 of them
+    /// were found on one machine. The fake writes its pid to `<script>.pid`; this reads it and
+    /// kills `-pid`, **only if** that process still runs the script (a recycled pid is somebody
+    /// else's). Declare it before the daemon so the daemon is dropped first.
+    struct KillBlockingUploadGroup {
+        script: PathBuf,
+    }
+
+    impl Drop for KillBlockingUploadGroup {
+        fn drop(&mut self) {
+            let Ok(text) = fs::read_to_string(format!("{}.pid", self.script.display())) else {
+                return;
+            };
+            let Ok(pid) = text.trim().parse::<u32>() else {
+                return;
+            };
+            let still_the_script = fs::read(format!("/proc/{pid}/cmdline"))
+                .map(|bytes| {
+                    String::from_utf8_lossy(&bytes).contains(&*self.script.to_string_lossy())
+                })
+                .unwrap_or(false);
+            if still_the_script {
+                let _ = common::run_other_tool(
+                    Command::new("kill")
+                        .arg("-KILL")
+                        .arg("--")
+                        .arg(format!("-{pid}")),
+                );
+            }
+        }
+    }
+
+    /// How many processes have `directory` in their command line: everything a test started in its
+    /// own temporary directory (the pattern is bracketed so `pgrep` cannot match itself).
+    fn processes_running_from(directory: &Path) -> usize {
+        let text = directory.display().to_string();
+        let (first, rest) = text.split_at(1);
+        let pattern = format!("[{first}]{rest}/");
+        let output = common::run_other_tool(Command::new("pgrep").arg("-f").arg(pattern));
+        String::from_utf8_lossy(&output.stdout).lines().count()
+    }
+
+    fn wait_until_nothing_runs_from(directory: &Path, limit: Duration) -> bool {
+        let deadline = Instant::now() + limit;
+        loop {
+            if processes_running_from(directory) == 0 {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    #[test]
+    fn the_fake_blocking_cli_leaves_when_the_process_that_started_it_does() {
+        // PR #434 third review, L7. Nothing ever stopped this script once its test was over.
+        let directory = tempdir().expect("tempdir");
+        let fake = write_blocking_upload_proton_drive(directory.path(), "/Drive/R");
+        let mut parent = common::sandboxed("sh", directory.path());
+        parent
+            .arg("-c")
+            .arg("\"$0\" filesystem upload a b c & wait")
+            .arg(&fake);
+        let mut parent = common::spawn_logging(&mut parent, &directory.path().join("parent.log"));
+        let started = PathBuf::from(format!("{}.started", fake.display()));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !started.exists() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(25));
+        }
+        assert!(started.exists(), "the fake is blocked in its upload");
+        assert!(
+            processes_running_from(directory.path()) >= 2,
+            "precondition: the parent and the fake are running"
+        );
+
+        parent
+            .kill()
+            .expect("kill the process that started the fake");
+        parent.wait().expect("reap it");
+        assert!(
+            wait_until_nothing_runs_from(directory.path(), Duration::from_secs(5)),
+            "the fake outlived its parent"
+        );
+    }
+
+    #[test]
+    fn the_group_killer_ends_the_fake_and_everything_it_started() {
+        use std::os::unix::process::CommandExt;
+        // A stand-in with the fake's shape: it writes its pid to `<script>.pid`, is the leader of
+        // its own group, and starts a child that would outlive it.
+        let directory = tempdir().expect("tempdir");
+        let script = directory.path().join("stand-in");
+        fs::write(
+            &script,
+            "#!/bin/sh\necho $$ > \"$0.pid\"\nsh -c 'sleep 300; :' \"$0.child\" &\nwait\n",
+        )
+        .expect("stand-in");
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).expect("mode");
+        let mut command = common::sandboxed(&script, directory.path());
+        command.process_group(0);
+        let mut child = common::spawn_logging(&mut command, &directory.path().join("child.log"));
+        let pid_file = PathBuf::from(format!("{}.pid", script.display()));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline
+            && !fs::read_to_string(&pid_file).is_ok_and(|text| !text.trim().is_empty())
+        {
+            thread::sleep(Duration::from_millis(25));
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while processes_running_from(directory.path()) < 2 && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(25));
+        }
+        assert!(
+            processes_running_from(directory.path()) >= 2,
+            "precondition: the stand-in and its child run"
+        );
+
+        drop(KillBlockingUploadGroup {
+            script: script.clone(),
+        });
+        let _ = wait_for_exit(&mut child, Duration::from_secs(5)).expect("the leader is killed");
+        assert!(
+            wait_until_nothing_runs_from(directory.path(), Duration::from_secs(5)),
+            "and so is the child it started"
+        );
+    }
+
+    #[test]
+    fn a_finished_daemon_test_leaves_no_fake_cli_running() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        fs::write(local_root.join("blocking.txt"), b"content").expect("write fixture");
+        let socket_path = directory.path().join("daemon.sock");
+        let lockfile_path = directory.path().join("daemon.lock");
+        let db_path = directory.path().join("sync_index.db");
+        let fake = write_blocking_upload_proton_drive(directory.path(), "/Drive/RemoteFolder");
+        {
+            let _reaper = KillBlockingUploadGroup {
+                script: fake.clone(),
+            };
+            let mut daemon = DaemonProcess::spawn_with_proton_timeout(
+                &local_root,
+                &socket_path,
+                &lockfile_path,
+                &db_path,
+                &fake,
+                2,
+            );
+            wait_for_socket(&socket_path, &mut daemon);
+            wait_for_marker(
+                &PathBuf::from(format!("{}.started", fake.display())),
+                &mut daemon,
+            );
+            assert!(
+                processes_running_from(directory.path()) >= 2,
+                "precondition: the daemon and the fake it is blocked on run"
+            );
+        }
+        assert!(
+            wait_until_nothing_runs_from(directory.path(), Duration::from_secs(5)),
+            "the daemon is dropped and nothing of the test is left running"
+        );
+    }
+
     fn write_blocking_upload_proton_drive(directory: &Path, remote_root: &str) -> PathBuf {
         let path = directory.join("fake-blocking-upload-proton-drive");
         fs::write(
             &path,
             format!(
                 r#"#!/bin/sh
+parent=$PPID
 if [ "$1" = "filesystem" ] && [ "$2" = "list" ] && [ "$3" = "--json" ] && [ "$4" = "{remote_root}" ]; then
     printf '{{"entries":[]}}\n'
     exit 0
 fi
 if [ "$1" = "filesystem" ] && [ "$2" = "upload" ]; then
+    echo $$ > "$0.pid"
     touch "$0.started"
+    # Wait for the release file, but never outlive the test: this script is a child of the daemon,
+    # which a finished test kills, and nothing else would ever stop it (59 were found running, up
+    # to 1.3 days old). It leaves when its parent is gone, and after a minute whatever happens.
+    waited=0
     while [ ! -f "$0.release" ]; do
+        kill -0 "$parent" 2>/dev/null || exit 0
+        waited=$((waited + 1))
+        [ "$waited" -le 1200 ] || exit 0
         sleep 0.05
     done
     exit 0

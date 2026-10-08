@@ -40,6 +40,14 @@ const EVENTS_OPT_IN_ENV: &str = "PROTON_SYNC_TEST_EVENTS_OPT_IN";
 /// reads it out of the desktop keyring, `curl` calls the events API with it.
 const STUBBED_TOOLS: [&str; 2] = ["secret-tool", "curl"];
 
+/// The file names of this crate's two binaries, for a test that compares them as **data** (a
+/// packaging manifest, an archive script). They are constants here so that no other test file
+/// contains the bare names: a bare name given to `Command::new` resolves through `PATH` to the
+/// user's installed binary, on a developer's machine the live daemon. `tests/test_isolation.rs`
+/// fails a file that names either and also mentions `Command`.
+pub const DAEMON_FILE_NAME: &str = "proton-syncd";
+pub const CONTROL_CLI_FILE_NAME: &str = "proton-sync";
+
 /// A [`Command`] for `program`, sandboxed by [`sandbox`].
 pub fn sandboxed(program: impl AsRef<OsStr>, directory: &Path) -> Command {
     let mut command = Command::new(program);
@@ -145,11 +153,20 @@ fn stub_directory() -> &'static Path {
 /// from the sandbox directory the command was given, so a command that was not sandboxed — or whose
 /// environment was cleared since — reports nothing.
 pub fn stub_hits(command: &Command) -> String {
+    read_stub_log(stub_log_path(command).as_deref())
+}
+
+/// The file the stubs append to for `command`, if it was sandboxed.
+fn stub_log_path(command: &Command) -> Option<PathBuf> {
     command
         .get_envs()
         .find(|(name, _)| *name == OsStr::new(STUB_LOG_ENV))
         .and_then(|(_, value)| value)
-        .and_then(|path| fs::read_to_string(path).ok())
+        .map(PathBuf::from)
+}
+
+fn read_stub_log(path: Option<&Path>) -> String {
+    path.and_then(|path| fs::read_to_string(path).ok())
         .unwrap_or_default()
 }
 
@@ -169,7 +186,8 @@ pub fn opt_in_to_events_driven(command: &mut Command) -> &mut Command {
 /// * **it leaves `events_driven` on** (the default) in any pair: the daemon would shell
 ///   `secret-tool` for the real session and call the events API with it. A test passes
 ///   `--no-events-driven`, or sets `events_driven = false` in the config file (in *every* `[[pair]]`
-///   table, when it has them), or calls [`opt_in_to_events_driven`].
+///   table, when it has them), or calls [`opt_in_to_events_driven`]. The flag `--events-driven`
+///   overrides a file that turned events off, so it is refused as well unless the run opted in.
 ///
 /// Any other program passes: the control CLI never runs `proton-drive` or reads the keyring.
 pub fn refuse_the_real_cli(command: &Command) {
@@ -197,10 +215,16 @@ pub fn refuse_the_real_cli(command: &Command) {
     let opted_in = command
         .get_envs()
         .any(|(name, value)| name == OsStr::new(EVENTS_OPT_IN_ENV) && value.is_some());
-    let events_off = args.iter().any(|arg| *arg == "--no-events-driven")
-        || config_texts
-            .iter()
-            .any(|text| config_turns_events_off(text));
+    // `--events-driven` beats a file's `events_driven = false` (the flag wins over the file), so a
+    // config that turns events off is not enough when the flag is beside it.
+    let events_forced_on = args.iter().any(|arg| {
+        *arg == "--events-driven" || arg.to_string_lossy().starts_with("--events-driven=")
+    });
+    let events_off = !events_forced_on
+        && (args.iter().any(|arg| *arg == "--no-events-driven")
+            || config_texts
+                .iter()
+                .any(|text| config_turns_events_off(text)));
     assert!(
         opted_in || events_off,
         "{command:?} leaves events_driven on (the default): the daemon would read the signed-in \
@@ -232,15 +256,66 @@ fn config_turns_events_off(text: &str) -> bool {
 /// Starts a long-running `command` (a daemon) with its stderr written to `stderr_path`, which the
 /// test's wait helpers quote when they time out. The caller owns the child and its bound: kill it
 /// on drop, and wait for it with a deadline. **The one way these tests start a daemon.**
-pub fn spawn_logging(command: &mut Command, stderr_path: &Path) -> Child {
+pub fn spawn_logging(command: &mut Command, stderr_path: &Path) -> LoggedChild {
     refuse_the_real_cli(command);
+    let stub_log = stub_log_path(command);
     let stderr = File::create(stderr_path).expect("create the daemon's stderr log");
-    command
+    let child = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::from(stderr))
         .spawn()
-        .unwrap_or_else(|error| panic!("spawn {command:?}: {error}"))
+        .unwrap_or_else(|error| panic!("spawn {command:?}: {error}"));
+    LoggedChild {
+        child,
+        stub_log,
+        description: format!("{command:?}"),
+    }
+}
+
+/// A daemon started by [`spawn_logging`]: a [`Child`] (it derefs to one, so `kill`, `wait`,
+/// `try_wait` and `id` are the usual ones) that **fails the test that owns it if the process
+/// reached a stub tool** ([`stub_hits`]), checked when it is dropped. [`run_bounded`] does the
+/// same for a run to completion; a daemon is long-running and waited on by the test's own helpers,
+/// so without this a test that reached the stubs and passed anyway would have degraded silently.
+/// Dropped last, after the owner's own `Drop` has killed the process, so the record is complete.
+pub struct LoggedChild {
+    child: Child,
+    stub_log: Option<PathBuf>,
+    description: String,
+}
+
+impl LoggedChild {
+    /// What the stub tools recorded for this process so far (empty when none was reached).
+    pub fn stub_hits(&self) -> String {
+        read_stub_log(self.stub_log.as_deref())
+    }
+}
+
+impl std::ops::Deref for LoggedChild {
+    type Target = Child;
+    fn deref(&self) -> &Child {
+        &self.child
+    }
+}
+
+impl std::ops::DerefMut for LoggedChild {
+    fn deref_mut(&mut self) -> &mut Child {
+        &mut self.child
+    }
+}
+
+impl Drop for LoggedChild {
+    fn drop(&mut self) {
+        let hits = self.stub_hits();
+        // A panic while already panicking aborts the test binary and hides the first failure.
+        if !hits.is_empty() && !thread::panicking() {
+            panic!(
+                "{} reached the real keyring or network (a stub tool in the sandbox answered):\n{hits}",
+                self.description
+            );
+        }
+    }
 }
 
 /// Runs `command` to completion and returns what it printed, **killing it after `limit`**.
@@ -297,6 +372,29 @@ pub fn run_bounded_reporting_stub_hits(command: &mut Command, limit: Duration) -
         stderr: read_back_bytes(&mut stderr),
     };
     (output, stub_hits(command))
+}
+
+/// Runs a program that is **not** a binary of this crate to completion and returns what it
+/// printed: `kill`, `pgrep`, the opt-in live tests' real `proton-drive`. **The one way a test runs
+/// such a program**, because `tests/test_isolation.rs` fails any other file that calls `.output()`,
+/// `.status()` or `.spawn()` on a command, and the reason is the same as for the binaries: a
+/// program named `proton-syncd` or `proton-sync` is the crate's own, and a bare name resolves
+/// through `PATH` to whatever is installed (on a developer's machine, the live daemon). It is
+/// refused here, so this cannot be the way around [`syncd`] and [`sync_cli`].
+pub fn run_other_tool(command: &mut Command) -> Output {
+    let program = Path::new(command.get_program())
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    assert!(
+        program != "proton-syncd" && program != "proton-sync",
+        "{command:?} is a binary of this crate: start it through common::syncd / common::sync_cli, \
+         not as an unsandboxed tool"
+    );
+    command
+        .stdin(Stdio::null())
+        .output()
+        .unwrap_or_else(|error| panic!("run {command:?}: {error}"))
 }
 
 fn read_back_bytes(file: &mut File) -> Vec<u8> {

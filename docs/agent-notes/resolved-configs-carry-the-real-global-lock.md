@@ -66,8 +66,10 @@ and no `proton_cli` in its config would sync the real account (one integration t
 per-pair-flag refusal, had exactly that gap). The session row was found by the second review of
 #102 phase 4c: naming a fake CLI does **not** stop the event session, which is a separate path to
 the same account. A poisoned run that became a daemon with a two-pair config that did not set
-`events_driven = false` ran `secret-tool` three times against the real keyring (read-only: the
-run was stopped by a stub `secret-tool`). So the sandbox cuts it three ways at once, because each
+`events_driven = false` reached `secret-tool` three times, and the reach was answered by the
+sandbox's stub `secret-tool`, not the real one: the sandbox's stub directory is first on `PATH`,
+the bus address is removed, and the run failed at its bound with the stub's record. The real
+keyring was not read. So the sandbox cuts it three ways at once, because each
 layer is what the one before it needs to fail: no bus to ask, stubs where the tools would be, and a
 refusal before the spawn.
 
@@ -77,20 +79,39 @@ sandboxed; the only places a test names them), `sandboxed(program, dir)` / `sand
 `run_bounded(command, limit)` (kills after the bound; output to temp files, not pipes; **fails a run
 that reached a stub tool**, since the stub made a real-session read harmlessly fail and the test
 would otherwise pass degraded), `spawn_logging(command, stderr_path)` (a daemon, stderr kept for the
-wait helpers) and `refuse_the_real_cli(command)` (a `proton-syncd` panics before it spawns unless it
+wait helpers; it returns a `LoggedChild`, which derefs to `Child` and **fails the test on drop if the
+process reached a stub**), `run_other_tool(command)` (the one way to run `kill`, `pgrep` or the live
+tests' real CLI; it refuses the crate's own binaries) and `refuse_the_real_cli(command)` (a `proton-syncd` panics before it spawns unless it
 names a fake CLI — `--proton-cli`, or a `--config` with `proton_cli` — **and** turns events off:
 `--no-events-driven`, or `events_driven = false` in the config, in *every* `[[pair]]` table when it
-has them; a test about the session itself opts in by name with `opt_in_to_events_driven`, and none
+has them, and never beside `--events-driven`, which wins over the file; a test about the session itself opts in by name with `opt_in_to_events_driven`, and none
 does today). The stubs append what they were asked to `<sandbox dir>/.sandbox-stub-hits`.
 
 **What the spawn guard catches, exactly.** `tests/test_isolation.rs` pins each of those, and its
-scan fails any file under `tests/` other than `common/mod.rs` that contains the literal
-`CARGO_BIN_` + `EXE_` (however it is used: `Command::new(env!(...))`, a variable bound first,
-`option_env!`, `std::env::var`) or calls `.spawn()`. It does **not** catch a binary reached without
-that name (a path built from `CARGO_MANIFEST_DIR` and `target/`, the name split with `concat!`, a
-copy of the binary), and it follows no data flow. A new test starts a binary through `common`, or
-that test fails. (The first version matched the text `Command::new(env!("CARGO_BIN_EXE_` and was
-bypassed by binding the name to a variable first.)
+scan fails any file under `tests/` **other than `common/mod.rs` and `test_isolation.rs` itself**
+(`test_isolation.rs` is exempt because its probe trees contain every form on purpose) that has, on a
+line not starting with `//`:
+
+- the literal `CARGO_BIN_` + `EXE_` (`Command::new(env!(...))`, a variable bound first, `option_env!`,
+  `std::env::var`);
+- a string literal **ending in** `proton-syncd` or `proton-sync` (`"proton-syncd"`,
+  `"/home/me/.cargo/bin/proton-syncd"`): a bare name resolves through `PATH` to the user's installed
+  binary, which is the **live daemon** on a developer's machine. `.proton-sync.toml` and
+  `proton-sync-gui` are longer names and are not matched;
+- a `Command` launch: `.spawn(`, `.output(`, `.status(` or `.exec(`, also as `Command::spawn(&mut c)`,
+  and with the name and the parenthesis on different lines;
+- `Command as <name>`, which would hide the type from the forms above;
+- `common::DAEMON_FILE_NAME` / `CONTROL_CLI_FILE_NAME` (the names, for a test comparing a manifest) in
+  a file that also mentions `Command`.
+
+A line inside a `/* */` block comment that holds a form is reported: the scan does not understand
+block comments, so it fails closed. It does **not** catch a binary reached without its name (a path
+built from `CARGO_MANIFEST_DIR` and `target/`, the name split with `concat!`, a copy of the binary), a
+launch wrapped in a function that holds none of the forms itself, or `cargo run --bin`, and it follows
+no data flow. A new test starts a binary through `common`, runs any other program with
+`common::run_other_tool`, or that test fails. (The first version matched the text
+`Command::new(env!("CARGO_BIN_EXE_` and was bypassed by binding the name to a variable first; the
+second missed a bare name, `.output()`/`.status()`, `Command::spawn(&mut c)` and a split `.spawn`.)
 
 A caller that clears the environment after `sandboxed` (the install-script sandbox in
 `tests/scripts.rs` does, to build a minimal one) loses the stubs and the stub log, and builds its
@@ -104,6 +125,13 @@ run fails at its 20 s bound and touches nothing outside its temp directory; with
 and `events_driven = false` removed as well, the poisoned daemon reaches the stub `secret-tool`
 (and the failure message quotes it) instead of the keyring. Compare `/run/user/<uid>` before and
 after, and check that the only `proton-syncd` running is the live one.
+
+**A fake CLI that waits must not outlive its test.** `tests/ipc_cli.rs`'s blocking-upload fake used to
+wait for a release file that never came, in a process group of its own (the daemon starts every CLI
+child that way, so killing the daemon does not reach it): 59 of them, up to 1.3 days old, were found
+on one machine. It now leaves when its parent is gone and after a minute regardless, and the tests
+that use it kill its group on drop. Check after a full run with a bracketed pattern, which cannot
+match its own `pgrep`: `pgrep -fc '[f]ake-blocking-upload-proton-drive'` should print `0`.
 
 **Lib tests are safe by construction**, not by this helper: they inject a fake `ProtonClient`, use
 `test_config` (every path in the tempdir) or repoint the lock as in section 1, and pin the event-source

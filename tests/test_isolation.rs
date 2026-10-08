@@ -220,6 +220,80 @@ fn a_daemon_that_leaves_events_driven_on_is_refused_before_it_runs() {
         refused(&mut Command::new(directory.path().join("proton-sync"))).is_none(),
         "the control CLI never reads the keyring"
     );
+    // PR #434 third review, L1. `--events-driven` overrides a file's `events_driven = false`
+    // (the flag beats the file), so a config that looks safe is not once the flag is beside it.
+    let message = refused(
+        Command::new(&program)
+            .arg("--config")
+            .arg(&off)
+            .arg("--events-driven"),
+    )
+    .expect("the flag turns events back on over a file that turned them off");
+    assert!(message.contains("leaves events_driven on"), "{message}");
+    assert!(
+        refused(Command::new(&program).args(["--proton-cli", "/fake", "--events-driven"]))
+            .is_some(),
+        "and over nothing at all"
+    );
+    let mut flag_opted_in = Command::new(&program);
+    flag_opted_in.args(["--proton-cli", "/fake", "--events-driven"]);
+    common::opt_in_to_events_driven(&mut flag_opted_in);
+    assert!(
+        refused(&mut flag_opted_in).is_none(),
+        "a test about the session may pass the flag, having said so"
+    );
+}
+
+#[test]
+fn a_daemon_that_reached_a_stub_tool_fails_its_test_when_the_child_is_dropped() {
+    // PR #434 third review, L1. `run_bounded` fails a run that reached a stub; a daemon started
+    // with `spawn_logging` is long-running and never goes through it, so a test that waited on a
+    // socket and passed would have degraded silently. Dropping the child is the end of the test.
+    let directory = tempdir().expect("tempdir");
+    let log = directory.path().join("child.stderr");
+    let message = panic_message(|| {
+        let mut command = common::sandboxed("sh", directory.path());
+        command
+            .arg("-c")
+            .arg("secret-tool lookup service \"$(echo z)\"; exit 0");
+        let mut child = common::spawn_logging(&mut command, &log);
+        child.wait().expect("the child ends");
+    })
+    .expect("a child that reached a stub tool fails the test that started it");
+    assert!(
+        message.contains("reached the real keyring or network")
+            && message.contains("secret-tool lookup service z\n"),
+        "{message}"
+    );
+
+    let clean = directory.path().join("clean");
+    fs::create_dir(&clean).expect("a second sandbox");
+    let message = panic_message(|| {
+        let mut command = common::sandboxed("sh", &clean);
+        command.arg("-c").arg("exit 0");
+        let mut child = common::spawn_logging(&mut command, &clean.join("child.stderr"));
+        child.wait().expect("the child ends");
+    });
+    assert!(
+        message.is_none(),
+        "a child that reached nothing passes: {message:?}"
+    );
+}
+
+#[test]
+fn the_tool_runner_refuses_the_binaries_of_this_crate() {
+    use std::process::Command;
+    let directory = tempdir().expect("tempdir");
+    for name in ["proton-syncd", "proton-sync"] {
+        let message = panic_message(|| {
+            let mut command = Command::new(directory.path().join(name));
+            common::run_other_tool(&mut command);
+        })
+        .expect("a binary of this crate is not an unsandboxed tool");
+        assert!(message.contains("binary of this crate"), "{message}");
+    }
+    let output = common::run_other_tool(Command::new("sh").args(["-c", "printf ok"]));
+    assert_eq!(output.stdout, b"ok", "any other program runs");
 }
 
 #[test]
@@ -370,19 +444,34 @@ fn a_bounded_run_applies_the_fake_cli_refusal_before_it_spawns() {
     assert!(message.contains("names no fake CLI"), "{message}");
 }
 
-/// The rule, enforced: **no test file other than `tests/common/mod.rs` contains the name of one of
-/// this crate's binaries** (`CARGO_BIN_` + `EXE_`, which is also what `env!`, `option_env!` and
-/// `std::env::var` would be handed). A test starts `proton-syncd` and `proton-sync` through
-/// `common::syncd` / `common::sync_cli` (sandboxed), runs one to completion with
-/// `common::run_bounded` or starts a daemon with `common::spawn_logging`; and `.spawn()` is
-/// `spawn_logging`'s alone.
+/// The rule, enforced. **No test file other than `tests/common/mod.rs` may**:
 ///
-/// What this does and does not catch, exactly. It is a text scan of `tests/**/*.rs`, comment lines
-/// skipped. It catches the literal name in any form (`Command::new(env!("..."))`, the name bound to
-/// a variable first, `option_env!`), and a `.spawn()` call. It does **not** catch a binary reached
-/// without that name: a path built from `CARGO_MANIFEST_DIR` and `target/`, the name split across
-/// `concat!` pieces, or a copy of the binary run from elsewhere. It does not follow data flow, and
-/// the needle is assembled so that this file does not match itself.
+/// * contain the name of one of this crate's binaries as `CARGO_BIN_` + `EXE_…` (what `env!`,
+///   `option_env!` and `std::env::var` are handed), however it is bound or aliased;
+/// * contain a string literal that **ends in** `proton-syncd` or `proton-sync` (`"proton-syncd"`,
+///   `"/home/me/.cargo/bin/proton-syncd"`): a bare name resolves through `PATH` to the user's
+///   installed binary, which on a developer's machine is the **live daemon**. Longer names
+///   (`.proton-sync.toml`, `proton-sync-gui`) are not the binaries and are not matched;
+/// * run a `Command` at all: `.spawn(`, `.output(`, `.status(` or `.exec(`, and the same called as
+///   `Command::spawn(&mut c)`; the name and the parenthesis may be on different lines;
+/// * rename the type (`Command as Other`), which would hide it from the form above;
+/// * use `common::DAEMON_FILE_NAME` / `common::CONTROL_CLI_FILE_NAME` (the binaries' file names,
+///   for a test that compares them as data) in a file that also mentions `Command`.
+///
+/// A test starts `proton-syncd` and `proton-sync` through `common::syncd` / `common::sync_cli`
+/// (sandboxed), runs one to completion with `common::run_bounded`, starts a daemon with
+/// `common::spawn_logging`, and runs any *other* program (`kill`, `pgrep`, the live `proton-drive`)
+/// with `common::run_other_tool`.
+///
+/// **What this catches and what it does not, exactly.** It is a text scan of every `tests/**/*.rs`
+/// except `tests/common/mod.rs` and **this file** (`tests/test_isolation.rs`, whose probe trees
+/// contain every form on purpose), comment lines (those starting with `//`) skipped. It does not
+/// understand block comments, so a line inside `/* ... */` that names a form is reported: it fails
+/// closed. It does **not** follow data flow, so it misses a binary reached without its name (a
+/// path built from `CARGO_MANIFEST_DIR` and `target/`, a name split across `concat!` pieces, a
+/// copy of the binary run from elsewhere), a launch through a function that wraps `Command` (it
+/// would have to contain one of the forms itself), and `cargo run --bin`. `Command::new` alone is
+/// not a launch and is not reported unless it names a binary of this crate.
 #[test]
 fn no_test_file_starts_a_binary_of_this_crate_without_the_sandbox() {
     let tests_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
@@ -391,17 +480,15 @@ fn no_test_file_starts_a_binary_of_this_crate_without_the_sandbox() {
         offenders.is_empty(),
         "start proton-syncd / proton-sync through common::syncd / common::sync_cli (HOME and the XDG \
          dirs in the test's own directory, no desktop session bus, stub keyring tools), run to \
-         completion with common::run_bounded or start a daemon with common::spawn_logging; \
-         a bare binary name or `.spawn()` at: {offenders:?}"
+         completion with common::run_bounded or start a daemon with common::spawn_logging, and run \
+         any other program with common::run_other_tool; a binary name, `Command` launch \
+         (spawn/output/status/exec) or `Command as` rename at: {offenders:?}"
     );
 }
 
-/// `file:line` for every line under `tests_dir` (recursively) that names one of the crate's
-/// binaries or calls `.spawn()`, outside the two files that are allowed to: `common/mod.rs`, and
-/// this one (whose mentions are assembled at run time).
+/// `file:line` for every offending line under `tests_dir` (recursively), outside the two files that
+/// are allowed to contain the forms: `common/mod.rs`, and this one.
 fn unsandboxed_spawns(tests_dir: &Path) -> Vec<String> {
-    let name = format!("{}{}", "CARGO_BIN_", "EXE_");
-    let spawn = format!("{}{}", ".spa", "wn()");
     let mut offenders = Vec::new();
     let mut directories = vec![tests_dir.to_path_buf()];
     while let Some(directory) = directories.pop() {
@@ -423,19 +510,85 @@ fn unsandboxed_spawns(tests_dir: &Path) -> Vec<String> {
                 continue;
             }
             let text = fs::read_to_string(&path).expect("test source");
-            for (index, line) in text.lines().enumerate() {
-                let code = line.trim_start();
-                if code.starts_with("//") {
-                    continue;
-                }
-                if code.contains(&name) || code.contains(&spawn) {
-                    offenders.push(format!("{relative}:{}", index + 1));
-                }
+            for line in offending_lines(&text) {
+                offenders.push(format!("{relative}:{line}"));
             }
         }
     }
     offenders.sort();
     offenders
+}
+
+/// The 1-based lines of `text` that hold one of the forms listed at
+/// [`no_test_file_starts_a_binary_of_this_crate_without_the_sandbox`]. Needles are assembled from
+/// pieces so that the file this lives in does not match them (it is exempt anyway).
+fn offending_lines(text: &str) -> Vec<usize> {
+    // Comment lines are blanked, not removed, so line numbers survive.
+    let code = text
+        .lines()
+        .map(|line| {
+            if line.trim_start().starts_with("//") {
+                ""
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let line_of = |index: usize| code[..index].matches('\n').count() + 1;
+    let mut lines = std::collections::BTreeSet::new();
+
+    // The crate's binary names, as the environment variable cargo provides.
+    let env_name = format!("{}{}", "CARGO_BIN_", "EXE_");
+    for (index, _) in code.match_indices(&env_name) {
+        lines.insert(line_of(index));
+    }
+
+    // A string literal ending in a binary's name: the character before it is the opening quote or
+    // a path separator, and the one after it (past an optional `d`) is the closing quote.
+    let binary = format!("{}{}", "proton-", "sync");
+    for (index, _) in code.match_indices(&binary) {
+        let rest = &code[index + binary.len()..];
+        let rest = rest.strip_prefix('d').unwrap_or(rest);
+        if rest.starts_with('"') && (code[..index].ends_with('"') || code[..index].ends_with('/')) {
+            lines.insert(line_of(index));
+        }
+    }
+
+    // A launch: `.spawn(`, or `Command::spawn(`, with whitespace (newlines too) allowed between
+    // the pieces. The name must be the whole identifier (`respawn(` has no `.` before it,
+    // `spawn_with_config(` no `(` after it), and `thread::spawn(` is not a `Command`.
+    for method in ["spawn", "output", "status", "exec"] {
+        for (index, _) in code.match_indices(method) {
+            let before = code[..index].trim_end();
+            let called_as_method = before.ends_with('.');
+            let called_as_function = before
+                .strip_suffix("::")
+                .is_some_and(|path| path.trim_end().ends_with("Command"));
+            // `spawn_with_config(` and `output_to(` continue the identifier, so no `(` follows.
+            let after = code[index + method.len()..].trim_start();
+            if (called_as_method || called_as_function) && after.starts_with('(') {
+                lines.insert(line_of(index));
+            }
+        }
+    }
+
+    // The two file-name constants stand for the bare names, so a file that mentions `Command` may
+    // not use them: `Command::new(common::DAEMON_FILE_NAME)` is the bare name in a trench coat.
+    if code.contains("Command") {
+        for constant in ["DAEMON_FILE_NAME", "CONTROL_CLI_FILE_NAME"] {
+            for (index, _) in code.match_indices(constant) {
+                lines.insert(line_of(index));
+            }
+        }
+    }
+
+    // The type renamed on import hides every `Command::` form above.
+    let rename = format!("{} as ", "Command");
+    for (index, _) in code.match_indices(&rename) {
+        lines.insert(line_of(index));
+    }
+    lines.into_iter().collect()
 }
 
 #[test]
@@ -476,9 +629,126 @@ fn the_spawn_guard_catches_the_name_bound_to_a_variable_first() {
         unsandboxed_spawns(tests.path()),
         [
             "bypass.rs:2",
+            "bypass.rs:3",
             "bypass.rs:4",
             "nested/deep.rs:1",
             "spawns.rs:1"
         ]
     );
+}
+
+/// One probe file per form the third review (L2) found the scan missing, each alone in its tree so
+/// that what is reported can only be that form. The right-hand side is the line the form is on.
+#[test]
+fn the_spawn_guard_catches_every_way_to_reach_a_binary_or_run_a_command() {
+    let bare_syncd = format!("let c = Command::new(\"{}{}\");\n", "proton-", "syncd");
+    let bare_sync = format!("let c = Command::new(\"{}{}\");\n", "proton-", "sync");
+    let path_syncd = format!(
+        "let p = \"/home/someone/.cargo/bin/{}{}\";\n",
+        "proton-", "syncd"
+    );
+    let forms: Vec<(&str, String)> = vec![
+        // A bare name resolves through PATH to the user's LIVE installed binary.
+        ("bare-syncd", bare_syncd),
+        ("bare-sync", bare_sync),
+        ("path-syncd", path_syncd),
+        // `.output()` and `.status()`, not only `.spawn()`.
+        ("output", "let _ = tool.arg(\"x\").output();\n".to_owned()),
+        ("status", "let _ = tool.arg(\"x\").status();\n".to_owned()),
+        // Universal function call syntax.
+        (
+            "ufcs-spawn",
+            "let child = std::process::Command::spawn(&mut command);\n".to_owned(),
+        ),
+        (
+            "ufcs-output",
+            "let out = Command::output(&mut command);\n".to_owned(),
+        ),
+        (
+            "ufcs-status",
+            "let out = process::Command::status(&mut command);\n".to_owned(),
+        ),
+        // The method name on a line of its own, and the parenthesis on another.
+        (
+            "split-spawn",
+            "let child = command\n    .spawn\n    ()\n    .unwrap();\n".to_owned(),
+        ),
+        (
+            "split-output",
+            "let out = command\n    .output\n    (\n    );\n".to_owned(),
+        ),
+        // A renamed import hides the type from the `Command::` forms.
+        (
+            "alias",
+            "use std::process::Command as Process;\n".to_owned(),
+        ),
+        // The file-name constants are data; beside a `Command` they are the bare name.
+        (
+            "file-name-constant",
+            "use std::process::Command;\nlet name = common::DAEMON_FILE_NAME;\n".to_owned(),
+        ),
+        // A block comment is not understood, so a line inside one fails closed.
+        (
+            "block-comment",
+            format!("/* Command::new(\"{}{}\") */\n", "proton-", "syncd"),
+        ),
+    ];
+    let lines = [
+        ("bare-syncd", 1),
+        ("bare-sync", 1),
+        ("path-syncd", 1),
+        ("output", 1),
+        ("status", 1),
+        ("ufcs-spawn", 1),
+        ("ufcs-output", 1),
+        ("ufcs-status", 1),
+        // The line the method name is on.
+        ("split-spawn", 2),
+        ("split-output", 2),
+        ("alias", 1),
+        ("file-name-constant", 2),
+        ("block-comment", 1),
+    ];
+    for ((form, source), (listed, line)) in forms.iter().zip(lines) {
+        assert_eq!(*form, listed, "the two lists are in the same order");
+        let tests = tempdir().expect("tempdir");
+        fs::write(tests.path().join(format!("{form}.rs")), source).expect("probe");
+        assert_eq!(
+            unsandboxed_spawns(tests.path()),
+            [format!("{form}.rs:{line}")],
+            "the form `{form}` is caught"
+        );
+    }
+}
+
+#[test]
+fn the_spawn_guard_does_not_flag_what_is_not_a_launch() {
+    let tests = tempdir().expect("tempdir");
+    // Each of these shares a word with a form above and starts nothing.
+    fs::write(
+        tests.path().join("fine.rs"),
+        format!(
+            "// Command::new(\"{0}{1}\").spawn() in a comment\n\
+             /// and in a doc comment: command.output()\n\
+             let child = common::syncd(directory);\n\
+             let status = output.status.success();\n\
+             let config = \".{0}{2}.toml\";\n\
+             let handle = std::thread::spawn(move || ());\n\
+             let again = DaemonProcess::spawn_with_config(&config);\n\
+             daemon.respawn();\n\
+             let label = \"not-{0}{1}\";\n\
+             let out = common::run_other_tool(&mut tool);\n\
+             let child = common::spawn_logging(&mut command, &log);\n",
+            "proton-", "syncd", "sync"
+        ),
+    )
+    .expect("probe");
+    // The constants beside no `Command` are a test comparing a manifest.
+    fs::write(
+        tests.path().join("manifest.rs"),
+        "assert_eq!(name, Some(common::DAEMON_FILE_NAME));\n\
+         assert!(script.contains(common::CONTROL_CLI_FILE_NAME));\n",
+    )
+    .expect("probe");
+    assert_eq!(unsandboxed_spawns(tests.path()), Vec::<String>::new());
 }
