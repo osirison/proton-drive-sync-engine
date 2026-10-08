@@ -8,8 +8,9 @@
 // that answers each command and **holds a reply open when told to**, which is what makes the window
 // between "the person pressed it" and "the daemon answered" a thing a test can stand in.
 //
-// Four scenarios, each a way a write can land on a different pair than the one it was drawn for. Each
-// was a bug before the capture existed or would be again if it were removed.
+// Five scenarios. The first four are each a way a write can land on a different pair than the one it was
+// drawn for — each was a bug before the capture existed or would be again if it were removed. The fifth
+// is the first-run rule at two pairs.
 //
 //   1. THE TAIL OF A DECISION. `Move to Proton's Trash` approves, waits for the daemon, then nudges a
 //      sync. The selection moves while the approval is in flight; the nudge must still go where the
@@ -24,6 +25,10 @@
 //   4. THE HERO'S BUTTONS. Two folders in the same state draw the same hero, so a switch patches the
 //      screen instead of rebuilding it, and its buttons are the ones built for the previous folder.
 //      `Pause` must still pause the folder the hero is now about.
+//   5. A PAIR THAT HAS NEVER SYNCED. At two folders the first-run wizard (whose `Next` writes
+//      top-level roots a `[[pair]]` file refuses) must stay shut, and the window must say the pair has
+//      not synced rather than `Everything is up to date`; at one folder the same reply still opens
+//      the wizard, because it is the count and not the state that decides.
 //
 // WHAT IT CANNOT SEE: it scripts the bridge, so it proves the facade and the screens agree with each
 // other, not that the real Rust agrees with either (that is `selection_tests.rs`); and it drives the
@@ -31,7 +36,7 @@
 
 import puppeteer from "puppeteer";
 import { serve } from "./serve.mjs";
-import { DELETIONS, MAIN, PLAN } from "../../src/js/ui/copy.js";
+import { DELETIONS, MAIN, PLAN, TRAY } from "../../src/js/ui/copy.js";
 import { EMPTY_CONFIG } from "../../src/js/api.js";
 
 const PAIRS = ["docs", "photos"];
@@ -77,7 +82,9 @@ async function until(what, check, ms = 6000) {
 
 /** A scripted daemon: answers every command the window sends, records them, and holds replies on request. */
 class Bridge {
-  constructor(queues) {
+  constructor(queues, { names = PAIRS, neverSynced = [] } = {}) {
+    this.names = names;
+    this.neverSynced = neverSynced;
     this.calls = [];
     this.selected = "docs";
     this.queues = queues; // pair -> pending deletions
@@ -97,12 +104,17 @@ class Bridge {
 
   status() {
     const name = this.selected;
-    const pairs = PAIRS.map((pair) => summaryOf(pair, this.queues[pair].length));
+    const never = (pair) => this.neverSynced.includes(pair);
+    const pairs = this.names.map((pair) => ({
+      ...summaryOf(pair, this.queues[pair].length),
+      ...(never(pair) ? { last_sync_epoch_secs: null } : {}),
+    }));
     return {
-      state: "idle",
+      // What `derive_state` says: a reachable daemon that has never synced THIS pair.
+      state: never(name) ? "firstRun" : "idle",
       selected: name,
       pairs,
-      pair_states: PAIRS.map((pair) => ({ name: pair, state: "idle" })),
+      pair_states: this.names.map((pair) => ({ name: pair, state: "idle" })),
       response: {
         status: "running",
         paused: false,
@@ -110,7 +122,7 @@ class Bridge {
         reconcile_seq: 1,
         pending_changes: 0,
         message: "",
-        last_sync_epoch_secs: 1_750_000_000,
+        last_sync_epoch_secs: never(name) ? null : 1_750_000_000,
         last_error: null,
         last_plan_summary: null,
         last_successful_sync_summary: null,
@@ -156,7 +168,7 @@ class Bridge {
         return {
           ...EMPTY_CONFIG,
           exists: true,
-          pairs: PAIRS.map((name) => ({
+          pairs: this.names.map((name) => ({
             name,
             local_root: `/home/u/${name}`,
             remote_root: `/Drive/${name}`,
@@ -356,6 +368,34 @@ await scenario("after a switch, the hero's Pause pauses the pair the hero is now
   await press(page, MAIN.pause);
   await until("the pause", () => bridge.called("pause").length === 1);
   expectPair(bridge.called("pause"), "photos", "pause");
+  await page.close();
+});
+
+// ---- 5. a pair that has never synced --------------------------------------------------------------
+const text = (page) => page.evaluate(() => document.getElementById("app-root")?.innerText ?? "");
+
+await scenario(
+  "at two pairs a never-synced pair is drawn as such, and the first-run takeover stays shut",
+  async () => {
+    const bridge = new Bridge({ docs: [], photos: [] }, { neverSynced: ["docs"] });
+    const page = await open(bridge);
+    await until("the hero", async () => (await text(page)).includes(TRAY.nothingSyncedYet));
+    const shown = await text(page);
+    if (shown.includes(MAIN.settled))
+      throw new Error(`a pair that has never synced was drawn as "${MAIN.settled}"`);
+    if (!shown.includes(TRAY.nothingSyncedYetSub))
+      throw new Error("the second sentence of the never-synced hero is missing");
+    // The takeover is the full-window wizard, which draws its own chip and no ⋯ menu.
+    if (/step 1 of 2/.test(shown)) throw new Error("the first-run takeover opened over a running app");
+    await page.close();
+  },
+);
+
+await scenario("at one pair the same reply still opens the first-run takeover", async () => {
+  // The other half of the rule: it is the COUNT that keeps the wizard shut, not the state.
+  const bridge = new Bridge({ docs: [] }, { names: ["docs"], neverSynced: ["docs"] });
+  const page = await open(bridge);
+  await until("the takeover", async () => /step 1 of 2/.test(await text(page)));
   await page.close();
 });
 
