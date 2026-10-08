@@ -312,6 +312,16 @@ main() {
       fi
     done < <(config_values "${config_path}" local_root)
   fi
+  # A pair written as an inline array (`pair = [{ ... }]`) keeps its roots inside one bracketed line,
+  # which `config_values` does not parse. Say so, and do not guess a root out of that text: a wrong
+  # guess would point the `.sync` removal at a directory that is not ours.
+  inline_pairs=false
+  if [[ -f "${config_path}" ]] && config_has_inline_pairs "${config_path}"; then
+    inline_pairs=true
+    warn "${config_path} declares folder pairs as an inline array (pair = [{ ... }]), which this script \
+cannot read: those pairs' .sync state directories are NOT in the plan below and will be left in place."
+    warn "to remove them, read each local_root from that file and delete <local_root>/.sync by hand."
+  fi
 
   collect_targets
   print_plan
@@ -341,6 +351,10 @@ main() {
   refresh_desktop_caches
 
   step "Done — Proton Drive Sync has been removed"
+  if [[ "${inline_pairs}" == "true" ]]; then
+    warn "folder pairs written as an inline array in ${config_path} were left in place: their .sync state"
+    warn "directories (<local_root>/.sync) were not removed."
+  fi
   note "Your synced files were left in place. If you are finished with Proton Drive entirely, log out"
   note "of and remove the separate 'proton-drive' CLI yourself."
 }

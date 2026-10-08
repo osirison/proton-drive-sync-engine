@@ -33,7 +33,9 @@ pub const RUN_BOUND: Duration = Duration::from_secs(60);
 ///   `--socket-path`; this is for the flag it forgets);
 /// * `XDG_STATE_HOME` — the user-global single-instance lock;
 /// * `XDG_DATA_HOME` — the FreeDesktop trash a local deletion moves into;
-/// * `HOME` — what the three above fall back to, and what a literal `~` expands to.
+/// * `XDG_CONFIG_HOME` and `XDG_CACHE_HOME` — nothing in the daemon reads them, but the install
+///   scripts and the desktop app do, and a test that runs one must not find the real config;
+/// * `HOME` — what the above fall back to, and what a literal `~` expands to.
 ///
 /// The sandbox cuts the daemon off from the machine's files, not from its keyring session, so a
 /// daemon that shells the real `proton-drive` CLI could still reach the real account. That is
@@ -44,7 +46,9 @@ pub fn sandboxed(program: impl AsRef<OsStr>, directory: &Path) -> Command {
         .env("HOME", directory)
         .env("XDG_RUNTIME_DIR", directory)
         .env("XDG_STATE_HOME", directory)
-        .env("XDG_DATA_HOME", directory);
+        .env("XDG_DATA_HOME", directory)
+        .env("XDG_CONFIG_HOME", directory)
+        .env("XDG_CACHE_HOME", directory);
     command
 }
 

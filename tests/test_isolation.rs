@@ -14,13 +14,12 @@ use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
 /// What a spawned process sees for each process-global default, one per line.
-const PRINT_ENVIRONMENT: &str =
-    r#"printf '%s\n%s\n%s\n%s\n' "$HOME" "$XDG_RUNTIME_DIR" "$XDG_STATE_HOME" "$XDG_DATA_HOME""#;
+const PRINT_ENVIRONMENT: &str = r#"printf '%s\n%s\n%s\n%s\n%s\n%s\n' "$HOME" "$XDG_RUNTIME_DIR" "$XDG_STATE_HOME" "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME""#;
 
 #[test]
 fn a_sandboxed_command_resolves_every_process_global_default_into_its_directory() {
-    // Run on a machine that has all four set (a developer's session does), the child must still
-    // see the test's directory: `Command::env` is applied over whatever the parent inherited.
+    // Run on a machine that has them set (a developer's session does), the child must still see
+    // the test's directory: `Command::env` is applied over whatever the parent inherited.
     let directory = tempdir().expect("tempdir");
     let mut command = common::sandboxed("sh", directory.path());
     command.arg("-c").arg(PRINT_ENVIRONMENT);
@@ -30,9 +29,8 @@ fn a_sandboxed_command_resolves_every_process_global_default_into_its_directory(
     let seen: Vec<&str> = seen.lines().collect();
     let expected = directory.path().to_str().expect("utf-8 path");
     assert_eq!(
-        seen, [expected; 4],
-        "HOME, XDG_RUNTIME_DIR, XDG_STATE_HOME and XDG_DATA_HOME must all name the test's own \
-         directory"
+        seen, [expected; 6],
+        "HOME and the five XDG directories must all name the test's own directory"
     );
 }
 
