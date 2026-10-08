@@ -93,6 +93,12 @@ pub use proton_drive_sync_engine::trash::LocalDeleteMode;
 /// ever the engine's definition of what a sidecar looks like.
 pub use proton_drive_sync_engine::sync::ConflictNaming;
 
+/// The folder pairs a config file declares, and the name of the implicit one — **the engine's own
+/// reading**, re-exported so the GUI never derives a pair's paths (or the `~` rule, or the per-root
+/// `.sync` default) a second time (#102 phase 5a, #135). `pair_views` is tolerant of a document
+/// part-way through an edit; see its doc for exactly what it does and does not refuse.
+pub use proton_drive_sync_engine::config::{DEFAULT_PAIR_NAME, PairView, pair_views};
+
 /// An in-memory, edit-in-place view of a config file. Getters read known keys; setters mutate only
 /// the targeted key, leaving comments and every other key untouched.
 pub struct ConfigDoc {
@@ -122,6 +128,19 @@ impl ConfigDoc {
     /// Render the current document back to TOML (comments and layout preserved).
     pub fn to_toml_string(&self) -> String {
         self.doc.to_string()
+    }
+
+    /// Whether the document states its folder pairs as `[[pair]]` tables (or the inline
+    /// `pair = [{ … }]` spelling of the same list) rather than as the top-level keys of the one
+    /// implicit pair (#102, ADR 0005 §2).
+    ///
+    /// A question about the **file's shape**, which the pair list alone cannot answer: the implicit
+    /// pair and a table named `default` read identically through `pair_views`. It matters to a
+    /// caller that has to hand the file to the daemon's own binary, because a pair table is
+    /// addressed with `--pair NAME` and never with the per-pair root flags that amend the implicit
+    /// pair.
+    pub fn declares_pair_tables(&self) -> bool {
+        self.doc.get("pair").is_some()
     }
 
     /// The spelling **this document** uses for `key`, which is not always the one the caller
@@ -1212,5 +1231,33 @@ local = true
                 .to_string();
             assert!(error.contains(needle), "expected {needle:?} in: {error}");
         }
+    }
+
+    /// The file's SHAPE, which the pair list cannot show: an implicit pair and a table named
+    /// `default` read identically through `pair_views`, but the daemon's binary is addressed
+    /// differently for the two.
+    #[test]
+    fn a_document_says_whether_it_declares_pair_tables() {
+        for (text, tables) in [
+            ("", false),
+            ("local_root = \"/x\"\nremote_root = \"/Drive/x\"\n", false),
+            (
+                "[[pair]]\nname = \"default\"\nlocal_root = \"/x\"\nremote_root = \"/Drive/x\"\n",
+                true,
+            ),
+            // The inline spelling is the same list, and just as much "not the implicit pair".
+            ("pair = [{ name = \"a\", local_root = \"/x\" }]\n", true),
+        ] {
+            let doc = ConfigDoc::from_toml_str(text).unwrap();
+            assert_eq!(doc.declares_pair_tables(), tables, "{text:?}");
+        }
+        // And the engine's reading of the two shapes is the same single pair, which is exactly why
+        // the question needs its own answer.
+        let implicit = pair_views("local_root = \"/x\"\nremote_root = \"/Drive/x\"\n").unwrap();
+        let table = pair_views(
+            "[[pair]]\nname = \"default\"\nlocal_root = \"/x\"\nremote_root = \"/Drive/x\"\n",
+        )
+        .unwrap();
+        assert_eq!(implicit, table);
     }
 }

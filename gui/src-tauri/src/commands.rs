@@ -25,14 +25,16 @@
 //! **A command that touches the filesystem, a subprocess or a socket must be `async` and do its
 //! work in `spawn_blocking`.** A synchronous one runs on the GTK main loop, and WebKitGTK aborts
 //! the whole process when that loop stalls (#142/#143). `read_config`, `write_config`,
-//! `resolve_conflict`, `read_conflict_pair` and `path_sync_status` predate the rule and are still
-//! synchronous — `path_sync_status` in particular can hold the loop for its full 3s index busy
-//! timeout. They are bounded enough to have survived; anything unbounded is not, and none of the
-//! commands added since is synchronous. S9's two `notify_policy` commands were, for one commit, and
-//! the review that caught them is the reason this sentence is checkable at all.
+//! `resolve_conflict` and `read_conflict_pair` predate the rule and are still synchronous.
+//! `path_sync_status` was one until it was given a pair argument (#102 phase 5a): it can hold the
+//! loop for its full 3s index busy timeout, and a command being touched anyway is the moment to stop
+//! being a violation. The rest are bounded enough to have survived; anything unbounded is not, and
+//! none of the commands added since is synchronous. S9's two `notify_policy` commands were, for one
+//! commit, and the review that caught them is the reason this sentence is checkable at all.
 
-use crate::config_path::RuntimePaths;
+use crate::config_path::{PairRef, RuntimePaths};
 use gui_core::conflicts::{self, Conflict, Resolution};
+use gui_core::pairs::Target;
 use gui_core::state::derive_state;
 use gui_core::wire::{
     ApplyOutcome, ControlCommand, ControlRequest, ControlResponse, DeleteDirection, DryRunReport,
@@ -83,6 +85,34 @@ fn socket_path_for_ipc(state: &Paths) -> Result<std::path::PathBuf, ipc::IpcErro
     socket_path(state).map_err(ipc::IpcError::Unreachable)
 }
 
+/// Which pair a command means (#102 phase 5a), resolved once under the lock.
+///
+/// `pair` is the command's own argument. **`None` is the default pair**, which is what the frontend
+/// sends today (it knows of one pair), so a command with no argument behaves exactly as it always
+/// did. A name is checked against the pairs the app knows and an unknown one is refused — never read
+/// as the default, because a command that meant one folder and acted on another is the failure this
+/// argument exists to prevent. Once the selection moves into Rust (5a-2) a class-R command with no
+/// argument will mean the *selected* pair; that is the one line that changes, here.
+///
+/// The classes are `COMMAND_CLASSES`' (R: a wrong pair costs a wrong screen; W: a wrong pair costs
+/// data). Until the frontend can name a pair, a class-W command with no argument also means the
+/// default pair, because refusing it would break every caller that exists.
+fn pair_ref(state: &Paths, pair: Option<&str>) -> Result<PairRef, String> {
+    state.lock().unwrap().resolve_pair(pair)
+}
+
+/// The socket and the pair a status-shaped command addresses, as the transport error the payload
+/// folds. A pair this app cannot place is reported in the same place an unresolvable socket is: the
+/// request never leaves, and the reason travels with the state.
+fn addressed(
+    state: &Paths,
+    pair: Option<&str>,
+) -> Result<(std::path::PathBuf, PairRef), ipc::IpcError> {
+    let socket = socket_path_for_ipc(state)?;
+    let pair = pair_ref(state, pair).map_err(ipc::IpcError::Unreachable)?;
+    Ok((socket, pair))
+}
+
 /// Drop ANSI escape sequences (`ESC [ … <letter>`) from subprocess stderr. The daemon's tracing
 /// output is coloured for terminals; rendered raw in the webview it turns error cards into
 /// `[2m…[0m` soup.
@@ -106,17 +136,19 @@ fn strip_ansi(s: &str) -> String {
     out
 }
 
-/// Fold a status round trip into a payload AND cache the daemon-reported live config, so later
-/// commands (conflict scan, emblems, dry run) can act on the roots the daemon is really syncing
-/// even when the GUI-owned config file doesn't exist.
+/// Fold a status round trip into a payload AND cache what the daemon reported, so later commands
+/// (conflict scan, emblems, dry run) can act on the roots the daemon is really syncing even when the
+/// GUI-owned config file doesn't exist.
+///
+/// **Keyed by the reply's pair, not by "the last reply"** (`RuntimePaths::remember_daemon_reply`): a
+/// reply addressed to one pair describes that pair at its top level, and filing it as the daemon's
+/// config would paint it over every other pair's slot.
 fn status_payload_remembering(
     state: &Paths,
     result: Result<ControlResponse, ipc::IpcError>,
 ) -> StatusPayload {
     if let Ok(response) = &result {
-        if let Some(info) = &response.config {
-            state.lock().unwrap().remember_daemon_config(info);
-        }
+        state.lock().unwrap().remember_daemon_reply(response);
     }
     status_payload(result)
 }
@@ -144,40 +176,71 @@ where
 // the handle also lets us re-borrow the managed paths *after* the `.await` (to remember the daemon's
 // live config from the reply), which a `State<'_>` guard cannot cross.
 
-/// The shared body of the no-argument status commands (`get_status`/`pause`/`resume`/`sync_now`):
-/// one control-socket round trip run off the main loop, folded into a `StatusPayload`. Generic over
-/// the runtime so a `tauri::test` mock app can drive it headlessly (see tests).
+/// The shared body of the status commands (`get_status`/`pause`/`resume`/`sync_now`/`resync`): one
+/// control-socket round trip run off the main loop, folded into a `StatusPayload`. Generic over the
+/// runtime so a `tauri::test` mock app can drive it headlessly (see tests).
+///
+/// `pair` is the command's own argument (see [`pair_ref`]); `None` is the default pair, which sends
+/// the request every client has always sent.
 async fn status_round_trip<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     command: ControlCommand,
+    pair: Option<String>,
 ) -> StatusPayload {
-    let socket = match socket_path_for_ipc(&app.state()) {
-        Ok(socket) => socket,
+    let (socket, pair) = match addressed(&app.state(), pair.as_deref()) {
+        Ok(addressed) => addressed,
         Err(error) => return status_payload(Err(error)),
     };
-    let reply =
-        spawn_blocking_ipc(move || ipc::command(&socket, command, ipc::DEFAULT_TIMEOUT)).await;
+    let reply = spawn_blocking_ipc(move || {
+        ipc::command(
+            &socket,
+            Target::from_selector(pair.selector.as_deref()),
+            command,
+            ipc::DEFAULT_TIMEOUT,
+        )
+    })
+    .await;
     status_payload_remembering(&app.state(), reply)
 }
 
+// The status commands are generic over the runtime so a test can call the COMMAND — its argument
+// plumbing and all — against a mock app, rather than only the helper under it. Tauri accepts a
+// generic command, and the production runtime is inferred where `generate_handler!` names it.
+
+/// Class R: a wrong pair costs a wrong screen.
 #[tauri::command]
-pub async fn get_status(app: tauri::AppHandle) -> StatusPayload {
-    status_round_trip(app, ControlCommand::Status).await
+pub async fn get_status<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    pair: Option<String>,
+) -> StatusPayload {
+    status_round_trip(app, ControlCommand::Status, pair).await
 }
 
+/// Class W: pausing the wrong folder stops the wrong folder.
 #[tauri::command]
-pub async fn pause(app: tauri::AppHandle) -> StatusPayload {
-    status_round_trip(app, ControlCommand::Pause).await
+pub async fn pause<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    pair: Option<String>,
+) -> StatusPayload {
+    status_round_trip(app, ControlCommand::Pause, pair).await
 }
 
+/// Class W.
 #[tauri::command]
-pub async fn resume(app: tauri::AppHandle) -> StatusPayload {
-    status_round_trip(app, ControlCommand::Resume).await
+pub async fn resume<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    pair: Option<String>,
+) -> StatusPayload {
+    status_round_trip(app, ControlCommand::Resume, pair).await
 }
 
+/// Class W.
 #[tauri::command]
-pub async fn sync_now(app: tauri::AppHandle) -> StatusPayload {
-    status_round_trip(app, ControlCommand::Syncnow).await
+pub async fn sync_now<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    pair: Option<String>,
+) -> StatusPayload {
+    status_round_trip(app, ControlCommand::Syncnow, pair).await
 }
 
 /// Settings › *Sweep now* — the full-tree comparison, not an ordinary pass.
@@ -190,27 +253,38 @@ pub async fn sync_now(app: tauri::AppHandle) -> StatusPayload {
 ///
 /// An older daemon that predates the variant rejects it as an unknown command — the reply carries
 /// the error and the button reports it, rather than silently doing an ordinary sync.
+///
+/// Class W: a full-tree walk of the wrong folder is the wrong folder's cost, and it overrides a
+/// warm start.
 #[tauri::command]
-pub async fn resync(app: tauri::AppHandle) -> StatusPayload {
-    status_round_trip(app, ControlCommand::Resync).await
+pub async fn resync<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    pair: Option<String>,
+) -> StatusPayload {
+    status_round_trip(app, ControlCommand::Resync, pair).await
 }
 
 /// The shared body of `approve`/`deny`: a path-argument round trip folded into a `StatusPayload`.
 /// Generic over the runtime so a `tauri::test` mock app can drive it headlessly (see tests).
+///
+/// **The path is relative to the root of the pair `pair` names**, so it travels with the pair or it
+/// means a different file.
 async fn approval_round_trip<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     command: ControlCommand,
     target: String,
     literal_path: bool,
     direction: Option<DeleteDirection>,
+    pair: Option<String>,
 ) -> StatusPayload {
-    let socket = match socket_path_for_ipc(&app.state()) {
-        Ok(socket) => socket,
+    let (socket, pair) = match addressed(&app.state(), pair.as_deref()) {
+        Ok(addressed) => addressed,
         Err(error) => return status_payload(Err(error)),
     };
     let reply = spawn_blocking_ipc(move || {
         ipc::command_with_argument(
             &socket,
+            Target::from_selector(pair.selector.as_deref()),
             command,
             target,
             literal_path,
@@ -225,12 +299,15 @@ async fn approval_round_trip<R: tauri::Runtime>(
 /// `direction` is read by the daemon ONLY when nothing pending matches `target` — the Plan screen
 /// approving its own plan's deletion before any pass has withheld it (#227). A pending item's own
 /// direction wins over it, and an approval with neither authorises nothing.
+///
+/// Class W: an approval authorises a deletion, and `target` is a path under ONE pair's root.
 #[tauri::command]
-pub async fn approve(
-    app: tauri::AppHandle,
+pub async fn approve<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     target: String,
     literal_path: bool,
     direction: Option<DeleteDirection>,
+    pair: Option<String>,
 ) -> StatusPayload {
     approval_round_trip(
         app,
@@ -238,13 +315,20 @@ pub async fn approve(
         target,
         literal_path,
         direction,
+        pair,
     )
     .await
 }
 
+/// Class W.
 #[tauri::command]
-pub async fn deny(app: tauri::AppHandle, target: String, literal_path: bool) -> StatusPayload {
-    approval_round_trip(app, ControlCommand::Deny, target, literal_path, None).await
+pub async fn deny<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    target: String,
+    literal_path: bool,
+    pair: Option<String>,
+) -> StatusPayload {
+    approval_round_trip(app, ControlCommand::Deny, target, literal_path, None, pair).await
 }
 
 /// `Keep it` — refuse a withheld deletion (#224). The daemon purges the baseline record for the
@@ -253,18 +337,38 @@ pub async fn deny(app: tauri::AppHandle, target: String, literal_path: bool) -> 
 ///
 /// An older daemon that predates the variant rejects it as an unknown command, and the reply
 /// carries that error rather than the screen recording a decision nothing acted on.
+///
+/// Class W: the most destructive-adjacent verb there is — it purges a baseline record and its
+/// subtree, which is why a keep that lands on the wrong pair is data loss.
 #[tauri::command]
-pub async fn keep(app: tauri::AppHandle, target: String, literal_path: bool) -> StatusPayload {
-    approval_round_trip(app, ControlCommand::Keep, target, literal_path, None).await
+pub async fn keep<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    target: String,
+    literal_path: bool,
+    pair: Option<String>,
+) -> StatusPayload {
+    approval_round_trip(app, ControlCommand::Keep, target, literal_path, None, pair).await
 }
 
+/// Class R. The withheld deletions of ONE pair: they ride on its status reply.
 #[tauri::command]
-pub async fn list_pending_deletions(app: tauri::AppHandle) -> Result<Vec<PendingDeletion>, String> {
+pub async fn list_pending_deletions<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    pair: Option<String>,
+) -> Result<Vec<PendingDeletion>, String> {
     let socket = socket_path(&app.state())?;
-    spawn_blocking_ipc(move || ipc::command(&socket, ControlCommand::Status, ipc::DEFAULT_TIMEOUT))
-        .await
-        .map(|response| response.pending_deletions)
-        .map_err(|e| e.to_string())
+    let pair = pair_ref(&app.state(), pair.as_deref())?;
+    spawn_blocking_ipc(move || {
+        ipc::command(
+            &socket,
+            Target::from_selector(pair.selector.as_deref()),
+            ControlCommand::Status,
+            ipc::DEFAULT_TIMEOUT,
+        )
+    })
+    .await
+    .map(|response| response.pending_deletions)
+    .map_err(|e| e.to_string())
 }
 
 /// A read of the GUI-owned config file, exposing both the raw TOML and the known settings.
@@ -453,14 +557,18 @@ pub fn write_config(state: Paths, update: ConfigUpdate) -> Result<(), String> {
     // re-resolve is UNREACHABLE while `socket_path` is `Err`, since its first line's `?` returns
     // before reaching it. Letting the fresh value through here is what lets typing a working
     // `socket_path` over a failed-closed one actually take, the moment it is saved.
+    //
+    // **Re-resolved at the path this save wrote, never at the environment's.** `resolve()` asks
+    // `$XDG_CONFIG_HOME` where the config is, and a save whose managed path differs from that — every
+    // test, and any session started with an explicit config — then re-read, and the next save wrote,
+    // a different file: the developer's real one. The read happens before the lock is taken, so the
+    // lock covers the swap and not the file I/O.
+    let mut resolved = RuntimePaths::resolve_at(&path);
     let mut paths = state.lock().unwrap();
-    let mut resolved = RuntimePaths::resolve();
     if paths.socket_path.is_ok() {
         resolved.socket_path = paths.socket_path.clone();
     }
-    resolved.daemon_local_root = paths.daemon_local_root.take();
-    resolved.daemon_remote_root = paths.daemon_remote_root.take();
-    resolved.daemon_db_path = paths.daemon_db_path.take();
+    resolved.daemon = std::mem::take(&mut paths.daemon);
     *paths = resolved;
     Ok(())
 }
@@ -543,49 +651,93 @@ const PLAN_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis
 /// polls running is not a pass that is still working.
 const PLAN_POLL_ERROR_LIMIT: u32 = 5;
 
+/// Everything one dry run decides from, taken under one lock so it describes one instant.
+///
+/// **Two sets of paths, kept apart on purpose** (`the_two_remote_roots_stay_two`): what the config
+/// FILE says about the pair and what the DAEMON last reported about it. `daemon_plans_the_same_roots`
+/// has to tell "the file says X" from "the daemon says X"; one merged value would make that question
+/// unaskable.
+struct DryRunInputs {
+    socket: Result<std::path::PathBuf, String>,
+    config_path: std::path::PathBuf,
+    /// The pair being previewed: its name (for the child's `--pair`) and the selector its daemon
+    /// requests carry.
+    pair: PairRef,
+    /// The name the config FILE gives that pair, which is not always the name it is selected by:
+    /// the selection is validated against the daemon's pairs once it has answered, and the child
+    /// `--dry-run` reads the file.
+    file_pair: Option<String>,
+    /// Whether the file states its pairs as `[[pair]]` tables rather than as the implicit pair.
+    pair_tables: bool,
+    file_local: Option<std::path::PathBuf>,
+    file_remote: Option<std::path::PathBuf>,
+    file_db: Option<std::path::PathBuf>,
+    daemon_local: Option<std::path::PathBuf>,
+    daemon_remote: Option<std::path::PathBuf>,
+    daemon_db: Option<std::path::PathBuf>,
+}
+
+impl DryRunInputs {
+    fn read(paths: &RuntimePaths, pair: PairRef) -> Self {
+        // The FILE'S table for this pair, which the daemon's name for it may not be (see
+        // `RuntimePaths::file_pair_name`): its roots are what the file says about this pair, so they
+        // are what `daemon_plans_the_same_roots` compares the daemon's against.
+        let file_pair = paths.file_pair_name(&pair.name).map(str::to_owned);
+        let configured = file_pair.as_deref().and_then(|name| paths.pair(name));
+        let reported = paths.reported(&pair.name);
+        Self {
+            socket: paths.socket_path.clone(),
+            config_path: paths.config_path.clone(),
+            file_pair,
+            pair_tables: paths.pair_tables,
+            file_local: configured.and_then(|c| c.local_root.clone()),
+            file_remote: configured.and_then(|c| c.remote_root.clone()),
+            file_db: configured.and_then(|c| c.db_path.clone()),
+            daemon_local: reported.map(|r| r.local_root.clone()),
+            daemon_remote: reported.map(|r| r.remote_root.clone()),
+            daemon_db: reported.map(|r| r.db_path.clone()),
+            pair,
+        }
+    }
+}
+
 /// Async so the full-tree dry run — which is a remote walk that can take many seconds against a
 /// large remote — never blocks the GTK main loop. Running it synchronously would stall the
 /// webview's URI-scheme handler thread (the GTK main loop) until WebKit aborts the whole process;
 /// here the blocking work runs on a runtime blocking thread instead. (See `restart_service` for the
 /// same pattern.)
+///
+/// Class W: a plan is the identity an `apply_plan` is pinned to, and a token is a plan's identity
+/// within ONE pair.
 #[tauri::command]
-pub async fn run_dry_run(state: Paths<'_>) -> Result<DryRunPayload, String> {
-    let (
-        socket,
-        config_path,
-        file_local,
-        file_remote,
-        file_db,
-        daemon_local,
-        daemon_remote,
-        daemon_db,
-    ) = {
+pub async fn run_dry_run(state: Paths<'_>, pair: Option<String>) -> Result<DryRunPayload, String> {
+    run_dry_run_with(&state, pair, launch_proton_syncd).await
+}
+
+/// How the child `proton-syncd --dry-run` is started. A parameter, not a constant, so that no test
+/// ever runs the real binary: it would be the one on `PATH`, signed in to the developer's Proton
+/// account through the desktop keyring (`docs/agent-notes/resolved-configs-carry-the-real-global-
+/// lock.md`).
+type LaunchChild = fn(&[std::ffi::OsString]) -> std::io::Result<std::process::Output>;
+
+fn launch_proton_syncd(args: &[std::ffi::OsString]) -> std::io::Result<std::process::Output> {
+    Command::new("proton-syncd").args(args).output()
+}
+
+/// `run_dry_run`, with the child launcher injected.
+async fn run_dry_run_with(
+    state: &Paths<'_>,
+    pair: Option<String>,
+    launch: LaunchChild,
+) -> Result<DryRunPayload, String> {
+    let inputs = {
         let paths = state.lock().unwrap();
-        (
-            paths.socket_path.clone(),
-            paths.config_path.clone(),
-            paths.local_root.clone(),
-            paths.remote_root.clone(),
-            paths.db_path.clone(),
-            paths.daemon_local_root.clone(),
-            paths.daemon_remote_root.clone(),
-            paths.daemon_db_path.clone(),
-        )
+        let pair = paths.resolve_pair(pair.as_deref())?;
+        DryRunInputs::read(&paths, pair)
     };
-    tauri::async_runtime::spawn_blocking(move || {
-        run_dry_run_impl(
-            socket,
-            config_path,
-            file_local,
-            file_remote,
-            file_db,
-            daemon_local,
-            daemon_remote,
-            daemon_db,
-        )
-    })
-    .await
-    .map_err(|error| format!("dry-run task failed: {error}"))?
+    tauri::async_runtime::spawn_blocking(move || run_dry_run_impl(inputs, &launch))
+        .await
+        .map_err(|error| format!("dry-run task failed: {error}"))?
 }
 
 /// Whether the daemon's `plan` verb answers the question this screen is asking.
@@ -628,72 +780,30 @@ enum DaemonPlanFailure {
 /// `proton-syncd --dry-run` only when there is no daemon to ask — which is exactly onboarding,
 /// where the child path is the only one that can work. Kept as a free function so the mutex guard
 /// from `run_dry_run` never crosses the `.await`.
-#[allow(clippy::too_many_arguments)]
 fn run_dry_run_impl(
-    socket: Result<std::path::PathBuf, String>,
-    config_path: std::path::PathBuf,
-    file_local: Option<std::path::PathBuf>,
-    file_remote: Option<std::path::PathBuf>,
-    file_db: Option<std::path::PathBuf>,
-    daemon_local: Option<std::path::PathBuf>,
-    daemon_remote: Option<std::path::PathBuf>,
-    daemon_db: Option<std::path::PathBuf>,
+    inputs: DryRunInputs,
+    launch: &dyn Fn(&[std::ffi::OsString]) -> std::io::Result<std::process::Output>,
 ) -> Result<DryRunPayload, String> {
     let ask_the_daemon = daemon_plans_the_same_roots(
-        file_local.as_deref(),
-        file_remote.as_deref(),
-        daemon_local.as_deref(),
-        daemon_remote.as_deref(),
+        inputs.file_local.as_deref(),
+        inputs.file_remote.as_deref(),
+        inputs.daemon_local.as_deref(),
+        inputs.daemon_remote.as_deref(),
     );
-    if let Ok(socket) = &socket {
+    if let Ok(socket) = &inputs.socket {
         if ask_the_daemon {
-            match plan_through_daemon(socket) {
+            match plan_through_daemon(
+                socket,
+                Target::from_selector(inputs.pair.selector.as_deref()),
+            ) {
                 Ok(payload) => return Ok(payload),
                 Err(DaemonPlanFailure::Reported(message)) => return Err(message),
                 Err(DaemonPlanFailure::Unavailable) => {}
             }
         }
     }
-    let mut command = Command::new("proton-syncd");
-    command.arg("--dry-run");
-    if config_path.exists() {
-        command.arg("--config").arg(&config_path);
-        // The config file wins wherever it speaks; a live daemon's reported values fill only the
-        // gaps the file leaves (explicit CLI flags beat file values in the daemon's own
-        // precedence, so only pass a flag when the file has no value of its own).
-        if file_local.is_none() {
-            if let Some(local) = &daemon_local {
-                command.arg("--local-root").arg(local);
-            }
-        }
-        if file_remote.is_none() {
-            if let Some(remote) = &daemon_remote {
-                command.arg("--remote-root").arg(remote);
-            }
-        }
-        if file_db.is_none() {
-            if let Some(db) = &daemon_db {
-                command.arg("--db-path").arg(db);
-            }
-        }
-    } else if let (Some(local), Some(remote)) = (&daemon_local, &daemon_remote) {
-        // No GUI config file, but a live daemon told us its real roots — preview against those
-        // instead of failing on a config path that was never written.
-        command.arg("--local-root").arg(local);
-        command.arg("--remote-root").arg(remote);
-        if let Some(db) = &daemon_db {
-            command.arg("--db-path").arg(db);
-        }
-    } else {
-        return Err(format!(
-            "no config file at {} and no running daemon to take the folder pair from — set the \
-             folders in Settings first",
-            config_path.display()
-        ));
-    }
-    let output = command
-        .output()
-        .map_err(|e| format!("failed to launch proton-syncd: {e}"))?;
+    let args = dry_run_args(&inputs, inputs.config_path.exists())?;
+    let output = launch(&args).map_err(|e| format!("failed to launch proton-syncd: {e}"))?;
     if !output.status.success() {
         return Err(format!(
             "proton-syncd --dry-run failed: {}",
@@ -706,6 +816,87 @@ fn run_dry_run_impl(
     // No daemon answered, so nothing said which mode a local delete would run under. `Permanent`
     // is the over-warning answer and the only safe default under a typed-`DELETE` gate.
     Ok(payload_from_report(report, None, LocalDisposal::Permanent))
+}
+
+/// The argument list of the child `proton-syncd --dry-run`, as a pure function — so what the GUI
+/// asks its own daemon binary to do is a value a test can read and not a spawn it has to make.
+///
+/// - **A `[[pair]]` file**: `--config FILE --pair NAME` and **no root flag, ever**. The per-pair
+///   flags amend *the* pair, and a flag cannot say which of several it means, so the engine refuses
+///   them beside more than one pair (maintainer decision M2). The child used to be handed the
+///   daemon-reported roots as flags regardless, which made a preview of a multi-pair config fail
+///   with `proton-syncd --dry-run failed: …`; and it never passed `--pair`, so it could only ever
+///   preview the first pair. The file already names this pair's roots; selecting it by name is the
+///   whole instruction.
+/// - **An implicit one-pair file**: `--config FILE`, plus a flag for each slot the file leaves empty
+///   and the daemon filled — the file wins wherever it speaks, because an explicit flag beats a
+///   file value in the daemon's own precedence.
+/// - **No file at all**: the daemon-reported roots as flags, or a refusal saying why there is
+///   nothing to preview.
+fn dry_run_args(
+    inputs: &DryRunInputs,
+    config_exists: bool,
+) -> Result<Vec<std::ffi::OsString>, String> {
+    use std::ffi::OsString;
+
+    let mut args: Vec<OsString> = vec!["--dry-run".into()];
+    if config_exists {
+        args.push("--config".into());
+        args.push(inputs.config_path.clone().into_os_string());
+        if inputs.pair_tables {
+            // THE FILE'S NAME for the pair, because the child reads the file: the selected name is
+            // validated against the daemon's list and can be one the file does not contain.
+            // Without a file name the selected one goes through and the engine says what it has.
+            args.push("--pair".into());
+            args.push(
+                inputs
+                    .file_pair
+                    .clone()
+                    .unwrap_or_else(|| inputs.pair.name.clone())
+                    .into(),
+            );
+            return Ok(args);
+        }
+        // The config file wins wherever it speaks; a live daemon's reported values fill only the
+        // gaps the file leaves (explicit CLI flags beat file values in the daemon's own
+        // precedence, so only pass a flag when the file has no value of its own).
+        if inputs.file_local.is_none() {
+            if let Some(local) = &inputs.daemon_local {
+                args.push("--local-root".into());
+                args.push(local.clone().into_os_string());
+            }
+        }
+        if inputs.file_remote.is_none() {
+            if let Some(remote) = &inputs.daemon_remote {
+                args.push("--remote-root".into());
+                args.push(remote.clone().into_os_string());
+            }
+        }
+        if inputs.file_db.is_none() {
+            if let Some(db) = &inputs.daemon_db {
+                args.push("--db-path".into());
+                args.push(db.clone().into_os_string());
+            }
+        }
+    } else if let (Some(local), Some(remote)) = (&inputs.daemon_local, &inputs.daemon_remote) {
+        // No GUI config file, but a live daemon told us its real roots — preview against those
+        // instead of failing on a config path that was never written.
+        args.push("--local-root".into());
+        args.push(local.clone().into_os_string());
+        args.push("--remote-root".into());
+        args.push(remote.clone().into_os_string());
+        if let Some(db) = &inputs.daemon_db {
+            args.push("--db-path".into());
+            args.push(db.clone().into_os_string());
+        }
+    } else {
+        return Err(format!(
+            "no config file at {} and no running daemon to take the folder pair from — set the \
+             folders in Settings first",
+            inputs.config_path.display()
+        ));
+    }
+    Ok(args)
 }
 
 fn payload_from_report(
@@ -749,8 +940,11 @@ fn payload_from_report(
 /// completes normally. An overall timeout is no better: a legitimate walk can run 30 minutes, so
 /// any bound large enough to be safe is too large to help, and `PLAN_POLL_ERROR_LIMIT` below
 /// already covers the real failure — a daemon that stopped answering at all.
-fn plan_through_daemon(socket: &std::path::Path) -> Result<DryRunPayload, DaemonPlanFailure> {
-    let ack = match ipc::command(socket, ControlCommand::Plan, ipc::DEFAULT_TIMEOUT) {
+fn plan_through_daemon(
+    socket: &std::path::Path,
+    target: Target<'_>,
+) -> Result<DryRunPayload, DaemonPlanFailure> {
+    let ack = match ipc::command(socket, target, ControlCommand::Plan, ipc::DEFAULT_TIMEOUT) {
         Ok(ack) => ack,
         // The request did not complete. That is EITHER no daemon (onboarding, the case the child
         // exists for) OR a daemon too old to parse the verb — which drops the connection without
@@ -758,7 +952,7 @@ fn plan_through_daemon(socket: &std::path::Path) -> Result<DryRunPayload, Daemon
         // has ever existed answers, and let the answer decide.
         Err(error) => return Err(classify_unreachable_plan(socket, error)),
     };
-    let target = match ack.plan {
+    let plan_target = match ack.plan {
         Some(PlanOutcome::Scheduled { plan_seq }) => plan_seq,
         Some(PlanOutcome::Paused) => {
             return Err(DaemonPlanFailure::Reported(
@@ -783,10 +977,13 @@ fn plan_through_daemon(socket: &std::path::Path) -> Result<DryRunPayload, Daemon
         // action, and a window is a rendering the user decides from. Destructive rows are never
         // truncated whatever the cap (`StoredPlan::outcome`), so what a bigger cap buys is the
         // ordinary rows of an unusually large plan, not safety.
-        let request = ControlRequest {
+        //
+        // And the SAME pair the plan was asked for: `plan_seq` is per pair, so a poll addressed to
+        // another pair compares the wrong counter and can answer with the wrong pair's plan.
+        let request = target.address(ControlRequest {
             limit: Some(PLAN_ACTIONS_MAX_LIMIT),
             ..ControlRequest::new(ControlCommand::PlanResult)
-        };
+        });
         let response = match ipc::send_request(socket, &request, ipc::DEFAULT_TIMEOUT) {
             Ok(response) => {
                 consecutive_errors = 0;
@@ -806,7 +1003,7 @@ fn plan_through_daemon(socket: &std::path::Path) -> Result<DryRunPayload, Daemon
             }
         };
         match response.plan {
-            Some(PlanOutcome::Computed(plan)) if plan.plan_seq >= target => {
+            Some(PlanOutcome::Computed(plan)) if plan.plan_seq >= plan_target => {
                 let token = plan.token.clone();
                 // `summary` describes the WHOLE plan; `actions` may be a window (see
                 // `PLAN_ACTIONS_*`). The screen counts from the summary for exactly that reason,
@@ -823,7 +1020,7 @@ fn plan_through_daemon(socket: &std::path::Path) -> Result<DryRunPayload, Daemon
                     local_disposal,
                 ));
             }
-            Some(PlanOutcome::Failed { plan_seq, error }) if plan_seq >= target => {
+            Some(PlanOutcome::Failed { plan_seq, error }) if plan_seq >= plan_target => {
                 return Err(DaemonPlanFailure::Reported(error));
             }
             // Still computing, or an older answer than the one asked for.
@@ -875,7 +1072,13 @@ enum DaemonPresence {
 }
 
 fn daemon_presence(socket: &std::path::Path) -> DaemonPresence {
-    match ipc::command(socket, ControlCommand::Status, ipc::DEFAULT_TIMEOUT) {
+    // The default pair: this asks whether a daemon is THERE, which is the same answer from every pair.
+    match ipc::command(
+        socket,
+        Target::DEFAULT,
+        ControlCommand::Status,
+        ipc::DEFAULT_TIMEOUT,
+    ) {
         Ok(_) => DaemonPresence::Answering,
         Err(reply) if !status_error_proves_no_daemon(&reply) => DaemonPresence::Undecodable(reply),
         Err(_) => DaemonPresence::Absent,
@@ -950,16 +1153,28 @@ fn unexpected_plan_ack(outcome: Option<&PlanOutcome>) -> &'static str {
 /// this loop exits on. `schedule_apply` always sends a `LoopCommand::SyncNow`, so the pass that
 /// reaches that discard is always scheduled (daemon guard:
 /// `a_pause_cancels_an_apply_it_overtook_rather_than_latching_it`).
+///
+/// Class W: an apply performs deletions under a review, and a token is a plan's identity within ONE
+/// pair — applied to another it is `stale` at best.
 #[tauri::command]
-pub async fn apply_plan(
-    app: tauri::AppHandle,
+pub async fn apply_plan<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     token: String,
     skip_destructive: bool,
+    pair: Option<String>,
 ) -> Result<ApplyOutcome, String> {
     let socket = socket_path(&app.state())?;
+    let pair = pair_ref(&app.state(), pair.as_deref())?;
     let ack = tauri::async_runtime::spawn_blocking(move || {
-        let ack = ipc::apply_plan(&socket, token, skip_destructive, ipc::DEFAULT_TIMEOUT)?;
-        let target = match ack.apply {
+        let target = Target::from_selector(pair.selector.as_deref());
+        let ack = ipc::apply_plan(
+            &socket,
+            target,
+            token,
+            skip_destructive,
+            ipc::DEFAULT_TIMEOUT,
+        )?;
+        let apply_target = match ack.apply {
             Some(ApplyOutcome::Scheduled { apply_seq }) => apply_seq,
             // Refused, or a daemon too old to know the verb — either way there is nothing to wait
             // for, and the outcome says which it was.
@@ -975,10 +1190,10 @@ pub async fn apply_plan(
             // `1`, not `0`: the daemon clamps the limit to at least one row, and a literal that
             // does not survive the clamp reads as a stronger claim than it is. Destructive rows are
             // never truncated whatever the limit, so this bounds the ordinary case only (#321).
-            let request = ControlRequest {
+            let request = target.address(ControlRequest {
                 limit: Some(1),
                 ..ControlRequest::new(ControlCommand::PlanResult)
-            };
+            });
             let response = match ipc::send_request(&socket, &request, ipc::DEFAULT_TIMEOUT) {
                 Ok(response) => {
                     consecutive_errors = 0;
@@ -997,7 +1212,7 @@ pub async fn apply_plan(
                     outcome @ (ApplyOutcome::Applied { apply_seq, .. }
                     | ApplyOutcome::Diverged { apply_seq }
                     | ApplyOutcome::Failed { apply_seq, .. }),
-                ) if apply_seq >= target => return Ok(outcome),
+                ) if apply_seq >= apply_target => return Ok(outcome),
                 _ => {}
             }
         }
@@ -1025,16 +1240,23 @@ pub async fn apply_plan(
 
 /// Async so a full local-tree conflict scan (the sidecar walk) never blocks the GTK main loop on a
 /// large folder.
+///
+/// Class R: a wrong pair costs a wrong list.
 #[tauri::command]
-pub async fn scan_conflicts(state: Paths<'_>) -> Result<Vec<Conflict>, String> {
-    // Root and naming come out of the SAME guard: the scanner must look for the suffix this config
-    // makes the daemon write, not the compiled-in default (`conflict_suffix`, G23/#237).
+pub async fn scan_conflicts(
+    state: Paths<'_>,
+    pair: Option<String>,
+) -> Result<Vec<Conflict>, String> {
+    // Root and naming come out of the SAME guard, and out of the SAME pair: the scanner must look
+    // for the suffix THIS pair's config makes the daemon write, not the compiled-in default and not
+    // another pair's (`conflict_suffix`, G23/#237; per pair in the engine).
     let (local_root, naming) = {
         let paths = state.lock().unwrap();
+        let pair = paths.resolve_pair(pair.as_deref())?;
         let local_root = paths
-            .effective_local_root()
-            .ok_or_else(|| "local_root is not configured".to_string())?;
-        (local_root, paths.conflict_naming.clone())
+            .effective_local_root(&pair.name)
+            .ok_or_else(|| paths.unplaced("local_root is not configured"))?;
+        (local_root, paths.conflict_naming(&pair.name))
     };
     tauri::async_runtime::spawn_blocking(move || {
         conflicts::scan_conflicts(&local_root, &naming).map_err(|e| e.to_string())
@@ -1043,47 +1265,62 @@ pub async fn scan_conflicts(state: Paths<'_>) -> Result<Vec<Conflict>, String> {
     .map_err(|error| format!("conflict-scan task failed: {error}"))?
 }
 
+/// Class W: it overwrites or removes a file. A `Conflict` carries paths RELATIVE to a root and
+/// `apply_resolution` joins them onto whatever root it is handed, so a row of one pair applied
+/// against another pair's root would rename that other pair's same-named file.
 #[tauri::command]
 pub fn resolve_conflict(
     state: Paths,
     conflict: Conflict,
     choice: Resolution,
+    pair: Option<String>,
 ) -> Result<(), String> {
-    let local_root = state
-        .lock()
-        .unwrap()
-        .effective_local_root()
-        .ok_or_else(|| "local_root is not configured".to_string())?;
+    let local_root = {
+        let paths = state.lock().unwrap();
+        let pair = paths.resolve_pair(pair.as_deref())?;
+        paths
+            .effective_local_root(&pair.name)
+            .ok_or_else(|| paths.unplaced("local_root is not configured"))?
+    };
     conflicts::apply_resolution(&local_root, &conflict, choice).map_err(|e| e.to_string())
 }
 
 /// Read both sides of a conflict (the local file + its sidecar) for the compare
 /// view. Path-safe and size-bounded — see `gui_core::conflicts::read_conflict_pair`.
+///
+/// Class R.
 #[tauri::command]
 pub fn read_conflict_pair(
     state: Paths,
     conflict: Conflict,
+    pair: Option<String>,
 ) -> Result<conflicts::ConflictPair, String> {
-    let local_root = state
-        .lock()
-        .unwrap()
-        .effective_local_root()
-        .ok_or_else(|| "local_root is not configured".to_string())?;
+    let (local_root, db_path) = {
+        let paths = state.lock().unwrap();
+        let pair = paths.resolve_pair(pair.as_deref())?;
+        (
+            paths
+                .effective_local_root(&pair.name)
+                .ok_or_else(|| paths.unplaced("local_root is not configured"))?,
+            paths.effective_db_path(&pair.name),
+        )
+    };
     // THE ANCESTOR IS READ FROM THE INDEX, AND ITS ABSENCE IS NOT AN ERROR (#217/#347). Everything
     // here that can fail — no database configured, a database that will not open, a path with no
     // summary — lands on `None`, and the card then draws one line fewer. A conflict screen that
     // refused to open because a decoration could not be computed would be a worse bug than the
     // fabricated sentence this replaces.
-    let ancestor = read_agreed_summary(&state, &conflict.original);
+    let ancestor = read_agreed_summary(db_path, &conflict.original);
     conflicts::read_conflict_pair(&local_root, &conflict, ancestor.as_ref())
 }
 
-/// The last agreed version's line summary for `relative`, or `None` for any reason at all.
+/// The last agreed version's line summary for `relative` from the pair's own index `db_path`, or
+/// `None` for any reason at all.
 fn read_agreed_summary(
-    state: &Paths,
+    db_path: Option<std::path::PathBuf>,
     relative: &std::path::Path,
 ) -> Option<conflicts::LineSummary> {
-    let db_path = state.lock().unwrap().effective_db_path()?;
+    let db_path = db_path?;
     let connection = index_read::open_readonly(&db_path, index_read::DEFAULT_BUSY_TIMEOUT).ok()?;
     index_read::agreed_summary(&connection, relative)
         .ok()
@@ -1172,20 +1409,34 @@ impl EmblemStatus {
     }
 }
 
+/// Class R, and **async since it was given a pair argument**: it opens the index behind a 3 s busy
+/// timeout, which on the GTK main loop is exactly the stall WebKitGTK aborts on (#142/#143) — the
+/// module header listed it as a known violation. `relative_path` is relative to the root of the pair
+/// the command addresses, and the index it opens is that pair's.
 #[tauri::command]
-pub fn path_sync_status(state: Paths, relative_path: String) -> Result<EmblemStatus, String> {
-    let db_path = state
-        .lock()
-        .unwrap()
-        .effective_db_path()
-        .ok_or_else(|| "no index database configured or reported by the daemon".to_string())?;
-    let connection = index_read::open_readonly(&db_path, index_read::DEFAULT_BUSY_TIMEOUT)?;
-    let path = std::path::Path::new(&relative_path);
-    let Some(record) = index_read::record_for_path(&connection, path)? else {
-        return Ok(EmblemStatus::untracked());
+pub async fn path_sync_status(
+    state: Paths<'_>,
+    relative_path: String,
+    pair: Option<String>,
+) -> Result<EmblemStatus, String> {
+    let db_path = {
+        let paths = state.lock().unwrap();
+        let pair = paths.resolve_pair(pair.as_deref())?;
+        paths.effective_db_path(&pair.name).ok_or_else(|| {
+            paths.unplaced("no index database configured or reported by the daemon")
+        })?
     };
-    let last_transfer = index_read::last_transfer(&connection, path)?;
-    Ok(EmblemStatus::new(record, last_transfer))
+    tauri::async_runtime::spawn_blocking(move || {
+        let connection = index_read::open_readonly(&db_path, index_read::DEFAULT_BUSY_TIMEOUT)?;
+        let path = std::path::Path::new(&relative_path);
+        let Some(record) = index_read::record_for_path(&connection, path)? else {
+            return Ok(EmblemStatus::untracked());
+        };
+        let last_transfer = index_read::last_transfer(&connection, path)?;
+        Ok(EmblemStatus::new(record, last_transfer))
+    })
+    .await
+    .map_err(|error| format!("path status task failed: {error}"))?
 }
 
 /// One file the search found: the path it is stored under, and that record's status.
@@ -1220,19 +1471,27 @@ const SEARCH_LIMIT: usize = 50;
 ///
 /// Async + `spawn_blocking`: a name search is a full table scan behind a 3s busy timeout, and the
 /// module header's rule is what keeps WebKitGTK from aborting on a stalled main loop.
+///
+/// Class R. The index searched is the addressed pair's, and so is the root a pasted absolute path is
+/// reduced against.
 #[tauri::command]
-pub async fn search_files(
-    app: tauri::AppHandle,
+pub async fn search_files<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     query: String,
     limit: Option<usize>,
+    pair: Option<String>,
 ) -> Result<FileSearch, String> {
     let (db_path, local_root) = {
         let paths = app.state::<Mutex<RuntimePaths>>();
         let paths = paths.lock().unwrap();
-        (paths.effective_db_path(), paths.effective_local_root())
+        let pair = paths.resolve_pair(pair.as_deref())?;
+        (
+            paths.effective_db_path(&pair.name).ok_or_else(|| {
+                paths.unplaced("no index database configured or reported by the daemon")
+            })?,
+            paths.effective_local_root(&pair.name),
+        )
     };
-    let db_path = db_path
-        .ok_or_else(|| "no index database configured or reported by the daemon".to_string())?;
     let limit = limit.unwrap_or(SEARCH_LIMIT).clamp(1, 500);
     tauri::async_runtime::spawn_blocking(move || {
         let query = relative_query(&query, local_root.as_deref());
@@ -1339,6 +1598,7 @@ fn probe_old_socket(socket_path: &Result<std::path::PathBuf, String>) -> Option<
     socket_path.as_deref().ok().map(|path| {
         probe_from(&ipc::command(
             path,
+            Target::DEFAULT,
             ControlCommand::Status,
             ipc::DEFAULT_TIMEOUT,
         ))
@@ -1623,6 +1883,7 @@ pub(crate) fn restart_service_impl(
 
     let probe = probe_from(&ipc::command(
         socket_path,
+        Target::DEFAULT,
         ControlCommand::Status,
         ipc::DEFAULT_TIMEOUT,
     ));
@@ -1651,7 +1912,12 @@ pub(crate) fn restart_service_impl(
 
     // Best-effort: if the shutdown call itself errors the daemon may already be exiting;
     // the socket probe below is the authoritative "has it stopped" signal.
-    let _ = ipc::command(socket_path, ControlCommand::Shutdown, ipc::DEFAULT_TIMEOUT);
+    let _ = ipc::command(
+        socket_path,
+        Target::DEFAULT,
+        ControlCommand::Shutdown,
+        ipc::DEFAULT_TIMEOUT,
+    );
     let deadline = Instant::now() + STOP_TIMEOUT;
     loop {
         // BY THE PROBE, NOT `is_err()` (#335). An undecodable reply mid-drain is a daemon that is
@@ -1659,6 +1925,7 @@ pub(crate) fn restart_service_impl(
         // start a second process beside a live one and then report a restart that did not happen.
         let last = probe_from(&ipc::command(
             socket_path,
+            Target::DEFAULT,
             ControlCommand::Status,
             Duration::from_secs(1),
         ));
@@ -1766,9 +2033,15 @@ fn start_and_maybe_adopt_socket(
 /// gate above says it may. Split out so a test can drive it against the REAL `RuntimePaths`/`Mutex`
 /// plumbing (`mock_app`) rather than a hand-rolled stand-in, without the probe or the start running
 /// at all.
+///
+/// **Re-resolved at the config path the session already holds** (`resolve_at`), not at the
+/// environment's: the environment's is the developer's real file in every test, and in a session
+/// started with an explicit config it is the wrong one in production too.
 fn apply_socket_adoption(state: &Mutex<RuntimePaths>, may_adopt: bool) {
     if may_adopt {
-        state.lock().unwrap().socket_path = RuntimePaths::resolve().socket_path;
+        let config_path = state.lock().unwrap().config_path.clone();
+        let socket_path = RuntimePaths::resolve_at(&config_path).socket_path;
+        state.lock().unwrap().socket_path = socket_path;
     }
 }
 
@@ -1795,7 +2068,7 @@ pub async fn restart_service(
     // rather than unconditional: `NeverStopped`/`Undetermined` must keep dialling the address they
     // have positive (or at least prior) history with, not one nothing has confirmed yet.
     if old_socket_is_settled(&outcome) {
-        state.lock().unwrap().socket_path = RuntimePaths::resolve().socket_path;
+        apply_socket_adoption(&state, true);
     }
     Ok(outcome)
 }
@@ -1955,6 +2228,48 @@ fn open_target(program: &str, target: &std::ffi::OsStr) -> Result<(), String> {
     }
 }
 
+/// The single place `open_paths` and `open_folder` hand a resolved path to the desktop.
+#[cfg(not(test))]
+fn hand_to_opener(target: &std::ffi::OsStr) -> Result<(), String> {
+    open_target(OPENER, target)
+}
+
+/// **In a test build the openers spawn nothing, ever.** A command test that gets past the path
+/// guard would otherwise reach `xdg-open` on the developer's desktop and open a window there. The
+/// target is recorded instead, which is also the only way a test can see WHICH folder a command
+/// meant to open: the path it resolved, not a launch. (`open_target` itself is tested directly with
+/// stand-in programs; it is not this.)
+#[cfg(test)]
+fn hand_to_opener(target: &std::ffi::OsStr) -> Result<(), String> {
+    opener_record::hand(target)
+}
+
+#[cfg(test)]
+mod opener_record {
+    use std::ffi::{OsStr, OsString};
+    use std::sync::{Mutex, PoisonError};
+
+    /// Every target the openers were handed, in order. Appended to and never cleared: tests have
+    /// roots of their own (a fresh temp directory each), so one finds its targets by prefix and
+    /// needs no reset that a test running beside it could race.
+    static HANDED: Mutex<Vec<OsString>> = Mutex::new(Vec::new());
+
+    pub(super) fn hand(target: &OsStr) -> Result<(), String> {
+        HANDED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(target.to_owned());
+        Ok(())
+    }
+
+    pub(crate) fn handed() -> Vec<OsString> {
+        HANDED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+}
+
 /// Open one or both sides of a conflict in whatever the desktop opens that kind of file with
 /// (#220 — S2's `Open both in an editor`).
 ///
@@ -1964,9 +2279,22 @@ fn open_target(program: &str, target: &std::ffi::OsStr) -> Result<(), String> {
 /// Every failure is reported, not the first: `Open both` opening one of two and saying nothing about
 /// the other is the same silence the button had before. Every failure that is ABOUT a path, that is
 /// — see the missing-root check below.
+///
+/// Class R: the root the relative paths are joined onto is the addressed pair's.
 #[tauri::command]
-pub async fn open_paths(state: Paths<'_>, relative: Vec<String>) -> Result<(), String> {
-    let local_root = state.lock().unwrap().effective_local_root();
+pub async fn open_paths(
+    state: Paths<'_>,
+    relative: Vec<String>,
+    pair: Option<String>,
+) -> Result<(), String> {
+    let (local_root, no_root) = {
+        let paths = state.lock().unwrap();
+        let pair = paths.resolve_pair(pair.as_deref())?;
+        (
+            paths.effective_local_root(&pair.name),
+            paths.unplaced(&gui_core::opener::OpenRefusal::NoLocalRoot.to_string()),
+        )
+    };
     tauri::async_runtime::spawn_blocking(move || {
         if relative.is_empty() {
             return Err("nothing to open".to_string());
@@ -1976,7 +2304,7 @@ pub async fn open_paths(state: Paths<'_>, relative: Vec<String>) -> Result<(), S
         // against `None` pushed the identical sentence twice and joined it to itself. Every OTHER
         // refusal names the path it is about, so only this one can duplicate. (Copilot, PR #283.)
         if local_root.is_none() {
-            return Err(gui_core::opener::OpenRefusal::NoLocalRoot.to_string());
+            return Err(no_root);
         }
         let mut failures = Vec::new();
         for path in &relative {
@@ -1987,7 +2315,7 @@ pub async fn open_paths(state: Paths<'_>, relative: Vec<String>) -> Result<(), S
                     continue;
                 }
             };
-            if let Err(e) = open_target(OPENER, resolved.as_os_str()) {
+            if let Err(e) = hand_to_opener(resolved.as_os_str()) {
                 failures.push(e);
             }
         }
@@ -2006,13 +2334,29 @@ pub async fn open_paths(state: Paths<'_>, relative: Vec<String>) -> Result<(), S
 /// The parent is computed HERE. Letting the webview send a directory would mean trusting it to have
 /// stripped the last component, and a path that is a file or a folder depending on who called is
 /// exactly the ambiguity the guard is for.
+///
+/// Class R.
 #[tauri::command]
-pub async fn open_folder(state: Paths<'_>, relative: String) -> Result<(), String> {
-    let local_root = state.lock().unwrap().effective_local_root();
+pub async fn open_folder(
+    state: Paths<'_>,
+    relative: String,
+    pair: Option<String>,
+) -> Result<(), String> {
+    let (local_root, no_root) = {
+        let paths = state.lock().unwrap();
+        let pair = paths.resolve_pair(pair.as_deref())?;
+        (
+            paths.effective_local_root(&pair.name),
+            paths.unplaced(&gui_core::opener::OpenRefusal::NoLocalRoot.to_string()),
+        )
+    };
     tauri::async_runtime::spawn_blocking(move || {
         let folder = gui_core::opener::folder_under_root(local_root.as_deref(), &relative)
-            .map_err(|refusal| refusal.to_string())?;
-        open_target(OPENER, folder.as_os_str())
+            .map_err(|refusal| match refusal {
+                gui_core::opener::OpenRefusal::NoLocalRoot => no_root,
+                other => other.to_string(),
+            })?;
+        hand_to_opener(folder.as_os_str())
     })
     .await
     .map_err(|error| format!("open task failed: {error}"))?
@@ -2228,21 +2572,27 @@ pub async fn open_system_log() -> Result<(), String> {
 ///
 /// Async because a hung network or FUSE mount makes `statvfs` block indefinitely, and the sync
 /// folder being on such a mount is exactly the case where the number matters.
+///
+/// Class R. `pair` matters only when `path` is omitted: a typed path prices that folder whichever
+/// pair is selected.
 #[tauri::command]
-pub async fn free_space(
-    app: tauri::AppHandle,
+pub async fn free_space<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     path: Option<String>,
+    pair: Option<String>,
 ) -> Result<gui_core::free_space::FreeSpace, String> {
     let target = match path {
         // A path typed into the folder picker gets the same `~` expansion the config values get —
         // the picker is a text field, and `~/ProtonDrive` is what someone types.
         Some(path) => config_io::expand_config_path(path, "path"),
-        None => app
-            .state::<Mutex<RuntimePaths>>()
-            .lock()
-            .unwrap()
-            .effective_local_root()
-            .ok_or_else(|| "local_root is not configured".to_string())?,
+        None => {
+            let state = app.state::<Mutex<RuntimePaths>>();
+            let paths = state.lock().unwrap();
+            let pair = paths.resolve_pair(pair.as_deref())?;
+            paths
+                .effective_local_root(&pair.name)
+                .ok_or_else(|| paths.unplaced("local_root is not configured"))?
+        }
     };
     tauri::async_runtime::spawn_blocking(move || gui_core::free_space::for_path(&target))
         .await
@@ -2359,22 +2709,28 @@ fn probe_cli(proton_cli: &str) -> bool {
 ///
 /// Async and unbounded — this walks the whole local tree (metadata only, no hashing). Running it on
 /// the GTK main loop would freeze the window for the length of the walk.
+///
+/// Class R: every figure is a count over ONE pair's folder, its index and its sidecar spelling.
 #[tauri::command]
-pub async fn skip_rule_usage(
-    app: tauri::AppHandle,
+pub async fn skip_rule_usage<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     patterns: Vec<String>,
     include: Option<Vec<String>>,
+    pair: Option<String>,
 ) -> Result<gui_core::skip_rules::SkipRuleReport, String> {
     let (local_root, db_path, naming) = {
         let paths = app.state::<Mutex<RuntimePaths>>();
         let paths = paths.lock().unwrap();
+        let pair = paths.resolve_pair(pair.as_deref())?;
         (
-            paths.effective_local_root(),
-            paths.effective_db_path(),
+            paths
+                .effective_local_root(&pair.name)
+                .ok_or_else(|| paths.unplaced("local_root is not configured")),
+            paths.effective_db_path(&pair.name),
             // The baseline `measure` builds is the denominator — "would the daemon sync this
             // file" — and a conflict sidecar is one of the things it answers no to, so it has to
-            // ask under the daemon's configured suffix rather than the compiled-in one.
-            paths.conflict_naming.clone(),
+            // ask under THIS pair's configured suffix rather than the compiled-in one.
+            paths.conflict_naming(&pair.name),
         )
     };
     // Two different "no" answers, and only one of them makes a rule safe to remove.
@@ -2385,7 +2741,7 @@ pub async fn skip_rule_usage(
     // `files: 0` with `folder_exists: Some(false)`, which the tab draws as **`Matching nothing · no
     // such folder here any more — safe to remove`** on every rule at once. Removing them would then
     // start syncing everything they were hiding, the moment the drive came back.
-    let local_root = local_root.ok_or_else(|| "local_root is not configured".to_string())?;
+    let local_root = local_root?;
     tauri::async_runtime::spawn_blocking(move || {
         if !local_root.is_dir() {
             return Err(format!(
@@ -2583,7 +2939,12 @@ pub fn quit_stopping_the_daemon(app: tauri::AppHandle) {
     // and doing that on the UI thread is the WebKitGTK freeze this crate has already shipped once
     // (PR #142). The exit follows the attempt either way.
     std::thread::spawn(move || {
-        if let Err(error) = ipc::command(&socket, ControlCommand::Shutdown, ipc::DEFAULT_TIMEOUT) {
+        if let Err(error) = ipc::command(
+            &socket,
+            Target::DEFAULT,
+            ControlCommand::Shutdown,
+            ipc::DEFAULT_TIMEOUT,
+        ) {
             eprintln!("quit: could not stop the daemon ({error}); exiting anyway");
         }
         app.exit(0);
@@ -2701,7 +3062,8 @@ pub async fn tray_action(app: tauri::AppHandle, id: String) -> StatusPayload {
             ControlCommand::Status
         }
     };
-    status_round_trip(app, command).await
+    // The default pair: the tray acts on it alone until its rows learn to name a pair (#102 phase 5d).
+    status_round_trip(app, command, None).await
 }
 
 /// The panel measures itself once it knows its state and asks the window to match. The states differ
@@ -3153,6 +3515,9 @@ mod tests {
 // The socket-command tests need Unix domain sockets, so they are gated `unix` (mirroring
 // `gui-core/src/ipc.rs`); the portable `strip_ansi` test above stays under plain `#[cfg(test)]`.
 #[cfg(all(test, unix))]
+mod pair_tests;
+
+#[cfg(all(test, unix))]
 mod socket_tests {
     use super::*;
     use std::io::{BufRead, BufReader, Write};
@@ -3298,21 +3663,33 @@ mod socket_tests {
         );
     }
 
-    /// A headless mock app (no webview/display) managing `RuntimePaths` pointed at `socket`.
-    fn mock_app(socket: std::path::PathBuf) -> tauri::App<tauri::test::MockRuntime> {
-        let mut paths = RuntimePaths::resolve();
+    /// A headless mock app (no webview/display) managing `RuntimePaths` pointed at `socket`, with
+    /// its config in a fresh temp directory — **never the environment's**: `RuntimePaths::resolve`
+    /// reads the developer's real GUI config, and the first save a test made would then have
+    /// written it. The directory is returned so it outlives the app.
+    fn mock_app(
+        socket: std::path::PathBuf,
+    ) -> (tauri::App<tauri::test::MockRuntime>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut paths = RuntimePaths::resolve_at(&dir.path().join("proton-sync.toml"));
         paths.socket_path = Ok(socket);
-        tauri::test::mock_builder()
+        let app = tauri::test::mock_builder()
             .manage(Mutex::new(paths))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .expect("mock app should build")
+            .expect("mock app should build");
+        (app, dir)
     }
 
     #[test]
     fn spawn_blocking_ipc_runs_the_round_trip_off_thread_and_parses_the_reply() {
         let (path, _dir) = spawn_one_shot_daemon(CANNED_REPLY);
         let reply = tauri::async_runtime::block_on(spawn_blocking_ipc(move || {
-            ipc::command(&path, ControlCommand::Status, ipc::DEFAULT_TIMEOUT)
+            ipc::command(
+                &path,
+                Target::DEFAULT,
+                ControlCommand::Status,
+                ipc::DEFAULT_TIMEOUT,
+            )
         }));
         let response = reply.expect("round trip should succeed");
         assert_eq!(response.status, "running");
@@ -3324,7 +3701,12 @@ mod socket_tests {
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("nope.sock");
         let reply = tauri::async_runtime::block_on(spawn_blocking_ipc(move || {
-            ipc::command(&missing, ControlCommand::Status, ipc::DEFAULT_TIMEOUT)
+            ipc::command(
+                &missing,
+                Target::DEFAULT,
+                ControlCommand::Status,
+                ipc::DEFAULT_TIMEOUT,
+            )
         }));
         // `NotListening` since #335 — a missing socket is the one transport failure that proves
         // nothing is there, and it is drawn as the unreachable state all the same (`derive_state`).
@@ -3341,10 +3723,11 @@ mod socket_tests {
     #[test]
     fn status_round_trip_resolves_app_state_and_folds_a_live_reply() {
         let (socket, _dir) = spawn_one_shot_daemon(CANNED_REPLY);
-        let app = mock_app(socket);
+        let (app, _dir) = mock_app(socket);
         let payload = tauri::async_runtime::block_on(status_round_trip(
             app.handle().clone(),
             ControlCommand::Status,
+            None,
         ));
         assert!(
             payload.error.is_none(),
@@ -3361,7 +3744,7 @@ mod socket_tests {
     #[test]
     fn an_unresolvable_socket_path_folds_into_the_unreachable_state_with_its_reason() {
         let (socket, _dir) = spawn_one_shot_daemon(CANNED_REPLY);
-        let app = mock_app(socket);
+        let (app, _dir) = mock_app(socket);
         app.state::<Mutex<RuntimePaths>>()
             .lock()
             .unwrap()
@@ -3370,6 +3753,7 @@ mod socket_tests {
         let payload = tauri::async_runtime::block_on(status_round_trip(
             app.handle().clone(),
             ControlCommand::Status,
+            None,
         ));
 
         assert_eq!(payload.state, gui_core::DaemonState::Unreachable);
@@ -3474,7 +3858,12 @@ mod socket_tests {
         std::fs::write(&not_a_directory, b"a regular file").unwrap();
         let socket = not_a_directory.join("proton-sync.sock");
 
-        let reply = ipc::command(&socket, ControlCommand::Status, ipc::DEFAULT_TIMEOUT);
+        let reply = ipc::command(
+            &socket,
+            Target::DEFAULT,
+            ControlCommand::Status,
+            ipc::DEFAULT_TIMEOUT,
+        );
         assert_eq!(
             probe_from(&reply),
             DaemonProbe::Unknown,
@@ -3601,16 +3990,15 @@ mod socket_tests {
     /// and has to dial THIS value to shut the still-live old daemon down. Moving it here points that
     /// dial at an address nothing has bound yet.
     ///
-    /// `config_path` is redirected to a tempfile — never the real GUI config `RuntimePaths::resolve`
-    /// would otherwise read and write on whatever machine runs this test.
+    /// The config is resolved AT a file in a temp directory — never the real GUI config
+    /// `RuntimePaths::resolve` would otherwise read and write on whatever machine runs this test.
     #[test]
     fn a_save_leaves_socket_path_alone_for_the_restart_that_reads_it_next() {
         let dir = tempfile::tempdir().unwrap();
         let old_socket = dir.path().join("old.sock");
         let new_socket = dir.path().join("new.sock");
 
-        let mut paths = RuntimePaths::resolve();
-        paths.config_path = dir.path().join("proton-sync.toml");
+        let mut paths = RuntimePaths::resolve_at(&dir.path().join("proton-sync.toml"));
         paths.socket_path = Ok(old_socket.clone());
         let app = tauri::test::mock_builder()
             .manage(Mutex::new(paths))
@@ -3643,8 +4031,7 @@ mod socket_tests {
         let dir = tempfile::tempdir().unwrap();
         let new_socket = dir.path().join("new.sock");
 
-        let mut paths = RuntimePaths::resolve();
-        paths.config_path = dir.path().join("proton-sync.toml");
+        let mut paths = RuntimePaths::resolve_at(&dir.path().join("proton-sync.toml"));
         paths.socket_path = Err("fallback runtime directory is owned by uid 1234".to_owned());
         let app = tauri::test::mock_builder()
             .manage(Mutex::new(paths))
@@ -3657,15 +4044,14 @@ mod socket_tests {
         )
         .expect("an absolute socket_path saves");
 
-        // Equality with a FRESH resolve, not `.is_ok()`: on a machine where the engine's own
-        // fallback also fails closed, the honest post-save value is another `Err`, and the test
-        // must not read that as a regression — it must read the SAME value a resolve computes now,
-        // whichever it is (the same env-robust pattern the sequence test below uses).
+        // The save re-resolves at the file it just wrote, and that file now names `new_socket`, so
+        // this asserts the value itself rather than "whatever the environment computes": it is no
+        // longer environment-dependent, because nothing here reads the environment's config.
         let after = app.state::<Mutex<RuntimePaths>>();
         let after_socket = after.lock().unwrap().socket_path.clone();
         assert_eq!(
             after_socket.as_deref().ok(),
-            RuntimePaths::resolve().socket_path.ok().as_deref(),
+            Some(new_socket.as_path()),
             "a save must not leave a previously-Err socket_path stuck at Err (#336)"
         );
     }
@@ -3686,8 +4072,7 @@ mod socket_tests {
         let old_socket = dir.path().join("old.sock");
         let new_socket = dir.path().join("new.sock");
 
-        let mut paths = RuntimePaths::resolve();
-        paths.config_path = dir.path().join("proton-sync.toml");
+        let mut paths = RuntimePaths::resolve_at(&dir.path().join("proton-sync.toml"));
         paths.socket_path = Ok(old_socket.clone());
         let app = tauri::test::mock_builder()
             .manage(Mutex::new(paths))
@@ -3730,15 +4115,12 @@ mod socket_tests {
             Some(old_socket.as_path()),
             "a settled outcome must move the app off the address it just confirmed is unneeded"
         );
-        // And it must move to exactly what a fresh resolve computes NOW — not the literal string
-        // this test wrote (`RuntimePaths::resolve`'s own `config_path` is the fixed, env-resolved
-        // one — see `config_path.rs` — not `state`'s, so it cannot see `new_socket` either) and not
-        // a guess: a later request reads this same field, so proving it equals a fresh resolve IS
-        // proving a later request reaches wherever that resolve currently points.
-        assert_eq!(
-            after_socket.as_deref().ok(),
-            RuntimePaths::resolve().socket_path.ok().as_deref()
-        );
+        // And it must move to exactly what the session's OWN config file says — `new_socket`, the
+        // value the save wrote. This used to compare against a fresh `RuntimePaths::resolve()`
+        // because the restart re-resolved at the ENVIRONMENT's path and so could never see the
+        // value this test had saved; it now re-resolves at the path it was given, so the test can
+        // assert the value itself, and a restart that read some other file fails here.
+        assert_eq!(after_socket.as_deref().ok(), Some(new_socket.as_path()));
     }
 
     // ---- #359: `start_service` gets the same re-resolve gate, on evidence of its own -------------
@@ -3850,6 +4232,7 @@ mod socket_tests {
             || {
                 Some(probe_from(&ipc::command(
                     &socket,
+                    Target::DEFAULT,
                     ControlCommand::Status,
                     ipc::DEFAULT_TIMEOUT,
                 )))
@@ -3869,7 +4252,14 @@ mod socket_tests {
     #[test]
     fn socket_path_follows_the_gate_and_only_the_gate() {
         let old_socket = std::path::PathBuf::from("/nonexistent/old.sock");
-        let app = mock_app(old_socket.clone());
+        let (app, dir) = mock_app(old_socket.clone());
+        // The session's own config names the address the adoption must land on.
+        let adopted = dir.path().join("adopted.sock");
+        std::fs::write(
+            dir.path().join("proton-sync.toml"),
+            format!("socket_path = \"{}\"\n", adopted.display()),
+        )
+        .unwrap();
         let state = app.state::<Mutex<RuntimePaths>>();
 
         apply_socket_adoption(&state, false);
@@ -3882,31 +4272,30 @@ mod socket_tests {
         apply_socket_adoption(&state, true);
         assert_eq!(
             state.lock().unwrap().socket_path.as_deref().ok(),
-            RuntimePaths::resolve().socket_path.ok().as_deref(),
-            "an open gate must move to exactly what a fresh resolve computes now"
+            Some(adopted.as_path()),
+            "an open gate must move to exactly what the session's own config file says now"
         );
     }
 
     /// A mock app whose managed paths name `root` as the sync folder. The socket is deliberately a
     /// path nothing is listening on: the opener commands never touch it.
     fn mock_app_rooted(root: &std::path::Path) -> tauri::App<tauri::test::MockRuntime> {
-        let mut paths = RuntimePaths::resolve();
+        let mut paths = RuntimePaths::resolve_at(&root.join("proton-sync.toml"));
         paths.socket_path = Ok(root.join("unused.sock"));
-        paths.local_root = Some(root.to_path_buf());
+        paths.pairs[0].local_root = Some(root.to_path_buf());
         tauri::test::mock_builder()
             .manage(Mutex::new(paths))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("mock app should build")
     }
 
-    /// A mock app that knows of no sync folder at all — BOTH sources cleared. `RuntimePaths::resolve`
-    /// reads the developer's real GUI config, so leaving `local_root` alone would make this test
-    /// pass or fail depending on whose machine it runs on.
+    /// A mock app that knows of no sync folder at all — BOTH sources empty. Resolved at a file in
+    /// `dir` that does not exist, so it is empty on every machine and not only on one whose real GUI
+    /// config happens to name no folder.
     fn mock_app_rootless(dir: &std::path::Path) -> tauri::App<tauri::test::MockRuntime> {
-        let mut paths = RuntimePaths::resolve();
+        let mut paths = RuntimePaths::resolve_at(&dir.join("proton-sync.toml"));
         paths.socket_path = Ok(dir.join("unused.sock"));
-        paths.local_root = None;
-        paths.daemon_local_root = None;
+        assert!(paths.effective_local_root("default").is_none());
         tauri::test::mock_builder()
             .manage(Mutex::new(paths))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
@@ -3925,6 +4314,7 @@ mod socket_tests {
             let error = tauri::async_runtime::block_on(open_folder(
                 app.state::<Mutex<RuntimePaths>>(),
                 hostile.to_string(),
+                None,
             ))
             .expect_err("an escaping path must never reach the opener");
             assert!(
@@ -3942,6 +4332,7 @@ mod socket_tests {
         let error = tauri::async_runtime::block_on(open_paths(
             app.state::<Mutex<RuntimePaths>>(),
             vec!["/etc/passwd".to_string(), "gone.txt".to_string()],
+            None,
         ))
         .expect_err("both sides are unopenable");
         assert!(error.contains("/etc/passwd"), "got {error}");
@@ -3961,6 +4352,7 @@ mod socket_tests {
                 "notes/todo.txt".to_string(),
                 "notes/todo.proton-cloud.txt".to_string(),
             ],
+            None,
         ))
         .expect_err("with no sync folder there is nothing to open");
         assert_eq!(
@@ -3977,21 +4369,25 @@ mod socket_tests {
     fn open_paths_with_nothing_to_open_says_so() {
         let dir = tempfile::tempdir().unwrap();
         let app = mock_app_rooted(dir.path());
-        let error =
-            tauri::async_runtime::block_on(open_paths(app.state::<Mutex<RuntimePaths>>(), vec![]))
-                .expect_err("an empty list is not a successful open");
+        let error = tauri::async_runtime::block_on(open_paths(
+            app.state::<Mutex<RuntimePaths>>(),
+            vec![],
+            None,
+        ))
+        .expect_err("an empty list is not a successful open");
         assert_eq!(error, "nothing to open");
     }
 
     #[test]
     fn approval_round_trip_reaches_the_daemon_and_folds_a_live_reply() {
-        let (socket, _dir) = spawn_one_shot_daemon(CANNED_REPLY);
-        let app = mock_app(socket);
+        let (socket, _socket_dir) = spawn_one_shot_daemon(CANNED_REPLY);
+        let (app, _dir) = mock_app(socket);
         let payload = tauri::async_runtime::block_on(approval_round_trip(
             app.handle().clone(),
             ControlCommand::Approve,
             "some/file.txt".to_string(),
             true,
+            None,
             None,
         ));
         assert!(

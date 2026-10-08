@@ -54,6 +54,9 @@ gdkx11 = "0.18"
 gtk-layer-shell = { version = "0.8.2", features = ["v0_6"] }
 
 [dev-dependencies]
+# The recording fake daemon (`gui_core::testing`) — one fake for every GUI test, driven over a real
+# Unix socket. Named here and nowhere else so it never reaches a shipped build.
+gui_core = { package = "proton-sync-gui-core", path = "../gui-core", features = ["test-support"] }
 # `test` gives us `tauri::test::mock_builder`, so the socket commands can be driven headlessly
 # (no webview/display) against a fake daemon over a real Unix socket.
 tauri = { version = "2", features = ["test"] }

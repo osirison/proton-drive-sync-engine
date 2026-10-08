@@ -6,6 +6,9 @@ mod config_path;
 // Not Linux-gated even though its whole body is: every caller wants "raise this window" and none of
 // them wants to know which display server is under it.
 mod focus;
+// Holds the tests off the machine's real config: see its header.
+#[cfg(test)]
+mod isolation_scan;
 mod notify;
 mod panel;
 mod tray;

@@ -769,38 +769,152 @@ impl PairFileConfig {
 /// `ControlRequest.pair` addresses). Reordering the tables is what would change it, which is why the
 /// order is preserved rather than sorted, and why rule 3 reserves `default` for the first table.
 fn resolve_pairs(config: &FileConfig) -> AppResult<Vec<PairFileConfig>> {
-    let pairs = match &config.pair {
-        None => vec![PairFileConfig::from_top_level(config)],
-        Some(tables) if tables.is_empty() => {
+    if let Some(tables) = &config.pair {
+        if tables.is_empty() {
             return Err(boxed_error(
                 "config declares `pair = []`: an empty pair list syncs nothing. Declare at least \
                  one `[[pair]]` table, or remove the key and use top-level \
                  `local_root`/`remote_root` (a file with no `[[pair]]` is one pair named `default`)",
             ));
         }
-        Some(tables) => {
-            let top_level_per_pair_keys: Vec<&str> = ConfigKey::ALL
-                .into_iter()
-                .filter(|key| key.scope() == KeyScope::Pair && config.key_present(*key))
-                .map(ConfigKey::spelling)
-                .collect();
-            if !top_level_per_pair_keys.is_empty() {
-                // Named once, not twice: repeating the list read as "move `a`, `b` and `c` into the
-                // table *it* belongs to", whose grammar drifts the moment there is more than one key.
-                return Err(boxed_error(format!(
-                    "config sets per-pair {} at the top level and also declares `[[pair]]` tables: \
-                     they are two spellings of one setting; move each per-pair key into the \
-                     `[[pair]]` table it belongs to, or delete the `[[pair]]` tables",
-                    describe_quoted(&top_level_per_pair_keys),
-                )));
-            }
-            tables.iter().map(PairFileConfig::from_table).collect()
+        let top_level_per_pair_keys: Vec<&str> = ConfigKey::ALL
+            .into_iter()
+            .filter(|key| key.scope() == KeyScope::Pair && config.key_present(*key))
+            .map(ConfigKey::spelling)
+            .collect();
+        if !top_level_per_pair_keys.is_empty() {
+            // Named once, not twice: repeating the list read as "move `a`, `b` and `c` into the
+            // table *it* belongs to", whose grammar drifts the moment there is more than one key.
+            return Err(boxed_error(format!(
+                "config sets per-pair {} at the top level and also declares `[[pair]]` tables: \
+                 they are two spellings of one setting; move each per-pair key into the \
+                 `[[pair]]` table it belongs to, or delete the `[[pair]]` tables",
+                describe_quoted(&top_level_per_pair_keys),
+            )));
         }
-    };
+    }
+    let pairs = pair_files(config);
     validate_pair_names(&pairs)?;
     require_roots_in_every_table(&pairs)?;
     validate_pair_roots(&pairs)?;
     Ok(pairs)
+}
+
+/// The pairs a config file **states**, in file order, with no rule applied (#102 phase 5a).
+///
+/// The projection [`resolve_pairs`] validates and [`pair_views`] reads as it is: a file with no
+/// `[[pair]]` is its one implicit pair, otherwise one entry per table. Split out so the strict
+/// reader and the tolerant one start from the same list and cannot disagree about which pairs a
+/// file has. It does **not** check that the file may be read at all: both spellings at once, an
+/// explicit `pair = []` and every name or root rule are `resolve_pairs`' job, and a half-written
+/// document a settings screen is part-way through editing must still be viewable.
+///
+/// With `[[pair]]` tables present the top-level per-pair keys are not read — `resolve_pairs` refuses
+/// that file, so no daemon ever starts on a reading that mixed the two. An explicit `pair = []`
+/// yields no pairs, which is the honest reading of a file that declares none.
+fn pair_files(config: &FileConfig) -> Vec<PairFileConfig> {
+    match &config.pair {
+        None => vec![PairFileConfig::from_top_level(config)],
+        Some(tables) => tables.iter().map(PairFileConfig::from_table).collect(),
+    }
+}
+
+/// One folder pair as a **client** of the config file needs it: the paths the daemon would act on,
+/// derived by the engine's own rules so a second implementation never has to exist (#135, #102
+/// phase 5a). Built by [`pair_views`].
+///
+/// Every `Option` is `None` for one reason only: the file does not place that value. `local_root`
+/// and `remote_root` are as the file says them, `local_root` with its leading `~` expanded.
+/// `db_path` and `lockfile_path` are the files the daemon would open: an absolute override as it
+/// is, a relative one under `local_root`, and the per-root `.sync` default when the file sets none.
+/// Without a `local_root` a relative override or a default has nothing to hang off, so it is `None`
+/// rather than a guess.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PairView {
+    pub name: String,
+    pub local_root: Option<PathBuf>,
+    pub remote_root: Option<PathBuf>,
+    pub db_path: Option<PathBuf>,
+    pub lockfile_path: Option<PathBuf>,
+    /// The file's literal `conflict_suffix`, or `None` for the daemon's default. Not validated here:
+    /// a client turns it into a [`ConflictNaming`] and falls back to the default on a value the
+    /// daemon would refuse to start on.
+    pub conflict_suffix: Option<String>,
+}
+
+impl PairView {
+    fn from_file(pair: &PairFileConfig) -> Self {
+        let local_root = pair
+            .local_root
+            .clone()
+            .map(|path| expand_tilde_or_keep(path, "local_root"));
+        let state_path =
+            |override_value: Option<&PathBuf>,
+             field_name: &str,
+             default_for: fn(&Path) -> PathBuf| match override_value {
+                // A value `effective_state_path` refuses (blank, or naming a directory) is a file the
+                // daemon will not start on, not one it opens: the view does not place it.
+                Some(path)
+                    if require_non_blank_value(Some(path.as_path()), field_name).is_err()
+                        || require_state_path_names_a_file(Some(path.as_path()), field_name)
+                            .is_err() =>
+                {
+                    None
+                }
+                Some(path) => {
+                    let path = expand_tilde_or_keep(path.clone(), field_name);
+                    if path.is_absolute() {
+                        Some(path)
+                    } else {
+                        local_root
+                            .as_deref()
+                            .map(|root| state_path_from(root, Some(path), default_for))
+                    }
+                }
+                None => local_root.as_deref().map(default_for),
+            };
+        Self {
+            name: pair.name.clone(),
+            db_path: state_path(pair.db_path.as_ref(), "db_path", default_state_db_path),
+            lockfile_path: state_path(
+                pair.lockfile_path.as_ref(),
+                "lockfile_path",
+                default_lockfile_path,
+            ),
+            local_root,
+            remote_root: pair.remote_root.clone(),
+            conflict_suffix: pair.conflict_suffix.clone(),
+        }
+    }
+}
+
+/// `~` expanded by the engine's own rule, or the value verbatim when the engine would refuse it
+/// (`~user`, or `~` with no `HOME`). The tolerant counterpart of [`expand_tilde`]: a config the
+/// daemon will not start on is still one a settings screen has to be able to show, and keeping the
+/// literal is what lets the eventual error name the string the person typed.
+fn expand_tilde_or_keep(path: PathBuf, field_name: &str) -> PathBuf {
+    expand_tilde(path.clone(), field_name).unwrap_or(path)
+}
+
+/// The folder pairs a config file declares, as a client reads them (#102 phase 5a, ADR 0005).
+///
+/// **Tolerant by design.** It fails only when the text is not a config file at all (it does not
+/// parse as a [`FileConfig`]); every shape rule — names, root collisions, both spellings at once,
+/// an empty `pair = []` — stays [`validate_file_config_text`]'s job, because the readers of this
+/// are screens that show a document part-way through an edit. It is built on [`pair_files`], the
+/// projection [`resolve_pairs`] validates, not on `resolve_pairs` itself, which refuses exactly the
+/// half-written files this has to read.
+///
+/// Reads no filesystem and no environment beyond `HOME` for `~`. The daemon's strict reader,
+/// [`resolve_runtime_configs`], is the oracle: for a complete valid file the paths here equal the
+/// ones it resolves, pair for pair (`pair_views_agrees_with_the_daemon_resolver`).
+pub fn pair_views(text: &str) -> AppResult<Vec<PairView>> {
+    let config = parse_file_config(text)
+        .map_err(|error| boxed_error(format!("failed to parse config: {error}")))?;
+    Ok(pair_files(&config)
+        .iter()
+        .map(PairView::from_file)
+        .collect())
 }
 
 /// **With more than one pair, every table sets both roots** (ADR 0005 §2, phase 4c).
@@ -4379,6 +4493,194 @@ local_delete_mode = \"permanent\"
             b.lockfile_path,
             default_lockfile_path(Path::new("/local/b"))
         );
+    }
+
+    // ---- `pair_views` (#102 phase 5a): the tolerant reader a GUI uses ----------------------------
+
+    /// The daemon's own answer for each pair of a COMPLETE file, as the views carry it. The oracle
+    /// `pair_views` is held to: it is the strict reader, so a view that disagrees with it is a GUI
+    /// operating on a file other than the one the daemon opens.
+    fn views_of_the_daemon(text: &str) -> Vec<PairView> {
+        resolve_all(text, DaemonConfigInput::default())
+            .expect("a complete file resolves")
+            .pairs
+            .into_iter()
+            .map(|config| PairView {
+                name: config.name,
+                local_root: Some(config.local_root),
+                remote_root: Some(config.remote_root),
+                db_path: Some(config.db_path),
+                lockfile_path: Some(config.lockfile_path),
+                // `ConflictNaming` is the resolved form of the literal the view carries; compare in
+                // the resolved one so the default (`None`) and its spelling agree.
+                conflict_suffix: Some(config.conflict_naming.suffix().to_owned()),
+            })
+            .collect()
+    }
+
+    fn views_of_the_file(text: &str) -> Vec<PairView> {
+        pair_views(text)
+            .expect("a complete file parses")
+            .into_iter()
+            .map(|view| PairView {
+                conflict_suffix: Some(
+                    view.conflict_suffix
+                        .map(|suffix| {
+                            ConflictNaming::new(&suffix)
+                                .expect("a valid suffix")
+                                .suffix()
+                                .to_owned()
+                        })
+                        .unwrap_or_else(|| ConflictNaming::default().suffix().to_owned()),
+                ),
+                ..view
+            })
+            .collect()
+    }
+
+    /// `pair_views` == `resolve_runtime_configs`, pair for pair, over complete files. Every file here
+    /// names its daemon-wide half, so the comparison leans on no XDG directory.
+    #[test]
+    fn pair_views_agrees_with_the_daemon_resolver() {
+        let daemon_wide = "socket_path = \"/tmp/pair-views.sock\"\n\
+             proton_cli = \"/usr/bin/fake-proton-drive\"\n";
+        let corpus = [
+            // Implicit pair, nothing but its two roots: both state paths are the `.sync` defaults.
+            format!("{daemon_wide}local_root = \"/local/a\"\nremote_root = \"/Drive/a\"\n"),
+            // Implicit pair with every path override: absolute, relative (under the root) and a
+            // non-default conflict suffix.
+            format!(
+                "{daemon_wide}local_root = \"/local/a\"\nremote_root = \"/Drive/a\"\n\
+                 db_path = \"state/index.db\"\nlockfile_path = \"/var/lock/a.lock\"\n\
+                 conflict_suffix = \"cloud-copy\"\n"
+            ),
+            // The same pair as a `[[pair]]` table.
+            format!(
+                "{daemon_wide}[[pair]]\nname = \"default\"\nlocal_root = \"/local/a\"\n\
+                 remote_root = \"/Drive/a\"\ndb_path = \"state/index.db\"\n"
+            ),
+            // Two pairs that differ in every way a view reads, kebab and snake spellings alike.
+            format!(
+                "{daemon_wide}[[pair]]\nname = \"a\"\nlocal_root = \"/local/a\"\n\
+                 remote_root = \"/Drive/a\"\nconflict_suffix = \"alpha\"\n\
+                 [[pair]]\nname = \"b\"\nlocal-root = \"/local/b\"\nremote-root = \"/Drive/b\"\n\
+                 db-path = \"/elsewhere/b.db\"\nlockfile-path = \"b-state/lock\"\n\
+                 conflict-suffix = \"beta\"\n"
+            ),
+            TWO_PAIRS.to_owned(),
+            // A leading `~`: both readers expand it with the same function (the comparison is on the
+            // answer, so a machine with no HOME is skipped below rather than failing).
+            format!(
+                "{daemon_wide}local_root = \"~/pair-views\"\nremote_root = \"/Drive/a\"\n\
+                 db_path = \"~/pair-views-state/index.db\"\n"
+            ),
+        ];
+        for text in &corpus {
+            if resolve_all(text, DaemonConfigInput::default()).is_err() {
+                // Only the `~` file can refuse here, and only with HOME unset.
+                assert!(
+                    text.contains('~'),
+                    "a corpus file failed to resolve:\n{text}"
+                );
+                continue;
+            }
+            assert_eq!(
+                views_of_the_file(text),
+                views_of_the_daemon(text),
+                "pair_views disagrees with the daemon resolver for:\n{text}"
+            );
+        }
+    }
+
+    /// A settings screen shows a document part-way through an edit, and `resolve_pairs` refuses
+    /// every one of these. The view must still answer.
+    #[test]
+    fn pair_views_survives_a_half_written_file() {
+        let half_written = [
+            // Two pairs with the same root: `validate_pair_roots` refuses it.
+            "[[pair]]\nname = \"a\"\nlocal_root = \"/same\"\nremote_root = \"/Drive/a\"\n\
+             [[pair]]\nname = \"b\"\nlocal_root = \"/same\"\nremote_root = \"/Drive/b\"\n",
+            // Beside other pairs a table with no roots: `require_roots_in_every_table`.
+            "[[pair]]\nname = \"a\"\nlocal_root = \"/local/a\"\nremote_root = \"/Drive/a\"\n\
+             [[pair]]\nname = \"b\"\n",
+            // A reserved name in the second slot, and a duplicate name.
+            "[[pair]]\nname = \"a\"\n[[pair]]\nname = \"default\"\n",
+            "[[pair]]\nname = \"a\"\n[[pair]]\nname = \"A\"\n",
+            // A name the charset refuses.
+            "[[pair]]\nname = \"has space\"\nlocal_root = \"/x\"\nremote_root = \"/Drive/x\"\n",
+            // Both spellings at once.
+            "local_root = \"/top\"\nremote_root = \"/Drive/top\"\n\
+             [[pair]]\nname = \"a\"\nlocal_root = \"/local/a\"\nremote_root = \"/Drive/a\"\n",
+        ];
+        for text in half_written {
+            let config = parse_file_config(text).expect("these parse");
+            assert!(
+                resolve_pairs(&config).is_err(),
+                "the premise: the strict reader refuses this file:\n{text}"
+            );
+            assert!(
+                pair_views(text).is_ok(),
+                "the tolerant reader must still answer for:\n{text}"
+            );
+        }
+        // An explicit empty list is a file that declares no pair, not an implicit one.
+        assert!(pair_views("pair = []\n").expect("parses").is_empty());
+        // Only text that is not a config file at all is an error: bad TOML, an unknown key (the
+        // daemon's `deny_unknown_fields`), a table with no name.
+        for text in [
+            "local_root = [ this is not toml",
+            "no_such_key = 1\n",
+            "[[pair]]\nlocal_root = \"/x\"\n",
+        ] {
+            assert!(pair_views(text).is_err(), "should not read: {text}");
+        }
+    }
+
+    /// The shape rules a view applies by itself, read off a file rather than the daemon: file order,
+    /// the implicit pair's name, what is and is not placed.
+    #[test]
+    fn pair_views_places_only_what_the_file_places() {
+        // Nothing at all is still one implicit pair, and nothing is placed.
+        let views = pair_views("").expect("an empty file parses");
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].name, DEFAULT_PAIR_NAME);
+        assert_eq!(views[0].local_root, None);
+        assert_eq!(views[0].db_path, None, "no root, nothing to default under");
+        assert_eq!(views[0].lockfile_path, None);
+
+        // A root places both defaults; a relative override is under the root; an absolute one is
+        // not; the order of the tables is the order of the views.
+        let views = pair_views(
+            "[[pair]]\nname = \"z\"\nlocal_root = \"/r/z\"\nremote_root = \"/Drive/z\"\n\
+             db_path = \"x/y.db\"\n\
+             [[pair]]\nname = \"a\"\nlocal_root = \"/r/a\"\nlockfile_path = \"/abs/a.lock\"\n",
+        )
+        .expect("parses");
+        assert_eq!(
+            views.iter().map(|v| v.name.as_str()).collect::<Vec<_>>(),
+            ["z", "a"]
+        );
+        assert_eq!(views[0].db_path, Some(PathBuf::from("/r/z/x/y.db")));
+        assert_eq!(
+            views[0].lockfile_path,
+            Some(default_lockfile_path(Path::new("/r/z")))
+        );
+        assert_eq!(views[1].remote_root, None);
+        assert_eq!(views[1].lockfile_path, Some(PathBuf::from("/abs/a.lock")));
+        assert_eq!(
+            views[1].db_path,
+            Some(default_state_db_path(Path::new("/r/a")))
+        );
+
+        // A `~user` value the engine refuses is kept as typed; a state path the daemon would refuse
+        // to open (blank, or a directory) is not placed rather than defaulted behind the user's back.
+        let views = pair_views(
+            "local_root = \"~nobody-here/x\"\ndb_path = \"\"\nlockfile_path = \"state/\"\n",
+        )
+        .expect("parses");
+        assert_eq!(views[0].local_root, Some(PathBuf::from("~nobody-here/x")));
+        assert_eq!(views[0].db_path, None);
+        assert_eq!(views[0].lockfile_path, None);
     }
 
     #[test]

@@ -7,6 +7,7 @@
 //! every transport failure to [`IpcError::NotListening`] or [`IpcError::Unreachable`] — both of
 //! which the UI must render as its own state, **never as zeroes**.
 
+use crate::pairs::Target;
 use crate::wire::{ControlCommand, ControlRequest, ControlResponse, DeleteDirection};
 use std::path::Path;
 use std::time::Duration;
@@ -144,20 +145,32 @@ pub fn default_socket_path() -> Result<std::path::PathBuf, String> {
 }
 
 /// Convenience wrapper for the argument-less commands (`status`, `pause`, `resume`, `syncnow`).
+///
+/// `target` says which folder pair the command is about (#102 phase 5a): [`Target::DEFAULT`] sends
+/// the request every client has always sent, and a named target puts that pair's name on the wire.
 pub fn command(
     socket_path: &Path,
+    target: Target<'_>,
     command: ControlCommand,
     timeout: Duration,
 ) -> Result<ControlResponse, IpcError> {
-    send_request(socket_path, &ControlRequest::new(command), timeout)
+    send_request(
+        socket_path,
+        &target.address(ControlRequest::new(command)),
+        timeout,
+    )
 }
 
 /// Convenience wrapper for `approve` / `deny`, which take a path (or `"all"`) argument.
 /// `literal_path` mirrors [`ControlRequest::literal_path`]: pass `true` when the argument is a
 /// row's actual path (so a file literally named `all` cannot be mistaken for the every-item
 /// selector) and `false` for the explicit approve-all/deny-all form.
+///
+/// **The path is relative to the root of the pair `target` names**, so the target travels with the
+/// path or the path means a different file.
 pub fn command_with_argument(
     socket_path: &Path,
+    target: Target<'_>,
     command: ControlCommand,
     argument: impl Into<String>,
     literal_path: bool,
@@ -166,13 +179,13 @@ pub fn command_with_argument(
 ) -> Result<ControlResponse, IpcError> {
     send_request(
         socket_path,
-        &ControlRequest {
+        &target.address(ControlRequest {
             argument: Some(argument.into()),
             literal_path,
             // Only `approve` reads it, and only when nothing pending matches the selector (#227).
             direction,
             ..ControlRequest::new(command)
-        },
+        }),
         timeout,
     )
 }
@@ -183,19 +196,23 @@ pub fn command_with_argument(
 /// a path**: it is a plan token, so `literal_path` is meaningless and the `direction` an approval
 /// carries has nothing to say about it. Passing it through the approval builder would put a token
 /// where every other caller puts a path.
+///
+/// A token is a plan's identity **within one pair**, so `target` must be the pair the plan was made
+/// for.
 pub fn apply_plan(
     socket_path: &Path,
+    target: Target<'_>,
     token: impl Into<String>,
     skip_destructive: bool,
     timeout: Duration,
 ) -> Result<ControlResponse, IpcError> {
     send_request(
         socket_path,
-        &ControlRequest {
+        &target.address(ControlRequest {
             argument: Some(token.into()),
             skip_destructive,
             ..ControlRequest::new(ControlCommand::Apply)
-        },
+        }),
         timeout,
     )
 }
@@ -230,7 +247,13 @@ mod tests {
     #[test]
     fn round_trips_a_status_request_and_parses_the_reply() {
         let (path, _dir) = spawn_one_shot_daemon(CANNED_REPLY);
-        let resp = command(&path, ControlCommand::Status, DEFAULT_TIMEOUT).unwrap();
+        let resp = command(
+            &path,
+            Target::DEFAULT,
+            ControlCommand::Status,
+            DEFAULT_TIMEOUT,
+        )
+        .unwrap();
         assert_eq!(resp.status, "running");
         assert_eq!(resp.pending_changes, 3);
         assert_eq!(resp.message, "sync completed");
@@ -265,7 +288,13 @@ mod tests {
     fn a_missing_socket_says_nothing_is_listening_rather_than_merely_unreachable() {
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("nope.sock");
-        let err = command(&missing, ControlCommand::Status, DEFAULT_TIMEOUT).unwrap_err();
+        let err = command(
+            &missing,
+            Target::DEFAULT,
+            ControlCommand::Status,
+            DEFAULT_TIMEOUT,
+        )
+        .unwrap_err();
         assert!(matches!(err, IpcError::NotListening(_)), "got {err:?}");
     }
 
@@ -285,7 +314,13 @@ mod tests {
             thread::sleep(Duration::from_millis(600));
             drop(held);
         });
-        let err = command(&path, ControlCommand::Status, Duration::from_millis(150)).unwrap_err();
+        let err = command(
+            &path,
+            Target::DEFAULT,
+            ControlCommand::Status,
+            Duration::from_millis(150),
+        )
+        .unwrap_err();
         assert!(
             matches!(err, IpcError::Unreachable(_)),
             "a bound socket that did not answer is not evidence of absence: got {err:?}"
@@ -311,6 +346,7 @@ mod tests {
         });
         let _ = command_with_argument(
             &path,
+            Target::DEFAULT,
             ControlCommand::Approve,
             "all",
             false,
