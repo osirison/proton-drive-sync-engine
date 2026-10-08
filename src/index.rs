@@ -5,6 +5,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::fmt;
 use std::fs::{self, File};
 use std::io::{BufReader, Read};
@@ -2257,13 +2258,17 @@ fn normalize_ignored_path(root: &Path, path: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Canonicalizes `path` when it exists on disk; otherwise falls back to anchoring it against
-/// the current working directory and resolving `.`/`..` components lexically. Used only for
-/// prefix *matching* in [`normalize_ignored_path`], never for filesystem access.
-fn canonicalize_best_effort(path: &Path) -> PathBuf {
-    if let Ok(canonical) = fs::canonicalize(path) {
-        return canonical;
-    }
+/// Canonicalizes `path` when it exists on disk; otherwise canonicalizes the **deepest ancestor that
+/// does**, appends the rest as written, and resolves `.`/`..` in that remainder lexically. Anchored
+/// against the current working directory when relative. Used only for prefix *matching* — in
+/// [`normalize_ignored_path`], and by the daemon's real-path overlap check between folder pairs
+/// (`daemon::real_path_overlap`) — never for filesystem access.
+///
+/// The ancestor walk is what a pair's folder that does not exist **yet** needs: `link/b` with `b`
+/// missing and `link` a symlink is `<target of link>/b`, and answering with the lexical `link/b`
+/// (which is all this used to do for a path that does not exist) would put the folder somewhere it
+/// will not be created. The part that does not exist cannot be a symlink, so appending it is exact.
+pub(crate) fn canonicalize_best_effort(path: &Path) -> PathBuf {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else if let Ok(current_dir) = std::env::current_dir() {
@@ -2271,7 +2276,22 @@ fn canonicalize_best_effort(path: &Path) -> PathBuf {
     } else {
         path.to_path_buf()
     };
-    crate::lexically_normalized(&absolute)
+    let mut remainder: Vec<&OsStr> = Vec::new();
+    let mut existing = absolute.as_path();
+    loop {
+        if let Ok(mut canonical) = fs::canonicalize(existing) {
+            canonical.extend(remainder.iter().rev());
+            return crate::lexically_normalized(&canonical);
+        }
+        match (existing.parent(), existing.file_name()) {
+            (Some(parent), Some(name)) => {
+                remainder.push(name);
+                existing = parent;
+            }
+            // A root, or a path ending in `..`: nothing further to peel.
+            _ => return crate::lexically_normalized(&absolute),
+        }
+    }
 }
 
 fn build_glob_set(patterns: &[String]) -> AppResult<GlobSet> {
@@ -2936,6 +2956,42 @@ mod tests {
         assert!(
             !options.allows_relative_file(Path::new("state/custom.db")),
             "relative db paths joined under a relative local root must be ignored"
+        );
+    }
+
+    #[test]
+    fn canonicalize_best_effort_keeps_several_missing_components_in_the_order_written() {
+        // PR #434 review, F3. The deepest existing ancestor is found by peeling names off the END of
+        // the path, so the peeled names come out deepest-first and are put back reversed. Every
+        // earlier test had at most ONE missing component, where the order cannot show: dropping the
+        // `.rev()` returned `real/three/two/one` for `link/one/two/three` and nothing failed. The
+        // daemon's overlap check compares these answers by prefix, so a reversed tail would put a
+        // pair's folder somewhere it will never be created.
+        let directory = tempdir().expect("tempdir");
+        let base = fs::canonicalize(directory.path()).expect("canonical tempdir");
+        let real = base.join("real");
+        fs::create_dir(&real).expect("real");
+        std::os::unix::fs::symlink(&real, base.join("link")).expect("link");
+
+        assert_eq!(
+            canonicalize_best_effort(&base.join("link").join("one").join("two").join("three")),
+            real.join("one").join("two").join("three"),
+            "the link is resolved and the three missing names keep their order"
+        );
+        assert_eq!(
+            canonicalize_best_effort(&base.join("link").join("one").join("two")),
+            real.join("one").join("two"),
+            "two missing names"
+        );
+        assert_eq!(
+            canonicalize_best_effort(&base.join("link").join("one")),
+            real.join("one"),
+            "one missing name, where the order was never in question"
+        );
+        assert_eq!(
+            canonicalize_best_effort(&base.join("link")),
+            real,
+            "and a path that exists is simply canonical"
         );
     }
 

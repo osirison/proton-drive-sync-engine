@@ -64,6 +64,15 @@ app** and the packaged systemd unit adopt the convention
 `~/.config/proton-sync/proton-sync.toml`, and the app reads and writes exactly that file.
 :::
 
+## Several folders
+
+The file above is one folder pair, named `default`. To sync more than one folder, declare each
+as a `[[pair]]` table with a `name`, its own `local_root` and `remote_root`, and any per-folder
+setting; the daemon-wide keys (`socket_path`, `log_level`, `proton_cli`, `proton_timeout_secs`,
+`proton_list_attempts`) stay at the top. A file that has no `[[pair]]` table keeps working
+unchanged, forever. The rules, the flag restrictions and the limits are on
+[Multiple folder pairs](/daemon/folder-pairs/).
+
 ## Precedence
 
 Settings resolve in this order, highest first:
@@ -81,6 +90,9 @@ Two things to remember:
 - `--include`/`--exclude` on the CLI **replace** the corresponding config list entirely
   (each independently) — they don't add to it.
 - Passing only `--include` leaves the file's `exclude` in effect, and vice versa.
+- Beside more than one `[[pair]]` table, a flag that describes a folder is **refused**, not
+  applied — it cannot say which pair it amends. See
+  [Multiple folder pairs](/daemon/folder-pairs/#command-line-flags).
 
 ## Per-directory settings (`.proton-sync.toml`)
 

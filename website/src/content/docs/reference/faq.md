@@ -72,6 +72,9 @@ mixing them in would file your own settings under "cannot be synced".
 No — **one daemon per user**. Every daemon shells the same `proton-drive` CLI, whose shared
 SQLite cache isn't concurrency-safe, so a user-global lock enforces a single instance.
 
+That one daemon can sync **several folder pairs**: declare each as a `[[pair]]` table and the
+pairs take turns, one at a time. See [Multiple folder pairs](/daemon/folder-pairs/).
+
 ## Does closing the desktop app stop syncing?
 
 No. Closing the window **hides it to the tray**; the app process and the daemon keep running.

@@ -20,7 +20,7 @@ set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=setup.sh
-source "${script_dir}/setup.sh" # config_home/default_config_path/config_value/expand_tilde/xdg_data_home/cargo_bin_dir + err/warn/step/note
+source "${script_dir}/setup.sh" # config_home/default_config_path/config_value(s)/expand_tilde/xdg_data_home/cargo_bin_dir + err/warn/step/note
 
 # ---- usage ------------------------------------------------------------------------------------
 
@@ -33,7 +33,7 @@ Options:
   --dry-run              Print the removal plan and exit; change nothing.
   -y, --yes              Do not prompt for confirmation before removing.
   --keep-config          Keep the config file + folder pairing (remove everything else).
-  --config PATH          Config to read the local root from (to find its .sync state dir).
+  --config PATH          Config to read the local roots from (to find each pair's .sync state dir).
                          Default: $XDG_CONFIG_HOME/proton-sync/proton-sync.toml.
   -h, --help             Show this help.
 
@@ -148,10 +148,15 @@ collect_targets() {
   add "$(runtime_socket_path)" "control socket"
   add "$(fallback_runtime_dir)" "fallback runtime directory"
 
-  # Per-root .sync — only if it validates as a real `.sync` under the configured local root.
-  local sync_dir
-  if sync_dir="$(validated_sync_state_dir "${local_root}")"; then
-    removable_paths+=("${sync_dir}"$'\t'"engine state (per-root .sync)")
+  # Per-root .sync — only if it validates as a real `.sync` under a configured local root. One per
+  # pair: a config with several `[[pair]]` tables has a local root, and so a `.sync`, for each (#102).
+  local sync_dir root
+  if ((${#local_roots[@]} > 0)); then
+    for root in "${local_roots[@]}"; do
+      if sync_dir="$(validated_sync_state_dir "${root}")"; then
+        removable_paths+=("${sync_dir}"$'\t'"engine state (per-root .sync)")
+      fi
+    done
   fi
 }
 
@@ -216,7 +221,14 @@ print_plan() {
   fi
 
   step "Preserved (never touched)"
-  note "your synced files:        ${local_root:-<local root from config>} (only its .sync state dir is removed)"
+  if ((${#local_roots[@]} > 0)); then
+    local root
+    for root in "${local_roots[@]}"; do
+      note "your synced files:        ${root} (only its .sync state dir is removed)"
+    done
+  else
+    note "your synced files:        <local root from config> (only its .sync state dir is removed)"
+  fi
   if [[ "${keep_config}" == "true" ]]; then
     note "config + folder pairing:  ${config_path} (--keep-config)"
   fi
@@ -288,10 +300,27 @@ main() {
     config_path="$(default_config_path)"
   fi
 
-  # Read the local root from the config so we can find (and only then, safely, remove) its .sync dir.
-  local_root=""
+  # Read every local root from the config so we can find (and only then, safely, remove) each one's
+  # .sync dir. `config_values` returns every match — one per `[[pair]]` table — where `config_value`
+  # stopped at the first, which left the other pairs' state behind and made the plan misreport.
+  local_roots=()
   if [[ -f "${config_path}" ]]; then
-    local_root="$(config_value "${config_path}" local_root)"
+    local value
+    while IFS= read -r value; do
+      if [[ -n "${value}" ]]; then
+        local_roots+=("${value}")
+      fi
+    done < <(config_values "${config_path}" local_root)
+  fi
+  # A pair written as an inline array (`pair = [{ ... }]`) keeps its roots inside one bracketed line,
+  # which `config_values` does not parse. Say so, and do not guess a root out of that text: a wrong
+  # guess would point the `.sync` removal at a directory that is not ours.
+  inline_pairs=false
+  if [[ -f "${config_path}" ]] && config_has_inline_pairs "${config_path}"; then
+    inline_pairs=true
+    warn "${config_path} declares folder pairs as an inline array (pair = [{ ... }]), which this script \
+cannot read: those pairs' .sync state directories are NOT in the plan below and will be left in place."
+    warn "to remove them, read each local_root from that file and delete <local_root>/.sync by hand."
   fi
 
   collect_targets
@@ -322,6 +351,10 @@ main() {
   refresh_desktop_caches
 
   step "Done — Proton Drive Sync has been removed"
+  if [[ "${inline_pairs}" == "true" ]]; then
+    warn "folder pairs written as an inline array in ${config_path} were left in place: their .sync state"
+    warn "directories (<local_root>/.sync) were not removed."
+  fi
   note "Your synced files were left in place. If you are finished with Proton Drive entirely, log out"
   note "of and remove the separate 'proton-drive' CLI yourself."
 }

@@ -1,6 +1,9 @@
 # ADR 0005 — Multiple folder pairs in one daemon
 
-- **Status:** Proposed (design only — no implementation ships with this ADR)
+- **Status:** Implemented through phase 4 — a config may declare any number of pairs and one daemon
+  runs them all (the lift, phase 4c). Phase 5 (the GUI) and phase 6 (the shared-volume event scope)
+  are not built. Written as a design (2026-08-17); the phases below carry their own "Shipped, with
+  departures" notes.
 - **Date:** 2026-08-17
 - **Issue:** #102 (E5 · Multiple folder pairs). This ADR is the "scoping pass" the maintainer's
   decision comment asked for; it does not close the issue.
@@ -691,8 +694,9 @@ multi-pair. Chain, verified in code:
    volume, with no scope filter before `reconstruct_remote`.
 2. `TargetedResolver::resolve` places a created/updated node by listing its parent — but only if
    the parent has an index row (`path_for_proton_id`). A node whose parent is not indexed falls
-   back to the root listing, and if it is not there either, returns `Err(...)`
-   (`src/daemon.rs:6335`, "changed node … is not under any indexed parent or the remote root").
+   back to the root listing, and if it is not there either, returns `Err(...)` (`src/daemon.rs`,
+   grep for "is not under any indexed parent or the remote root"; this cited `:6335` and the line
+   has moved).
 3. `reconstruct_remote` turns that `Err` into `Reconstruction::FallbackToSnapshot`, and the pass
    re-bootstraps with a full O(folders) walk.
 
@@ -1406,9 +1410,130 @@ Expect this phase to be as large as phase 2 and riskier. Closes: the feature, he
 > at that look, once per cause in the log, and the pair is tried again at its next turn.
 >
 > **Still not done**, deliberately: the empty mount point and the unmounted-at-boot root (#426); a
-> watcher that cannot be built at all is still fatal (it is process-wide, not per root);
-> `fs::metadata(root)` on a hung network mount blocks the one main task, as the scan already does;
-> and the lift itself (4c).
+> watcher that cannot be built at all is still fatal (it is process-wide, not per root); and
+> `fs::metadata(root)` on a hung network mount blocks the one main task, as the scan already does.
+> (The lift itself, which this paragraph listed, is 4c, below.)
+>
+> **4c (the lift) shipped, with departures.** Config is the only thing 4c changes about the
+> runtime's input: `config::refuse_unsupported_pair_count` and both its calls are gone, and
+> `config::resolve_runtime_configs` resolves a file into one `DaemonConfig` per `[[pair]]` table plus
+> a `RunMode` (`Daemon`, or `Preview { pair }`). `resolve_runtime_config` stays as the one-pair
+> entry point (it errors when the file declares several). The binary hands the whole list to
+> `Daemon::new(Vec<DaemonConfig>)`, the public door to `Daemon::from_pairs`, which remains the one
+> place that checks the pairs agree on everything daemon-wide. Maintainer decisions M2, M3 and M4
+> are on issue #102:
+>
+> - **M2: with more than one pair, every per-pair flag is refused at startup, naming the flags** —
+>   including `--no-delete-approval`, `--no-events-driven` and `--no-warm-start`. §2's "refused by
+>   rule 1" was a file rule and no code implemented a flag rule; this is that code. With one pair
+>   a flag amends it, as before. `DaemonConfigInput::per_pair_flags_set` is an exhaustive
+>   destructure that sorts every field into daemon-wide, mode or per-pair, so a new flag cannot
+>   compile unclassified. `--full-walk` is a mode flag and reaches every pair's first pass.
+> - **M3: `dry_run = true` inside a `[[pair]]` table is refused beside other pairs** — by
+>   `validate_file_config_text` outright, and at startup unless `--dry-run` or `--no-dry-run` says
+>   what the run is. A preview rehearses one pair and exits, so a per-pair key cannot pick the
+>   process's mode. `dry_run = false` is accepted.
+> - **M4: the lift ships before the GUI's multi-pair work.** The desktop app, the tray's Pause and
+>   the notifications act on the **default** pair only; the tray would say "Paused" while the other
+>   pairs keep syncing, approved deletions included. Documented on the website's desktop overview,
+>   and logged once at daemon startup when more than one pair is configured. Exposure is limited
+>   to hand-written configs: nothing in the GUI writes `[[pair]]`.
+>
+> Two further file rules came with it. **Beside other pairs, every table sets both `local_root`
+> and `remote_root`** (in `resolve_pairs`, because no flag can supply one — they are refused — and
+> because `validate_pair_roots` compares only the roots it is given, so a pair without one would
+> have skipped every cross-pair rule). And **`proton-syncd --dry-run --pair NAME`** previews the
+> named pair instead of the default one (§2): one pair per invocation, validated **after**
+> resolution because whether the run is a preview depends on the flag, the file's `dry_run` and
+> `--no-dry-run` together, an error unless it is, matched byte-exactly, and an unknown name is an
+> error that names the configured pairs. Config errors stay all-or-nothing; beside several pairs an
+> error from one pair's merge names the pair, beside one it is unchanged.
+>
+> (1) **The real-path overlap check runs before a pair is prepared, against every other pair.** The
+> design said after preparation, between ready pairs. Run before, it creates nothing and locks
+> nothing in a place that overlaps, it needs no pair to be ready, and exact aliasing is reported
+> as an overlap instead of as the shared lockfile's "daemon already running". It is one function
+> (`real_path_overlap`) with two callers: boot, where an overlap is fatal naming both pairs and,
+> for every path, the written and the real form; and `retry_unavailable`, where the pair stays
+> unavailable with that sentence as its reason, so a folder that was missing at boot is checked
+> when it appears. Resolving a path that does not exist yet needed
+> `index::canonicalize_best_effort` to canonicalize the deepest ancestor that does, where it fell
+> back to a purely lexical answer for the whole path — a folder `b` under a symlink `link` that
+> does not exist yet is `<target of link>/b`, and the lexical `link/b` places it somewhere it will
+> never be made. That function now has two callers and the same contract.
+>
+> **Review round: a third caller, for a pair that is already running.** Boot and a promotion look
+> once, so two running pairs that came to overlap later (`b`'s folder moved into `a`'s, a link
+> left where it was) stayed `Ready`, and `a` uploaded `b`'s `.sync` as ordinary files. The same
+> function is now asked of every other pair before each of a ready pair's `Sync` jobs
+> (`examine_ready_pair`, through `stop_overlapping_pairs`). **Both pairs of an overlap become
+> unavailable**, each with its own side's wording: stopping only the inner pair leaves the outer one
+> — correctly configured, still `Ready` — uploading the inner one's `.sync`, which is already in its
+> tree. The check is symmetric in what it finds (a shared folder and a shared state file have no
+> inner side), so no rule about fault is needed. A scanner-side guard (never upload another pair's
+> `.sync`) was weighed and not built: `is_sync_state_path` is name-based and top-level only by
+> decision, and keying it on other pairs' real state directories would reach `ScanOptions`, the
+> watcher and gui-core's disk walk and be recomputed whenever the layout changes.
+>
+> **Second review round: the running pair asks about unavailable pairs too, and stops only ready
+> ones.** The first version asked only other *ready* pairs, on the reasoning that an unavailable pair
+> runs nothing. That holds for the unavailable pair's own writes and not for what the running pair
+> reads: an unavailable pair's folder, with the `.sync` it had while it ran, is what the running pair
+> uploads once that folder is inside its tree. A pair can be down for a reason unrelated to the
+> overlap (a held lock, an index that failed to open, a folder restored from a backup), and then its
+> own retry can only keep it down: it cannot stop the running pair. So a running pair is asked
+> against every other pair whose folder exists, and only a ready one is stopped. A neighbour counts
+> only while its folder exists: a missing or unmounted neighbour has nothing in the tree, and one
+> unplugged drive must not become two stopped pairs. A neighbour whose folder is missing is skipped
+> whole, state files included, so a state file of its that lies in the running pair's tree beside a
+> missing folder is not found until the folder is (boot refuses that layout).
+>
+> **Third review round: the folder, not the slot, decides whether a neighbour counts.** The existence
+> filter was keyed on the neighbour's slot state (unavailable and no folder: skipped), so a *ready*
+> neighbour whose folder had vanished — the usual state of a yanked drive, since a typed root error
+> keeps the slot ready — still stopped a healthy pair, and `retry_unavailable` had no filter at all.
+> Both callers now read one definition, `neighbours_with_a_folder`, which keeps a neighbour whose
+> folder exists whatever its slot state. Boot does not use it: an overlap in the configuration is
+> fatal there whether or not a folder exists yet.
+>
+> (2) **A test that built nested roots directly now builds them after construction.** 4a's
+> `an_event_under_pair_a_is_never_tested_against_pair_bs_filters` made a daemon whose roots nest to
+> prove that routing happens before any pair's filter; the constructor refuses that shape now, so
+> the test sets the nesting on the built daemon. Its assertions are unchanged; routing stays a
+> second line of defence, tested as one.
+>
+> (3) **`resolve_runtime_configs` reads the daemon-wide half first.** The old single-pair body
+> evaluated a pair's roots before `proton_cli` and `socket_path`; the daemon-wide half is
+> `ProcessValues` now, computed once and copied to every pair, so a file with two errors can name
+> the other one first. Each error is unchanged, and no existing test pinned the order.
+>
+> (4) **Negative `!contains("not yet supported")` assertions stay.** The phrase has no producer
+> any more, so they are vacuous; each sits beside an assertion of the real reason, which is what
+> they were protecting. They were left rather than deleted so that no assertion is weakened.
+>
+> (5) **The GUI is unchanged, and what it does at N > 1 is a recorded fact, not a feature.**
+> `ConfigDoc` writes top-level keys only, so it saves daemon-wide edits to a multi-pair file and
+> refuses a per-pair edit as "two spellings of one setting" (pinned by
+> `a_two_pair_file_saves_daemon_wide_edits_and_refuses_per_pair_ones`). The child `--dry-run`
+> (`run_dry_run_impl`) reads its roots from the top-level keys, so for a `[[pair]]` file it has
+> none. (Read from the code, not driven.) With a live daemon it asks the daemon, which previews the **default** pair; with no daemon
+> to ask and a cached root from an earlier one it passes `--local-root`, `--remote-root` and
+> `--db-path` beside `--config`, which M2 refuses with a message naming the flags, and the screen
+> shows `proton-syncd --dry-run failed:` and that message. Phase 5a fixes the cause.
+>
+> (6) **`setup.sh` and `uninstall.sh`.** `config_values` returns every matching line where
+> `config_value` returned the first, and `uninstall.sh` removes each pair's `.sync` rather than
+> the first pair's; its plan listed one synced folder and so misreported. `setup.sh`'s
+> "your existing config syncs X, not Y" warning still names only the first pair; setup.sh writes
+> single-pair configs, so a multi-pair file is one a person made.
+>
+> **§8a was not measured.** Two pairs on one volume make each other fall back to a full walk
+> whenever an event names a node under neither's indexed parents — the cost this ADR already
+> described, now live for N > 1. It was not measured against a live account for this change. The
+> procedure: run the daemon with two pairs on one volume at `RUST_LOG=info`, make changes in pair
+> A's folder only, and count `event-driven pass fell back to a full-tree snapshot` lines per
+> pair — each carries its `pair{name=…}` span — over the same period for one pair alone and for
+> both. If pair B's count tracks pair A's activity, §8a's candidate (a) is worth its own ADR.
 
 **Phase 5 — GUI (large, and larger than the issue assumes).** Splits into three, and they are worth
 tracking separately because only the first is mechanical: (5a) pair-index `RuntimePaths` and the

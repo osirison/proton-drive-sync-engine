@@ -93,11 +93,20 @@ notice:
   have had to invent.
 - **Applying a reviewed plan is a fresh pass.** Dry-run and the real reconcile are separate
   invocations, so the applied plan can differ from the reviewed one — the app says so.
-- **One folder pair.** The daemon syncs one local↔remote pair, and the engine itself refuses
-  a config naming more than one — the control protocol can already address a pair by name (see
-  the [CLI reference](/cli/reference/)'s `--pair`/`--all-pairs`), but the desktop app does not
-  use that yet. The Folders tab is two plain inputs for that one pair — no add or remove
-  control.
+- **One folder pair.** The daemon can sync several local↔remote pairs from one config (see
+  [Multiple folder pairs](/daemon/folder-pairs/)), and the control protocol addresses a pair by
+  name (the [CLI reference](/cli/reference/)'s `--pair`/`--all-pairs`), but **the desktop app
+  does not use that yet**: it shows, and acts on, the **default pair** (the first `[[pair]]`
+  table) only. The Folders tab is two plain inputs for that one pair — no add or remove
+  control — and the app cannot create a `[[pair]]` file. If you wrote one by hand, know that:
+  - the tray's **Pause syncing** pauses the default pair and says *Paused* while every other
+    pair keeps syncing — including deletions you had already approved. Pause the others with
+    `proton-sync --pair NAME pause`, or all of them with `proton-sync --all-pairs pause`.
+  - the notifications, the status and the Plan screen describe the default pair, not the
+    others.
+  - Settings saves a change to a daemon-wide setting (log level, the socket, the CLI path) but
+    refuses to edit a per-pair setting of a `[[pair]]` file, saying the file would state it twice.
+  - the daemon logs a warning once at startup when it finds more than one pair configured.
 
 Continue to [Screens](/desktop/screens/) for a tour of each view, or
 [Tray & notifications](/desktop/tray/) for the background indicator.

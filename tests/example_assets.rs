@@ -1,3 +1,5 @@
+mod common;
+
 use proton_drive_sync_engine::config::{DaemonConfigInput, resolve_runtime_config};
 use std::fs;
 #[cfg(unix)]
@@ -85,11 +87,11 @@ fn release_asset_manifest_points_at_existing_distribution_assets() {
 
     assert_eq!(
         manifest["binaries"]["daemon"].as_str(),
-        Some("proton-syncd")
+        Some(common::DAEMON_FILE_NAME)
     );
     assert_eq!(
         manifest["binaries"]["control_cli"].as_str(),
-        Some("proton-sync")
+        Some(common::CONTROL_CLI_FILE_NAME)
     );
 
     for key_path in [
@@ -118,8 +120,8 @@ fn release_archive_helper_has_expected_packaging_contract() {
     assert!(script.contains("cargo build"));
     assert!(script.contains("--release --bins --locked"));
     assert!(script.contains("tar -C"));
-    assert!(script.contains("proton-syncd"));
-    assert!(script.contains("proton-sync"));
+    assert!(script.contains(common::DAEMON_FILE_NAME));
+    assert!(script.contains(common::CONTROL_CLI_FILE_NAME));
     assert!(script.contains("install-user-service.sh"));
 
     #[cfg(unix)]

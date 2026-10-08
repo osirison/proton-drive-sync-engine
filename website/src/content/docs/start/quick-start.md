@@ -48,9 +48,9 @@ proton-syncd \
   --remote-root /Drive/RemoteFolder
 ```
 
-It reconciles once on startup, then watches the folder and reconciles on changes, on a
-periodic timer, and on demand. Stop it with `Ctrl+C` or `SIGTERM`; it removes its socket
-on shutdown.
+It does a first full reconcile, then watches the folder, notes what changes, and re-checks on
+a periodic timer (and on the faster change-stream poll while that is live) and on demand.
+Stop it with `Ctrl+C` or `SIGTERM`; it removes its socket on shutdown.
 
 By default the daemon keeps all of its state — the SQLite index, its status/metrics
 sidecars, and the instance lockfile — in a `<local-root>/.sync/` directory that the engine

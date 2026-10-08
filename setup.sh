@@ -148,10 +148,44 @@ default_config_path() {
 # Read a top-level string value out of a TOML file (best-effort; empty if absent). Used only to warn
 # about a folder-pair mismatch on re-run, not to parse config for real.
 config_value() {
+  # `|| true`: on a multi-pair file `head` leaves after the first line, the writer gets SIGPIPE, and
+  # `set -o pipefail` would turn that into a failed command substitution in the caller. It is not an
+  # error here; the first value is the answer.
+  config_values "$1" "$2" | head -n1 || true
+}
+
+# Every `key = "value"` (or `key = 'value'`) line of a TOML file, one value per line, in file order. A
+# config with several `[[pair]]` tables has one `local_root` line per pair (#102), and a caller that
+# has to act on each pair (uninstall.sh purges every pair's `.sync`) must not stop at the first match
+# the way `config_value` does. Same best-effort reading, same caveats: it knows nothing of table
+# boundaries, it does not unescape a basic string, and it sees only a key that starts its own line —
+# so a pair written as an inline array (`pair = [{ ... }]`) is invisible to it; see
+# `config_has_inline_pairs`, which callers that act on every pair use to say so.
+#
+# Both TOML string forms are read: a basic string up to its closing `"`, a literal string up to its
+# closing `'`, so a `#` inside the quotes is part of the value and one after them starts a comment.
+# An unquoted value (not TOML for a string, but accepted before) ends at whitespace or `#`.
+config_values() {
   local file="$1" key="$2"
   grep -E "^[[:space:]]*${key}[[:space:]]*=" "${file}" 2>/dev/null \
-    | head -n1 \
-    | sed -E "s/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*\"?([^\"#]*[^\"# ])\"?.*/\1/" || true
+    | sed -E "s/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*(\"([^\"]*)\"|'([^']*)'|([^\"'#[:space:]]*)).*/\2\3\4/" || true
+}
+
+# Whether the file declares its folder pairs as an inline array (`pair = [{ name = ... }]`) instead of
+# `[[pair]]` tables. Both are the same configuration to the daemon, but `config_values` reads one
+# `key = value` per line and an inline table keeps its keys inside a bracket, so none of that pair's
+# roots are seen. Callers say so rather than guess a root out of text this does not parse.
+config_has_inline_pairs() {
+  grep -qE "^[[:space:]]*(pair|\"pair\"|'pair')[[:space:]]*=" "$1" 2>/dev/null
+}
+
+# How many `[[pair]]` tables the file declares (0 for a file with none, or no file). The key may be
+# quoted, as in `config_has_inline_pairs` (`[["pair"]]`, `[['pair']]` are the same table in TOML), so
+# the two helpers agree on what a `pair` key is.
+count_pair_tables() {
+  local count
+  count="$(grep -cE "^[[:space:]]*\[\[[[:space:]]*(pair|\"pair\"|'pair')[[:space:]]*\]\]" "$1" 2>/dev/null || true)"
+  printf '%s\n' "${count:-0}"
 }
 
 # Where `cargo install` drops binaries. Cargo's own precedence is CARGO_INSTALL_ROOT > CARGO_HOME >
@@ -292,6 +326,15 @@ write_config() {
     note "Keeping existing config: ${target} (pass --force-config to overwrite)"
     # A silent keep here would strand a user who re-ran with a *different* folder pair: the service
     # would keep syncing the old one. Surface the mismatch loudly.
+    # With a hand-written multi-pair config (`[[pair]]` tables, #102) this reads, and so names,
+    # only the FIRST pair — the default one. Acceptable: setup.sh writes single-pair configs, so a
+    # multi-pair file is one a person made, and "your existing config is kept" is what this says.
+    # A pair written as an inline array is not read at all, and that is said rather than left as a
+    # check that quietly found nothing to compare.
+    if config_has_inline_pairs "${target}"; then
+      note "The existing config declares its folder pairs as an inline array (pair = [{ ... }]), which \
+this script cannot read, so it cannot check them against '${local_root}' <-> '${remote_root}'."
+    fi
     local existing_local existing_remote
     existing_local="$(config_value "${target}" local_root)"
     existing_remote="$(config_value "${target}" remote_root)"
@@ -464,6 +507,21 @@ preview_and_start() {
   uploads="$(extract_count "${json}" uploads)"
   downloads="$(extract_count "${json}" downloads)"
   note "Plan summary: uploads=${uploads:-?} downloads=${downloads:-?} destructive_actions=${destructive:-?}"
+
+  # `--dry-run` previews ONE pair: the default (first) one unless `--pair NAME` names another. A
+  # config with several pairs (a re-run keeps the existing file) is previewed here for the first
+  # only, and the daemon the service starts syncs them all — so say what was and was not looked at.
+  local pair_tables
+  pair_tables="$(count_pair_tables "${cfg}")"
+  if ((pair_tables > 1)); then
+    warn "this config declares ${pair_tables} folder pairs; the plan above is for the first (default) \
+pair only, and the service will sync all of them."
+    note "Preview another with:  \"${daemon_bin}\" --config \"${cfg}\" --dry-run --pair NAME"
+  elif config_has_inline_pairs "${cfg}"; then
+    warn "this config declares its folder pairs as an inline array, so this script cannot tell how many \
+there are; the plan above is for the first (default) pair only, and the service will sync all of them."
+    note "Preview another with:  \"${daemon_bin}\" --config \"${cfg}\" --dry-run --pair NAME"
+  fi
 
   if [[ "${no_start}" == "true" ]]; then
     step "Leaving the service stopped (--no-start)"
