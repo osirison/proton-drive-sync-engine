@@ -1,0 +1,44 @@
+{
+  "apply_plan": [
+    "{\"command\":\"apply\",\"argument\":\"tok\",\"literal_path\":false,\"window_secs\":null,\"limit\":null,\"direction\":null,\"skip_destructive\":false,\"pair\":null}",
+    "{\"command\":\"plan_result\",\"argument\":null,\"literal_path\":false,\"window_secs\":null,\"limit\":1,\"direction\":null,\"skip_destructive\":false,\"pair\":null}"
+  ],
+  "apply_plan_skipping_destructive": [
+    "{\"command\":\"apply\",\"argument\":\"tok\",\"literal_path\":false,\"window_secs\":null,\"limit\":null,\"direction\":null,\"skip_destructive\":true,\"pair\":null}",
+    "{\"command\":\"plan_result\",\"argument\":null,\"literal_path\":false,\"window_secs\":null,\"limit\":1,\"direction\":null,\"skip_destructive\":false,\"pair\":null}"
+  ],
+  "approve_all_with_direction": [
+    "{\"command\":\"approve\",\"argument\":\"all\",\"literal_path\":false,\"window_secs\":null,\"limit\":null,\"direction\":\"remote\",\"skip_destructive\":false,\"pair\":null}"
+  ],
+  "approve_path_literal": [
+    "{\"command\":\"approve\",\"argument\":\"docs/a.txt\",\"literal_path\":true,\"window_secs\":null,\"limit\":null,\"direction\":null,\"skip_destructive\":false,\"pair\":null}"
+  ],
+  "deny_path_literal": [
+    "{\"command\":\"deny\",\"argument\":\"docs/a.txt\",\"literal_path\":true,\"window_secs\":null,\"limit\":null,\"direction\":null,\"skip_destructive\":false,\"pair\":null}"
+  ],
+  "get_status": [
+    "{\"command\":\"status\",\"argument\":null,\"literal_path\":false,\"window_secs\":null,\"limit\":null,\"direction\":null,\"skip_destructive\":false,\"pair\":null}"
+  ],
+  "keep_path_literal": [
+    "{\"command\":\"keep\",\"argument\":\"docs/a.txt\",\"literal_path\":true,\"window_secs\":null,\"limit\":null,\"direction\":null,\"skip_destructive\":false,\"pair\":null}"
+  ],
+  "list_pending_deletions": [
+    "{\"command\":\"status\",\"argument\":null,\"literal_path\":false,\"window_secs\":null,\"limit\":null,\"direction\":null,\"skip_destructive\":false,\"pair\":null}"
+  ],
+  "pause": [
+    "{\"command\":\"pause\",\"argument\":null,\"literal_path\":false,\"window_secs\":null,\"limit\":null,\"direction\":null,\"skip_destructive\":false,\"pair\":null}"
+  ],
+  "resume": [
+    "{\"command\":\"resume\",\"argument\":null,\"literal_path\":false,\"window_secs\":null,\"limit\":null,\"direction\":null,\"skip_destructive\":false,\"pair\":null}"
+  ],
+  "resync": [
+    "{\"command\":\"resync\",\"argument\":null,\"literal_path\":false,\"window_secs\":null,\"limit\":null,\"direction\":null,\"skip_destructive\":false,\"pair\":null}"
+  ],
+  "run_dry_run_through_the_daemon": [
+    "{\"command\":\"plan\",\"argument\":null,\"literal_path\":false,\"window_secs\":null,\"limit\":null,\"direction\":null,\"skip_destructive\":false,\"pair\":null}",
+    "{\"command\":\"plan_result\",\"argument\":null,\"literal_path\":false,\"window_secs\":null,\"limit\":5000,\"direction\":null,\"skip_destructive\":false,\"pair\":null}"
+  ],
+  "sync_now": [
+    "{\"command\":\"syncnow\",\"argument\":null,\"literal_path\":false,\"window_secs\":null,\"limit\":null,\"direction\":null,\"skip_destructive\":false,\"pair\":null}"
+  ]
+}

@@ -36,10 +36,15 @@ pub mod gui_prefs;
 pub mod index_read;
 pub mod ipc;
 pub mod opener;
+pub mod pairs;
 pub mod plan;
 pub mod sidecars;
 pub mod skip_rules;
 pub mod state;
+/// The one recording fake daemon every GUI test shares. Behind a cargo feature so it is never part
+/// of the shipped app: `gui/src-tauri` turns it on for its own tests only (`[dev-dependencies]`).
+#[cfg(all(feature = "test-support", unix))]
+pub mod testing;
 
 /// The daemon's own wire/serialization types, re-exported so the GUI depends on this facade
 /// rather than on `proton_drive_sync_engine` directly. See the crate-level "facade rule".
@@ -49,8 +54,8 @@ pub mod wire {
     pub use proton_drive_sync_engine::ipc::{
         ApplyOutcome, AuthState, ControlCommand, ControlRequest, ControlResponse,
         LIST_ENTRIES_MAX_LIMIT, ListingOutcome, LocalDisposal, PLAN_ACTIONS_MAX_LIMIT,
-        PLAN_PASS_KIND, PendingDeletion, PlanOutcome, RemoteEntry, ReviewedPlan, RunningConfigInfo,
-        StatusHistoryEntry,
+        PLAN_PASS_KIND, PairSummary, PendingDeletion, PlanOutcome, RemoteEntry, ReviewedPlan,
+        RunningConfigInfo, StatusHistoryEntry,
     };
     pub use proton_drive_sync_engine::sync::{
         DeleteDirection, DryRunReport, PlanSummary, PlannedAction, SyncAction, TransferDirection,

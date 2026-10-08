@@ -6,12 +6,20 @@
 //! need, falling back to the engine's own defaults when a key is unset.
 //!
 //! A daemon may also be running with flags or a different config file entirely. The status reply
-//! carries its *live* resolved roots (`RunningConfigInfo`); `get_status` caches them here so every
-//! command can fall back to the daemon's ground truth when the GUI config doesn't provide a value.
+//! carries its *live* resolved roots (`RunningConfigInfo`, and one `PairSummary` per pair); every
+//! status-shaped round trip caches them here so a command can fall back to the daemon's ground truth
+//! when the GUI config doesn't provide a value.
+//!
+//! **Pair-indexed (#102 phase 5a).** Everything a folder pair owns — its roots, its index, how its
+//! conflict sidecars are spelled — is a slot of [`PairPaths`] (what the file says) beside a slot of
+//! [`PairReported`] (what the daemon last said), looked up **by pair name**. What stays singular is
+//! what is singular in the daemon: the config path, the control socket, the `proton-drive` command.
 
-use gui_core::config_io::ConflictNaming;
+use gui_core::config_io::{ConflictNaming, DEFAULT_PAIR_NAME};
+use gui_core::pairs::{wire_selector, PairCapability};
+use gui_core::wire::ControlResponse;
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// A base-directory environment value, honoured **only when it is absolute** (#286). Every XDG
 /// reader in this crate goes through it; the value is taken as an argument (never read here) so
@@ -39,6 +47,10 @@ pub fn absolute_dir(value: Option<OsString>) -> Option<PathBuf> {
 /// restart that follows a save has to dial the OLD value to shut the still-live old daemon down.
 /// `commands::restart_service` moves it, once the restart's own outcome confirms nothing needs that
 /// address any more (`commands::old_socket_is_settled`).
+///
+/// **Every re-resolve names the file it reads** ([`Self::resolve_at`]); only the process's startup
+/// asks the environment where that file is ([`Self::resolve`]). A re-resolve that asked again would
+/// read — and a test that saved first would then WRITE — the developer's real config.
 pub struct RuntimePaths {
     pub config_path: PathBuf,
     /// `Err` only when the GUI config sets no `socket_path` **and** the engine's default fails
@@ -46,24 +58,66 @@ pub struct RuntimePaths {
     /// user owns at 0700). Carried as a `Result` rather than a guessed path so the UI reports the
     /// real reason instead of a wrong "connect: No such file" (#277).
     pub socket_path: Result<PathBuf, String>,
-    /// From the GUI config file (explicit `db_path`, or derived from `local_root`). `None` when
-    /// the config file provides neither — the daemon-reported path may still fill in.
+    pub proton_cli: String,
+    /// Whether the file states its pairs as `[[pair]]` tables rather than as the implicit one-pair
+    /// top-level keys. The child `--dry-run` is addressed differently for the two (`dry_run_args`).
+    pub pair_tables: bool,
+    /// The pairs the FILE declares, in file order — the first is the default pair. An implicit
+    /// one-pair file is one pair named `default`. Empty when the file cannot be read as a config at
+    /// all (the daemon would not start on it either), in which case the daemon's own report is the
+    /// only source.
+    pub pairs: Vec<PairPaths>,
+    /// What the running daemon last said, per pair. Fallbacks only: an explicit value in the GUI
+    /// config always wins.
+    pub daemon: DaemonView,
+}
+
+/// One folder pair as the GUI config file states it.
+pub struct PairPaths {
+    pub name: String,
+    /// From the file: an explicit `db_path`, or the per-root default derived from `local_root`.
+    /// `None` when the file places neither — the daemon-reported path may still fill in.
     pub db_path: Option<PathBuf>,
     pub local_root: Option<PathBuf>,
+    /// **The file's value, never merged with the daemon's.** There is no `effective_remote_root`
+    /// (see below): the two are kept apart so a caller can tell "the file says X" from "the daemon
+    /// says X".
     pub remote_root: Option<PathBuf>,
-    pub proton_cli: String,
-    /// How the daemon spells conflict sidecars (`conflict_suffix`). Resolved from the same file the
-    /// daemon reads, because the GUI's conflict scanner walks the disk looking for exactly the
-    /// names the daemon wrote — a scanner holding the default while the daemon runs a custom suffix
-    /// reports "no conflicts" on a folder full of them. An invalid value falls back to the default
-    /// rather than failing the whole resolve: that config does not start a daemon either, and the
-    /// Settings screen's own validation is what reports it.
+    /// How THIS pair's daemon spells conflict sidecars (`conflict_suffix`, which is per pair in the
+    /// engine). Resolved from the same file the daemon reads, because the GUI's conflict scanner
+    /// walks the disk looking for exactly the names the daemon wrote — a scanner holding the default
+    /// while the daemon runs a custom suffix reports "no conflicts" on a folder full of them. An
+    /// invalid value falls back to the default rather than failing the whole resolve: that config
+    /// does not start a daemon either, and the Settings screen's own validation is what reports it.
     pub conflict_naming: ConflictNaming,
-    /// Live values reported by the running daemon (cached from the last successful status round
-    /// trip). Fallbacks only: an explicit GUI-config value always wins.
-    pub daemon_local_root: Option<PathBuf>,
-    pub daemon_remote_root: Option<PathBuf>,
-    pub daemon_db_path: Option<PathBuf>,
+}
+
+/// What the daemon last said about itself, from the most recent status-shaped reply.
+#[derive(Default)]
+pub struct DaemonView {
+    /// Whether the daemon understands a pair selector, as that reply showed.
+    pub capability: PairCapability,
+    /// One entry per pair the daemon runs. A daemon that predates multi-pair reports its one pair
+    /// as `config`, which is stored here as a single entry named after the reply's `pair`
+    /// (`default` when it names none).
+    pub pairs: Vec<PairReported>,
+}
+
+/// One pair's roots as the DAEMON reports them — the live values, however it was launched.
+pub struct PairReported {
+    pub name: String,
+    pub local_root: PathBuf,
+    pub remote_root: PathBuf,
+    pub db_path: PathBuf,
+}
+
+/// A command's answer to "which pair?": the name its path slots are looked up by, and the selector
+/// its request carries. They differ in exactly one case — the default pair has a name and no
+/// selector, because the default pair is addressed by omission.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PairRef {
+    pub name: String,
+    pub selector: Option<String>,
 }
 
 /// The GUI's owned config path convention.
@@ -98,26 +152,17 @@ use gui_core::config_io::expand_config_path as expand;
 // to_build` for the GUI resolving to exactly the engine's answer.
 
 impl RuntimePaths {
-    /// Resolve from the GUI config path, applying engine defaults where a key is unset.
+    /// Resolve from the config file the environment points at. **Only the process's startup calls
+    /// this** (`lib.rs`); every later re-resolve and every test names its file with
+    /// [`Self::resolve_at`]. A source scan (`isolation_scan`) holds that line.
     pub fn resolve() -> Self {
-        let config_path = gui_config_path();
-        let doc = gui_core::config_io::ConfigDoc::load(&config_path).ok();
-        let get = |key: &str| doc.as_ref().and_then(|d| d.get_str(key));
+        Self::resolve_at(&gui_config_path())
+    }
 
-        // `~` is expanded HERE, once, for the same reason the daemon expands it once at config
-        // resolution (#135). Onboarding writes `local_root = "~/ProtonDrive"` — a literal the shell
-        // never touched — and every GUI feature that joins that value onto the filesystem then
-        // operates on a directory named `~` under the process's working directory: the conflict
-        // scan finds nothing, the emblem lookup opens no index, and the free-space check reports
-        // ENOENT on the one screen whose whole job is to say whether there is room. Expanding at
-        // the funnel fixes every consumer at once, including the ones not written yet; expanding
-        // per command is how the two halves drift apart again.
-        //
-        // `local_root` is expanded BEFORE `db_path` derives from it, or the derived index path
-        // inherits the unexpanded root.
-        let local_root = get("local_root").map(|value| expand(value, "local_root"));
-        // A Proton Drive path, not a local one.
-        let remote_root = get("remote_root").map(PathBuf::from);
+    /// Resolve from `config_path`, applying engine defaults where a key is unset.
+    pub fn resolve_at(config_path: &Path) -> Self {
+        let doc = gui_core::config_io::ConfigDoc::load(config_path).ok();
+        let get = |key: &str| doc.as_ref().and_then(|d| d.get_str(key));
 
         // The default comes from the engine (`gui_core::ipc::default_socket_path`), never from a
         // private copy here: the copy this replaced pointed at `<temp>/proton-sync.sock` while the
@@ -127,59 +172,194 @@ impl RuntimePaths {
             Some(value) => Ok(expand(value, "socket_path")),
             None => gui_core::ipc::default_socket_path(),
         };
-        let db_path = get("db_path")
-            .map(|value| expand(value, "db_path"))
-            .or_else(|| {
-                local_root
-                    .as_ref()
-                    .map(|root| root.join(".sync").join("sync_index.db"))
-            });
         let proton_cli = get("proton_cli")
             .map(|value| expand(value, "proton_cli").to_string_lossy().into_owned())
             .unwrap_or_else(|| "proton-drive".to_string());
-        let conflict_naming = get("conflict_suffix")
-            .and_then(|value| ConflictNaming::new(&value).ok())
+
+        // THE PAIRS COME FROM THE ENGINE (`config::pair_views`), not from this file's own reading of
+        // the keys. It was a second derivation of the db-path default and of the `~` rule, and two
+        // readers of one format is how the GUI and the daemon came to disagree about `~` in the first
+        // place (#135). The engine expands `~` once, in `local_root` before the index path derives
+        // from it, and never in `remote_root`, which is a Drive path where `~` means nothing.
+        let pairs = doc
+            .as_ref()
+            .and_then(|d| pair_paths_from_text(&d.to_toml_string()))
             .unwrap_or_default();
 
         Self {
-            config_path,
+            config_path: config_path.to_owned(),
             socket_path,
-            db_path,
-            local_root,
-            remote_root,
             proton_cli,
-            conflict_naming,
-            daemon_local_root: None,
-            daemon_remote_root: None,
-            daemon_db_path: None,
+            pair_tables: doc.as_ref().is_some_and(|d| d.declares_pair_tables()),
+            pairs,
+            daemon: DaemonView::default(),
         }
     }
 
-    /// Cache the daemon-reported live config from a status reply.
-    pub fn remember_daemon_config(&mut self, info: &gui_core::wire::RunningConfigInfo) {
-        self.daemon_local_root = Some(info.local_root.clone());
-        self.daemon_remote_root = Some(info.remote_root.clone());
-        self.daemon_db_path = Some(info.db_path.clone());
+    /// Cache what a status-shaped reply says about the daemon: which pairs it runs, where, and
+    /// whether it understands a selector at all.
+    ///
+    /// **Keyed by the pair, never by "the last reply".** A reply addressed to one pair describes
+    /// that pair at its top level, so caching it as *the* daemon config would paint pair B's roots
+    /// over pair A's the moment something asks about B. The list a current daemon sends carries
+    /// every pair's three paths, so it replaces the cache wholesale and a reply about one pair can
+    /// never overwrite another's slot. A daemon that predates the list reports one pair as
+    /// `config`, which is filed under the name the reply gives it.
+    pub fn remember_daemon_reply(&mut self, response: &ControlResponse) {
+        self.daemon.capability = PairCapability::from_reply(response);
+        if !response.pairs.is_empty() {
+            self.daemon.pairs = response
+                .pairs
+                .iter()
+                .map(|pair| PairReported {
+                    name: pair.name.clone(),
+                    local_root: pair.local_root.clone(),
+                    remote_root: pair.remote_root.clone(),
+                    db_path: pair.db_path.clone(),
+                })
+                .collect();
+        } else if let Some(info) = &response.config {
+            self.daemon.pairs = vec![PairReported {
+                name: response
+                    .pair
+                    .clone()
+                    .unwrap_or_else(|| DEFAULT_PAIR_NAME.to_owned()),
+                local_root: info.local_root.clone(),
+                remote_root: info.remote_root.clone(),
+                db_path: info.db_path.clone(),
+            }];
+        }
     }
 
-    /// The local root commands should act on: GUI config first, daemon-reported second.
-    pub fn effective_local_root(&self) -> Option<PathBuf> {
-        self.local_root
-            .clone()
-            .or_else(|| self.daemon_local_root.clone())
+    /// The names a command may address: the daemon's pairs once it has answered, otherwise the
+    /// file's. In the daemon's order, so the first is the default pair either way.
+    pub fn known_pair_names(&self) -> Vec<&str> {
+        if self.daemon.pairs.is_empty() {
+            self.pairs.iter().map(|pair| pair.name.as_str()).collect()
+        } else {
+            self.daemon
+                .pairs
+                .iter()
+                .map(|pair| pair.name.as_str())
+                .collect()
+        }
+    }
+
+    /// The default pair — the one a request that names none reaches. With nothing known it is
+    /// still called `default`, which is what the implicit pair of an empty file is.
+    pub fn default_pair_name(&self) -> String {
+        self.known_pair_names()
+            .first()
+            .map_or_else(|| DEFAULT_PAIR_NAME.to_owned(), |name| (*name).to_owned())
+    }
+
+    /// Which pair a command means, and how its request must address it.
+    ///
+    /// `None` is the default pair. A name is validated against the **known** set and an unknown one
+    /// is refused — never read as the default, because a command that meant one folder and acted on
+    /// another is the failure this layer exists to prevent. The wire selector is absent for the
+    /// default pair (`wire_selector`), so a one-pair setup sends exactly what it always sent.
+    pub fn resolve_pair(&self, requested: Option<&str>) -> Result<PairRef, String> {
+        let default = self.default_pair_name();
+        // A command that names no pair means the default one, and goes through the SAME rule as one
+        // that names it: there is one place a chosen pair becomes a wire selector, and a request for
+        // the default pair is the case that rule exists for.
+        let selected = match requested {
+            None => default.clone(),
+            Some(requested) => {
+                let known = self.known_pair_names();
+                if !known.contains(&requested) {
+                    return Err(if known.is_empty() {
+                        format!(
+                            "no folder pair named {requested:?}: no folder pairs are configured"
+                        )
+                    } else {
+                        format!(
+                            "no folder pair named {requested:?}: the configured pairs are {}",
+                            known
+                                .iter()
+                                .map(|name| format!("{name:?}"))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    });
+                }
+                requested.to_owned()
+            }
+        };
+        Ok(PairRef {
+            selector: wire_selector(&selected, &default),
+            name: selected,
+        })
+    }
+
+    /// What the file says about `pair`, if it declares one by that name.
+    pub fn pair(&self, pair: &str) -> Option<&PairPaths> {
+        self.pairs.iter().find(|candidate| candidate.name == pair)
+    }
+
+    /// What the daemon last reported about `pair`.
+    pub fn reported(&self, pair: &str) -> Option<&PairReported> {
+        self.daemon
+            .pairs
+            .iter()
+            .find(|candidate| candidate.name == pair)
+    }
+
+    /// The local root commands should act on for `pair`: GUI config first, daemon-reported second.
+    pub fn effective_local_root(&self, pair: &str) -> Option<PathBuf> {
+        self.pair(pair)
+            .and_then(|configured| configured.local_root.clone())
+            .or_else(|| {
+                self.reported(pair)
+                    .map(|reported| reported.local_root.clone())
+            })
     }
 
     // `effective_remote_root` WAS HERE and went with `list_remote` (#311). It resolved the remote
     // root for a listing the GUI ran itself, and that is the one question this process must not
-    // answer: `run_dry_run` reads the two `remote_root` fields RAW and separately, because
-    // `daemon_plans_the_same_roots` has to tell a configured root from a daemon-reported one
-    // rather than collapse them. A resolver that hides which of the two answered has no caller
-    // left, and would be the wrong shape for the one caller there is.
+    // answer: `run_dry_run` reads `PairPaths::remote_root` and `PairReported::remote_root` RAW and
+    // separately, because `daemon_plans_the_same_roots` has to tell a configured root from a
+    // daemon-reported one rather than collapse them. A resolver that hides which of the two
+    // answered has no caller left, and would be the wrong shape for the one caller there is. Pair
+    // indexing does not change that: it makes it two slots PER PAIR, not one merged getter.
+    // (`the_two_remote_roots_stay_two` holds the line.)
 
-    /// The index DB for read-only lookups: GUI config first, daemon-reported second.
-    pub fn effective_db_path(&self) -> Option<PathBuf> {
-        self.db_path.clone().or_else(|| self.daemon_db_path.clone())
+    /// The index DB for read-only lookups on `pair`: GUI config first, daemon-reported second.
+    pub fn effective_db_path(&self, pair: &str) -> Option<PathBuf> {
+        self.pair(pair)
+            .and_then(|configured| configured.db_path.clone())
+            .or_else(|| self.reported(pair).map(|reported| reported.db_path.clone()))
     }
+
+    /// How `pair`'s conflict sidecars are named. The default naming for a pair the file does not
+    /// declare, which is the daemon's own default and so right until the daemon says otherwise.
+    pub fn conflict_naming(&self, pair: &str) -> ConflictNaming {
+        self.pair(pair)
+            .map(|configured| configured.conflict_naming.clone())
+            .unwrap_or_default()
+    }
+}
+
+/// The engine's reading of `text`, as this module's slots. `None` when the text is not a config
+/// file the engine can parse.
+fn pair_paths_from_text(text: &str) -> Option<Vec<PairPaths>> {
+    gui_core::config_io::pair_views(text).ok().map(|views| {
+        views
+            .into_iter()
+            .map(|view| PairPaths {
+                conflict_naming: view
+                    .conflict_suffix
+                    .as_deref()
+                    .and_then(|suffix| ConflictNaming::new(suffix).ok())
+                    .unwrap_or_default(),
+                name: view.name,
+                db_path: view.db_path,
+                local_root: view.local_root,
+                remote_root: view.remote_root,
+            })
+            .collect()
+    })
 }
 
 #[cfg(test)]
@@ -227,5 +407,293 @@ mod tests {
         assert_eq!(absolute_dir(Some(OsString::from(".config"))), None);
         // A literal `~` no shell expanded is a relative component, not $HOME (#135).
         assert_eq!(absolute_dir(Some(OsString::from("~/.config"))), None);
+    }
+
+    // ---- pair-indexed slots (#102 phase 5a) ----
+
+    use gui_core::testing::{FakeDaemon, FakePair};
+    use gui_core::wire::ControlCommand;
+
+    /// `text` written as a config file in a fresh temp directory, resolved at THAT path — never the
+    /// environment's.
+    fn resolved(text: &str) -> (RuntimePaths, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("proton-sync.toml");
+        std::fs::write(&path, text).unwrap();
+        (RuntimePaths::resolve_at(&path), dir)
+    }
+
+    const TWO_PAIRS: &str = "\
+socket_path = \"/tmp/gui-two-pairs.sock\"
+proton_cli = \"/usr/bin/fake-proton-drive\"
+
+[[pair]]
+name = \"photos\"
+local_root = \"/local/photos\"
+remote_root = \"/Drive/Photos\"
+conflict_suffix = \"alpha\"
+
+[[pair]]
+name = \"docs\"
+local_root = \"/local/docs\"
+remote_root = \"/Drive/Docs\"
+db_path = \"/state/docs.db\"
+conflict_suffix = \"beta\"
+";
+
+    /// Acceptance 3: each pair has ITS OWN roots, index and sidecar spelling. The failure this
+    /// guards is a slot shared between pairs, which would scan one pair's folder for another's
+    /// conflicts and read one pair's index for another's files.
+    #[test]
+    fn resolve_at_gives_each_pair_its_own_roots_db_and_conflict_suffix() {
+        let (paths, _dir) = resolved(TWO_PAIRS);
+        assert!(paths.pair_tables);
+        assert_eq!(paths.known_pair_names(), ["photos", "docs"]);
+        assert_eq!(
+            paths.effective_local_root("photos"),
+            Some(PathBuf::from("/local/photos"))
+        );
+        assert_eq!(
+            paths.effective_local_root("docs"),
+            Some(PathBuf::from("/local/docs"))
+        );
+        // The per-root `.sync` default for one, an explicit override for the other.
+        assert_eq!(
+            paths.effective_db_path("photos"),
+            Some(PathBuf::from("/local/photos/.sync/sync_index.db"))
+        );
+        assert_eq!(
+            paths.effective_db_path("docs"),
+            Some(PathBuf::from("/state/docs.db"))
+        );
+        assert_eq!(paths.conflict_naming("photos").suffix(), "alpha");
+        assert_eq!(paths.conflict_naming("docs").suffix(), "beta");
+        // A pair nothing declares has no slot, and falls back to the default sidecar spelling.
+        assert_eq!(paths.effective_local_root("nope"), None);
+        assert_eq!(paths.effective_db_path("nope"), None);
+        assert_eq!(
+            paths.conflict_naming("nope"),
+            ConflictNaming::default(),
+            "an undeclared pair is not given another pair's suffix"
+        );
+        // Daemon-wide keys are read once.
+        assert_eq!(paths.proton_cli, "/usr/bin/fake-proton-drive");
+        assert_eq!(
+            paths.socket_path.as_deref().ok(),
+            Some(Path::new("/tmp/gui-two-pairs.sock"))
+        );
+    }
+
+    #[test]
+    fn an_implicit_one_pair_file_is_one_pair_called_default_with_the_slots_it_always_had() {
+        let (paths, dir) = resolved(
+            "local_root = \"/local/x\"\nremote_root = \"/Drive/X\"\nconflict_suffix = \"mine\"\n",
+        );
+        assert!(!paths.pair_tables);
+        assert_eq!(paths.known_pair_names(), ["default"]);
+        assert_eq!(paths.default_pair_name(), "default");
+        assert_eq!(
+            paths.effective_local_root("default"),
+            Some(PathBuf::from("/local/x"))
+        );
+        assert_eq!(
+            paths.effective_db_path("default"),
+            Some(PathBuf::from("/local/x/.sync/sync_index.db"))
+        );
+        assert_eq!(
+            paths.pair("default").unwrap().remote_root,
+            Some(PathBuf::from("/Drive/X"))
+        );
+        assert_eq!(paths.conflict_naming("default").suffix(), "mine");
+        assert_eq!(paths.config_path, dir.path().join("proton-sync.toml"));
+    }
+
+    /// `resolve_at` reads the file it is handed and no other: the one property the real-config
+    /// protection rests on. A file that does not exist is an empty config, not an error and not a
+    /// fall-through to the environment's.
+    #[test]
+    fn resolve_at_reads_only_the_file_it_is_given() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("nothing-here.toml");
+        let paths = RuntimePaths::resolve_at(&missing);
+        assert_eq!(paths.config_path, missing);
+        assert!(!paths.pair_tables);
+        // The implicit pair of an empty file: present, and placing nothing.
+        assert_eq!(paths.known_pair_names(), ["default"]);
+        assert_eq!(paths.effective_local_root("default"), None);
+        assert_eq!(paths.effective_db_path("default"), None);
+        assert_eq!(paths.proton_cli, "proton-drive");
+    }
+
+    /// A file the engine cannot parse names no pair — the daemon would not start on it either, and
+    /// the daemon's own report is then the only source.
+    #[test]
+    fn a_file_the_engine_cannot_parse_declares_no_pairs() {
+        let (paths, _dir) = resolved("no_such_key = 1\nlocal_root = \"/x\"\n");
+        assert!(paths.pairs.is_empty());
+        assert_eq!(paths.default_pair_name(), "default");
+    }
+
+    #[test]
+    fn the_file_wins_and_the_daemon_fills_the_gaps_per_pair() {
+        let daemon = FakeDaemon::multi_pair(vec![
+            FakePair::with_roots(
+                "photos",
+                Path::new("/reported/photos"),
+                Path::new("/Drive/ReportedPhotos"),
+                Path::new("/reported/photos.db"),
+            ),
+            FakePair::with_roots(
+                "docs",
+                Path::new("/reported/docs"),
+                Path::new("/Drive/ReportedDocs"),
+                Path::new("/reported/docs.db"),
+            ),
+        ])
+        .start();
+        let (mut paths, _dir) = resolved(
+            "[[pair]]\nname = \"photos\"\nlocal_root = \"/local/photos\"\n\
+             [[pair]]\nname = \"docs\"\n",
+        );
+        let reply = gui_core::ipc::command(
+            daemon.socket_path(),
+            gui_core::pairs::Target::DEFAULT,
+            ControlCommand::Status,
+            gui_core::ipc::DEFAULT_TIMEOUT,
+        )
+        .unwrap();
+        paths.remember_daemon_reply(&reply);
+        // `photos` is placed by the file; `docs` has nothing, so the daemon's answer stands in.
+        assert_eq!(
+            paths.effective_local_root("photos"),
+            Some(PathBuf::from("/local/photos"))
+        );
+        assert_eq!(
+            paths.effective_local_root("docs"),
+            Some(PathBuf::from("/reported/docs"))
+        );
+        // The file's `photos` places no db, so the DERIVED default (under the file's root) wins
+        // over the daemon's: a configured pair always places its index.
+        assert_eq!(
+            paths.effective_db_path("photos"),
+            Some(PathBuf::from("/local/photos/.sync/sync_index.db"))
+        );
+        assert_eq!(
+            paths.effective_db_path("docs"),
+            Some(PathBuf::from("/reported/docs.db"))
+        );
+    }
+
+    /// A reply about ONE pair must never be filed as another's. The old single slot cached
+    /// `response.config` — which describes only the pair the request addressed — as THE daemon
+    /// config, so asking about `b` repainted `a`.
+    #[test]
+    fn a_reply_addressed_to_one_pair_never_overwrites_another_pairs_slot() {
+        let daemon = FakeDaemon::multi_pair(vec![
+            FakePair::with_roots(
+                "a",
+                Path::new("/l/a"),
+                Path::new("/Drive/a"),
+                Path::new("/l/a.db"),
+            ),
+            FakePair::with_roots(
+                "b",
+                Path::new("/l/b"),
+                Path::new("/Drive/b"),
+                Path::new("/l/b.db"),
+            ),
+        ])
+        .start();
+        let (mut paths, _dir) = resolved("");
+        let ask_about = |target| {
+            gui_core::ipc::command(
+                daemon.socket_path(),
+                target,
+                ControlCommand::Status,
+                gui_core::ipc::DEFAULT_TIMEOUT,
+            )
+            .unwrap()
+        };
+        let about_b = ask_about(gui_core::pairs::Target::named("b"));
+        assert_eq!(about_b.pair.as_deref(), Some("b"), "the premise");
+        paths.remember_daemon_reply(&about_b);
+        assert_eq!(
+            paths.reported("a").map(|p| p.local_root.clone()),
+            Some(PathBuf::from("/l/a")),
+            "a reply addressed to `b` must leave `a`'s slot holding `a`'s roots"
+        );
+        assert_eq!(
+            paths.reported("b").map(|p| p.local_root.clone()),
+            Some(PathBuf::from("/l/b"))
+        );
+        assert_eq!(paths.daemon.capability, PairCapability::MultiPair);
+        // And then the other way round.
+        paths.remember_daemon_reply(&ask_about(gui_core::pairs::Target::DEFAULT));
+        assert_eq!(
+            paths.reported("b").map(|p| p.db_path.clone()),
+            Some(PathBuf::from("/l/b.db"))
+        );
+    }
+
+    /// A daemon that predates the list reports its one pair as `config`, and that is filed under a
+    /// name — `default` unless the reply says otherwise — so the same lookups work against it.
+    #[test]
+    fn a_legacy_reply_is_filed_as_the_one_pair_called_default() {
+        let daemon = FakeDaemon::legacy(FakePair::with_roots(
+            "ignored-by-a-legacy-reply",
+            Path::new("/l/only"),
+            Path::new("/Drive/only"),
+            Path::new("/l/only.db"),
+        ))
+        .start();
+        let reply = gui_core::ipc::command(
+            daemon.socket_path(),
+            gui_core::pairs::Target::DEFAULT,
+            ControlCommand::Status,
+            gui_core::ipc::DEFAULT_TIMEOUT,
+        )
+        .unwrap();
+        assert_eq!(PairCapability::from_reply(&reply), PairCapability::Legacy);
+        let (mut paths, _dir) = resolved("");
+        paths.remember_daemon_reply(&reply);
+        assert_eq!(paths.daemon.capability, PairCapability::Legacy);
+        assert_eq!(paths.known_pair_names(), ["default"]);
+        assert_eq!(
+            paths.effective_local_root("default"),
+            Some(PathBuf::from("/l/only"))
+        );
+    }
+
+    /// `PairRef`: the default pair has a name and no selector; any other pair has both; an unknown
+    /// name is refused and never read as the default.
+    #[test]
+    fn a_command_is_addressed_by_omission_for_the_default_pair_and_refused_for_an_unknown_one() {
+        let (paths, _dir) = resolved(TWO_PAIRS);
+        let omitted = paths.resolve_pair(None).unwrap();
+        assert_eq!(
+            omitted,
+            PairRef {
+                name: "photos".into(),
+                selector: None
+            }
+        );
+        // Naming the default pair explicitly is the same request as naming none.
+        assert_eq!(paths.resolve_pair(Some("photos")).unwrap(), omitted);
+        assert_eq!(
+            paths.resolve_pair(Some("docs")).unwrap(),
+            PairRef {
+                name: "docs".into(),
+                selector: Some("docs".into())
+            }
+        );
+        let error = paths.resolve_pair(Some("Docs")).unwrap_err();
+        assert!(
+            error.contains("\"Docs\"") && error.contains("\"photos\""),
+            "{error}"
+        );
+        // Nothing configured and nothing heard: only the default is addressable.
+        let (nothing, _dir) = resolved("no_such_key = 1\n");
+        assert_eq!(nothing.resolve_pair(None).unwrap().name, "default");
+        assert!(nothing.resolve_pair(Some("default")).is_err());
     }
 }

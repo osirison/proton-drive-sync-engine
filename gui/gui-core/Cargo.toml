@@ -15,6 +15,15 @@ rusqlite = { version = "0.40.1", features = ["bundled"] }
 # dependency of the Tauri stack; taken directly here so the syscall is a safe call rather than an
 # `unsafe` libc block in a crate that has none.
 rustix = { version = "1", features = ["fs"] }
+# Only for `testing` (the `test-support` feature): the fake daemon binds in a short temp directory.
+tempfile = { version = "3", optional = true }
+
+# `testing` — the recording fake daemon every GUI test shares. A feature rather than a dev-only
+# module because `gui/src-tauri`'s tests need it too and an `examples/` file or a `#[cfg(test)]`
+# module is not importable from another crate. Off in every shipped build: `src-tauri` names it in
+# `[dev-dependencies]` only.
+[features]
+test-support = ["dep:tempfile"]
 
 [dev-dependencies]
 tempfile = "3"

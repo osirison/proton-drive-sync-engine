@@ -31,6 +31,7 @@
 
 use crate::config_path::RuntimePaths;
 use gui_core::ipc;
+use gui_core::pairs::Target;
 use gui_core::state::{derive_state, DaemonState};
 use gui_core::wire::{ControlCommand, ControlResponse};
 #[cfg(target_os = "linux")]
@@ -204,7 +205,14 @@ fn spawn_poll(app: AppHandle) {
                 // An unlocatable socket (#277) IS unreachable, and must reach `derive_state` as
                 // such — the offline glyph with its reason, not a skipped tick.
                 Err(reason) => Err(ipc::IpcError::Unreachable(reason)),
-                Ok(socket) => ipc::command(&socket, ControlCommand::Status, ipc::DEFAULT_TIMEOUT),
+                // The default pair: the tray acts on it alone until its rows learn to name a pair
+                // (#102 phase 5d).
+                Ok(socket) => ipc::command(
+                    &socket,
+                    Target::DEFAULT,
+                    ControlCommand::Status,
+                    ipc::DEFAULT_TIMEOUT,
+                ),
             })
             .await;
             // A join failure is this task's own bug, not the daemon's, and it must not be folded
@@ -435,7 +443,7 @@ fn send_command(app: &AppHandle, command: ControlCommand) {
         };
         match socket {
             Ok(socket) => {
-                let _ = ipc::command(&socket, command, ipc::DEFAULT_TIMEOUT);
+                let _ = ipc::command(&socket, Target::DEFAULT, command, ipc::DEFAULT_TIMEOUT);
             }
             Err(reason) => {
                 eprintln!("tray: could not locate the daemon's control socket ({reason})")
