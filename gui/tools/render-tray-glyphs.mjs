@@ -36,6 +36,7 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer";
+import { armClock } from "./fidelity/clock-pin.mjs";
 import { serve } from "./fidelity/serve.mjs";
 import { TRAY_GLYPH_STATES } from "../src/js/ui/hexagon.js";
 
@@ -80,6 +81,9 @@ await page.setViewport({ width: 700, height: 700, deviceScaleFactor: 1 });
 // DARK, because that is the sheet the gate compares and the value only ever survives on a desktop
 // that does not know the Breeze convention — every one that does overwrites it.
 await page.emulateMediaFeatures([{ name: "prefers-color-scheme", value: "dark" }]);
+// The clock, pinned like every other `?frame=` load. The sheet prints no time, so this changes no byte;
+// it is here so no page this repository opens reads the machine's clock.
+await armClock(page);
 await page.goto(`http://127.0.0.1:${port}/?frame=${encodeURIComponent("10a Glyph states")}`, {
   waitUntil: "networkidle0",
 });

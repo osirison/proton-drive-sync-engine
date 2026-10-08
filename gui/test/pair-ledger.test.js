@@ -157,7 +157,8 @@ const app = readFileSync(fileURLToPath(new URL("../src/js/app.js", import.meta.u
  * defaults, rest) without a second regex to keep in step with the first, and counts nothing that only
  * looks like a declaration (a comment, a template, an indented `let` in a block).
  *
- * `espree` is the parser `eslint` itself runs, so it is present wherever the lint gate is.
+ * `espree` is the parser `eslint` itself runs, and is declared in `package.json` in its own right rather than
+ * borrowed from eslint's dependency tree, whose layout a package manager is free to change.
  */
 function bindings(source) {
   const program = espree.parse(source, { ecmaVersion: 2023, sourceType: "module" });

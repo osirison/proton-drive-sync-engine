@@ -10,7 +10,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { installClock, PINNED_NOW_MS, SKEW_STEP_MS } from "../tools/fidelity/clock-pin.mjs";
 import { clock } from "../src/js/ui/format.js";
@@ -97,25 +97,37 @@ test("without a pin the real clock is only moved, never frozen", async () => {
   assert.ok(Math.abs(new scope.Date().getTime() - read) < 1_000);
 });
 
-test("every gate that opens a ?frame= page arms the clock first", () => {
+test("every script that opens a ?frame= page arms the clock first", () => {
   // A gate that loads frames and forgets this is back to failing one run in three, and nothing
-  // else would say so. The list is read from the directory, so a NEW gate cannot opt out by being
-  // absent from it.
-  const gates = readdirSync(join(HERE, "..", "tools", "fidelity")).filter((file) => file.endsWith(".mjs"));
-  const loaders = gates.filter((file) => {
-    const source = readFileSync(join(HERE, "..", "tools", "fidelity", file), "utf8");
-    return /page\.goto\(/.test(source) && /\?frame=/.test(source);
-  });
-  assert.deepEqual(
-    loaders.sort(),
-    ["assert.mjs", "check-contrast.mjs", "check-n1-identity.mjs"],
-    "the set of gates that render a frame changed — decide whether the new one needs the pin",
+  // else would say so. The list is read from the directories, so a NEW script cannot opt out by being
+  // absent from it. `tools/` holds the generators (screenshots, tray glyphs) beside the gates in
+  // `tools/fidelity/`: they load the same pages and read the same clock.
+  const dirs = [join(HERE, "..", "tools", "fidelity"), join(HERE, "..", "tools")];
+  const loaders = dirs.flatMap((dir) =>
+    readdirSync(dir)
+      .filter((file) => file.endsWith(".mjs"))
+      .map((file) => join(dir, file))
+      .filter((path) => {
+        const source = readFileSync(path, "utf8");
+        return /page\.goto\(/.test(source) && /\?frame=/.test(source);
+      }),
   );
-  for (const file of loaders) {
-    const source = readFileSync(join(HERE, "..", "tools", "fidelity", file), "utf8");
-    assert.match(source, /from "\.\/clock-pin\.mjs"/, `${file} must import the clock pin`);
+  assert.deepEqual(
+    loaders.map((path) => relative(join(HERE, "..", "tools"), path)).sort(),
+    [
+      "fidelity/assert.mjs",
+      "fidelity/check-contrast.mjs",
+      "fidelity/check-n1-identity.mjs",
+      "render-screenshots.mjs",
+      "render-tray-glyphs.mjs",
+    ],
+    "the set of scripts that render a frame changed — decide whether the new one needs the pin",
+  );
+  for (const path of loaders) {
+    const source = readFileSync(path, "utf8");
+    assert.match(source, /from "\.\/(fidelity\/)?clock-pin\.mjs"/, `${path} must import the clock pin`);
     const armAt = source.indexOf("armClock(page");
     const gotoAt = source.indexOf("page.goto(");
-    assert.ok(armAt !== -1 && armAt < gotoAt, `${file} must arm the clock before it first navigates`);
+    assert.ok(armAt !== -1 && armAt < gotoAt, `${path} must arm the clock before it first navigates`);
   }
 });
