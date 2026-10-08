@@ -120,6 +120,7 @@ export default defineConfig({
           items: [
             { label: 'Command reference', link: '/daemon/reference/' },
             { label: 'Configuration', link: '/daemon/configuration/' },
+            { label: 'Multiple folder pairs', link: '/daemon/folder-pairs/' },
             { label: 'Selective sync', link: '/daemon/selective-sync/' },
             { label: 'Logging', link: '/daemon/logging/' },
             { label: 'Running as a service', link: '/daemon/running-as-a-service/' },

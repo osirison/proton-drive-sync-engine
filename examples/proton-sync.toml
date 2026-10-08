@@ -69,3 +69,22 @@ dry_run = false
 # sidecars, so they are no longer ignored by the scanner and upload as ordinary files, and they no
 # longer resolve back to the file they belong to. Rename them yourself before changing it.
 # conflict_suffix = "proton-cloud"
+
+# SEVERAL FOLDERS. The keys above that describe a folder (local_root, remote_root, include,
+# exclude, scan_interval_secs, the delete-approval settings, ...) belong to ONE pair, named
+# "default". To sync more than one folder, delete them from the top level and declare each pair as
+# a `[[pair]]` table instead; socket_path, log_level, proton_cli, proton_timeout_secs and
+# proton_list_attempts stay at the top. Every table needs a unique `name`, `local_root` and
+# `remote_root`; the first table is the default pair; per-pair command-line flags are refused
+# beside several pairs. See https://osirison.github.io/proton-drive-sync-engine/daemon/folder-pairs/
+#
+# [[pair]]
+# name = "documents"
+# local_root = "~/Documents"
+# remote_root = "/Drive/Docs"
+# exclude = ["*.tmp"]
+#
+# [[pair]]
+# name = "photos"
+# local_root = "~/Pictures"
+# remote_root = "/Drive/Photos"

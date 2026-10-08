@@ -46,9 +46,9 @@ would resolve against each process's own working directory.
 
 ## Folder pairs
 
-A daemon config may name more than one folder pair (each a `[[pair]]` table), though today's
-daemon still refuses to *start* on more than one — that limit lifts in a later release. Every
-command above addresses one pair, **except `stop`**, which is daemon-wide (see below). With
+A daemon config may name more than one folder pair (each a `[[pair]]` table); see
+[Multiple folder pairs](/daemon/folder-pairs/) for how to write one and what the daemon checks.
+Every command above addresses one pair, **except `stop`**, which is daemon-wide (see below). With
 neither `--pair` nor `--all-pairs`, the addressed pair is the **default pair** — the first
 `[[pair]]` table, or the whole file's top-level keys when it has no `[[pair]]` at all — which is
 exactly what every `proton-sync` invocation predating this feature already meant.

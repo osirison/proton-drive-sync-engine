@@ -5,10 +5,13 @@ sidebar:
   order: 1
 ---
 
-`proton-syncd` is the long-running background daemon. It reconciles once on startup, then
-watches the folder and reconciles on filesystem events, on a periodic timer, on the faster
-events-poll interval, and on demand via the control socket. It also hosts the one-shot
-`--dry-run` planner.
+`proton-syncd` is the long-running background daemon. It gives every folder pair a first
+reconcile at startup, one after another, then re-checks each pair on a periodic timer, on the
+faster events-poll interval while Proton's change stream is live, and on demand via the control
+socket. Filesystem events do not start a pass by themselves: the watcher queues the changed
+paths, and the next pass for that pair picks them up. It also hosts the one-shot `--dry-run`
+planner. One daemon syncs [several folder pairs](/daemon/folder-pairs/) if the config declares
+them.
 
 ```bash
 proton-syncd \
@@ -41,6 +44,7 @@ Stop it with `Ctrl+C` or `SIGTERM`; it removes its Unix socket on shutdown.
 | `--proton-list-attempts <N>` | `2` | Attempts for read-only remote listings. Uploads, downloads, and deletes are **never** retried. |
 | `--dry-run` | `false` | Print the current plan as JSON and exit without changing files or the index. See [Dry-run](/safety/dry-run/). |
 | `--no-dry-run` | — | Override `dry_run = true` from a config file. Conflicts with `--dry-run`. |
+| `--pair <NAME>` | the default (first) pair | With `--dry-run`, preview this folder pair instead of the default one. Matched exactly; an unknown name is an error that lists the configured pairs; without a dry run it is an error, because the daemon runs every pair. See [Multiple folder pairs](/daemon/folder-pairs/). |
 | `--events-driven` | on² | Detect remote changes from Proton's volume-event stream. On by default; the flag exists for explicitness / to override a config `events_driven = false`. |
 | `--no-events-driven` | — | Opt out of event-driven detection; use full-tree-walk-only remote change detection. Conflicts with `--events-driven`. |
 | `--events-full-scan-every <N>` | `0` | Force a full-tree reconvergence every *N* incremental passes (event-driven mode only). **`0` (the default) disables the periodic resync** — after the one-time startup snapshot the daemon stays purely event-driven; set a positive *N* to reinstate a self-healing full walk. |
@@ -49,6 +53,17 @@ Stop it with `Ctrl+C` or `SIGTERM`; it removes its Unix socket on shutdown.
 ¹ `--local-root` and `--remote-root` are required **unless** supplied by a `--config` file.
 ² Event-driven mode is on by default; when the reused CLI session/keyring is unavailable at
 runtime, the daemon degrades to snapshot scans automatically.
+
+**With more than one folder pair**, the flags that describe a folder (`--local-root`,
+`--remote-root`, `--db-path`, `--lockfile-path`, `--scan-interval-secs`, `--download-batch-size`,
+`--include`, `--exclude`, `--events-driven`, `--no-events-driven`, `--events-full-scan-every`,
+`--warm-start`, `--no-warm-start`, `--warm-start-full-walk-every`,
+`--warm-start-max-cursor-age-secs`, `--no-delete-approval`, `--deletion-policy`,
+`--local-delete-mode`, `--conflict-suffix`) are refused at startup, naming the flag: a flag cannot
+say which pair it amends. Set them in the `[[pair]]` table instead. The daemon-wide flags
+(`--config`, `--socket-path`, `--proton-cli`, `--proton-timeout-secs`, `--proton-list-attempts`,
+`--log-level`) and the mode flags (`--dry-run`, `--no-dry-run`, `--full-walk`, `--pair`) work
+beside any number of pairs. With one pair every flag amends it, as always.
 
 ## Notes on individual flags
 

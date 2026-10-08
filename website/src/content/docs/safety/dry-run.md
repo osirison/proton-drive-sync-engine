@@ -21,6 +21,17 @@ Dry-run still contacts Proton Drive through the `proton-drive` CLI (to list the 
 authentication and remote permissions must already work. It does **not** bind the IPC
 socket, take the daemon lock, or run any side effect.
 
+**With several [folder pairs](/daemon/folder-pairs/) a preview shows one pair** — the default
+(first) pair, or the one `--pair` names — because the report describes one tree:
+
+```bash
+proton-syncd --config proton-sync.toml --dry-run --pair photos
+```
+
+`--pair` is matched exactly, an unknown name is an error that lists the configured pairs, and
+`--pair` without a dry run is an error (the daemon itself runs every pair). A `dry_run = true`
+inside a `[[pair]]` table is refused when there is more than one pair; use `--dry-run`.
+
 The desktop app runs the same computation and renders it instead of printing it:
 
 ![The plan screen: "The next sync moves 9 things", three files leaving this computer and two arriving from Proton, a red band saying one file gets deleted for good, then every action in order with its destination, and a DELETE box that arms the run.](../../../assets/screenshots/plan.png)
