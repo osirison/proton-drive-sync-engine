@@ -106,9 +106,19 @@ export function withOnePair(status) {
   };
 }
 
-/** `read_config`'s reply with the `pairs` list a current build sends: the one implicit pair. */
+/**
+ * `read_config`'s reply with the `pairs` list a current build sends: the one implicit pair.
+ *
+ * A config that already LISTS pairs keeps them. One that lists NONE is rewritten, and that is every
+ * fixture there is — the 8 that describe a config file carry `pairs: []` (their `ConfigPayload` is a
+ * legacy build's), and so does `EMPTY_CONFIG`, which stands for the 43 that describe none. This used
+ * to return any config whose `pairs` was an ARRAY untouched, and an empty array is one: the injection
+ * reached no `read_config` reply at all, so the half of the N=1 comparison that is about the config
+ * (`configHasPair`, the first-run check) compared a reply with itself. A real current build answers a
+ * missing file with the implicit pair too, placing no roots (`read_config_lists_the_one_implicit_pair…`).
+ */
 export function withOnePairConfig(config) {
-  if (!config || Array.isArray(config.pairs)) return config;
+  if (!config || (Array.isArray(config.pairs) && config.pairs.length > 0)) return config;
   return {
     ...config,
     pairs: [

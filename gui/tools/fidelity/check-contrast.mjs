@@ -37,6 +37,7 @@
 
 import { writeFileSync } from "node:fs";
 import puppeteer from "puppeteer";
+import { armClock } from "./clock-pin.mjs";
 import { serve } from "./serve.mjs";
 import { FIXTURES } from "../../src/js/fixtures/frames.js";
 
@@ -86,6 +87,9 @@ const { server, port } = await serve();
 const browser = await puppeteer.launch({ headless: true, args: ["--no-sandbox"] });
 const page = await browser.newPage();
 await page.setViewport({ width: 1040, height: 764, deviceScaleFactor: 1 });
+// The instant and the zone every load reads (`clock-pin.mjs`): a colour never depends on the time a
+// frame prints, but the set of nodes it reads does not get to depend on the machine's clock either.
+await armClock(page);
 
 /**
  * Every text node's colour and the colour actually behind it, for one rendered screen.

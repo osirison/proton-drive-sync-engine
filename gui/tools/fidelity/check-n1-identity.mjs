@@ -26,12 +26,25 @@
 // A frame that does not render the same bytes twice from the SAME url is reported as such and fails
 // the run: a comparison that cannot tell "the second rendering differs" from "this frame is not
 // deterministic" would be a gate that fails at random and gets switched off.
+//
+// THAT SENTENCE WAS NOT TRUE UNTIL THE CLOCK WAS PINNED, and the reason is worth keeping next to the
+// fix. `fixtures/clock.js` freezes `Date.now()` per page load, at whatever the machine's clock reads
+// when that load runs, so two loads of one URL froze at two instants. Eight frames print an ABSOLUTE
+// time from it (`9a Consent`'s `since ${clock(ago(60))}`), and CI rendered "since 15:17" and then
+// "since 15:18" from the same URL when a minute fell between the loads: a red build that came and went
+// with the second hand. Every load here now runs on one fixed instant (`clock-pin.mjs`), and each is
+// ARMED WITH A REAL CLOCK A MINUTE AND A BIT LATER THAN THE LAST, which the pin hides from the page and
+// which — if the pin ever stops holding — puts the minute boundary between every pair of loads rather
+// than between one pair in three. A regression fails the same eight frames on every run.
+// `FIDELITY_CLOCK_POISON=1` is that regression on demand.
 
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer";
+import { armClock, SKEW_STEP_MS } from "./clock-pin.mjs";
 import { serve } from "./serve.mjs";
+import { FIXTURES } from "../../src/js/fixtures/frames.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const index = JSON.parse(readFileSync(join(HERE, "frames", "index.json"), "utf8"));
@@ -59,6 +72,7 @@ async function settledHtml() {
   return { html: last, settled: stable >= 3 };
 }
 
+let loads = 0;
 async function render(frame, query) {
   // The colour scheme is pinned exactly as the style gate pins it, or the machine's own default
   // would pick the theme and a frame could "differ" by the runner.
@@ -66,6 +80,10 @@ async function render(frame, query) {
     { name: "prefers-color-scheme", value: frame.label.startsWith("12a") ? "light" : "dark" },
     { name: "prefers-reduced-motion", value: "no-preference" },
   ]);
+  // The clock, and the skew that keeps the pin honest (see the header): this load's real clock reads
+  // more than a minute after the previous load's, whatever the machine's actually did.
+  await armClock(page, { realClockSkewMs: loads * SKEW_STEP_MS });
+  loads += 1;
   await page.goto(`http://127.0.0.1:${port}/index.html?frame=${encodeURIComponent(frame.label)}${query}`, {
     waitUntil: "networkidle0",
   });
@@ -126,4 +144,41 @@ if (problems.length) {
   );
   process.exit(1);
 }
-console.log(`fidelity:n1 — ${identical}/${index.length} frames render the same bytes with one pair listed`);
+
+/**
+ * WHAT THE LISTING ACTUALLY REACHES, counted from the fixtures rather than assumed — "51/51" reads as
+ * fifty-one frames each rewritten end to end, and that is not what happens. The injection rewrites two
+ * replies, and a frame only has what it has:
+ *
+ *   · the STATUS reply (`pair`, `pairs`, `selected`, `pair_states`) is rewritten on the frames whose
+ *     fixture carries a status with a reply; a status with none gains `selected` alone (all Rust knows
+ *     when the socket failed); and a frame that describes no status is answered by the generic mock,
+ *     which the listing does not touch;
+ *   · the `read_config` reply (`pairs`) is asked for by every frame's boot, from the frame's own config
+ *     when it describes one and from the empty one when it does not. A config that already lists a pair
+ *     keeps it, so only those that list none are rewritten.
+ *
+ * The comparison is exact on every frame, and the printed counts say how many of them it can have
+ * moved. They are printed rather than written here because the fixtures are what they are counted from.
+ */
+function reach() {
+  const labels = index.map((frame) => frame.label);
+  const count = (test) => labels.filter((label) => test(FIXTURES[label])).length;
+  const listsPairs = (fixture) => (fixture.config?.pairs?.length ?? 0) > 0;
+  return {
+    reply: count((f) => Boolean(f.status?.response)),
+    selectedOnly: count((f) => Boolean(f.status) && !f.status.response),
+    noStatus: count((f) => !f.status),
+    ownConfig: count((f) => Boolean(f.config)),
+    emptyConfig: count((f) => !f.config),
+    configRewritten: count((f) => !listsPairs(f)),
+    configAuthored: count(listsPairs),
+  };
+}
+const r = reach();
+console.log(
+  `fidelity:n1 — ${identical}/${index.length} frames render the same bytes with one pair listed\n` +
+    `  reach: status reply rewritten on ${r.reply}, \`selected\` alone on ${r.selectedOnly}, no status on ${r.noStatus}; ` +
+    `read_config rewritten on ${r.configRewritten} (${r.ownConfig} describe a config, ${r.emptyConfig} take the empty one), ` +
+    `already listing a pair on ${r.configAuthored}`,
+);
