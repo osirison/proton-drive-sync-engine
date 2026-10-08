@@ -84,7 +84,8 @@ tables changes which pair that is.
   enough: its `.sync` is already inside the outer pair's folder. A pair that is *already
   unavailable*, for any other reason, is asked about too, because its `.sync` is still on disk:
   the running pair stops if that folder is inside it, and the unavailable pair stays as it was. Its
-  folder counts only if it exists, so an unmounted drive stops nothing. Nothing is deleted or
+  folder counts only while it exists, whatever state that pair is in, so an unmounted drive stops
+  nothing and holds back no pair that is coming back up. Nothing is deleted or
   tidied; undo the move or the link and both pairs resume at their next attempt. (The same layout
   would refuse to start the daemon.)
 - **`dry_run = true` inside a `[[pair]]` table is refused** when there is more than one pair. A

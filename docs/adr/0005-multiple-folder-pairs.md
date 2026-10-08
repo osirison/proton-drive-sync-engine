@@ -1480,13 +1480,21 @@ Expect this phase to be as large as phase 2 and riskier. Closes: the feature, he
 > runs nothing. That holds for the unavailable pair's own writes and not for what the running pair
 > reads: an unavailable pair's folder, with the `.sync` it had while it ran, is what the running pair
 > uploads once that folder is inside its tree. A pair can be down for a reason unrelated to the
-> overlap (a held lock, an index that failed to open, a folder restored from a backup), and then
-> nothing about its own retry asks. So a running pair is asked against every other pair, and only a
-> ready one is stopped. An unavailable pair's folder counts only if it exists: a missing or unmounted
-> neighbour has nothing in the tree, and one unplugged drive must not become two stopped pairs. A
-> neighbour whose folder is missing is skipped whole, state files included, so a state file of its
-> that lies in the running pair's tree beside a missing folder is not found until the folder is
-> (boot refuses that layout, and a retry asks about it).
+> overlap (a held lock, an index that failed to open, a folder restored from a backup), and then its
+> own retry can only keep it down: it cannot stop the running pair. So a running pair is asked
+> against every other pair whose folder exists, and only a ready one is stopped. A neighbour counts
+> only while its folder exists: a missing or unmounted neighbour has nothing in the tree, and one
+> unplugged drive must not become two stopped pairs. A neighbour whose folder is missing is skipped
+> whole, state files included, so a state file of its that lies in the running pair's tree beside a
+> missing folder is not found until the folder is (boot refuses that layout).
+>
+> **Third review round: the folder, not the slot, decides whether a neighbour counts.** The existence
+> filter was keyed on the neighbour's slot state (unavailable and no folder: skipped), so a *ready*
+> neighbour whose folder had vanished — the usual state of a yanked drive, since a typed root error
+> keeps the slot ready — still stopped a healthy pair, and `retry_unavailable` had no filter at all.
+> Both callers now read one definition, `neighbours_with_a_folder`, which keeps a neighbour whose
+> folder exists whatever its slot state. Boot does not use it: an overlap in the configuration is
+> fatal there whether or not a folder exists yet.
 >
 > (2) **A test that built nested roots directly now builds them after construction.** 4a's
 > `an_event_under_pair_a_is_never_tested_against_pair_bs_filters` made a daemon whose roots nest to

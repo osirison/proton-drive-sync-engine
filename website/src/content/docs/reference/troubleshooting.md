@@ -108,7 +108,8 @@ cadence. The reason says which of these it is:
   overlap, **both** stop before their next pass, because the outer one would otherwise upload the
   inner one's `.sync` directory (its lockfile and status files) as ordinary files. A running pair
   also stops when a pair that is **already unavailable** (for any other reason) has its folder
-  inside it, but only if that folder exists: an unplugged or unmounted drive stops nothing.
+  inside it, but a pair counts only while its folder exists, whatever state it is in: an unplugged
+  or unmounted drive stops nothing.
   Nothing is deleted. Undo the move or the link, and both resume at their next attempt.
 - **Its state could not be opened, or its metrics file could not be written** — the
   `.sync` directory (or the index path you configured) isn't usable. Fix the permissions or
