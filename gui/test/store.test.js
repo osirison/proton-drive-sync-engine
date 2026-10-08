@@ -77,13 +77,21 @@ test("a scan is filed under the pair it was issued for, whatever is selected whe
 
 test("a withheld deletion carries the pair whose queue it is in", () => {
   store.configure({ follows: "selection" });
-  store.setStatus(payload(["docs", "photos"], "docs", "docs"), next());
-  store.setPendingDeletions([{ path: "x", direction: "local" }], "photos");
-  store.setPendingDeletions([{ path: "x", direction: "local" }], "docs");
+  const withheld = { path: "x", direction: "local" };
+  store.setStatus(payload(["docs", "photos"], "photos", "docs", { pending_deletions: [withheld] }), next());
+  store.setStatus(payload(["docs", "photos"], "docs", "docs", { pending_deletions: [withheld] }), next());
   // The SAME path in the same direction in two folders: two deletions, each tagged with its own.
-  assert.deepEqual(store.select.pendingDeletions(), [{ path: "x", direction: "local", pair: "docs" }]);
-  store.setStatus(payload(["docs", "photos"], "photos", "photos"), next());
-  assert.deepEqual(store.select.pendingDeletions(), [{ path: "x", direction: "local", pair: "photos" }]);
+  assert.deepEqual(store.select.pendingDeletions(), [{ ...withheld, pair: "docs" }]);
+  store.setStatus(payload(["docs", "photos"], "photos", "photos", { pending_deletions: [withheld] }), next());
+  assert.deepEqual(store.select.pendingDeletions(), [{ ...withheld, pair: "photos" }]);
+  // Filed WITH the status, so a pair that has just become selected never shows an empty queue between
+  // its status and its deletions.
+  store.setStatus(payload(["docs", "photos"], "docs", "docs", { pending_deletions: [] }), next());
+  assert.deepEqual(store.select.pendingDeletions(), []);
+  // An outage says nothing new about the queue, and forgets none of it.
+  store.setStatus(payload(["docs", "photos"], "docs", "docs", { pending_deletions: [withheld] }), next());
+  store.setStatus({ state: "unreachable", error: "daemon unreachable", selected: "docs" }, next());
+  assert.deepEqual(store.select.pendingDeletions(), [{ ...withheld, pair: "docs" }]);
 });
 
 test("a slow old reply cannot move the selection back", () => {

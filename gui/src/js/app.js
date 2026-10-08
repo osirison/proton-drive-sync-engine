@@ -4060,12 +4060,11 @@ function noticeSelection() {
 }
 
 async function poll() {
-  let payload = null;
   // ALLOCATED BEFORE THE REQUEST GOES OUT, so the answer can be compared against things that
   // happened while it was in flight (#335). See `store.beginStatus`.
   const issue = store.beginStatus();
   try {
-    payload = await api.getStatus(pollTarget());
+    const payload = await api.getStatus(pollTarget());
     // Set before setStatus (which synchronously re-renders) so the onboarding-routing gate sees that
     // a real poll has now completed — only then may an `unreachable` reply mean a genuinely fresh
     // machine rather than the pre-poll default.
@@ -4091,10 +4090,9 @@ async function poll() {
     // have (re)written it since boot, and it also drives the no-daemon fallback pair display.
     refreshConfig();
   }
-  // Pending deletions ride on the status reply itself — no second IPC round trip per tick.
-  if (payload?.response) {
-    store.setPendingDeletions(payload.response.pending_deletions ?? [], store.pairOf(payload));
-  }
+  // The withheld deletions ride on the status reply itself — no second IPC round trip per tick — and
+  // `store.setStatus` files them with it, under the pair the reply describes.
+  //
   // LAST, and after the conflict scan above, so the four triggers see one consistent picture.
   //
   // TWO EXCLUSIONS, AND THE SECOND IS THE ONE THAT BITES. A frame preview never notifies: `?frame=`

@@ -125,6 +125,12 @@ export function setStatus(payload, issue) {
   const slice = sliceFor(name);
   slice.status = payload;
   slice.statusIssue = issue;
+  // The withheld deletions RIDE ON THE REPLY, so they are filed with it, in the same publish. Filed in
+  // a second call after this one (as the poll used to), the pair that has just become selected showed
+  // an EMPTY queue for one render — `Nothing waiting to be deleted` — before its own arrived, which
+  // is a flash at start-up and, across a switch, the whole screen redrawn from nothing. A payload with
+  // no reply (the socket failed) says nothing new about the queue, and leaves what was last seen.
+  if (payload?.response) slice.pendingDeletions = tagged(payload.response.pending_deletions, name);
 
   // The roster. A reply from a daemon that predates the selector carries none, and that IS the
   // answer ("no pairs"); a payload with no reply at all (the socket failed) knows nothing new and
@@ -156,10 +162,6 @@ const tagged = (list, pair) => (Array.isArray(list) ? list : []).map((item) => (
  */
 export function setConflicts(list, pair = selectedName()) {
   sliceFor(pair).conflicts = tagged(list, pair);
-  emit();
-}
-export function setPendingDeletions(list, pair = selectedName()) {
-  sliceFor(pair).pendingDeletions = tagged(list, pair);
   emit();
 }
 export function setLedgerFilter(filter) {
