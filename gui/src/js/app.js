@@ -1504,19 +1504,30 @@ async function ensureConflictPair(conflict) {
 }
 
 async function chooseConflict(conflict, choice) {
+  // THE FOLDER ON SCREEN WHEN THE BUTTON WAS PRESSED. The decision itself goes to the folder the card
+  // was drawn for (`conflict.pair`), whatever happens next. What follows it is a different question: it
+  // moves the position, the tally and the cached bytes of the screen that is shown, and if the
+  // selection has moved on while the call was out, that screen belongs to another folder, whose own
+  // card would be pulled back to a position it never held and whose tally would count a choice it did
+  // not make. `noticeSelection` has already reset those for the new folder.
+  const shown = store.select.pairName();
+  const stillShown = () => store.select.pairName() === shown;
   try {
     await api.resolveConflict(conflict, choice, { pair: conflict.pair });
   } catch (error) {
     console.error("resolve_conflict failed:", error);
     return;
   }
-  conflictsSettled = {
-    total: conflictsSettled.total + 1,
-    keptBoth: conflictsSettled.keptBoth + (choice === "keep_both" ? 1 : 0),
-    tookProton: conflictsSettled.tookProton + (choice === "use_proton" ? 1 : 0),
-  };
+  if (stillShown()) {
+    conflictsSettled = {
+      total: conflictsSettled.total + 1,
+      keptBoth: conflictsSettled.keptBoth + (choice === "keep_both" ? 1 : 0),
+      tookProton: conflictsSettled.tookProton + (choice === "use_proton" ? 1 : 0),
+    };
+  }
   // Re-scan before moving: settling one removes it, and `advanceAfter` needs the list it is
   // adjusting against. Keeping the old length here is what makes the last conflict dead-end.
+  // Filed under the folder it was found in, so it is a true fact about that folder either way.
   let next = store.select.conflicts();
   try {
     next = await api.scanConflicts({ pair: conflict.pair });
@@ -1524,6 +1535,7 @@ async function chooseConflict(conflict, choice) {
   } catch (error) {
     console.error("scan_conflicts failed:", error);
   }
+  if (!stillShown()) return;
   conflictIndex = advanceAfter(conflictIndex, next);
   conflictDiffOpen = false;
   // The settled file's bytes are gone in both senses — dropped together, so nothing can name them.

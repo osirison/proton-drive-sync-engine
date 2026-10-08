@@ -37,6 +37,9 @@
 //      screen where the person chooses which version to destroy.
 //   8. THE DECISION ON A CONFLICT. A card drawn for one folder is pressed after the selection has
 //      moved to another; the decision goes to the folder the card was drawn for.
+//   8b. ... AND WHAT FOLLOWS IT. The decision lands after the selection has moved: its continuation
+//      (the tally, the position, the cached bytes) belongs to the screen that was shown, not the one
+//      that is, and must not touch the folder now on screen.
 //   9. THE TRAY PANEL'S PIN. The panel's rows act on the default pair, so it must show the default
 //      pair whatever the window has selected — both halves of that, the pair it asks about and the
 //      reply it follows.
@@ -507,6 +510,52 @@ await scenario("a decision on a conflict goes to the pair the card was drawn for
   expectPair(bridge.called("resolve_conflict"), "docs", "resolve_conflict");
   await page.close();
 });
+
+await scenario(
+  "a late decision on one pair's conflict leaves the card another pair is showing where it was",
+  async () => {
+    // docs has one conflict and photos two. The decision on docs' is out when the selection moves to
+    // photos, and photos' queue is stepped to its SECOND card. The decision then lands: it must settle
+    // docs' conflict and touch nothing the photos screen holds. Unguarded, its continuation set the
+    // position from docs' rescan (one conflict, so index 0) and the photos screen jumped back to its first.
+    const SECOND = { original: "other.txt", sidecar: "other.proton-cloud.txt", kind: "content" };
+    const bridge = new Bridge(
+      { docs: [], photos: [] },
+      { conflicts: { docs: [CONFLICT], photos: [CONFLICT, SECOND] } },
+    );
+    const releaseDecision = bridge.hold("resolve_conflict");
+    const page = await open(bridge);
+    await press(page, MAIN.band.conflictAction);
+    const keepBoth = await until("the card's choices", async () => {
+      const handle = await page.evaluateHandle(
+        (label) =>
+          [...document.querySelectorAll("button")].find(
+            (b) => b.querySelector(".btn-choice-name")?.textContent.trim() === label,
+          ) ?? null,
+        CONFLICTS.keepBoth,
+      );
+      return handle.asElement();
+    });
+    await keepBoth.evaluate((button) => button.click());
+    await until("the decision to go out", () => bridge.called("resolve_conflict").length === 1);
+    await select(page, bridge, "photos"); // while the decision is still out
+    await press(page, "\u203a"); // `›`: photos' second card
+    await until("photos' second card", async () => /other\.txt/.test(await pageText(page)));
+
+    releaseDecision();
+    await settle(page);
+    await until("the rescan of docs", () =>
+      bridge.called("scan_conflicts").some((c) => c.args?.pair === "docs"),
+    );
+    await settle(page);
+    const shown = await pageText(page);
+    if (!/other\.txt/.test(shown)) {
+      throw new Error("the late decision for docs moved the photos screen off its second card");
+    }
+    expectPair(bridge.called("resolve_conflict"), "docs", "resolve_conflict");
+    await page.close();
+  },
+);
 
 // ---- 9. the tray panel's pin ------------------------------------------------------------------------------
 await scenario("the tray panel shows the pair its rows act on, not the one the window selected", async () => {
