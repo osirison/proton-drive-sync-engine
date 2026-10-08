@@ -1462,6 +1462,19 @@ Expect this phase to be as large as phase 2 and riskier. Closes: the feature, he
 > does not exist yet is `<target of link>/b`, and the lexical `link/b` places it somewhere it will
 > never be made. That function now has two callers and the same contract.
 >
+> **Review round: a third caller, for a pair that is already running.** Boot and a promotion look
+> once, so two running pairs that came to overlap later (`b`'s folder moved into `a`'s, a link
+> left where it was) stayed `Ready`, and `a` uploaded `b`'s `.sync` as ordinary files. The same
+> function is now asked of every other *ready* pair before each of a ready pair's `Sync` jobs
+> (`examine_ready_pair`, through `stop_overlapping_pairs`). **Both pairs of an overlap become
+> unavailable**, each with its own side's wording: stopping only the inner pair leaves the outer one
+> — correctly configured, still `Ready` — uploading the inner one's `.sync`, which is already in its
+> tree. The check is symmetric in what it finds (a shared folder and a shared state file have no
+> inner side), so no rule about fault is needed. A scanner-side guard (never upload another pair's
+> `.sync`) was weighed and not built: `is_sync_state_path` is name-based and top-level only by
+> decision, and keying it on other pairs' real state directories would reach `ScanOptions`, the
+> watcher and gui-core's disk walk and be recomputed whenever the layout changes.
+>
 > (2) **A test that built nested roots directly now builds them after construction.** 4a's
 > `an_event_under_pair_a_is_never_tested_against_pair_bs_filters` made a daemon whose roots nest to
 > prove that routing happens before any pair's filter; the constructor refuses that shape now, so

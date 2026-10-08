@@ -98,6 +98,15 @@ cadence. The reason says which of these it is:
   `proton-syncd`, or another account's daemon syncing the same folder). A daemon that is
   *starting* refuses to start, naming the pair; one that is already running leaves that pair
   unavailable until the lock is free.
+- **It overlaps another folder pair** — the reason names both pairs and, for every path, what
+  the config says and where it really points, and ends in "Two pairs may not share a folder or
+  nest" (or says that one pair's index or lockfile is inside the other's folder, or that two pairs
+  share a state file). Two pairs' folders are, on disk, the same folder or one inside the other —
+  usually a symlink, or a folder moved into another pair's. The daemon refuses to *start* on it;
+  a pair whose folder appears later stays unavailable; and when two **running** pairs come to
+  overlap, **both** stop before their next pass, because the outer one would otherwise upload the
+  inner one's `.sync` directory (its lockfile and status files) as ordinary files. Nothing is
+  deleted. Undo the move or the link, and both resume at their next attempt.
 - **Its state could not be opened, or its metrics file could not be written** — the
   `.sync` directory (or the index path you configured) isn't usable. Fix the permissions or
   free the space.

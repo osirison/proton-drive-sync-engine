@@ -106,9 +106,11 @@ struct Cli {
     /// Changing it leaves sidecars written under the old suffix behind as ordinary files.
     #[arg(long = "conflict-suffix", value_name = "SUFFIX")]
     conflict_suffix: Option<String>,
-    /// With `--dry-run` (or a config `dry_run = true`): preview this folder pair instead of the
-    /// default one, the first `[[pair]]` table. Matched exactly. A preview rehearses one pair per
-    /// invocation; without `--dry-run` this is an error, because the daemon runs every pair.
+    /// With `--dry-run`: preview this folder pair instead of the default one, the first `[[pair]]`
+    /// table. Matched exactly. A preview rehearses one pair per invocation; without a preview this
+    /// is an error, because the daemon runs every pair. (A one-pair config file's own
+    /// `dry_run = true` makes the run a preview too; beside several pairs that key is refused in a
+    /// table, so use the flag.)
     #[arg(long = "pair", value_name = "NAME")]
     pair: Option<String>,
 }

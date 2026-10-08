@@ -76,9 +76,21 @@ tables changes which pair that is.
   missing when the daemon started is checked the same way when the folder appears, and stays
   unavailable (with the same message as its error in `proton-sync status`) instead of syncing into
   another pair's tree.
+- **A pair that is already running is checked again.** Before each of its passes the daemon asks
+  the same question of every other running pair. If a layout changes under a running daemon — a
+  pair's folder moved into another pair's with a link left where it was — **both pairs stop**
+  (each shows as unavailable, with the overlap as its reason) rather than the outer pair
+  uploading the inner pair's `.sync` files as its own. Stopping only the inner one would not be
+  enough: its `.sync` is already inside the outer pair's folder. Nothing is deleted or tidied; undo
+  the move or the link and both pairs resume at their next attempt. (The same layout would refuse
+  to start the daemon.)
 - **`dry_run = true` inside a `[[pair]]` table is refused** when there is more than one pair. A
   dry run previews one pair and exits, so a key inside one table cannot decide what the whole
-  daemon does. `dry_run = false` is accepted. Preview with `--dry-run` on the command line instead.
+  daemon does. The two readers of the file differ only in what a command line can do: **the
+  daemon refuses to start on it unless `--dry-run` or `--no-dry-run` is given** (the flag then
+  decides what the run does, and the key decides nothing), while the desktop app's save path has no
+  command line and **always refuses to write it**. `dry_run = false` is accepted. Preview with
+  `--dry-run` on the command line instead.
 
 ## Command-line flags
 
@@ -140,4 +152,9 @@ pauses only that pair; the others keep syncing on their own schedules. See the
 - **One pair that cannot start does not stop the others** — a missing folder or a lock held by
   another process leaves that pair unavailable with the reason as its error. The exception is a
   lock held by another process *at startup*, which refuses to start and names the pair.
-- **Uninstalling** removes every pair's `.sync` state directory, not only the first.
+- **Uninstalling** removes every pair's `.sync` state directory, not only the first. It reads the
+  roots from `[[pair]]` tables; pairs written as an inline array (`pair = [{ ... }]`) cannot be read
+  by the script, which says so and leaves those `.sync` directories in place for you to remove.
+- **Re-running `setup.sh` previews the default pair only.** It keeps an existing config, so with
+  several pairs its start-up preview is of the first one while the service it starts syncs all of
+  them. It says so; preview another with `proton-syncd --config proton-sync.toml --dry-run --pair NAME`.

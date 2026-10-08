@@ -30,7 +30,9 @@ proton-syncd --config proton-sync.toml --dry-run --pair photos
 
 `--pair` is matched exactly, an unknown name is an error that lists the configured pairs, and
 `--pair` without a dry run is an error (the daemon itself runs every pair). A `dry_run = true`
-inside a `[[pair]]` table is refused when there is more than one pair; use `--dry-run`.
+inside a `[[pair]]` table is refused when there is more than one pair (the daemon accepts it only
+when `--dry-run` or `--no-dry-run` is given on the command line, where the flag decides; the
+desktop app's save path always refuses it); use `--dry-run`.
 
 The desktop app runs the same computation and renders it instead of printing it:
 
