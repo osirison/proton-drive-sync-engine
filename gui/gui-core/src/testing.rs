@@ -405,6 +405,7 @@ fn reply_for(shape: Shape, pairs: &[FakePair], index: usize) -> ControlResponse 
         reconcile_seq: 0,
         pending_changes: 0,
         message: "fake daemon".to_owned(),
+        pause_unsaved: None,
         last_sync_epoch_secs: pair.last_sync,
         last_error: pair.last_error.clone(),
         last_plan_summary: None,

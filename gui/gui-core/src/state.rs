@@ -261,6 +261,7 @@ mod tests {
             reconcile_seq: 0,
             pending_changes: 0,
             message: String::new(),
+            pause_unsaved: None,
             last_sync_epoch_secs: Some(1),
             last_error: None,
             last_plan_summary: None,
