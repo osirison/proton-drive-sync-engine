@@ -586,17 +586,19 @@ await scenario("the tray panel shows the pair its rows act on, not the one the w
   // that act on a folder it is not describing.
   const bridge = new Bridge({ docs: [], photos: [] }, { selected: "photos", neverSynced: ["docs"] });
   const page = await open(bridge, "?surface=tray");
-  await until("the first poll", () => bridge.called("tray_status").length >= 1);
+  // A poll of EITHER kind, so a panel that went back to `get_status` fails the assertion below with
+  // its own message rather than timing out waiting for a command it no longer sends.
+  const polls = () => bridge.calls.filter((call) => call.cmd === "tray_status" || call.cmd === "get_status");
+  await until("the first poll", () => polls().length >= 1);
   await settle(page);
-  const before = bridge.called("tray_status").length;
+  const before = polls().length;
   await page.evaluate(() => window.__listeners["pair-selected"]({ payload: "photos" }));
-  await until("a poll after the selection moved", () => bridge.called("tray_status").length > before);
+  await until("a poll after the selection moved", () => polls().length > before);
   await settle(page);
 
   // THE FIRST POLL TOO. It is a command with no pair to name, so it cannot mean the selection; and the
   // panel never asks `get_status`, whose unnamed read IS the selection.
-  const asked = bridge.calls.filter((call) => call.cmd === "tray_status" || call.cmd === "get_status");
-  const wrong = asked.filter((call) => call.cmd !== "tray_status" || call.args != null);
+  const wrong = polls().filter((call) => call.cmd !== "tray_status" || call.args != null);
   if (wrong.length) {
     throw new Error(
       `the panel asked ${JSON.stringify(wrong.map((c) => [c.cmd, c.args]))} instead of a bare tray_status`,
