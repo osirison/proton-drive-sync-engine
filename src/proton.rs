@@ -958,12 +958,7 @@ impl ProtonClient for ProtonDriveClient {
         // directory first and move the single resulting entry into place with one
         // rename, rather than trusting the CLI to name it correctly on the first try.
         let scratch_dir = download_scratch_dir(local_folder);
-        fs::create_dir_all(&scratch_dir).map_err(|error| {
-            boxed_error(format!(
-                "failed to create scratch download directory {}: {error}",
-                scratch_dir.display()
-            ))
-        })?;
+        create_download_scratch_dir(&scratch_dir)?;
         let _scratch_guard = ScratchDirGuard::new(&scratch_dir);
         if let Some(sink) = &self.progress_sink {
             sink.download_staging(&scratch_dir);
@@ -1291,11 +1286,8 @@ impl ProtonDriveClient {
         local_folder: &Path,
     ) -> Vec<AppResult<()>> {
         let scratch_dir = download_scratch_dir(local_folder);
-        if let Err(error) = fs::create_dir_all(&scratch_dir) {
-            let message = format!(
-                "failed to create scratch download directory {}: {error}",
-                scratch_dir.display()
-            );
+        if let Err(error) = create_download_scratch_dir(&scratch_dir) {
+            let message = error.to_string();
             return requests
                 .iter()
                 .map(|_| Err(boxed_error(message.clone())))
@@ -1923,6 +1915,24 @@ impl Drop for ScratchDirGuard {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.path);
     }
+}
+
+/// Makes the staging directory a download is fetched into — **one level, below a parent that must
+/// already exist**, and the one place the client makes a directory. `create_dir`, never
+/// `create_dir_all`: the recursive form makes every missing ancestor, so a sync folder deleted (or
+/// a drive unmounted) while a pass ran was made again by the next download's staging, empty but
+/// for what that download fetched, and the next pass planned the rest of the tree as deletions
+/// (ADR 0005, the 4b note, item 13). The executor makes the destination's directory first
+/// (`daemon::ensure_directory_below`, which checks the root's identity and stops at the root), so a
+/// parent that is missing here is a folder that went away, and the download fails rather than
+/// bringing it back.
+fn create_download_scratch_dir(scratch_dir: &Path) -> AppResult<()> {
+    fs::create_dir(scratch_dir).map_err(|error| {
+        boxed_error(format!(
+            "failed to create scratch download directory {}: {error}",
+            scratch_dir.display()
+        ))
+    })
 }
 
 /// Builds the private per-invocation scratch directory path under `local_folder` used to
@@ -5369,6 +5379,89 @@ exit 0
         assert_eq!(
             error.to_string(),
             "proton-drive list failed for /Drive/RemoteFolder: 401 Unauthorized"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn download_staging_never_makes_the_destinations_directory() {
+        // ADR 0005, the 4b note, item 13. The staging directory was made with `create_dir_all`,
+        // which made every missing ancestor: a sync folder deleted while a pass ran was made again
+        // by the next download's staging. Now the staging is one level below a parent that must
+        // already exist — the executor's to make — and a missing one fails the download before
+        // the CLI is spawned, for the single-file and the batched form alike.
+        let directory = tempdir().expect("tempdir");
+        let executable = write_script(
+            directory.path(),
+            "fake-proton-drive",
+            r#"#!/bin/sh
+printf '%s\n' "$@" > "$0.args"
+exit 0
+"#,
+        );
+        let client = ProtonDriveClient::with_command_policy(
+            executable.clone(),
+            CommandPolicy::new(Duration::from_secs(1), 1),
+        );
+        let gone = directory.path().join("gone-drive").join("demo");
+
+        let error = client
+            .download(Path::new("/my-files/demo/a.txt"), &gone.join("a.txt"))
+            .expect_err("the destination's directory is not there");
+        assert!(
+            error.to_string().contains("scratch download directory"),
+            "{error}"
+        );
+        assert!(
+            !gone.exists(),
+            "the download made its destination's directory"
+        );
+        assert!(
+            !directory.path().join("gone-drive").exists(),
+            "the download made an ancestor of it"
+        );
+        assert!(
+            !args_path(&executable).exists(),
+            "the CLI was spawned for a download that had nowhere to land"
+        );
+
+        let results = client.download_many(&[
+            DownloadRequest {
+                remote_path: PathBuf::from("/my-files/demo/a.txt"),
+                destination: gone.join("a.txt"),
+                expected_sha1: None,
+            },
+            DownloadRequest {
+                remote_path: PathBuf::from("/my-files/demo/b.txt"),
+                destination: gone.join("b.txt"),
+                expected_sha1: None,
+            },
+        ]);
+        assert_eq!(results.len(), 2);
+        for result in results {
+            let error = result.expect_err("the batch has nowhere to land either");
+            assert!(
+                error.to_string().contains("scratch download directory"),
+                "{error}"
+            );
+        }
+        assert!(!directory.path().join("gone-drive").exists());
+        assert!(!args_path(&executable).exists());
+
+        // With the parent there, the staging is made below it and cleaned up after.
+        fs::create_dir_all(&gone).expect("the executor made the directory");
+        let error = client
+            .download(Path::new("/my-files/demo/a.txt"), &gone.join("a.txt"))
+            .expect_err("the script stages nothing, so the download reports that");
+        assert!(
+            !error.to_string().contains("scratch download directory"),
+            "{error}"
+        );
+        assert!(args_path(&executable).exists(), "the CLI ran this time");
+        assert_eq!(
+            fs::read_dir(&gone).expect("the directory").count(),
+            0,
+            "the staging directory is cleaned up"
         );
     }
 

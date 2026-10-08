@@ -38,6 +38,10 @@ CREATE TABLE IF NOT EXISTS warm_start_state (
     id INTEGER PRIMARY KEY CHECK (id = 0),
     warm_starts_since_full_walk INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS forced_delete_approval (
+    id INTEGER PRIMARY KEY CHECK (id = 0),
+    active INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS unsyncable_items (
     path BLOB PRIMARY KEY,
     entity_kind TEXT NOT NULL,
@@ -1002,6 +1006,10 @@ pub fn reset_index_state(connection: &Connection) -> AppResult<()> {
         "file_index",
         "remote_event_cursor",
         "warm_start_state",
+        // A start-over bootstraps an empty baseline and plans no deletion, so there is nothing
+        // for a forced approval to withhold; one left standing would outlive the replacement it
+        // was for (ADR 0005, the 4b note, item 14).
+        "forced_delete_approval",
         "delete_approvals",
         "unsyncable_items",
         // The ancestor summaries are things the daemon has LEARNED about content it agreed on, so
@@ -1046,6 +1054,37 @@ pub fn store_warm_start_count(connection: &Connection, count: u64) -> AppResult<
         ON CONFLICT(id) DO UPDATE SET warm_starts_since_full_walk = excluded.warm_starts_since_full_walk
         "#,
         params![stored],
+    )?;
+    Ok(())
+}
+
+/// Whether every deletion this pair plans is withheld for approval whatever the configured policy
+/// says — the state an accepted replacement puts the pair in (`daemon::PairRuntime::force_delete_approval`,
+/// ADR 0005, the 4b note, item 13), **persisted so a restart does not spend it** (item 14): the force
+/// was in memory only, and a daemon restarted over an accepted replacement executed the deletion
+/// the previous one had withheld. A single-row table (`id = 0`) like `warm_start_state`; no row
+/// means off.
+pub fn load_forced_delete_approval(connection: &Connection) -> AppResult<bool> {
+    let active: Option<i64> = connection
+        .query_row(
+            "SELECT active FROM forced_delete_approval WHERE id = 0",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(active.unwrap_or(0) != 0)
+}
+
+/// Records [`load_forced_delete_approval`]'s answer. Cleared by `reset_index_state` too, because a
+/// start-over plans no deletion for it to withhold.
+pub fn store_forced_delete_approval(connection: &Connection, active: bool) -> AppResult<()> {
+    connection.execute(
+        r#"
+        INSERT INTO forced_delete_approval (id, active)
+        VALUES (0, ?1)
+        ON CONFLICT(id) DO UPDATE SET active = excluded.active
+        "#,
+        params![i64::from(active)],
     )?;
     Ok(())
 }
@@ -1896,6 +1935,51 @@ struct WalkContext<'a> {
     options: &'a ScanOptions,
     known: &'a HashMap<PathBuf, FileRecord>,
     observer: Option<ScanObserver<'a>>,
+}
+
+/// Whether the tree at `root` holds **anything the scan would keep**: a regular file the options
+/// allow, or a directory that is itself a sync entity.
+///
+/// The same predicates as [`visit_directory`] — which is the one definition of what the engine
+/// syncs — but stopping at the first hit instead of reading the tree, so an empty folder costs one
+/// directory listing and a populated one a handful. What the scan *drops* is not content: the state
+/// directory, a trash directory, the per-directory settings file, a conflict sidecar, a path an
+/// exclude rule or the include filter hides, and a socket, symlink, FIFO or device node.
+///
+/// An error other than a child that vanished mid-walk is returned, not read as "empty": a folder
+/// that cannot be read is not evidence that nothing is in it.
+pub fn local_tree_holds_syncable_entry(root: &Path, options: &ScanOptions) -> AppResult<bool> {
+    fn holds_in(root: &Path, directory: &Path, options: &ScanOptions) -> AppResult<bool> {
+        for entry in fs::read_dir(directory)? {
+            let entry = entry?;
+            let path = entry.path();
+            let Some(file_type) = vanished_entry_to_skip(entry.file_type().map_err(Into::into))?
+            else {
+                continue;
+            };
+            let relative_path = path.strip_prefix(root).map_err(|err| {
+                boxed_error(format!(
+                    "failed to compute relative path for {} against {}: {err}",
+                    path.display(),
+                    root.display()
+                ))
+            })?;
+            if file_type.is_dir() {
+                if !options.allows_directory_traversal(relative_path) {
+                    continue;
+                }
+                if options.allows_relative_directory(relative_path)
+                    || vanished_entry_to_skip(holds_in(root, &path, options))? == Some(true)
+                {
+                    return Ok(true);
+                }
+            } else if file_type.is_file() && options.allows_relative_file(relative_path) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+    holds_in(root, root, options)
 }
 
 /// See [`scan_local_files`] for the default-naming caveat.
@@ -4402,6 +4486,52 @@ mod tests {
         // And the new table is fully usable after the upgrade.
         store_warm_start_count(&connection, 7).expect("store count");
         assert_eq!(load_warm_start_count(&connection).expect("reload"), 7);
+    }
+
+    #[test]
+    fn the_forced_delete_approval_is_added_to_a_preexisting_database_and_defaults_to_off() {
+        // Same upgrade path as the warm-start counter: an index written before the table exists
+        // opens cleanly and reads as "not forced", which is what every pair was before a
+        // replacement could force anything.
+        let directory = tempdir().expect("tempdir");
+        let db_path = directory.path().join("sync_index.db");
+        {
+            let connection = Connection::open(&db_path).expect("open");
+            connection
+                .execute_batch(
+                    "CREATE TABLE file_index (
+                        file_path TEXT PRIMARY KEY,
+                        entity_kind TEXT NOT NULL DEFAULT 'file',
+                        file_size INTEGER NOT NULL,
+                        mtime INTEGER NOT NULL,
+                        sha1_hash TEXT,
+                        proton_id TEXT,
+                        sync_status TEXT NOT NULL
+                    );",
+                )
+                .expect("preexisting schema");
+        }
+        let connection = open_database(&db_path).expect("open database upgrades cleanly");
+        assert!(!load_forced_delete_approval(&connection).expect("load"));
+
+        store_forced_delete_approval(&connection, true).expect("store");
+        assert!(load_forced_delete_approval(&connection).expect("reload"));
+        store_forced_delete_approval(&connection, false).expect("store again");
+        assert!(!load_forced_delete_approval(&connection).expect("reload"));
+    }
+
+    #[test]
+    fn a_reset_clears_the_forced_delete_approval() {
+        // A start-over bootstraps an empty baseline and plans no deletion: a force left standing
+        // would outlive the replacement it was for.
+        let connection = Connection::open_in_memory().expect("open");
+        connection.execute_batch(SCHEMA).expect("schema");
+        store_forced_delete_approval(&connection, true).expect("store");
+        assert!(load_forced_delete_approval(&connection).expect("precondition"));
+
+        reset_index_state(&connection).expect("reset");
+
+        assert!(!load_forced_delete_approval(&connection).expect("cleared"));
     }
 
     // ---- pass and path history --------------------------------------------------------------

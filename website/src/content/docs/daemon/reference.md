@@ -63,6 +63,65 @@ folder rather than failing. Confirm the path first:
 proton-drive filesystem list --json /Drive/RemoteFolder
 ```
 
+### `--local-root`
+
+The daemon creates the folder when it **starts**, if it doesn't exist. If it can't (a parent
+that is a file, a read-only filesystem), or the folder is gone later — an unplugged drive, a
+deleted tree — the daemon **keeps running** instead of exiting: that folder pair shows the
+reason as its error (`proton-sync status`, and the desktop app's error state rather than its
+first-run wizard), any other pair keeps syncing, and the pair is tried again on its normal
+cadence. A folder that disappears *while the daemon runs* is never created again: put it back
+(re-mount the drive, restore the folder) and the next attempt picks it up.
+
+**If the folder lives on a drive, mount the drive — don't restart the daemon.** A restart
+creates a missing folder, and a mount point that is missing only because its drive isn't
+mounted would be created as an empty folder on the wrong disk and then treated as your sync
+folder ([#426](https://github.com/osirison/proton-drive-sync-engine/issues/426)). Restart the
+daemon only when the folder is truly gone and should be created empty.
+
+Two cases are held on purpose, so nothing is deleted on a guess:
+
+- A folder **replaced by an empty one** while files are recorded as synced for it (an
+  unmounted drive's empty mount point, or a folder deleted and made again) leaves the pair
+  unavailable, saying so in its status, until the folder holds something again. Nothing is
+  deleted, created or downloaded in the meantime, whether the pair's state lives in the
+  default `.sync` directory or elsewhere. To start the folder over from Proton instead, run
+  `proton-sync reset-index --yes`: it downloads everything and deletes nothing. Restoring only
+  part of the folder ends the hold, and the first pass after that withholds every deletion for
+  approval whatever your delete-approval setting says, so the files not yet restored wait as
+  pending deletions until you approve them, restore them, or start over — a restart of the
+  daemon does not spend that; it remembers that they wait. The hold itself lives in the running
+  daemon only: a restart while the pair is held does not keep it.
+- A folder deleted and made again **with the pair's state inside it** (the default `.sync`
+  directory holds the index and the lock) and **with files in it** is prepared again from
+  scratch on the next attempt: the index is new, so the pair adopts what is there, downloads
+  what is missing and deletes nothing. (If the new folder is empty, the case above applies —
+  also when it is emptied *after* the daemon noticed and *before* it could prepare the pair
+  again, whether it was replaced or emptied in place: the daemon remembers how many items the
+  old folder had recorded, and if that count could not be read it assumes there were items. A
+  folder that was never synced, or whose baseline recorded nothing, is not held.)
+
+A folder replaced while the daemon runs is told from the old one by the directory's identity
+(device, inode and birth time). On a filesystem that reports a different identity each time it
+is asked — some FUSE mounts — the daemon cannot tell a replaced folder from the same one, says so
+once when it starts (`the filesystem names the folder differently on each look`), and checks
+only that the folder is there: for such a folder nothing is held or withheld for a replacement,
+and your delete-approval setting applies as it is. Keep delete approval on for a folder on such
+a filesystem. (A folder like that whose state went with it, and that holds nothing, is still
+held: that judgement needs no identity.) A plan (`proton-sync plan`, the desktop app's *Check
+again*) on a replaced folder is refused with the same message a sync gives, so it never offers
+the replacement's deletions for approval.
+
+While a sync pass runs, the daemon checks that the folder is still the one the pass started on
+before each action, and again immediately before an upload or a remote move, which can follow
+a second-long call to Proton. A folder swapped in the middle ends the pass at once with
+nothing further done to it. A check that fails for another reason (an I/O error on a network
+mount) is treated the same way, because the daemon cannot tell what folder it would be working
+on: the pass ends and is tried again, and the adoptions it had already worked out are kept. A
+swap that lands during one transfer's own call to Proton cannot be caught by any check; the
+pass ends at the next one with its place in Proton's change stream held, and the next sync
+judges the replacement.
+
 ### `--include` / `--exclude`
 
 Both are repeatable and match paths relative to the roots. Passing `--include` on the

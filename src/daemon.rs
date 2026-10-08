@@ -7,13 +7,14 @@ use crate::index::{
     LocalEntityState, LocalFileState, LocalScan, PassKind, PassOutcomeKind, ScanOptions,
     SyncStatus, UnsyncableEntry, WithheldDeletion, begin_pass, byte_totals_since,
     delete_delete_approval, file_events, finish_pass, get_record, index_totals, insert_file_events,
-    last_full_sweep, load_event_cursor, load_existing_index, load_index, load_sole_event_cursor,
-    load_unsyncable_items, load_warm_start_count, load_withheld_deletions, local_directory_state,
-    local_file_state, mark_modified, matching_delete_approval, open_database, path_for_proton_id,
-    prune_agreed_summaries, prune_history, purge_record, purge_subtree_records, recent_passes,
-    replace_unsyncable_items, replace_withheld_deletions, reset_index_state, scan_local_tree,
-    sha1_hex, store_agreed_summary, store_event_cursor, store_warm_start_count,
-    upsert_delete_approval, upsert_record,
+    last_full_sweep, load_event_cursor, load_existing_index, load_forced_delete_approval,
+    load_index, load_sole_event_cursor, load_unsyncable_items, load_warm_start_count,
+    load_withheld_deletions, local_directory_state, local_file_state,
+    local_tree_holds_syncable_entry, mark_modified, matching_delete_approval, open_database,
+    path_for_proton_id, prune_agreed_summaries, prune_history, purge_record, purge_subtree_records,
+    recent_passes, replace_unsyncable_items, replace_withheld_deletions, reset_index_state,
+    scan_local_tree, sha1_hex, store_agreed_summary, store_event_cursor,
+    store_forced_delete_approval, store_warm_start_count, upsert_delete_approval, upsert_record,
 };
 use crate::ipc::{
     ACTIVITY_EVENTS_DEFAULT_LIMIT, ACTIVITY_EVENTS_MAX_LIMIT, ApplyOutcome, AuthState,
@@ -363,6 +364,15 @@ struct PairRuntime {
     /// no schema migration (ADR 0005 §3). The control plane's second connection to the same file is
     /// built beside it by `Daemon::control_plane_pair`.
     connection: Connection,
+    /// The file `connection` was opened on, as `stat` named it then. The default layout keeps the
+    /// index inside the folder, and a folder deleted and made again leaves this connection on a
+    /// file with no name — every write to it fails — while the path now names a different one. A
+    /// pair whose path no longer stats to this is no longer running on its own state
+    /// ([`Self::removed_state`]). `None` when the filesystem names the file differently on two looks
+    /// in a row (a FUSE mount without stable inode numbers): every look would read as a replacement,
+    /// and the pair would be prepared again — a full first pass — at every attempt. Only the file's
+    /// *presence* is checked then.
+    db_identity: Option<FileIdentity>,
     /// Selective-sync filters + ignore rules + this pair's conflict-sidecar naming. Derived from
     /// [`Self::config`] at construction, and the *same* value the planner, the scanner and the
     /// watcher read — one spelling on the writing side and another on the reading side means the
@@ -427,6 +437,79 @@ struct PairRuntime {
     /// snapshots never advanced: its next steady-state pass full-walks once
     /// (`PairPass::catch_up_with_event_source_generation`; ADR 0005, phase 4a departure 6).
     seen_event_source_generation: u64,
+    /// Where this pair's recursive watch stands ([`RootWatch`]). Read and moved by
+    /// `Daemon::maintain_root_watch` before each pass and by the lost-event settle, nowhere else.
+    root_watch: RootWatch,
+    /// **The directory this pair has accepted as its folder** ([`RootRecord`]): the one at the path
+    /// when the runtime was opened, and afterwards the one `Daemon::examine_ready_pair` found there
+    /// and accepted (a replaced folder with content, or with nothing recorded to lose). Independent
+    /// of the watch — a registration that never completes (the limit is spent from boot) leaves the
+    /// pair with exactly the same record of which folder it runs on, so a folder replaced by an
+    /// empty one is held whether or not anything was ever watched. A different directory at the
+    /// path now is a replaced folder; a pass started or continuing on one is [`RootUnavailable`]
+    /// ([`root_availability`], [`ensure_directory_below`]). [`RootRecord::Unrecorded`] only when
+    /// the folder could not be examined at open — a `stat` that failed in the instant between the
+    /// preparation's look and this one — and then **back-filled by the first examination that can
+    /// see it** ([`Examination::Unrecorded`]), so a pair is never without a record of its folder for
+    /// life. [`RootRecord::PresenceOnly`] when the filesystem names the folder differently on two
+    /// looks in a row, exactly as [`Self::db_identity`] is `None` then. Carried through a demotion
+    /// ([`UnavailablePair::known_root`]), so a promotion compares the folder it finds with the one
+    /// the pair last ran on.
+    known_root: RootRecord,
+    /// **Every deletion is withheld for approval, whatever the configured policy says**, from the
+    /// moment a replacement is accepted until a pass completes with no deletion withheld for this
+    /// reason (ADR 0005, the 4b note, item 13). Set when a replaced folder with content is accepted
+    /// (`Daemon::examine_ready_pair`) and when a hold lifts on content (`Daemon::retry_unavailable`);
+    /// **not** by a `reset-index`, whose pass bootstraps an empty baseline and plans no deletion.
+    /// Read by `PairPass::decide_delete_gate`, which counts what it withheld only for this reason
+    /// (`DeleteGate::forced`), and cleared at the end of the first pass that reached its gate and
+    /// withheld nothing for it. Carried through a demotion like `known_root`, and **persisted in the
+    /// index** (`index::forced_delete_approval`, item 14: written when it is set, cleared in the
+    /// final commit of the pass that spends it, truncated by `reset_index_state`, loaded at open) so
+    /// a restart — the GUI has a restart-daemon flow — does not spend it either.
+    ///
+    /// "Has content" is a binary test, so a stray `.directory` or an empty `lost+found/` lifts the
+    /// hold on an otherwise empty replacement, and a partly restored folder lifts it by design: with
+    /// the guard off, the next pass used to delete every recorded file not in the folder. Now it
+    /// withholds them, and the user approves, restores the files, or runs `reset-index`.
+    force_delete_approval: bool,
+    /// What the baseline recorded **before this runtime's own index existed**: carried from the
+    /// demotion that dropped the previous connection ([`UnavailablePair::recorded_items`], item 14)
+    /// and read beside this index's own count by [`Self::recorded_under_an_empty_folder`], because
+    /// with the default layout the index went with the folder and the fresh one records nothing —
+    /// which read as "nothing to lose" over an empty replacement. [`CarriedCount::Absent`] once a
+    /// pass has completed on this runtime (its baseline is then the real one), after a
+    /// `reset-index`, and for a pair that was never demoted; [`CarriedCount::Unreadable`] is its own
+    /// state and not an absence, because a count nobody could read is not a count of nothing
+    /// (item 15).
+    carried_recorded_items: CarriedCount,
+    /// How many synced or adopted items the last pass that planned knew about **in memory**: the
+    /// baseline it loaded (as the planner sees it) plus the adoptions it planned, whether or not
+    /// they could be committed (`items_known_to_a_pass`). Written when a plan exists, cleared when
+    /// a pass completes and by a `reset-index`, and read by one thing: a demotion
+    /// ([`Self::recorded_items_to_carry`]) takes the **greater** of this and what the database
+    /// reports. It exists for the default layout, where a folder swapped for an empty one takes the
+    /// index with it: the adoptions a first sync had accumulated cannot land in an index that is no
+    /// longer the file at its path, the database then reports nothing, and an empty replacement
+    /// would read as having nothing to lose. `0` when no pass has planned since the last completion.
+    items_known_in_memory: usize,
+    /// The last reason a look at this pair's folder or state failed with something other than "not
+    /// found" ([`Look::Unreadable`]), so a standing failure is logged once per cause instead of at
+    /// every attempt. `None` while every look answers.
+    unreadable: Option<String>,
+    /// Why this pair's folder could not be judged this job: it is not the directory the pair ran on
+    /// (or its state went with it), and whether it holds content over a recorded baseline could not
+    /// be established. **The pass is not started on a folder nobody could judge**
+    /// (`PairPass::ensure_root_available`): it ends with the typed unavailable error, the cursor and
+    /// every latch untouched, and the judgement is made again at the next job.
+    unjudged: Option<String>,
+    /// The last reason the watch could not be registered, so a standing failure is logged once per
+    /// cause instead of at every pass's retry. `None` while it is registered.
+    watch_declined: Option<String>,
+    /// The last reported reason this pair's folder was missing, so a folder that stays gone is
+    /// logged once per cause instead of at every attempt (and again if the cause changes). `None`
+    /// while the folder is there. Diagnostic only — see `PairPass::ensure_root_available`.
+    root_unavailable: Option<String>,
     /// Deletions withheld by the delete-approval guard on the most recent reconcile, awaiting the
     /// user's approval. Recomputed from ground truth every pass, so it always reflects the current
     /// plan; surfaced over IPC (`proton-sync pending`) and in the metrics sidecar.
@@ -523,71 +606,625 @@ struct PairPass<'a, C: ProtonClient> {
 /// Rebuilds the event session on demand (see [`Daemon::event_source_factory`]).
 type EventSourceFactory = Box<dyn FnMut() -> Option<Box<dyn EventSource>> + Send>;
 
-/// One configured folder pair, as the daemon holds it (#102 phase 4a, maintainer decision M1).
+/// One configured folder pair, as the daemon holds it (#102 phase 4, maintainer decision M1).
 ///
 /// `Ready` is a pair with a runtime: prepared root, locks, an open index. `Unavailable` is a pair the
-/// daemon keeps running *without*: its root could not be prepared or watched, so it publishes its
-/// reason and answers every request for it rather than stopping the process — N = 1 included.
-/// **Phase 4a constructs only `Ready`**; the producers (boot preparation, retry, missing root,
-/// watch failure, a held lock) are phase 4b. Every arm that consumes a request on an unavailable
-/// slot already seals it here (`Daemon::run_job`), so 4b adds producers and no new arm.
+/// daemon keeps running *without*: its root could not be prepared, so it publishes its reason and
+/// answers every request for it rather than stopping the process — N = 1 included. Boot builds
+/// whichever each pair's preparation allows (`Daemon::from_pairs_with_opener`); a `Sync` job on an
+/// unavailable slot retries the preparation (`Daemon::retry_unavailable`) and a ready one is demoted
+/// by `Daemon::demote_pair`. Every arm that consumes a request on an unavailable slot seals it
+/// (`Daemon::run_job`).
+///
+/// A per-root lock held by **another process** is not an unavailable pair at boot but a refused
+/// startup (that is what the lock exists to stop), and it keeps a pair unavailable on a retry.
 enum PairSlot {
     Ready(Box<PairRuntime>),
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "constructed by phase 4b's producers; 4a only seals its arms"
-        )
-    )]
     Unavailable(Box<UnavailablePair>),
 }
 
-/// A configured pair the daemon could not prepare (see [`PairSlot`]).
+/// A configured pair the daemon holds no runtime for (see [`PairSlot`]).
 struct UnavailablePair {
     config: PairConfig,
     /// What a status reply carries as `last_error`.
     reason: String,
-    /// In memory only — its `.sync` directory may be exactly what is missing. Never empty: gui-core
-    /// reads "never synced and no history" as `FirstRun` *before* it reads `last_error`
+    /// What the pair last published while it was ready, kept so a pair that *was* syncing does not
+    /// start publishing "never synced" the moment it is demoted: the GUI reads that as a machine
+    /// that never synced. `None`/empty for a pair that was never ready in this process.
+    last_sync: Option<SystemTime>,
+    last_plan_summary: Option<PlanSummary>,
+    last_successful_sync_summary: Option<PlanSummary>,
+    /// In memory only — its `.sync` directory may be exactly what is missing. **Never empty**:
+    /// gui-core reads "never synced and no history" as `FirstRun` *before* it reads `last_error`
     /// (`gui-core/src/state.rs`), so an established user with an unplugged drive would otherwise be
-    /// shown the onboarding wizard instead of the error (maintainer decision M1b).
+    /// shown the onboarding wizard instead of the error (maintainer decision M1b). It is the pair's
+    /// real history (the sidecar at boot, the ready runtime's on a demotion) with at most one
+    /// `unavailable` entry on the end, because a cause that stands refreshes that entry's time
+    /// instead of adding one per attempt (see [`record_repeatable_status_entry`]).
     status_history: Vec<StatusHistoryEntry>,
+    pass_history: Option<PassHistory>,
+    index_totals: Option<IndexTotals>,
+    /// The OS error behind a reason that is about the folder itself, so a retry that meets the same
+    /// error keeps the reason it has instead of rewording it (see [`FolderError`]).
+    folder_error: Option<FolderError>,
+    /// A cause that outlives the thing that raised it: a retry does not clear it by finding the
+    /// folder there, only by finding what the cause was waiting for (see [`StandingCause`]).
+    standing: Option<StandingCause>,
+    /// The last reason a look at the folder failed with something other than "not found", so a
+    /// standing failure is logged once per cause ([`note_unreadable`]).
+    unreadable: Option<String>,
+    /// The directory the pair last ran on ([`PairRuntime::known_root`]), carried through the
+    /// demotion so that a promotion — from **any** cause, not only a standing one — can tell
+    /// whether the folder it finds is that directory. A pair prepared again over a different one
+    /// is examined exactly as a ready pair is (`Daemon::retry_unavailable`): an empty replacement
+    /// over a baseline that records items is held, a replacement with content is accepted with
+    /// every deletion withheld once. [`RootRecord::Unrecorded`] for a pair that was never ready in
+    /// this process.
+    known_root: RootRecord,
+    /// [`PairRuntime::force_delete_approval`], carried through the demotion so a demotion cannot
+    /// spend the one pass of forced approval an accepted replacement is owed.
+    force_delete_approval: bool,
+    /// What the demoted runtime's baseline recorded, as the planner sees it, read before its
+    /// connection was dropped (ADR 0005, the 4b note, items 14 and 15) — what a plain promotion is
+    /// judged against **before** anything is prepared (`judge_carried_replacement`), since preparing
+    /// a pair with the default layout makes `.sync` and a fresh index in whatever folder is at the
+    /// path, and that index records nothing. Three states and not an `Option`: a pair that was
+    /// never ready in this process has nothing to lose ([`CarriedCount::Absent`]), and a baseline
+    /// that could not be read is the opposite of that ([`CarriedCount::Unreadable`]).
+    recorded_items: CarriedCount,
 }
 
+/// What a demotion carries of the baseline it dropped. **Two different things used to share
+/// `None`**: a pair that was never ready (nothing to lose) and a count that could not be read
+/// (unknown, so assume items), and the second was filtered out with the first — the judgement was
+/// skipped and an empty replacement was prepared and populated (item 15, C2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CarriedCount {
+    /// No baseline was dropped: the pair was never ready in this process, or its runtime has since
+    /// completed a pass (its own baseline is the real one) or been reset.
+    Absent,
+    /// The dropped baseline recorded this many items, as the planner sees it. `0` is a baseline
+    /// that recorded nothing, which an empty folder cannot be the deletion of.
+    Items(usize),
+    /// A baseline existed and could not be counted.
+    Unreadable,
+}
+
+impl CarriedCount {
+    /// What an empty folder would be standing on, or `None` when there is nothing it could be the
+    /// deletion of. **The one definition of "at risk"**, read by the promotion's judgement.
+    fn at_risk(self) -> Option<StandingCause> {
+        match self {
+            Self::Absent | Self::Items(0) => None,
+            Self::Items(recorded) => Some(StandingCause::ReplacedByEmptyFolder { recorded }),
+            Self::Unreadable => Some(StandingCause::ReplacedByEmptyFolderUncounted),
+        }
+    }
+}
+
+/// A cause an unavailable pair stays unavailable for until a **condition** holds, rather than until
+/// its folder merely exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StandingCause {
+    /// The folder was replaced by an empty one while `recorded` items are recorded as synced for it
+    /// (ADR 0005, the 4b note, item 9). Planned as it stands, that is the deletion of everything recorded — held by
+    /// the approval guard, or executed outright where it is off. It stands until the folder holds
+    /// something again, and it stands through the folder going away and an empty one coming back,
+    /// which is the same folder in the same state.
+    ReplacedByEmptyFolder { recorded: usize },
+    /// The same, over a baseline that existed and could not be counted ([`CarriedCount::Unreadable`]):
+    /// an empty folder over an unknown number of recorded items is held exactly as over a known one,
+    /// and it is released the same two ways. Nothing here is worded as a number it does not have.
+    ReplacedByEmptyFolderUncounted,
+}
+
+impl StandingCause {
+    /// The reason a pair standing on this cause publishes. One definition: the demotion writes it
+    /// and every retry that finds the cause still standing restates it, and the two must not differ
+    /// by a character or the repeat reads as a new cause.
+    fn reason(&self, root: &Path) -> String {
+        match self {
+            Self::ReplacedByEmptyFolder { recorded } => {
+                let (noun, verb) = if *recorded == 1 {
+                    ("item", "is")
+                } else {
+                    ("items", "are")
+                };
+                // **No restart is offered**, and that is the point of the wording: with the delete
+                // guard off, a restart over an empty mount point is the deletion of everything
+                // remote (#426). The two ways out are the user's folder coming back, and the user
+                // asking to start over from Proton — which empties the baseline first, so it
+                // downloads everything and has nothing to delete from.
+                format!(
+                    "the folder {} was replaced by an empty folder while {recorded} synced {noun} \
+                     {verb} recorded; nothing will be deleted. To keep this folder as it was, \
+                     mount its drive or put the folder back and the next attempt picks it up. To \
+                     start this folder over from Proton instead, run `proton-sync reset-index \
+                     --yes`, which downloads everything and deletes nothing",
+                    root.display()
+                )
+            }
+            Self::ReplacedByEmptyFolderUncounted => format!(
+                "the folder {} was replaced by an empty folder, and how many synced items were \
+                 recorded for it could not be counted; nothing will be deleted. To keep this \
+                 folder as it was, mount its drive or put the folder back and the next attempt \
+                 picks it up. To start this folder over from Proton instead, run `proton-sync \
+                 reset-index --yes`, which downloads everything and deletes nothing",
+                root.display()
+            ),
+        }
+    }
+}
+
+/// The `message` of the status-history entry an unavailable pair's attempts write.
+const UNAVAILABLE_ENTRY_MESSAGE: &str = "folder pair unavailable";
+
 impl UnavailablePair {
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "phase 4b's producers call it; 4a builds slots only in tests"
-        )
-    )]
+    /// A pair that was never ready in this process, with no history of its own.
+    #[cfg(test)]
     fn new(config: PairConfig, reason: String) -> Self {
+        Self::with_history(config, reason, Vec::new())
+    }
+
+    /// A pair that could not be prepared, carrying whatever real history the caller could read.
+    fn with_history(
+        config: PairConfig,
+        reason: String,
+        status_history: Vec<StatusHistoryEntry>,
+    ) -> Self {
         let mut pair = Self {
             config,
             reason,
-            status_history: Vec::new(),
+            last_sync: None,
+            last_plan_summary: None,
+            last_successful_sync_summary: None,
+            status_history,
+            pass_history: None,
+            index_totals: None,
+            folder_error: None,
+            standing: None,
+            unreadable: None,
+            known_root: RootRecord::Unrecorded,
+            force_delete_approval: false,
+            recorded_items: CarriedCount::Absent,
         };
         pair.record_attempt();
         pair
     }
 
-    /// One in-memory history entry per attempt, bounded like a ready pair's.
+    /// A ready pair that cannot stay one. Copies — it does not take — so the caller decides when
+    /// the runtime (its index connection, its per-root lock) is dropped. **The baseline's count is
+    /// read here**, through the connection the runtime still holds (which works on an unlinked
+    /// file), because after the drop nothing can read it: the index may have gone with the folder.
+    fn demoted(runtime: &PairRuntime, reason: String) -> Self {
+        let mut pair = Self {
+            config: runtime.config.clone(),
+            reason,
+            last_sync: runtime.last_sync,
+            last_plan_summary: runtime.last_plan_summary.clone(),
+            last_successful_sync_summary: runtime.last_successful_sync_summary.clone(),
+            status_history: runtime.status_history.clone(),
+            pass_history: runtime.pass_history.clone(),
+            index_totals: runtime.index_totals,
+            folder_error: None,
+            standing: None,
+            unreadable: None,
+            known_root: runtime.known_root,
+            force_delete_approval: runtime.force_delete_approval,
+            recorded_items: runtime.recorded_items_to_carry(),
+        };
+        pair.record_attempt();
+        pair
+    }
+
+    /// One in-memory history entry for the current cause: a repeat of it moves the newest entry's
+    /// time, so a pair that stays unavailable never pushes the real history out of the 20-entry
+    /// window (at a 30 s cadence it would in about ten minutes).
     fn record_attempt(&mut self) {
-        self.status_history.push(StatusHistoryEntry {
-            epoch_secs: current_epoch_secs(),
-            message: "folder pair unavailable".to_owned(),
-            last_error: Some(self.reason.clone()),
-            plan_summary: None,
-            successful_sync_summary: None,
-            failed_item_count: 0,
+        record_repeatable_status_entry(
+            &mut self.status_history,
+            StatusHistoryEntry {
+                epoch_secs: current_epoch_secs(),
+                message: UNAVAILABLE_ENTRY_MESSAGE.to_owned(),
+                last_error: Some(self.reason.clone()),
+                plan_summary: None,
+                successful_sync_summary: None,
+                failed_item_count: 0,
+            },
+        );
+    }
+}
+
+/// Appends `entry` to an in-memory status history **unless it repeats the newest one**, in which
+/// case the newest entry's time moves instead. A cause that stands (a folder that stays missing, a
+/// pair that stays unavailable) is one entry whose time is "last seen", not one entry per attempt:
+/// the history holds [`STATUS_HISTORY_LIMIT`] entries, so an entry per 30 s attempt would evict
+/// everything real within ten minutes. Same-cause means the same `message` and `last_error`; a
+/// changed cause is a new entry.
+fn record_repeatable_status_entry(
+    history: &mut Vec<StatusHistoryEntry>,
+    entry: StatusHistoryEntry,
+) {
+    if let Some(newest) = history.last_mut()
+        && newest.message == entry.message
+        && newest.last_error == entry.last_error
+    {
+        newest.epoch_secs = entry.epoch_secs;
+        return;
+    }
+    history.push(entry);
+    if history.len() > STATUS_HISTORY_LIMIT {
+        let excess = history.len() - STATUS_HISTORY_LIMIT;
+        history.drain(0..excess);
+    }
+}
+
+/// This pair's folder is gone (or is not a directory) — the typed reason a pass did not start
+/// (#102 phase 4b, ADR 0005 §6). A pass that fails with it is **not a failed pass**: nothing was
+/// scanned, listed or written, no `sync_passes` row exists to describe, and no `proton-drive` child
+/// was spawned. Downcast with [`is_root_unavailable_error`], the way `AuthFailure` is.
+#[derive(Debug)]
+struct RootUnavailable {
+    root: PathBuf,
+    detail: String,
+}
+
+impl std::fmt::Display for RootUnavailable {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "the folder {} is not available: {}",
+            self.root.display(),
+            self.detail
+        )
+    }
+}
+
+impl std::error::Error for RootUnavailable {}
+
+fn is_root_unavailable_error(error: &(dyn std::error::Error + 'static)) -> bool {
+    error.downcast_ref::<RootUnavailable>().is_some()
+}
+
+/// Whether a directory is at `root` right now — **the one definition**, with the one message, read
+/// by every pass that must not start without one (`PairPass::ensure_root_available`: at the top of
+/// a pass, right after its local scan, before anything about the pass is mutated, before each
+/// action of the executor's loop and again immediately before an upload or a remote move, before
+/// every download chunk, and again before its final commit), by the executor's directory creation ([`ensure_directory_below`]) and by the plan
+/// (`PairPass::root_verdict`, and again after its scan in [`build_plan_report`]), which would
+/// otherwise answer the bare OS error of the scan that tripped over it. Pure: the once-per-cause
+/// latch is the pass's.
+///
+/// `expected` is the directory the caller is running on ([`PairRuntime::known_root`]). **A
+/// directory that is not that one is not available**: an unmounted drive whose mount point stays a
+/// directory, or a tree deleted and made again by something else, passes an `is_dir()` check and is
+/// not the folder the pass started on. `None` asks only whether a directory is there (the one-shot
+/// child, a pair whose folder cannot be named consistently, and tests).
+fn root_availability(root: &Path, expected: Option<RootIdentity>) -> Result<(), RootUnavailable> {
+    #[cfg(test)]
+    if let Some(detail) = test_root_look_fault::next() {
+        return Err(RootUnavailable {
+            root: root.to_path_buf(),
+            detail,
         });
-        if self.status_history.len() > STATUS_HISTORY_LIMIT {
-            let excess = self.status_history.len() - STATUS_HISTORY_LIMIT;
-            self.status_history.drain(0..excess);
+    }
+    let detail = match fs::metadata(root) {
+        Ok(metadata) if metadata.is_dir() => match expected {
+            Some(expected) if !expected.is_same_directory(&RootIdentity::of(&metadata)) => {
+                "it is not the folder this pair was running on (it was replaced while the \
+                 daemon ran)"
+                    .to_owned()
+            }
+            _ => return Ok(()),
+        },
+        Ok(_) => "it is not a directory".to_owned(),
+        Err(error) => error.to_string(),
+    };
+    Err(RootUnavailable {
+        root: root.to_path_buf(),
+        detail,
+    })
+}
+
+/// A look at the folder that fails with something other than "not found" (`EIO`, `ESTALE` or a
+/// timeout on a network mount), on demand: how a test makes the Nth look of a pass fail without a
+/// filesystem that does it. Thread-local, so it reaches only the pass the test drives, and armed
+/// by the test alone.
+#[cfg(test)]
+mod test_root_look_fault {
+    use std::cell::Cell;
+
+    thread_local! {
+        static LOOKS_BEFORE_THE_FAULT: Cell<Option<u32>> = const { Cell::new(None) };
+        static COUNTING: Cell<Option<u32>> = const { Cell::new(None) };
+    }
+
+    /// The look that many looks from now fails once; `0` is the next one.
+    pub(super) fn arm(looks_before: u32) {
+        LOOKS_BEFORE_THE_FAULT.with(|armed| armed.set(Some(looks_before)));
+    }
+
+    /// Counts the looks from now on without failing any, so a test can ask how many a pass makes
+    /// and fail exactly the last, or the one before it, on a second run.
+    pub(super) fn start_counting() {
+        COUNTING.with(|counting| counting.set(Some(0)));
+    }
+
+    /// How many looks were made since [`start_counting`], which stops counting.
+    pub(super) fn stop_counting() -> u32 {
+        COUNTING.with(|counting| counting.take().unwrap_or(0))
+    }
+
+    /// Whether this look is the one that fails, with the OS error it fails with.
+    pub(super) fn next() -> Option<String> {
+        COUNTING.with(|counting| {
+            if let Some(counted) = counting.get() {
+                counting.set(Some(counted + 1));
+            }
+        });
+        LOOKS_BEFORE_THE_FAULT.with(|armed| match armed.get() {
+            Some(0) => {
+                armed.set(None);
+                Some(std::io::Error::from_raw_os_error(5).to_string())
+            }
+            Some(remaining) => {
+                armed.set(Some(remaining - 1));
+                None
+            }
+            None => None,
+        })
+    }
+}
+
+/// The look at the folder the **next** [`PairRuntime::open`] on this thread names it by, in place
+/// of the real one: how a test makes a retry's open find a folder the filesystem names differently
+/// on two looks in a row, which no real directory does on a local filesystem. Consumed by the open
+/// that uses it, so it reaches one runtime and no other.
+#[cfg(test)]
+mod test_open_root_look {
+    use super::{Look, RootIdentity};
+    use std::cell::RefCell;
+    use std::path::Path;
+
+    pub(super) type RootLook = Box<dyn Fn(&Path) -> Look<RootIdentity>>;
+
+    thread_local! {
+        static NEXT_OPEN: RefCell<Option<RootLook>> = const { RefCell::new(None) };
+    }
+
+    pub(super) fn install(look: RootLook) {
+        NEXT_OPEN.with(|next| *next.borrow_mut() = Some(look));
+    }
+
+    pub(super) fn take() -> Option<RootLook> {
+        NEXT_OPEN.with(|next| next.borrow_mut().take())
+    }
+}
+
+/// A per-root (or user-global) instance lock is held by another process — typed so that **boot**
+/// can refuse to start on it while a **retry** keeps its pair unavailable instead; both used to be
+/// the same untyped string. The message is the one `LockGuard::acquire` always had.
+#[derive(Debug)]
+struct LockHeld {
+    path: PathBuf,
+}
+
+impl std::fmt::Display for LockHeld {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "daemon already running; lockfile is locked at {}",
+            self.path.display()
+        )
+    }
+}
+
+impl std::error::Error for LockHeld {}
+
+fn is_lock_held_error(error: &(dyn std::error::Error + 'static)) -> bool {
+    error.downcast_ref::<LockHeld>().is_some()
+}
+
+/// What identifies a directory: the device and inode, plus the directory's birth time where the
+/// filesystem has one. A root deleted and created again between two passes is a *different
+/// directory* whose watch the kernel dropped with the old one (inotify removes a watch on
+/// `DELETE_SELF`), yet it passes an `is_dir()` check; the inode alone would not tell them apart when
+/// the filesystem hands the freed number straight back. Recorded for the directory a watch was
+/// registered on ([`RootWatch::Watching`]) and for the one a pair runs on
+/// ([`PairRuntime::known_root`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RootIdentity {
+    device: u64,
+    inode: u64,
+    born: Option<SystemTime>,
+}
+
+impl RootIdentity {
+    fn of(metadata: &fs::Metadata) -> Self {
+        use std::os::unix::fs::MetadataExt;
+        Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            born: metadata.created().ok(),
         }
     }
+
+    /// Whether `other` is the same directory. The birth time counts only when **both** sides have
+    /// one: a filesystem that reports it on one `stat` and not the next would otherwise read as a
+    /// replaced folder every time, and cost a re-registration and a full local scan per pass.
+    fn is_same_directory(&self, other: &Self) -> bool {
+        self.device == other.device
+            && self.inode == other.inode
+            && match (self.born, other.born) {
+                (Some(ours), Some(theirs)) => ours == theirs,
+                _ => true,
+            }
+    }
+}
+
+/// What a pair knows about which directory it runs on ([`PairRuntime::known_root`]). Three states,
+/// and the third is not a synonym for the first: an unrecorded folder is recorded by the next look
+/// that can see it, a folder that cannot be named consistently never is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RootRecord {
+    /// The look at open failed (a `stat` that erred in the instant after the preparation's own):
+    /// the first examination that can see the folder records it ([`Examination::Unrecorded`]).
+    Unrecorded,
+    /// The directory the pair accepted as its folder.
+    Recorded(RootIdentity),
+    /// **The filesystem names the folder differently on each look** (a FUSE mount without stable
+    /// inode numbers), so no identity can be compared and only the folder's presence is checked —
+    /// the index's own two-look rule ([`PairRuntime::db_identity`]) applied to the root (ADR 0005,
+    /// the 4b note, item 14). A replaced folder is therefore not detected for this pair: nothing is
+    /// held or withheld for one, the configured deletion policy applies unchanged, and the pair
+    /// says so once when it is opened. Comparing anyway read **every** job as a replacement, which
+    /// put the pair under forced approval on every pass and, with the guard off, withheld every
+    /// deletion for ever — a policy override nothing reported. The index's and the lock's own
+    /// presence checks still work, so a replaced folder that took the state with it is still
+    /// judged.
+    PresenceOnly,
+}
+
+impl RootRecord {
+    /// The identity to compare the directory at the path with ([`root_availability`]'s
+    /// `expected`), or `None` when there is none to compare.
+    fn expected(self) -> Option<RootIdentity> {
+        match self {
+            Self::Recorded(identity) => Some(identity),
+            Self::Unrecorded | Self::PresenceOnly => None,
+        }
+    }
+
+    /// Two looks at the folder, sorted into the three states: both the same directory is a
+    /// record, two different answers are no identity at all, and anything else is unrecorded.
+    fn from_two_looks(first: Look<RootIdentity>, second: Look<RootIdentity>) -> Self {
+        match (first, second) {
+            (Look::Present(first), Look::Present(second)) if first.is_same_directory(&second) => {
+                Self::Recorded(first)
+            }
+            (Look::Present(_), Look::Present(_)) => Self::PresenceOnly,
+            _ => Self::Unrecorded,
+        }
+    }
+}
+
+/// What a `stat` of a path that something is bound to answered. **Only "not found" says it is
+/// gone.** Any other error (`EIO` or `ESTALE` on a network mount, `EACCES`) is no answer at all,
+/// and a caller that cannot tell must decide nothing: reading it as "gone" demotes a healthy pair
+/// for a look that failed, and reading it as "replaced" changes what the pair holds.
+#[derive(Debug)]
+enum Look<T> {
+    /// The path stats, to this.
+    Present(T),
+    /// Nothing is at the path (`NotFound`), or — for a folder — what is there is not a directory,
+    /// or — for a lockfile — it is not the file this guard locks.
+    Gone,
+    /// The look failed for any other reason.
+    Unreadable(std::io::Error),
+}
+
+impl<T> Look<T> {
+    fn present(self) -> Option<T> {
+        match self {
+            Self::Present(found) => Some(found),
+            Self::Gone | Self::Unreadable(_) => None,
+        }
+    }
+
+    /// Sorts the answer of a `stat` into the three things it can mean.
+    fn of_stat(
+        result: std::io::Result<fs::Metadata>,
+        found: impl FnOnce(&fs::Metadata) -> T,
+    ) -> Self {
+        match result {
+            Ok(metadata) => Self::Present(found(&metadata)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Self::Gone,
+            Err(error) => Self::Unreadable(error),
+        }
+    }
+}
+
+/// The identity of the directory at `root`. Follows symlinks, like the scan's `read_dir`. What is
+/// there but is not a directory is [`Look::Gone`]: there is no directory to watch.
+fn look_at_root(root: &Path) -> Look<RootIdentity> {
+    match fs::metadata(root) {
+        Ok(metadata) if metadata.is_dir() => Look::Present(RootIdentity::of(&metadata)),
+        Ok(_) => Look::Gone,
+        Err(error) => Look::of_stat(Err(error), RootIdentity::of),
+    }
+}
+
+/// What identifies a **file** that something holds open: the device and inode a `stat` reports. A
+/// handle (an SQLite connection, an `flock`) is bound to the inode, not to the path it was opened
+/// by, so "is this still the file at that path" is exactly "does the path still stat to this".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileIdentity {
+    device: u64,
+    inode: u64,
+}
+
+impl FileIdentity {
+    fn of(metadata: &fs::Metadata) -> Self {
+        use std::os::unix::fs::MetadataExt;
+        Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        }
+    }
+
+    /// The identity of the file at `path`, as a [`Look`].
+    fn look(path: &Path) -> Look<Self> {
+        Look::of_stat(fs::metadata(path), Self::of)
+    }
+}
+
+/// The reason a pair's state is no longer the state it holds open. **One definition**, read by the
+/// pass that demotes the pair and by the plan that refuses to run against it.
+fn state_removed_reason(what: &str) -> String {
+    format!(
+        "its state was removed along with the folder ({what} is no longer the file the daemon \
+         opened); it is prepared again from the folder as it is now"
+    )
+}
+
+/// Says once per cause that a look failed with something other than "not found" ([`Look::Unreadable`]).
+/// A standing failure is one line, not one per attempt; a different cause speaks again; a look that
+/// answers again ([`clear_unreadable`]) re-arms it.
+fn note_unreadable(latch: &mut Option<String>, cause: &str) {
+    if latch.as_deref() != Some(cause) {
+        warn!(
+            %cause,
+            "something cannot be examined right now (only \"not found\" means gone); the pair is \
+             left as it is and the look is repeated at its next attempt"
+        );
+        *latch = Some(cause.to_owned());
+    }
+}
+
+/// The counterpart of [`note_unreadable`]: the looks answer again.
+fn clear_unreadable(latch: &mut Option<String>) {
+    if latch.take().is_some() {
+        info!("the folder and its state can be examined again");
+    }
+}
+
+/// Where one pair's recursive watch stands (#102 phase 4b, ADR 0005 §6.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RootWatch {
+    /// Not registered yet: boot registers every ready root before the loop, and a pair that came
+    /// back from unavailable is registered before its first pass.
+    Unregistered,
+    /// Registered, completely, on the directory with this identity.
+    Watching(RootIdentity),
+    /// Registration failed — which can leave it partial, as notify adds one watch per directory and
+    /// stops at the first error — or something said a directory may have been missed (a watcher
+    /// error, a root that went away). Retried before every pass, and every pass scans locally until
+    /// it takes: an unwatched change is invisible to the events-mode idle fast-path.
+    ///
+    /// Which directory the pair runs on survives this state ([`PairRuntime::known_root`]), because
+    /// "is what is at the path the directory we run on" is a question about the folder, and a failed
+    /// registration or a folder that was gone for a pass does not answer it.
+    Incomplete,
 }
 
 pub struct Daemon<C: ProtonClient = ProtonDriveClient> {
@@ -757,6 +1394,18 @@ struct PairShared {
     /// for `reconcile_seq + 2`, when the pass it is queued behind contributes 0 — so it would sit
     /// until some later unrelated pass reached that number and then report *that* pass's outcome.
     plan_pass: AtomicBool,
+    /// `true` while the pair's slot is [`PairSlot::Ready`]: the daemon holds its index and its
+    /// per-root lock. Written by the daemon core on every transition, read by the IPC task — which
+    /// has no other way to tell a ready pair from one it must not touch: it opens its approvals
+    /// connection on first use once this is `true`, drops it when it is `false`, and never writes
+    /// the metrics sidecar of a pair that is not (that file belongs to the process that holds the
+    /// pair's lock, and its directory may be exactly what is missing).
+    has_runtime: AtomicBool,
+    /// How many runtimes this pair has been given (bumped by every `set_has_runtime(true)`). A
+    /// pair demoted and prepared again inside **one** job flips `has_runtime` false and true with
+    /// the IPC task never reading the false, so the flag alone cannot tell it that the index it
+    /// holds a connection to is not the one the daemon holds now; this can.
+    runtime_generation: AtomicU64,
     /// Count of completed reconcile attempts since startup (see `ControlResponse::reconcile_seq`).
     reconcile_seq: AtomicU64,
     /// Set by the IPC `resync` command to force the daemon's next reconcile to a full-tree walk
@@ -996,6 +1645,8 @@ impl PairShared {
             paused: AtomicBool::new(false),
             syncing: AtomicBool::new(false),
             plan_pass: AtomicBool::new(false),
+            has_runtime: AtomicBool::new(true),
+            runtime_generation: AtomicU64::new(0),
             reconcile_seq: AtomicU64::new(0),
             force_full_walk: AtomicBool::new(false),
             reset_index: AtomicBool::new(false),
@@ -1028,6 +1679,22 @@ impl PairShared {
 impl PairShared {
     fn is_paused(&self) -> bool {
         self.paused.load(Ordering::SeqCst)
+    }
+
+    fn has_runtime(&self) -> bool {
+        self.has_runtime.load(Ordering::SeqCst)
+    }
+
+    fn set_has_runtime(&self, ready: bool) {
+        if ready {
+            // Before the flag, so a reader that sees the flag set sees the new generation too.
+            self.runtime_generation.fetch_add(1, Ordering::SeqCst);
+        }
+        self.has_runtime.store(ready, Ordering::SeqCst);
+    }
+
+    fn runtime_generation(&self) -> u64 {
+        self.runtime_generation.load(Ordering::SeqCst)
     }
 
     fn plan_slot(&self) -> std::sync::MutexGuard<'_, PlanSlot> {
@@ -1744,6 +2411,11 @@ struct LostEvents {
     rewatch_roots: BTreeSet<usize>,
     /// ...or every root, when a notice named none.
     rewatch_every_root: bool,
+    /// Roots a watcher `Err` may have left unwatched (#102 phase 4b): the owners of the paths the
+    /// error carried — `MaxFilesWatch` carries the directory it could not add — ...
+    unwatched_roots: BTreeSet<usize>,
+    /// ...or every root, when the error carried no path.
+    unwatched_every_root: bool,
 }
 
 impl LostEvents {
@@ -1751,9 +2423,17 @@ impl LostEvents {
         self.cause.get_or_insert(cause);
     }
 
-    /// A watcher `Err`: events may be gone, but nothing says the watch itself is, so no re-walk.
-    fn note_error(&mut self, error: &notify::Error) {
+    /// A watcher `Err`: events may be gone, and so may a watch — notify reports a directory it
+    /// could not add (`MaxFilesWatch`) through the same channel. The owners of the paths it carries
+    /// are marked [`RootWatch::Incomplete`] (every root when it carries none), which makes the next
+    /// pass register them again; nothing is re-walked here.
+    fn note_error(&mut self, error: &notify::Error, owners: BTreeSet<usize>) {
         self.note(format!("filesystem watcher reported an error: {error}"));
+        if owners.is_empty() {
+            self.unwatched_every_root = true;
+        } else {
+            self.unwatched_roots.extend(owners);
+        }
     }
 
     /// A `Rescan`-flagged notice (#423): the owning roots when it carries paths some pair owns
@@ -1797,8 +2477,11 @@ pub fn preview_plan_with_client(
     let (_, pair_config) = config.clone().into_parts();
     let scan_options = scan_options_from_config(&pair_config)?;
     let base_records = load_existing_index(&pair_config.db_path)?;
+    // No identity to compare: the child has no pair runtime, so it asks only whether a directory
+    // is there — which the scan has just answered.
     build_plan_report(
         &pair_config,
+        None,
         proton,
         &scan_options,
         base_records,
@@ -1820,8 +2503,14 @@ pub fn preview_plan_with_client(
 /// against ground truth rather than against `reconstruct_remote(base ⊕ delta)`; that is also what
 /// keeps it structurally incapable of consuming the event delta, which is the one thing a plan pass
 /// must never do (advancing the cursor past changes nothing applied would orphan them).
+///
+/// `expected` is the directory the caller runs on ([`PairRuntime::known_root`]): the root is
+/// checked against it right after the scan, as a sync's is (ADR 0005, the 4b note, item 14), so a
+/// plan is only ever derived from a scan of that directory. `None` asks only whether a directory
+/// is there (the child, which has no runtime).
 fn build_plan_report(
     config: &PairConfig,
+    expected: Option<RootIdentity>,
     proton: &impl ProtonClient,
     scan_options: &ScanOptions,
     base_records: HashMap<PathBuf, FileRecord>,
@@ -1837,6 +2526,7 @@ fn build_plan_report(
     // `scan_local_tree`, not one of the entity-only entry points: the walk's own drops are the
     // half #315 needs, and taking both from one walk is what makes them describe one moment.
     let local_scan = scan_local_tree(&config.local_root, scan_options, &base_records, observer)?;
+    root_availability(&config.local_root, expected)?;
     phase(PHASE_LISTING_REMOTE);
     let (remote_entities, remote_root_missing) =
         load_remote_entities(proton, &config.remote_root, scan_options)?;
@@ -1963,21 +2653,40 @@ impl<C: ProtonClient> Daemon<C> {
         create_parent_directory(&process.socket_path)?;
         // Every pair's directories and per-root lock BEFORE the user-global lock, in today's order,
         // so a second daemon on the same root is refused by the per-root lock exactly as before.
-        let mut locked = Vec::with_capacity(pair_configs.len());
+        //
+        // **A pair that cannot be prepared does not stop the daemon** (maintainer decision M1,
+        // N = 1 included): it becomes an unavailable slot that shows why, and is retried on its
+        // cadence. The one refusal is a per-root lock held by another process — that is what the
+        // lock exists to stop, and it names the pair.
+        let mut prepared = Vec::with_capacity(pair_configs.len());
         for config in pair_configs {
             let _span = pair_span(&config.name).entered();
-            fs::create_dir_all(&config.local_root)?;
-            create_parent_directory(&config.db_path)?;
-            // Ensure the lockfile's directory (the `.sync` state dir by default) exists before
-            // acquiring the lock, so a first-ever run on a fresh root does not fail here.
-            create_parent_directory(&config.lockfile_path)?;
-            let lock_guard = LockGuard::acquire(&config.lockfile_path)?;
-            locked.push((config, lock_guard));
+            match prepare_pair_state(&config, RootMode::Create) {
+                Ok(lock_guard) => prepared.push((config, Ok(lock_guard))),
+                Err(PrepareFailure::LockHeld(message)) => {
+                    return Err(boxed_error(format!(
+                        "folder pair '{}': {message}",
+                        config.name
+                    )));
+                }
+                Err(failure) => {
+                    let folder_error = failure.folder_error();
+                    prepared.push((config, Err((failure.reason(), folder_error))));
+                }
+            }
         }
         // Then the user-global lock, so a second daemon started for a *different* root (its per-root
         // lock above would succeed) still cannot run: every daemon shells the same `proton-drive`
         // CLI, whose shared SQLite cache/session store is not concurrency-safe (#23). A crashed
         // daemon leaves only an unlocked file behind, which `acquire` reuses — restart still works.
+        // Its directory is made here, at boot, never under a root (`paths::default_global_lock_path`
+        // keys it on `$XDG_STATE_HOME`); `acquire` itself makes none.
+        create_parent_directory(&process.global_lock_path).map_err(|error| {
+            boxed_error(format!(
+                "cannot start: the directory for the lockfile {} could not be created: {error}",
+                process.global_lock_path.display()
+            ))
+        })?;
         let global_lock_guard = LockGuard::acquire(&process.global_lock_path).map_err(|error| {
             boxed_error(format!(
                 "cannot start: {error}. Only one proton-syncd may run per user account — every \
@@ -1985,9 +2694,9 @@ impl<C: ProtonClient> Daemon<C> {
                  not safe for concurrent use (#23). Stop the other daemon first."
             ))
         })?;
-        let mut slots = Vec::with_capacity(locked.len());
-        let mut published = Vec::with_capacity(locked.len());
-        for (config, lock_guard) in locked {
+        let mut slots = Vec::with_capacity(prepared.len());
+        let mut published = Vec::with_capacity(prepared.len());
+        for (config, lock_guard) in prepared {
             let _span = pair_span(&config.name).entered();
             published.push((
                 config.name.clone(),
@@ -1997,9 +2706,28 @@ impl<C: ProtonClient> Daemon<C> {
                     db_path: config.db_path.clone(),
                 },
             ));
-            slots.push(PairSlot::Ready(Box::new(PairRuntime::open(
-                config, lock_guard,
-            )?)));
+            let outcome = match lock_guard {
+                Ok(lock_guard) => PairRuntime::open(config.clone(), lock_guard)
+                    .map_err(|error| (format!("its state could not be opened: {error}"), None)),
+                Err(unprepared) => Err(unprepared),
+            };
+            slots.push(match outcome {
+                Ok(runtime) => PairSlot::Ready(Box::new(runtime)),
+                Err((reason, folder_error)) => {
+                    warn!(
+                        %reason,
+                        "folder pair unavailable; the daemon keeps running and tries it again"
+                    );
+                    // The real history, when the sidecar can be read (it lives under the root,
+                    // which may be exactly what is missing): an unavailable pair that publishes
+                    // none looks like a machine that never synced.
+                    let history = load_status_history(&status_history_path(&config.db_path))
+                        .unwrap_or_default();
+                    let mut unavailable = UnavailablePair::with_history(config, reason, history);
+                    unavailable.folder_error = folder_error;
+                    PairSlot::Unavailable(Box::new(unavailable))
+                }
+            });
         }
         let session_live = event_source.is_some();
         let cadences = slots
@@ -2023,12 +2751,20 @@ impl<C: ProtonClient> Daemon<C> {
             shutdown_notify: Arc::new(Notify::new()),
             _global_lock_guard: global_lock_guard,
         };
+        for (pair, slot) in daemon.pairs.iter().enumerate() {
+            daemon.shared.pairs[pair].set_has_runtime(matches!(slot, PairSlot::Ready(_)));
+        }
         // Every pair's published history before the first pass, so a client polling a just-started
         // daemon already sees the last full sweep from a previous run — for every pair, not only the
-        // default one.
+        // default one. A pair whose first metrics write fails is unavailable, not fatal.
         for pair in 0..daemon.pairs.len() {
             let _span = pair_span(&daemon.pair_config(pair).name).entered();
-            daemon.publish_at_startup(pair)?;
+            if let Err(reason) = daemon.publish_at_startup(pair) {
+                warn!(
+                    %reason,
+                    "folder pair unavailable; the daemon keeps running and tries it again"
+                );
+            }
         }
         Ok(daemon)
     }
@@ -2082,7 +2818,7 @@ impl<C: ProtonClient> Daemon<C> {
         // addresses both `shared.pairs[i]` and `plane.pairs[i]` without a second lookup.
         let plane_pairs = (0..self.pairs.len())
             .map(|pair| self.control_plane_pair(pair))
-            .collect::<AppResult<Vec<_>>>()?;
+            .collect::<Vec<_>>();
         let ipc_task = tokio::spawn(serve_control_socket(
             listener,
             Arc::new(ControlPlane {
@@ -2101,15 +2837,12 @@ impl<C: ProtonClient> Daemon<C> {
             }),
         ));
         // One watcher, one recursive watch per ready root; `route` hands each event to the pair
-        // that owns its path. A failed watch is still fatal here, as it was for the one pair; phase
-        // 4b degrades it per pair.
+        // that owns its path. A root that cannot be watched is not fatal (maintainer decision M1):
+        // that pair scans locally on every pass and retries the registration before each one
+        // (`maintain_root_watch`). Only a watcher that cannot be built at all stops the daemon.
         let (watch_tx, watch_rx) = mpsc::unbounded_channel();
         let mut watcher = build_watcher(watch_tx)?;
-        for pair in 0..self.pairs.len() {
-            if let Some(runtime) = self.runtime(pair) {
-                watcher.watch_root(&runtime.config.local_root)?;
-            }
-        }
+        self.register_root_watches(&mut watcher);
         let mut inputs = LoopInputs {
             loop_rx,
             watch_rx,
@@ -2181,7 +2914,7 @@ impl<C: ProtonClient> Daemon<C> {
             };
             // `ControlShared::active_pair` needs passes serialized: only this loop starts one.
             debug_assert!(self.shared.active_pair().is_none());
-            self.run_job(job, clock);
+            self.run_job(job, inputs.watcher.as_mut(), clock);
         }
     }
 
@@ -2270,8 +3003,9 @@ impl<C: ProtonClient> Daemon<C> {
     ///
     /// | job  | slot        | paused | what runs                                                  |
     /// |------|-------------|--------|------------------------------------------------------------|
-    /// | Sync | Ready       | either | `reconcile_if_needed`: a pass, or (paused) seal a queued apply |
-    /// | Sync | Unavailable | no     | `skip_unavailable_pass`: reason + history entry, seal an apply, `reconcile_seq` + 1 |
+    /// | Sync | Ready       | no     | `examine_ready_pair`, `maintain_root_watch` (the first may demote), then `reconcile_if_needed`: a pass |
+    /// | Sync | Ready       | yes    | `reconcile_if_needed`: seal a queued apply                 |
+    /// | Sync | Unavailable | no     | `retry_unavailable`; if it took, the Ready row, else `skip_unavailable_pass`: reason + history entry, seal an apply, `reconcile_seq` + 1 |
     /// | Sync | Unavailable | yes    | seal a queued apply, as a paused ready pair does          |
     /// | Plan | Ready       | either | `plan_now`: an inert pass that seals its own request       |
     /// | Plan | Unavailable | either | seal the booked plan `Failed` with the reason              |
@@ -2280,12 +3014,31 @@ impl<C: ProtonClient> Daemon<C> {
     /// and a skipped pair fires no backlog); a `Plan` job never does, because it is inert. A due
     /// sweep latches the pair's full walk before either arm, so a paused pair keeps it, as a
     /// `resync` does.
-    fn run_job(&mut self, job: Job, clock: &dyn Fn() -> Instant) {
+    ///
+    /// **A paused pair does no preparation and no watch upkeep**: a pause means no work, and both
+    /// are done right before a pass that is not going to run.
+    fn run_job(&mut self, job: Job, watcher: &mut dyn RootWatcher, clock: &dyn Fn() -> Instant) {
         // Every line the job logs — the pass family's included — names its pair.
         let _span = pair_span(&self.pair_config(job.pair).name).entered();
         let generation = self.event_source_generation;
         if job.kind == JobKind::Sync && job.cause == Cause::Sweep {
             self.latch_scheduled_full_sweep(job.pair);
+        }
+        if job.kind == JobKind::Sync && !self.is_paused(job.pair) {
+            // A pair whose folder was replaced by an empty one is held, and a pair whose state went
+            // with its folder is demoted, first: the retry below then prepares the second again in
+            // this same job instead of a cadence later, and leaves the first alone.
+            if self.slot_state(job.pair) == SlotState::Ready {
+                self.examine_ready_pair(job.pair);
+            }
+            // The retry comes next, so a pair that just became ready is looked after below like any
+            // other and its first pass runs now, not a cadence later.
+            if self.slot_state(job.pair) == SlotState::Unavailable {
+                self.retry_unavailable(job.pair);
+            }
+            if self.slot_state(job.pair) == SlotState::Ready {
+                self.maintain_root_watch(job.pair, watcher);
+            }
         }
         match (
             job.kind,
@@ -2314,6 +3067,353 @@ impl<C: ProtonClient> Daemon<C> {
         if self.event_source_generation != generation {
             self.retune_after_session_change(clock());
         }
+    }
+
+    /// Tries to make an unavailable pair ready (ADR 0005 §6.3): the same preparation boot does, with
+    /// one difference — **it never creates the folder** ([`RootMode::MustExist`]). On success the
+    /// pair is `Ready` with `is_first_reconcile` set, so the pass that follows in the same job is a
+    /// first pass (a full local scan, warm start or bootstrap); on failure it stays unavailable and
+    /// says why, once per cause. A per-root lock held by another process is such a failure here — at
+    /// boot it refuses the start, but nothing running may be stopped over one pair.
+    ///
+    /// **A standing cause is checked first** ([`StandingCause`]): the folder merely being there is
+    /// not what it waits for.
+    ///
+    /// **A promotion is examined like a pass** (ADR 0005, the 4b note, item 13). The directory the
+    /// pair last ran on is carried through the demotion ([`UnavailablePair::known_root`]), and a
+    /// pair prepared again for any cause but a lifted hold or a reset is handed that identity and
+    /// put through `examine_ready_pair` before anything runs on it: a different directory holding
+    /// nothing over a baseline that records items is held, one with content is accepted with every
+    /// deletion withheld once, and one that cannot be judged does not start. **Before that, and
+    /// before anything is prepared, the judgement asks one question of the folder** (item 15,
+    /// [`judge_carried_replacement`]): does it hold nothing the pair would keep, over a baseline
+    /// that recorded items or could not be counted ([`CarriedCount::at_risk`])? Which directory it
+    /// is, and whether the pair recorded an identity at all, are not part of it. A **lifted hold** is an
+    /// accepted replacement by definition — the examination already happened in
+    /// [`standing_cause_status`] — so it is not examined again and its first pass withholds every
+    /// deletion ([`PairRuntime::force_delete_approval`]). A **reset** is neither: its pass empties
+    /// the baseline first and plans no deletion, so an examination against the old baseline would
+    /// only hold the pair the user just asked to start over.
+    fn retry_unavailable(&mut self, pair: usize) {
+        let Some(unavailable) = self.unavailable(pair) else {
+            return;
+        };
+        let config = unavailable.config.clone();
+        let carried_root = unavailable.known_root;
+        let carried_force = unavailable.force_delete_approval;
+        let carried_recorded = unavailable.recorded_items;
+        let mut promotion = Promotion::Plain;
+        if let Some(standing) = unavailable.standing {
+            // **A `reset-index` is the user's explicit way out of the hold**, and it is answered
+            // by the existing reset, not by a second one: the cause is released, the pair is
+            // prepared like any other (a fresh index where the state went with the folder, the
+            // surviving one otherwise) and the pass that follows consumes the latch before it loads
+            // the baseline. The baseline is then empty, so that pass is a bootstrap — it downloads
+            // and adopts, and has nothing to plan a deletion from.
+            let status = if self.shared.pairs[pair].reset_index.load(Ordering::SeqCst) {
+                info!(
+                    "a reset-index was requested: the pair is prepared again and starts over from \
+                     Proton, which downloads everything and deletes nothing"
+                );
+                StandingStatus::Reset
+            } else {
+                standing_cause_status(&config, standing)
+            };
+            match status {
+                StandingStatus::Holds => {
+                    // Restated, not merely kept: the cause may have been interrupted by a
+                    // different one (the folder going away) and is the current one again.
+                    if let Some(unavailable) = self.unavailable_mut(pair) {
+                        unavailable.folder_error = None;
+                        clear_unreadable(&mut unavailable.unreadable);
+                    }
+                    self.note_unavailable_cause(pair, standing.reason(&config.local_root));
+                    return;
+                }
+                // The cause stands, and nothing about it changes, because the look that would
+                // have changed it failed.
+                StandingStatus::Unreadable(cause) => {
+                    if let Some(unavailable) = self.unavailable_mut(pair) {
+                        note_unreadable(&mut unavailable.unreadable, &cause);
+                    }
+                    self.note_unavailable_cause(pair, standing.reason(&config.local_root));
+                    return;
+                }
+                StandingStatus::Cleared | StandingStatus::Reset => {
+                    promotion = if status == StandingStatus::Reset {
+                        Promotion::Reset
+                    } else {
+                        Promotion::Lifted
+                    };
+                    if let Some(unavailable) = self.unavailable_mut(pair) {
+                        unavailable.standing = None;
+                        clear_unreadable(&mut unavailable.unreadable);
+                    }
+                }
+                // Not a directory right now: the ordinary preparation below says so, and the cause
+                // stands for whatever comes back.
+                StandingStatus::FolderGone => {}
+            }
+        }
+        // Items 14 and 15: a plain promotion is judged from what the demotion carried, BEFORE
+        // anything is prepared. Preparing a pair with the default layout makes `.sync`, an index
+        // and a lock in whatever folder is at the path, and the examination after the open then
+        // read that fresh index as "nothing recorded" and accepted an empty folder — the bootstrap
+        // downloaded the whole remote into it. The evidence is what the dropped baseline recorded
+        // and whether the folder holds anything, **and nothing about which directory it is**: a
+        // folder emptied in place is the same directory (C1), a pair whose folder cannot be named
+        // consistently has no identity to compare (C3), and a count nobody could read is assumed
+        // to be items (C2). A folder that cannot be judged is not prepared either.
+        if promotion == Promotion::Plain
+            && let Some(standing) = carried_recorded.at_risk()
+        {
+            match judge_carried_replacement(&config) {
+                CarriedJudgement::Proceed => {}
+                CarriedJudgement::Hold => {
+                    let reason = standing.reason(&config.local_root);
+                    warn!(
+                        %reason,
+                        "folder pair unavailable; the daemon keeps running and tries it again"
+                    );
+                    if let Some(unavailable) = self.unavailable_mut(pair) {
+                        unavailable.standing = Some(standing);
+                        unavailable.folder_error = None;
+                        clear_unreadable(&mut unavailable.unreadable);
+                        unavailable.reason = reason;
+                    }
+                    self.publish_pair(pair);
+                    return;
+                }
+                CarriedJudgement::CannotTell(cause) => {
+                    if let Some(unavailable) = self.unavailable_mut(pair) {
+                        note_unreadable(&mut unavailable.unreadable, &cause);
+                    }
+                    self.note_unavailable_cause(
+                        pair,
+                        format!(
+                            "the folder {} could not be judged: whether it was replaced by or \
+                             emptied to an empty folder could not be established ({cause})",
+                            config.local_root.display()
+                        ),
+                    );
+                    return;
+                }
+            }
+        }
+        let lock_guard = match prepare_pair_state(&config, RootMode::MustExist) {
+            Ok(lock_guard) => lock_guard,
+            Err(failure) => {
+                self.note_unavailable_failure(pair, failure);
+                return;
+            }
+        };
+        let mut runtime = match PairRuntime::open(config, lock_guard) {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                self.note_unavailable_failure(
+                    pair,
+                    PrepareFailure::Unavailable(format!("its state could not be opened: {error}")),
+                );
+                return;
+            }
+        };
+        // What the pair published while it was unavailable is what a client has been shown: keep
+        // it, so a pair that was syncing is not reborn as one that never did. The sidecar is read
+        // fresh by `open`; the carried history only fills in when that found nothing (a root that
+        // was re-created holds no sidecar).
+        if let Some(unavailable) = self.unavailable(pair) {
+            runtime.last_sync = unavailable.last_sync;
+            runtime.last_plan_summary = unavailable.last_plan_summary.clone();
+            runtime.last_successful_sync_summary = unavailable.last_successful_sync_summary.clone();
+            if runtime.status_history.is_empty() {
+                runtime.status_history = unavailable.status_history.clone();
+            }
+        }
+        // What the pair is owed from before the demotion survives it; a lifted hold adds the one
+        // pass of forced approval an accepted replacement gets. Persisted, so a restart does not
+        // spend it (item 14) — `open` loaded whatever the index at the path recorded, which with
+        // the default layout is a fresh index that recorded nothing.
+        if carried_force || promotion == Promotion::Lifted {
+            runtime.force_delete_approval_until_settled();
+        }
+        // A plain promotion runs on the directory the pair last ran on until the examination below
+        // says otherwise; `open` recorded whatever is at the path now, which is the question, not
+        // the answer — unless `open` found the folder cannot be named consistently, which is the
+        // fresher of the two judgements and stands. A lifted hold and a reset take the folder as
+        // it is (see the method doc). The count the dropped baseline recorded is carried the same
+        // way, except through a reset, whose pass empties the baseline it would stand for.
+        if promotion == Promotion::Plain
+            && let RootRecord::Recorded(_) = carried_root
+            && runtime.known_root != RootRecord::PresenceOnly
+        {
+            runtime.known_root = carried_root;
+        }
+        if promotion != Promotion::Reset {
+            runtime.carried_recorded_items = carried_recorded;
+        }
+        let previous_reason = self
+            .unavailable(pair)
+            .map(|unavailable| unavailable.reason.clone());
+        self.pairs[pair] = PairSlot::Ready(Box::new(runtime));
+        self.shared.pairs[pair].set_has_runtime(true);
+        // The first metrics write is part of being prepared. When it fails the pair goes straight
+        // back, and that is the same cause it already stood on unless it changed — so it speaks
+        // only then, not once per attempt for as long as the directory stays unwritable.
+        match self.publish_at_startup(pair) {
+            Ok(()) => info!("folder pair is available again"),
+            Err(reason) if previous_reason.as_deref() != Some(reason.as_str()) => {
+                warn!(%reason, "folder pair still unavailable");
+            }
+            Err(_) => {}
+        }
+        // The same examination a ready pair gets before its pass, against the carried identity:
+        // the one place a folder that is not the one the pair ran on is judged.
+        if promotion == Promotion::Plain && self.slot_state(pair) == SlotState::Ready {
+            self.examine_ready_pair(pair);
+        }
+    }
+
+    /// Records why a retry left an unavailable pair unavailable. **The same OS error as the reason
+    /// already on record is the same condition**, and keeps that reason: boot's "could not be
+    /// created: Not a directory" is not replaced by the retry's reading of the identical `ENOTDIR`
+    /// (which has to be worded for a folder it never tried to make), and a repeat adds no history
+    /// entry because the reason, and so the entry, is unchanged.
+    fn note_unavailable_failure(&mut self, pair: usize, failure: PrepareFailure) {
+        let folder_error = failure.folder_error();
+        let reason = failure.reason();
+        let Some(unavailable) = self.unavailable_mut(pair) else {
+            return;
+        };
+        if folder_error.is_some() && folder_error == unavailable.folder_error {
+            return;
+        }
+        unavailable.folder_error = folder_error;
+        self.note_unavailable_cause(pair, reason);
+    }
+
+    /// Records why an unavailable pair is still unavailable. Logged when the reason **changes** —
+    /// the first time a cause is seen, and again if it becomes another — never once per attempt.
+    fn note_unavailable_cause(&mut self, pair: usize, reason: String) {
+        let Some(unavailable) = self.unavailable_mut(pair) else {
+            return;
+        };
+        if unavailable.reason != reason {
+            warn!(%reason, "folder pair still unavailable");
+            unavailable.reason = reason;
+        }
+    }
+
+    /// Ready → unavailable: the runtime (its index connection, its per-root lock) is dropped and the
+    /// slot publishes `reason`. **What the pair last published stays published** — `last_sync`, the
+    /// summaries, the history — because `last_sync: None` is how the GUI tells a machine that has
+    /// never synced, and an established pair must not start looking like one (maintainer decision
+    /// M1b; the 4a note's first carried item).
+    ///
+    /// Silent: the caller knows whether this cause is news (`publish_at_startup`'s callers do).
+    fn demote_pair(&mut self, pair: usize, reason: String) {
+        self.demote_pair_standing(pair, reason, None);
+    }
+
+    /// [`Self::demote_pair`] for a cause that [`StandingCause`] keeps the pair unavailable for.
+    fn demote_pair_standing(
+        &mut self,
+        pair: usize,
+        reason: String,
+        standing: Option<StandingCause>,
+    ) {
+        let Some(runtime) = self.runtime(pair) else {
+            return;
+        };
+        let mut unavailable = UnavailablePair::demoted(runtime, reason);
+        unavailable.standing = standing;
+        self.pairs[pair] = PairSlot::Unavailable(Box::new(unavailable));
+        self.shared.pairs[pair].set_has_runtime(false);
+        self.publish_pair(pair);
+    }
+
+    /// Looks at a ready pair's folder and state before its pass and acts on what it finds
+    /// ([`Examination`], ADR 0005 and the 4b note, items 8 and 9). **The one place a folder that is
+    /// no longer the one the pair ran on is judged**, whichever way it stopped being: replaced by
+    /// another directory, or its index or lockfile went with it.
+    ///
+    /// - **Replaced by an empty folder over a baseline that records items**: the pair is held
+    ///   ([`StandingCause`]) and nothing is created, opened or locked. Planned as it stands that is
+    ///   the deletion of everything recorded, executed outright where the guard is off, and
+    ///   re-preparing the pair in it would download the whole remote into it — #426 reached
+    ///   mid-life. It takes precedence over the state demotion below, which would do exactly that.
+    ///   The user's `reset-index` is what releases it, in `retry_unavailable` and nowhere else.
+    /// - **State removed with the folder, and the folder has content** (or nothing was recorded):
+    ///   the pair is demoted, and the retry that follows in the same job prepares it again. Only
+    ///   while the folder is there: a folder that is not a directory right now is the typed pass
+    ///   error's to report, once, and demoting here too would write two history entries for one
+    ///   condition.
+    /// - **Replaced by a folder with content**: accepted as the pair's folder ([`Examination::Replaced`]);
+    ///   `maintain_root_watch` then watches it and the next pass scans it.
+    /// - **A look that failed with something other than "not found"**: nothing changes, and it is
+    ///   said once per cause. **A folder that could not be judged** blocks the pass instead
+    ///   ([`PairRuntime::unjudged`]).
+    fn examine_ready_pair(&mut self, pair: usize) {
+        let Some(runtime) = self.runtime_mut(pair) else {
+            return;
+        };
+        let root = runtime.config.local_root.clone();
+        let examination = runtime.examine();
+        // The pass is blocked by a folder nobody could judge, for exactly as long as nobody can.
+        runtime.unjudged = match &examination {
+            Examination::CannotJudge(cause) => Some(format!(
+                "it is not the folder this pair ran on, and whether it was replaced by an empty \
+                 folder could not be established ({cause})"
+            )),
+            _ => None,
+        };
+        match &examination {
+            Examination::Unreadable(cause) | Examination::CannotJudge(cause) => {
+                note_unreadable(&mut runtime.unreadable, cause);
+            }
+            _ => clear_unreadable(&mut runtime.unreadable),
+        }
+        let (reason, standing) = match examination {
+            Examination::Intact
+            | Examination::FolderGone
+            | Examination::Unreadable(_)
+            | Examination::CannotJudge(_) => return,
+            Examination::Unrecorded(current) => {
+                // The look at open failed and nothing since could see the folder; this is the
+                // first look that can, and the pair runs on this directory from here on.
+                info!(
+                    root = %root.display(),
+                    "recorded which directory this folder is; a different one at the path from \
+                     now on is a replaced folder"
+                );
+                runtime.known_root = RootRecord::Recorded(current);
+                return;
+            }
+            Examination::Replaced(current) => {
+                warn!(
+                    root = %root.display(),
+                    "the folder was replaced while the daemon was running (a different directory \
+                     is at the same path); watching it again and scanning it on the next pass, \
+                     and withholding every deletion that pass plans for approval"
+                );
+                runtime.known_root = RootRecord::Recorded(current);
+                // Item 13: a replacement with content is accepted, and the content test is binary
+                // — a stray file lifts it — so what the first pass plans to delete waits for the
+                // user, whatever the configured policy says.
+                runtime.force_delete_approval_until_settled();
+                return;
+            }
+            Examination::StateRemoved(reason) => (reason, None),
+            Examination::EmptyReplacement(standing) => (standing.reason(&root), Some(standing)),
+        };
+        if standing.is_some() {
+            warn!(
+                %reason,
+                "folder pair unavailable; the daemon keeps running and tries it again"
+            );
+        } else {
+            warn!(%reason, "folder pair's state is gone; preparing the pair again");
+        }
+        self.demote_pair_standing(pair, reason, standing);
     }
 
     /// A `Sync` job on a pair that is not ready. Not a pass — nothing is scanned, listed or written
@@ -2355,6 +3455,90 @@ impl<C: ProtonClient> Daemon<C> {
                 generation,
                 Err(format!("the folder pair is unavailable: {reason}")),
             );
+        }
+    }
+
+    /// Registers every ready pair's root on the watcher, once, before the loop.
+    fn register_root_watches(&mut self, watcher: &mut dyn RootWatcher) {
+        for pair in 0..self.pairs.len() {
+            let _span = pair_span(&self.pair_config(pair).name).entered();
+            self.maintain_root_watch(pair, watcher);
+        }
+    }
+
+    /// Looks after one ready pair's recursive watch right before its pass (ADR 0005 §5.5, §6.5):
+    /// registers it when it is not registered, **registers it again** when what is at the root is
+    /// no longer the directory that was watched, and retries a registration that failed. One
+    /// function, so boot, a promotion and every pass share a single definition of "watched".
+    ///
+    /// It registers; it does not judge. Whether a folder that is not the one the pair ran on may be
+    /// accepted at all — and a replaced folder that holds nothing, over a baseline that records
+    /// items, may not — is `examine_ready_pair`'s, which runs first in the same job.
+    ///
+    /// - **Replaced.** A root deleted and created again between two passes passes an `is_dir()`
+    ///   check and carries no watch: the kernel dropped it with the old directory. Its identity
+    ///   (device, inode, birth time) says so, against the directory the watch was registered on.
+    /// - **Unwatched.** A failed registration (`ENOSPC` is the realistic one) leaves the root
+    ///   unwatched, or partly: notify watches one directory at a time and stops at the first error.
+    ///   Until it takes, **every pass scans the local tree**, because the events-mode idle
+    ///   fast-path only knows what the watcher queued.
+    /// - **Gone.** No directory at the root: nothing to register, and the watch it had went with it,
+    ///   so it is marked for registration when the folder returns. The pass reports the folder.
+    /// - **Unreadable.** A look that failed with something other than "not found" is no answer: the
+    ///   watch is left as it is.
+    ///
+    /// Every registration after the first sets `force_local_rescan`: changes made while the root was
+    /// unwatched were queued by nothing. The first one does not — a first pass scans anyway.
+    fn maintain_root_watch(&mut self, pair: usize, watcher: &mut dyn RootWatcher) {
+        let Some(runtime) = self.runtime_mut(pair) else {
+            return;
+        };
+        let root = runtime.config.local_root.clone();
+        let current = match look_at_root(&root) {
+            Look::Present(current) => current,
+            Look::Gone => {
+                if matches!(runtime.root_watch, RootWatch::Watching(_)) {
+                    runtime.root_watch = RootWatch::Incomplete;
+                }
+                return;
+            }
+            Look::Unreadable(error) => {
+                note_unreadable(
+                    &mut runtime.unreadable,
+                    &format!("the folder {}: {error}", root.display()),
+                );
+                return;
+            }
+        };
+        let first = match runtime.root_watch {
+            RootWatch::Watching(registered) if registered.is_same_directory(&current) => return,
+            RootWatch::Unregistered => true,
+            RootWatch::Watching(_) | RootWatch::Incomplete => false,
+        };
+        let registered = watcher.watch_root(&root);
+        if !first || registered.is_err() {
+            runtime.force_local_rescan = true;
+        }
+        match registered {
+            Ok(()) => {
+                runtime.root_watch = RootWatch::Watching(current);
+                if runtime.watch_declined.take().is_some() {
+                    info!(root = %root.display(), "the folder is watched again");
+                }
+            }
+            Err(error) => {
+                runtime.root_watch = RootWatch::Incomplete;
+                let cause = error.to_string();
+                if runtime.watch_declined.as_deref() != Some(cause.as_str()) {
+                    warn!(
+                        %cause,
+                        root = %root.display(),
+                        "could not watch the folder; every pass scans it locally until it can be \
+                         watched, and the watch is tried again before each one"
+                    );
+                    runtime.watch_declined = Some(cause);
+                }
+            }
         }
     }
 
@@ -2598,7 +3782,14 @@ impl<C: ProtonClient> Daemon<C> {
                 // the returned first error exists for the test helper and is not logged twice.
                 let _ = self.route_event(event, lost);
             }
-            Err(error) => lost.note_error(&error),
+            Err(error) => {
+                let owners = error
+                    .paths
+                    .iter()
+                    .filter_map(|path| self.owning_pair(path))
+                    .collect();
+                lost.note_error(&error, owners);
+            }
         }
     }
 
@@ -2606,7 +3797,27 @@ impl<C: ProtonClient> Daemon<C> {
     /// drain saw (#423, #428). Before the pop, so the flag is up when the pass that needs it starts.
     fn settle_lost_events(&mut self, lost: &LostEvents, watcher: &mut dyn RootWatcher) {
         self.latch_lost_events(lost);
+        self.mark_roots_unwatched(lost);
         self.rewatch_after_rescan(lost, watcher);
+    }
+
+    /// A watcher `Err` may have left a directory unwatched: the roots it names are no longer known
+    /// to be completely watched, so [`Self::maintain_root_watch`] registers them again before their
+    /// next pass (and until it takes, that pass scans locally). Marked here rather than re-walked
+    /// here, so a burst of errors costs one registration per root per pass, not one per error.
+    fn mark_roots_unwatched(&mut self, lost: &LostEvents) {
+        let targets: Vec<usize> = if lost.unwatched_every_root {
+            (0..self.pairs.len()).collect()
+        } else {
+            lost.unwatched_roots.iter().copied().collect()
+        };
+        for pair in targets {
+            if let Some(runtime) = self.runtime_mut(pair)
+                && matches!(runtime.root_watch, RootWatch::Watching(_))
+            {
+                runtime.root_watch = RootWatch::Incomplete;
+            }
+        }
     }
 
     fn latch_lost_events(&mut self, lost: &LostEvents) {
@@ -2711,7 +3922,8 @@ impl<C: ProtonClient> Daemon<C> {
     /// window with no watch at all, and fails partway (EINVAL) on the descriptor of any directory
     /// deleted during the overflow, whose `IN_IGNORED` was among the lost events. And if the
     /// re-walk then failed (`MaxFilesWatch`), the root would be left with fewer watches than before
-    /// — with nothing in phase 4a to retry it.
+    /// — which is why a failure marks the root [`RootWatch::Incomplete`]: the next pass registers it
+    /// again ([`Self::maintain_root_watch`]), and scans locally until that takes.
     ///
     /// The owning root(s) when a notice carries paths (macOS can attach one), every ready root when
     /// one carries none (Linux always) — **once per root per drain**, whatever the notice count. The
@@ -2723,22 +3935,38 @@ impl<C: ProtonClient> Daemon<C> {
             lost.rewatch_roots.iter().copied().collect()
         };
         for pair in targets {
-            let Some(runtime) = self.runtime(pair) else {
+            let Some(runtime) = self.runtime_mut(pair) else {
                 continue;
             };
             let _span = pair_span(&runtime.config.name).entered();
-            let root = &runtime.config.local_root;
-            match watcher.watch_root(root) {
-                Ok(()) => info!(
-                    root = %root.display(),
-                    "re-registered the watch after the event stream was flagged for rescan"
-                ),
-                Err(error) => warn!(
-                    %error,
-                    root = %root.display(),
-                    "could not re-register the watch after the event stream was flagged for \
-                     rescan; a folder created meanwhile may stay unwatched"
-                ),
+            let root = runtime.config.local_root.clone();
+            match watcher.watch_root(&root) {
+                Ok(()) => {
+                    // A complete registration, whatever state the watch was in before it — of the
+                    // directory that is at the path now. Which folder the pair runs on is
+                    // `PairRuntime::known_root`'s, not the watch's, so recording the watched
+                    // directory here cannot launder a replaced folder: `examine_ready_pair` judges
+                    // it against `known_root` before the pair's next pass, held or accepted.
+                    runtime.root_watch = look_at_root(&root)
+                        .present()
+                        .map_or(RootWatch::Incomplete, RootWatch::Watching);
+                    runtime.watch_declined = None;
+                    info!(
+                        root = %root.display(),
+                        "re-registered the watch after the event stream was flagged for rescan"
+                    );
+                }
+                Err(error) => {
+                    // Retried before the pair's next pass (`maintain_root_watch`); the 4a version of
+                    // this arm had nothing to retry it with.
+                    runtime.root_watch = RootWatch::Incomplete;
+                    warn!(
+                        %error,
+                        root = %root.display(),
+                        "could not re-register the watch after the event stream was flagged for \
+                         rescan; a folder created meanwhile may stay unwatched"
+                    );
+                }
             }
         }
     }
@@ -2752,24 +3980,30 @@ impl<C: ProtonClient> Daemon<C> {
         let Some(unavailable) = self.unavailable(pair) else {
             return;
         };
+        // What a pair that *was* ready last published, carried (see [`UnavailablePair`]): only the
+        // facts about its past. What belongs to a pass that is not running — pending deletions,
+        // failed items, the unsyncable list — is empty, because nothing here can act on them.
         let snapshot = StatusSnapshot {
             pending_changes: 0,
-            last_sync_epoch_secs: None,
+            last_sync_epoch_secs: unavailable
+                .last_sync
+                .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                .map(|duration| duration.as_secs()),
             last_error: Some(unavailable.reason.clone()),
-            last_plan_summary: None,
-            last_successful_sync_summary: None,
+            last_plan_summary: unavailable.last_plan_summary.clone(),
+            last_successful_sync_summary: unavailable.last_successful_sync_summary.clone(),
             status_history: unavailable.status_history.clone(),
             pending_deletions: Vec::new(),
             failed_items: Vec::new(),
             failed_item_count: 0,
             unsyncable: Vec::new(),
-            index_totals: None,
+            index_totals: unavailable.index_totals,
             config: RunningConfigInfo {
                 local_root: unavailable.config.local_root.clone(),
                 remote_root: unavailable.config.remote_root.clone(),
                 db_path: unavailable.config.db_path.clone(),
             },
-            history: None,
+            history: unavailable.pass_history.clone(),
         };
         *self.shared.pairs[pair]
             .snapshot
@@ -2778,34 +4012,58 @@ impl<C: ProtonClient> Daemon<C> {
     }
 
     /// Everything a client polling a just-started daemon should already see, per pair: the pass
-    /// history and corpus size from the previous run, and the metrics sidecar (whose write failing
-    /// is still fatal for a ready pair, as it was; phase 4b makes it per pair). A pair that is not
+    /// history and corpus size from the previous run, and the metrics sidecar. A pair that is not
     /// ready publishes its reason and writes nothing — its directory may be what is missing.
-    fn publish_at_startup(&mut self, pair: usize) -> AppResult<()> {
-        if let Some(mut pass) = self.pass_for(pair) {
-            pass.refresh_pass_history();
-            pass.refresh_index_totals();
-            pass.publish_status();
-            return pass.write_metrics_snapshot();
+    ///
+    /// **The first metrics write is part of a pair being prepared**: when it fails (a read-only or
+    /// full state directory) the pair is demoted rather than the daemon stopped, keeping the
+    /// history this just read, and the reason comes back for the caller to report — once, since
+    /// whether it is news is the caller's to know. A pair that was not ready to begin with has
+    /// nothing to write and nothing new to say: `Ok`.
+    fn publish_at_startup(&mut self, pair: usize) -> Result<(), String> {
+        let Some(mut pass) = self.pass_for(pair) else {
+            self.publish_pair(pair);
+            return Ok(());
+        };
+        pass.refresh_pass_history();
+        pass.refresh_index_totals();
+        pass.publish_status();
+        match pass.write_metrics_snapshot() {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                let reason = format!("its metrics file could not be written: {error}");
+                self.demote_pair(pair, reason.clone());
+                Err(reason)
+            }
         }
-        self.publish_pair(pair);
-        Ok(())
     }
 
     /// The IPC task's per-pair state for pair `pair` (#102 phase 3): its own connection for the
     /// approval verbs — `None` for a pair that is not ready, which those verbs answer rather than
     /// failing the connection — its metrics sidecar, and the `list` verb's relative frame.
-    fn control_plane_pair(&self, pair: usize) -> AppResult<ControlPlanePair> {
+    fn control_plane_pair(&self, pair: usize) -> ControlPlanePair {
         let config = self.pair_config(pair);
+        // Opened here for a pair that is ready, and on first use (`approvals_connection`) for one
+        // that becomes ready later — neither failure may stop a daemon that is otherwise running.
         let approvals = match self.slot_state(pair) {
-            SlotState::Ready => Some(open_database(&config.db_path)?),
+            SlotState::Ready => match open_database(&config.db_path) {
+                Ok(connection) => Some(connection),
+                Err(error) => {
+                    warn!(
+                        %error,
+                        "no approvals connection for this folder pair yet; opening it on first use"
+                    );
+                    None
+                }
+            },
             SlotState::Unavailable => None,
         };
-        Ok(ControlPlanePair {
+        ControlPlanePair {
             approvals: tokio::sync::Mutex::new(approvals),
+            opened_under: AtomicU64::new(self.shared.pairs[pair].runtime_generation()),
             metrics_path: metrics_path(&config.db_path),
             remote_root: config.remote_root.clone(),
-        })
+        }
     }
 
     /// The cancel flag and the live-progress sink, on the one client. The only `&mut` the client
@@ -2849,6 +4107,9 @@ impl<C: ProtonClient> Daemon<C> {
             // total, and the outcome is on every status reply. Logging it again here would be a
             // second, differently-worded report of the same pass.
             Ok(PassOutcome::Clean | PassOutcome::Partial { .. }) => {}
+            // A missing folder is reported once per cause by the pass itself; an `error!` per
+            // attempt would be the same line every 30 seconds for as long as it stays gone.
+            Err(error) if is_root_unavailable_error(error.as_ref()) => {}
             Err(error) => error!(%error, "scheduled reconciliation failed"),
         }
     }
@@ -2972,6 +4233,119 @@ impl<C: ProtonClient> Daemon<C> {
     }
 }
 
+/// What a retry finds of a [`StandingCause`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum StandingStatus {
+    /// Still true: the pair stays unavailable for it.
+    Holds,
+    /// What it was waiting for has happened: the ordinary preparation decides the rest.
+    Cleared,
+    /// The user asked to start over from Proton (`reset-index`): the cause is released, and the
+    /// reset the pass performs empties the baseline it was about.
+    Reset,
+    /// There is no folder to look at right now. The cause is neither cleared nor restated — it
+    /// stands for whatever comes back.
+    FolderGone,
+    /// A look failed with something other than "not found": no answer, so the cause stands.
+    Unreadable(String),
+}
+
+/// How a retry came to prepare its pair again (`Daemon::retry_unavailable`), which decides whether
+/// the folder it found is examined against the one the pair last ran on, and whether its first
+/// pass withholds every deletion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Promotion {
+    /// The cause was not a standing one (a lock another process held, a folder that was not
+    /// there): the folder is examined against the carried identity before anything runs on it.
+    Plain,
+    /// A standing cause was cleared by content returning ([`StandingStatus::Cleared`]): an
+    /// accepted replacement, examined already, whose first pass withholds every deletion.
+    Lifted,
+    /// The user asked to start over ([`StandingStatus::Reset`]): the pass empties the baseline
+    /// before it plans, so there is nothing to examine the folder against.
+    Reset,
+}
+
+/// Re-checks a standing cause against the disk, with the pair's own rules for what counts.
+///
+/// **Fails closed**: a folder that cannot be read, or rules that cannot be built, leave the cause
+/// holding — a pair is never made ready by a check that could not be made.
+fn standing_cause_status(config: &PairConfig, standing: StandingCause) -> StandingStatus {
+    match standing {
+        StandingCause::ReplacedByEmptyFolder { .. }
+        | StandingCause::ReplacedByEmptyFolderUncounted => {
+            match look_at_root(&config.local_root) {
+                Look::Present(_) => {}
+                Look::Gone => return StandingStatus::FolderGone,
+                Look::Unreadable(error) => {
+                    return StandingStatus::Unreadable(format!(
+                        "the folder {}: {error}",
+                        config.local_root.display()
+                    ));
+                }
+            }
+            let Ok(options) = scan_options_from_config(config) else {
+                return StandingStatus::Holds;
+            };
+            match local_tree_holds_syncable_entry(&config.local_root, &options) {
+                Ok(true) => StandingStatus::Cleared,
+                Ok(false) | Err(_) => StandingStatus::Holds,
+            }
+        }
+    }
+}
+
+/// What [`judge_carried_replacement`] found.
+#[derive(Debug, PartialEq, Eq)]
+enum CarriedJudgement {
+    /// The folder holds something the pair's rules would keep, or is not a directory right now
+    /// (the ordinary preparation decides the rest).
+    Proceed,
+    /// The folder holds nothing the pair's rules would keep, and the caller has already established
+    /// that the baseline the pair dropped recorded items, or could not be counted: held, and
+    /// nothing is prepared in it.
+    Hold,
+    /// A look failed with something other than "not found": no answer, so nothing is prepared.
+    CannotTell(String),
+}
+
+/// Judges a plain promotion of a pair that was once ready, **before** anything is prepared (ADR
+/// 0005, the 4b note, items 14 and 15): does the folder at the path hold anything the pair's own
+/// rules would keep? The caller asks only when the baseline the demotion dropped recorded items or
+/// could not be counted ([`CarriedCount::at_risk`]), because with the default layout preparing the
+/// pair again makes `.sync` and a fresh index in whatever is at the path — an index that records
+/// nothing, which is what the examination after the open read.
+///
+/// **It does not ask which directory the folder is.** The first version asked, and answered
+/// "proceed" for the same directory: a folder emptied in place after a failed retry was prepared
+/// and populated (C1), and a pair with no identity to compare was never asked at all (C3). A folder
+/// that holds nothing over a baseline that recorded items is the same hazard whichever directory
+/// it is.
+///
+/// **Fails closed**, like [`standing_cause_status`]: a folder that cannot be read, or rules that
+/// cannot be built, are no evidence the folder may be prepared.
+fn judge_carried_replacement(config: &PairConfig) -> CarriedJudgement {
+    let root = &config.local_root;
+    match look_at_root(root) {
+        Look::Present(_) => {}
+        // Not a directory right now: the preparation says so, in the words it always used.
+        Look::Gone => return CarriedJudgement::Proceed,
+        Look::Unreadable(error) => {
+            return CarriedJudgement::CannotTell(format!("the folder {}: {error}", root.display()));
+        }
+    }
+    let Ok(options) = scan_options_from_config(config) else {
+        return CarriedJudgement::CannotTell("its rules could not be built".to_owned());
+    };
+    match local_tree_holds_syncable_entry(root, &options) {
+        Ok(true) => CarriedJudgement::Proceed,
+        Ok(false) => CarriedJudgement::Hold,
+        Err(error) => {
+            CarriedJudgement::CannotTell(format!("the folder could not be searched: {error}"))
+        }
+    }
+}
+
 /// The config of a slot, ready or not.
 fn slot_config(slot: &PairSlot) -> &PairConfig {
     match slot {
@@ -3080,6 +4454,9 @@ fn daemon_wide_mismatch(first: &DaemonConfig, other: &DaemonConfig) -> Option<&'
     }
 }
 
+/// Makes the directory a daemon-wide file lives in (the socket's, the user-global lock's): boot
+/// only, and never under a pair's root — a pair's own state directories go through
+/// [`create_state_directory_below`], which cannot make the root.
 fn create_parent_directory(path: &Path) -> AppResult<()> {
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
@@ -3089,10 +4466,212 @@ fn create_parent_directory(path: &Path) -> AppResult<()> {
     Ok(())
 }
 
+/// Makes the directory a pair's state file (`path`) lives in, **below `root` and never `root`
+/// itself** ([`create_directories_below`]). A state path outside the root is made the way
+/// `create_dir_all` would (nothing it makes is under a root); one inside it fails rather than
+/// making the folder again when the folder vanished since [`prepare_pair_state`]'s look.
+fn create_state_directory_below(root: &Path, path: &Path) -> std::io::Result<()> {
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => create_directories_below(root, parent),
+        _ => Ok(()),
+    }
+}
+
+/// What preparing a pair does about its folder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RootMode {
+    /// Boot: a folder that does not exist is created, as it always was.
+    Create,
+    /// A retry: **never** created. A folder that is gone while the daemon runs is gone — an
+    /// unplugged drive's mount point, a deleted tree — and creating it would present an empty folder
+    /// as the user's own, which a pass would then reconcile against the remote. A retry succeeds
+    /// when the folder is back, not by making one.
+    MustExist,
+}
+
+/// The OS error behind a folder that is not there: from `create_dir_all` at boot, from `stat` on a
+/// retry. Two different calls asked the same question, and when the same error answers both it is
+/// **one condition** — a file where a parent directory should be is `ENOTDIR` to both — so the
+/// cause boot wrote down is not replaced by a worse-worded one that merely describes the same thing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FolderError {
+    kind: std::io::ErrorKind,
+    errno: Option<i32>,
+}
+
+impl FolderError {
+    fn of(error: &std::io::Error) -> Self {
+        Self {
+            kind: error.kind(),
+            errno: error.raw_os_error(),
+        }
+    }
+}
+
+/// Why a pair's state could not be prepared.
+#[derive(Debug)]
+enum PrepareFailure {
+    /// Another process holds the pair's per-root lock (the message is the lock's own).
+    LockHeld(String),
+    /// The folder is not there or cannot be reached; `error` is the OS error behind `reason`.
+    Folder { reason: String, error: FolderError },
+    /// Anything else, as the one-line reason a status reply carries.
+    Unavailable(String),
+}
+
+impl PrepareFailure {
+    /// The reason a retry that failed this way leaves the pair unavailable for.
+    fn reason(self) -> String {
+        match self {
+            Self::LockHeld(message) => format!("locked by another process: {message}"),
+            Self::Folder { reason, .. } | Self::Unavailable(reason) => reason,
+        }
+    }
+
+    fn folder_error(&self) -> Option<FolderError> {
+        match self {
+            Self::Folder { error, .. } => Some(*error),
+            Self::LockHeld(_) | Self::Unavailable(_) => None,
+        }
+    }
+}
+
+/// Everything that has to hold before a pair's index is opened: its folder, the directories its
+/// index and lockfile live in, and its per-root instance lock. Boot and a retry both call this, so
+/// there is one definition of what "prepared" means; they differ only in [`RootMode`].
+///
+/// The lock is the **last** step, so a failure before it holds nothing.
+///
+/// **The state directories are made below the folder it just found, never the folder itself**
+/// (ADR 0005, the 4b note, item 14): with the default layout both live in `<root>/.sync`, and
+/// `create_dir_all` made the root again when it vanished between the look above and the call —
+/// the window [`ensure_directory_below`] was written to close, reached here on every retry. The
+/// same helper (`create_directories_below`, one level at a time, stopped at the root) makes them,
+/// so the root is made in exactly one place: the `RootMode::Create` arm, at boot.
+fn prepare_pair_state(config: &PairConfig, root: RootMode) -> Result<LockGuard, PrepareFailure> {
+    prepare_pair_state_after(config, root, || {})
+}
+
+/// [`prepare_pair_state`] with `after_root` run between the look at the folder and the state
+/// directories' creation: the only way a test can make the folder vanish in that window.
+fn prepare_pair_state_after(
+    config: &PairConfig,
+    root: RootMode,
+    after_root: impl FnOnce(),
+) -> Result<LockGuard, PrepareFailure> {
+    let local_root = config.local_root.display();
+    match root {
+        RootMode::Create => {
+            fs::create_dir_all(&config.local_root).map_err(|error| PrepareFailure::Folder {
+                reason: format!("the folder {local_root} could not be created: {error}"),
+                error: FolderError::of(&error),
+            })?
+        }
+        RootMode::MustExist => match fs::metadata(&config.local_root) {
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => {
+                return Err(PrepareFailure::Unavailable(format!(
+                    "the folder {local_root} is not a directory"
+                )));
+            }
+            Err(error) => {
+                // What to do about it depends on what it is: a folder that is not there is put
+                // back (or its drive mounted); anything else is something to fix first.
+                let (state, remedy) = if error.kind() == std::io::ErrorKind::NotFound {
+                    ("does not exist", "Put it back, or mount its drive")
+                } else {
+                    ("cannot be reached", "Fix that")
+                };
+                return Err(PrepareFailure::Folder {
+                    reason: format!(
+                        "the folder {local_root} {state} ({error}); the daemon does not create it \
+                         while it runs. {remedy}, and the next attempt picks it up"
+                    ),
+                    error: FolderError::of(&error),
+                });
+            }
+        },
+    }
+    after_root();
+    create_state_directory_below(&config.local_root, &config.db_path).map_err(|error| {
+        PrepareFailure::Unavailable(format!(
+            "the directory for its index could not be created: {error}"
+        ))
+    })?;
+    // The lockfile's directory (the `.sync` state dir by default) must exist before the lock is
+    // taken, so a first-ever run on a fresh root does not fail here; `LockGuard::acquire` makes
+    // none itself.
+    create_state_directory_below(&config.local_root, &config.lockfile_path).map_err(|error| {
+        PrepareFailure::Unavailable(format!(
+            "the directory for its lockfile could not be created: {error}"
+        ))
+    })?;
+    LockGuard::acquire(&config.lockfile_path).map_err(|error| {
+        if is_lock_held_error(error.as_ref()) {
+            PrepareFailure::LockHeld(error.to_string())
+        } else {
+            PrepareFailure::Unavailable(format!("its instance lock could not be taken: {error}"))
+        }
+    })
+}
+
 impl PairRuntime {
     /// A ready pair over a prepared root: its index, filters, history and persisted counters.
     fn open(config: PairConfig, lock_guard: LockGuard) -> AppResult<Self> {
+        #[cfg(test)]
+        if let Some(look_root) = test_open_root_look::take() {
+            return Self::open_looking(config, lock_guard, &FileIdentity::look, &*look_root);
+        }
+        Self::open_looking(config, lock_guard, &FileIdentity::look, &look_at_root)
+    }
+
+    /// [`Self::open`] with the `stat`s it names its index and its folder by injected: the only way
+    /// a test can make two looks at one path disagree, which is what the double looks below are
+    /// for.
+    fn open_looking(
+        config: PairConfig,
+        lock_guard: LockGuard,
+        look: &dyn Fn(&Path) -> Look<FileIdentity>,
+        look_root: &dyn Fn(&Path) -> Look<RootIdentity>,
+    ) -> AppResult<Self> {
         let connection = open_database(&config.db_path)?;
+        // Right after the open, so it names the file the connection is on. A database that cannot
+        // be examined cannot be told apart from a replaced one later, so it does not start.
+        let db_identity = match (look(&config.db_path), look(&config.db_path)) {
+            (Look::Present(first), Look::Present(second)) if first == second => Some(first),
+            (Look::Present(_), Look::Present(_)) => {
+                warn!(
+                    path = %config.db_path.display(),
+                    "the filesystem names the index differently on each look, so a replaced index \
+                     cannot be told from the same one; only its presence is checked"
+                );
+                None
+            }
+            _ => {
+                return Err(boxed_error(format!(
+                    "the index {} cannot be examined",
+                    config.db_path.display()
+                )));
+            }
+        };
+        // The folder this pair starts on, before `config` moves. Not read from a watch: nothing
+        // about whether a registration ever completes is a reason not to know which folder this is.
+        // Two looks, the index's own rule (item 14): a filesystem that names the folder differently
+        // each time would otherwise read every job as a replacement — forced approval on every
+        // pass, every deletion withheld for ever with the guard off, and nothing saying so.
+        let known_root = RootRecord::from_two_looks(
+            look_root(&config.local_root),
+            look_root(&config.local_root),
+        );
+        if known_root == RootRecord::PresenceOnly {
+            warn!(
+                root = %config.local_root.display(),
+                "the filesystem names the folder differently on each look, so a replaced folder \
+                 cannot be told from the same one; only its presence is checked, and a folder \
+                 replaced while the daemon runs is not detected, held, or withheld for approval \
+                 for this pair — the configured deletion policy applies as it is"
+            );
+        }
         let scan_options = scan_options_from_config(&config)?;
         let status_history_path = status_history_path(&config.db_path);
         let metrics_path = metrics_path(&config.db_path);
@@ -3126,9 +4705,22 @@ impl PairRuntime {
             warn!(%error, "ignoring an unreadable unsyncable-items list");
             Vec::new()
         });
+        // Persisted so a restart does not spend it (item 14). A read failure fails closed: one
+        // pass of withheld deletions is the whole cost, and the first pass that withholds nothing
+        // for it clears it (or warns that it could not).
+        let force_delete_approval =
+            load_forced_delete_approval(&connection).unwrap_or_else(|error| {
+                warn!(
+                    %error,
+                    "could not read whether deletions are withheld for a replaced folder; \
+                     withholding them this pass"
+                );
+                true
+            });
         Ok(Self {
             config,
             connection,
+            db_identity,
             scan_options,
             status_history_path,
             metrics_path,
@@ -3145,6 +4737,15 @@ impl PairRuntime {
             warm_starts_since_full_walk,
             event_scope_declined: None,
             seen_event_source_generation: 0,
+            root_watch: RootWatch::Unregistered,
+            known_root,
+            force_delete_approval,
+            carried_recorded_items: CarriedCount::Absent,
+            items_known_in_memory: 0,
+            unreadable: None,
+            unjudged: None,
+            watch_declined: None,
+            root_unavailable: None,
             pending_deletions: Vec::new(),
             last_failed_items: Vec::new(),
             last_failed_item_count: 0,
@@ -3162,6 +4763,286 @@ impl PairRuntime {
             _lock_guard: lock_guard,
         })
     }
+
+    /// Puts the pair under forced delete approval ([`Self::force_delete_approval`]) and records it
+    /// in the index, so a restart does not spend it (item 14). A record that cannot be written is
+    /// warned about and the force still holds for this process.
+    fn force_delete_approval_until_settled(&mut self) {
+        self.force_delete_approval = true;
+        if let Err(error) = store_forced_delete_approval(&self.connection, true) {
+            warn!(
+                %error,
+                "could not record that deletions are withheld for the replaced folder; they are \
+                 withheld until this daemon restarts"
+            );
+        }
+    }
+
+    /// The count a demotion carries ([`UnavailablePair::recorded_items`]): what this runtime's
+    /// baseline records as the planner sees it, read now while the connection still answers — or
+    /// the count it carried itself, whichever is larger, since a runtime whose first pass never
+    /// completed still has the fresh index the carried count stands in for. **A baseline that
+    /// cannot be counted is carried as such** ([`CarriedCount::Unreadable`]), never as zero: a
+    /// positive count that is known stands, and anything else that is not known is unknown.
+    fn recorded_items_to_carry(&self) -> CarriedCount {
+        // The greater of what the database reports and what the last pass knew in memory: with the
+        // default layout the database may have gone with the folder, and the adoptions the pass
+        // kept never reached it. A database that cannot be read is still `Unreadable` below.
+        let own = recorded_item_count(&self.connection, &self.scan_options)
+            .map_err(|error| warn!(%error, "could not read how many items the baseline records"))
+            .ok()
+            .map(|reported| reported.max(self.items_known_in_memory));
+        match (own, self.carried_recorded_items) {
+            (Some(own), CarriedCount::Absent) => CarriedCount::Items(own),
+            (Some(own), CarriedCount::Items(carried)) => CarriedCount::Items(own.max(carried)),
+            (Some(own), CarriedCount::Unreadable) if own > 0 => CarriedCount::Items(own),
+            (None, CarriedCount::Items(carried)) if carried > 0 => CarriedCount::Items(carried),
+            (Some(_), CarriedCount::Unreadable)
+            | (None, CarriedCount::Absent | CarriedCount::Items(_) | CarriedCount::Unreadable) => {
+                CarriedCount::Unreadable
+            }
+        }
+    }
+
+    /// Why this pair is no longer running on its own state, or `None` while it is: the index or
+    /// the lockfile it holds open is not the file at its path any more (ADR 0005, the 4b note,
+    /// item 8). **Only a definite answer counts** ([`StateStatus`]): a look that failed is not a
+    /// removed state.
+    fn removed_state(&self) -> Option<String> {
+        match self.state_status() {
+            StateStatus::Removed(reason) => Some(reason),
+            StateStatus::Intact | StateStatus::Unreadable(_) => None,
+        }
+    }
+
+    /// What one look at the index and the lockfile found.
+    ///
+    /// The default layout keeps both inside the folder. A folder deleted and made again takes them
+    /// with it, and the pair is left with a connection that refuses every write and a lock that
+    /// protects nothing — while the paths name fresh files. A missing file counts as gone: nothing
+    /// it could still be holding is reachable by name. **A definite removal wins over a look that
+    /// failed**, whichever file answered which.
+    fn state_status(&self) -> StateStatus {
+        let mut unreadable = None;
+        for part in [self.index_status(), self.lock_status()] {
+            match part {
+                StateStatus::Removed(reason) => return StateStatus::Removed(reason),
+                StateStatus::Unreadable(cause) => {
+                    unreadable.get_or_insert(cause);
+                }
+                StateStatus::Intact => {}
+            }
+        }
+        unreadable.map_or(StateStatus::Intact, StateStatus::Unreadable)
+    }
+
+    /// Whether the index this pair holds open is still the file at its path.
+    fn index_status(&self) -> StateStatus {
+        let path = &self.config.db_path;
+        let removed = || {
+            StateStatus::Removed(state_removed_reason(&format!(
+                "the index {}",
+                path.display()
+            )))
+        };
+        match FileIdentity::look(path) {
+            Look::Gone => removed(),
+            Look::Present(now) => match self.db_identity {
+                Some(opened) if opened != now => removed(),
+                Some(_) | None => StateStatus::Intact,
+            },
+            Look::Unreadable(error) => {
+                StateStatus::Unreadable(format!("the index {}: {error}", path.display()))
+            }
+        }
+    }
+
+    /// Whether the lockfile this pair holds is still the file at its path.
+    fn lock_status(&self) -> StateStatus {
+        let path = &self.config.lockfile_path;
+        match self._lock_guard.is_the_file_at(path) {
+            Look::Present(()) => StateStatus::Intact,
+            Look::Gone => StateStatus::Removed(state_removed_reason(&format!(
+                "the lockfile {}",
+                path.display()
+            ))),
+            Look::Unreadable(error) => {
+                StateStatus::Unreadable(format!("the lockfile {}: {error}", path.display()))
+            }
+        }
+    }
+
+    /// What one look at this pair's folder and state found, before its pass (see
+    /// [`Examination`]). Pure: it reads, and the daemon acts on what it says.
+    ///
+    /// **One question is asked whichever way the folder stopped being the one the pair ran on**: the
+    /// directory at the path is a different one, *or* the index or the lock went with it. If that
+    /// folder holds nothing the pair's own rules would keep over a baseline that records items, a
+    /// pass would plan the deletion of everything recorded (executed outright where the guard is
+    /// off), and re-preparing the pair in it would download the whole remote into it: both are
+    /// refused here ([`Examination::EmptyReplacement`]), before anything is created or opened. The
+    /// baseline is read through the connection this pair still holds, which works on a file that
+    /// has been unlinked.
+    fn examine(&self) -> Examination {
+        let root = &self.config.local_root;
+        let current = match look_at_root(root) {
+            Look::Present(current) => current,
+            Look::Gone => return Examination::FolderGone,
+            Look::Unreadable(error) => {
+                return Examination::Unreadable(format!("the folder {}: {error}", root.display()));
+            }
+        };
+        let state = self.state_status();
+        // A folder the filesystem cannot name consistently is never "replaced" here
+        // (`RootRecord::PresenceOnly`); its state's presence is still checked below.
+        let replaced = matches!(
+            self.known_root,
+            RootRecord::Recorded(known) if !known.is_same_directory(&current)
+        );
+        let removed = matches!(state, StateStatus::Removed(_));
+        if replaced || removed {
+            match self.recorded_under_an_empty_folder() {
+                Recorded::Items(recorded) => {
+                    return Examination::EmptyReplacement(StandingCause::ReplacedByEmptyFolder {
+                        recorded,
+                    });
+                }
+                Recorded::Uncounted => {
+                    return Examination::EmptyReplacement(
+                        StandingCause::ReplacedByEmptyFolderUncounted,
+                    );
+                }
+                Recorded::Nothing => {}
+                Recorded::CannotTell(cause) => return Examination::CannotJudge(cause),
+            }
+        }
+        match state {
+            StateStatus::Removed(reason) => Examination::StateRemoved(reason),
+            StateStatus::Unreadable(cause) => Examination::Unreadable(cause),
+            StateStatus::Intact if replaced => Examination::Replaced(current),
+            // No record to compare against (the look at open failed): this look is the record.
+            StateStatus::Intact if self.known_root == RootRecord::Unrecorded => {
+                Examination::Unrecorded(current)
+            }
+            StateStatus::Intact => Examination::Intact,
+        }
+    }
+
+    /// How many records the pair's baseline holds **as the planner sees it** (after the pair's own
+    /// selective-sync filters), when the folder at its root holds nothing the scan would keep — the
+    /// state in which a pass would plan to delete everything recorded (ADR 0005, the 4b note, item
+    /// 9). [`Recorded::Nothing`] when the folder has syncable content or nothing is recorded;
+    /// [`Recorded::CannotTell`] when either could not be established, which **fails closed**: a
+    /// folder that cannot be searched, or a baseline that cannot be read, is not evidence the folder
+    /// may be accepted.
+    fn recorded_under_an_empty_folder(&self) -> Recorded {
+        match local_tree_holds_syncable_entry(&self.config.local_root, &self.scan_options) {
+            Ok(false) => {}
+            Ok(true) => return Recorded::Nothing,
+            Err(error) => {
+                return Recorded::CannotTell(format!("the folder could not be searched: {error}"));
+            }
+        }
+        let recorded = match recorded_item_count(&self.connection, &self.scan_options) {
+            Ok(recorded) => recorded,
+            Err(error) => {
+                return Recorded::CannotTell(format!("the baseline could not be read: {error}"));
+            }
+        };
+        // This index may be the fresh one a promotion opened in the folder (item 14): the count
+        // the dropped baseline recorded is what an empty folder would be the deletion of. A count
+        // nobody could read is not zero (item 15): it is only "uncounted" when this index has
+        // nothing to say either.
+        let recorded = match self.carried_recorded_items {
+            CarriedCount::Absent => recorded,
+            CarriedCount::Items(carried) => recorded.max(carried),
+            CarriedCount::Unreadable if recorded == 0 => return Recorded::Uncounted,
+            CarriedCount::Unreadable => recorded,
+        };
+        if recorded == 0 {
+            Recorded::Nothing
+        } else {
+            Recorded::Items(recorded)
+        }
+    }
+}
+
+/// How many items a baseline records **as the planner sees it** (after the pair's own selective-sync
+/// filters) — what an empty folder over it would be the deletion of. One definition, read by the
+/// examination and by the demotion that carries it.
+fn recorded_item_count(connection: &Connection, scan_options: &ScanOptions) -> AppResult<usize> {
+    Ok(filter_base_index(load_index(connection)?, scan_options).len())
+}
+
+/// How many synced or adopted items a pass knows about once it has planned: the baseline as the
+/// planner sees it (`base_index` is already filtered) plus the adoptions the plan makes at paths
+/// the baseline does not hold. **The same unit as [`recorded_item_count`]** — a record per path —
+/// so the two compare, and a demotion takes the greater of them.
+fn items_known_to_a_pass(
+    base_index: &HashMap<PathBuf, FileRecord>,
+    plan: &[PlannedAction],
+) -> usize {
+    base_index.len()
+        + plan
+            .iter()
+            .filter(|action| {
+                action.action == SyncAction::AutoLink && !base_index.contains_key(&action.path)
+            })
+            .count()
+}
+
+/// What one look at a ready pair's index and lockfile found ([`PairRuntime::state_status`]).
+#[derive(Debug, PartialEq, Eq)]
+enum StateStatus {
+    /// Both are still the files this pair holds.
+    Intact,
+    /// One of them is not (the reason says which): the state went with the folder.
+    Removed(String),
+    /// A look failed with something other than "not found": no answer, so no decision.
+    Unreadable(String),
+}
+
+/// What [`PairRuntime::recorded_under_an_empty_folder`] found.
+#[derive(Debug, PartialEq, Eq)]
+enum Recorded {
+    /// The folder has syncable content, or nothing is recorded: nothing an empty folder could be
+    /// mistaken for the deletion of.
+    Nothing,
+    /// The folder holds nothing the pair would keep, and this many items are recorded for it.
+    Items(usize),
+    /// The folder holds nothing the pair would keep, and the baseline the demotion dropped could
+    /// not be counted ([`CarriedCount::Unreadable`]): assumed to record items.
+    Uncounted,
+    /// Either could not be established.
+    CannotTell(String),
+}
+
+/// What [`PairRuntime::examine`] found, and what `Daemon::examine_ready_pair` does about it.
+#[derive(Debug, PartialEq, Eq)]
+enum Examination {
+    /// The folder is the one the pair runs on, and its state is the state it holds.
+    Intact,
+    /// The folder is not a directory right now. The typed pass error reports it, once, and its
+    /// state being gone with it is a consequence, not a second cause.
+    FolderGone,
+    /// A different directory is at the path, with content or with nothing recorded to lose: it is
+    /// accepted as the pair's folder, and watched and scanned — with every deletion its first pass
+    /// plans withheld for approval ([`PairRuntime::force_delete_approval`]).
+    Replaced(RootIdentity),
+    /// The folder is there and the state intact, and the pair has no record of which directory it
+    /// runs on (the look at open failed): this one is recorded, and nothing else happens.
+    Unrecorded(RootIdentity),
+    /// The index or the lockfile went with a folder that has content: the pair is prepared again.
+    StateRemoved(String),
+    /// A folder that is not the one the pair ran on (or whose state went with it) holds nothing,
+    /// over a baseline that records items — or whose count could not be read: the pair is held on
+    /// the cause, and nothing is created or opened.
+    EmptyReplacement(StandingCause),
+    /// A look failed with something other than "not found": the pair is left as it is.
+    Unreadable(String),
+    /// The folder is not the one the pair ran on and could not be judged (see
+    /// [`Recorded::CannotTell`]): the pair is left as it is and its pass does not start.
+    CannotJudge(String),
 }
 
 impl<C: ProtonClient> PairPass<'_, C> {
@@ -3316,6 +5197,23 @@ impl<C: ProtonClient> PairPass<'_, C> {
 
     /// The blocking half of [`Self::plan_now`] — see its docs for the inertness family.
     fn plan_only_blocking(&mut self) -> AppResult<StoredPlan> {
+        // Refused in the sync's own words, and **without** the once-per-cause latch or a demotion:
+        // this pass observes and consumes nothing. Without the first check the scan trips over the
+        // missing folder and answers a bare OS error with no path; without the second it plans the
+        // new folder against an index that has no name and hands that over for review; without
+        // the third (item 14) it plans a replacement whose state is intact — `examine_ready_pair`
+        // runs on `Sync` jobs only, so a plan that asked whether *a* directory was there derived
+        // a plan from the replacement, rows the plan screen's typed-DELETE gate pins approvals to,
+        // which stand after the replacement is judged. The order is the sync's precedence (a
+        // missing folder, then state that went with it, then a different directory), and the
+        // third is asked again right after the scan, inside `build_plan_report`.
+        root_availability(&self.pair.config.local_root, None)?;
+        if let Some(reason) = self.pair.removed_state() {
+            return Err(boxed_error(format!(
+                "the folder pair is unavailable: {reason}"
+            )));
+        }
+        self.root_verdict().map_err(Box::new)?;
         info!("computing a plan-only pass");
         let base_records = load_index(&self.pair.connection)?;
         let local_root = self.pair.config.local_root.clone();
@@ -3333,6 +5231,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
         };
         let report = build_plan_report(
             &self.pair.config,
+            self.pair.known_root.expected(),
             self.proton.as_ref(),
             &self.pair.scan_options,
             base_records,
@@ -3350,6 +5249,128 @@ impl<C: ProtonClient> PairPass<'_, C> {
                 self.pair.config.local_delete_mode,
             ),
         })
+    }
+
+    /// Fails with the typed [`RootUnavailable`] when this pair's folder is not a directory right now
+    /// (ADR 0005 §6.4). Reported once per cause per pair: the first sight and every change of cause
+    /// speak, a standing one is silent, and the folder coming back says so and re-arms the latch.
+    ///
+    /// **Never creates the folder.** Only boot preparation does; a folder that vanished while the
+    /// daemon runs is gone, and a status write or a download that quietly made it again (both reach
+    /// `create_dir_all`) would hand the next pass an empty tree to reconcile against the remote.
+    ///
+    /// **A directory that is not the one this pair runs on is not available** — at the top of the
+    /// pass, right after the local scan (so a plan is only ever derived from a scan of the
+    /// directory the pair runs on), before anything about the pass is mutated, **before each
+    /// action** of the executor's loop (item 14 — so nothing executes on another directory),
+    /// **and again immediately before an upload or a remote move**, the two arms with a CLI child
+    /// of their own between the first look and their side effect (item 15), before every download
+    /// chunk, and again before the final commit. A look that fails with something other than "not
+    /// found" is no answer and ends the pass like a replacement does (fail closed).
+    /// Replaced mid-pass (an unmounted drive whose mount point stays a directory, a tree deleted
+    /// and made again by something else), it passes an `is_dir()` check and is not the folder the
+    /// pass started on: everything the pass did to it is a fact about a folder that is gone, and
+    /// the cursor must not claim it was applied. A folder that could not be judged this job
+    /// ([`PairRuntime::unjudged`]) is not available either. The verdict itself is
+    /// [`Self::root_verdict`], which the plan reads without this latch.
+    fn ensure_root_available(&mut self) -> AppResult<()> {
+        let root = &self.pair.config.local_root;
+        let verdict = self.root_verdict();
+        let error = match verdict {
+            Ok(()) => {
+                if self.pair.root_unavailable.take().is_some() {
+                    info!(root = %root.display(), "the folder is available again");
+                }
+                return Ok(());
+            }
+            Err(error) => error,
+        };
+        let cause = error.to_string();
+        if self.pair.root_unavailable.as_deref() != Some(cause.as_str()) {
+            warn!(
+                %cause,
+                "folder unavailable; this pair is skipped, and tried again at its next turn"
+            );
+            self.pair.root_unavailable = Some(cause);
+        }
+        Err(Box::new(error))
+    }
+
+    /// Whether this pair's folder is there, is the directory the pair runs on
+    /// ([`PairRuntime::known_root`]) and could be judged this job ([`PairRuntime::unjudged`]) —
+    /// **the one verdict**, read with the once-per-cause latch by [`Self::ensure_root_available`]
+    /// and without it by the plan, which observes and consumes nothing.
+    fn root_verdict(&self) -> Result<(), RootUnavailable> {
+        let root = &self.pair.config.local_root;
+        match &self.pair.unjudged {
+            Some(cause) => Err(RootUnavailable {
+                root: root.clone(),
+                detail: cause.clone(),
+            }),
+            None => root_availability(root, self.pair.known_root.expected()),
+        }
+    }
+
+    /// Lands the index-only work the executor's loop has accumulated since its last checkpoint,
+    /// right before the pass ends [`RootUnavailable`] (item 15). **Every exit of the loop for that
+    /// cause calls this**: the top-of-action look, an arm that met the cause, a download run and the
+    /// check after the loop.
+    ///
+    /// What is kept is what the next checkpoint would have carried had a side-effecting action
+    /// come next: adoptions and purges derived from the scan that the post-scan identity check
+    /// validated. A first sync's adoptions are all of that kind, so a large one on a mount whose
+    /// `stat` fails now and then no longer starts over from the scan each time — and a first sync
+    /// whose folder is then replaced by an empty one, with the state outside the folder, has a
+    /// baseline that records what it adopted, which is what holds the replacement. **With the
+    /// default layout it cannot**: the index went with the folder, so this commit has nowhere to
+    /// land; the replacement is held by the count the pass knew in memory instead
+    /// ([`PairRuntime::items_known_in_memory`], which the demotion carries beside the database's).
+    /// **Best effort**: a commit that fails is said and the pass ends with the cause it already
+    /// had, since the next pass derives the work again.
+    fn keep_accumulated_work(
+        &mut self,
+        index_mutations: &mut Vec<IndexMutation>,
+        pending_approval_consumptions: &mut Vec<(PathBuf, DeleteDirection)>,
+    ) {
+        if let Err(error) = commit_checkpoint(
+            &mut self.pair.connection,
+            index_mutations,
+            pending_approval_consumptions,
+            &mut self.pair.pass_log,
+            self.pair_shared,
+            &self.pair.config.local_root,
+        ) {
+            warn!(
+                %error,
+                "could not keep the work this pass had done before its folder became unavailable; \
+                 the next pass derives it again"
+            );
+        }
+    }
+
+    /// The executor's directory creation: below this pair's root, never the root itself, and only
+    /// while the root is still the directory the pass started on ([`ensure_directory_below`]).
+    fn ensure_parent_directory(&self, path: &Path) -> AppResult<()> {
+        ensure_parent_directory_below(
+            &self.pair.config.local_root,
+            self.pair.known_root.expected(),
+            path,
+        )
+    }
+
+    /// The status-history entry for an attempt that found the folder gone: pushed in memory, **never
+    /// persisted**, and a repeat of the same cause moves the newest entry's time instead of adding
+    /// one (see [`record_repeatable_status_entry`]).
+    fn record_unavailable_status(&mut self, message: &str) {
+        let entry = StatusHistoryEntry {
+            epoch_secs: current_epoch_secs(),
+            message: message.to_owned(),
+            last_error: self.pair.last_error.clone(),
+            plan_summary: self.pair.last_plan_summary.clone(),
+            successful_sync_summary: self.pair.last_successful_sync_summary.clone(),
+            failed_item_count: self.pair.last_failed_item_count,
+        };
+        record_repeatable_status_entry(&mut self.pair.status_history, entry);
     }
 
     fn reconcile_blocking(&mut self) -> AppResult<PassOutcome> {
@@ -3401,6 +5422,20 @@ impl<C: ProtonClient> PairPass<'_, C> {
                 self.pair.last_error = Some(summary);
                 format!("sync completed with {failed} failed item(s)")
             }
+            // The folder is not there, so nothing ran (`ensure_root_available`): there is no pass to
+            // describe, and so no `sync_passes` row — one per attempt, at the pair's cadence, would
+            // bury the history that matters. Still an attempt a waiting client is owed an answer to.
+            Err(error) if is_root_unavailable_error(error.as_ref()) => {
+                let cause = error.to_string();
+                // A pass that lost its folder AFTER landing something (`ensure_root_available`
+                // runs again before the final commit) has a row, opened `interrupted` by its first
+                // checkpoint. It ended gracefully, and `interrupted` is what only a crash leaves.
+                if self.pair.pass_log.id.is_some() {
+                    self.finalize_pass_record(PassOutcomeKind::Failed, 0, Some(&cause));
+                }
+                self.pair.last_error = Some(cause);
+                "folder unavailable".to_owned()
+            }
             Err(error) => {
                 let error = error.to_string();
                 // Reachable by a shutdown mid-plan too, which is why `interrupted` never is: every
@@ -3410,15 +5445,24 @@ impl<C: ProtonClient> PairPass<'_, C> {
                 "sync failed".to_owned()
             }
         };
+        let folder_unavailable =
+            matches!(&result, Err(error) if is_root_unavailable_error(error.as_ref()));
         // Seal this pass's apply verdict (#100), before the reply that carries it is publishable.
         // Every exit seals: a pass that never reached the comparison — a failed scan, a failed
         // listing — would otherwise leave its client polling a request nothing will ever answer.
         self.seal_apply_outcome(&result);
-        // Before `record_status_history`, which snapshots into the metrics sidecar: refreshing
-        // after it would publish this pass's history beside the previous pass's corpus size.
-        // Runs on every outcome, not just `Ok` — see `index_totals_stale`.
-        self.refresh_index_totals();
-        self.record_status_history(&message);
+        if folder_unavailable {
+            // In memory only, and a standing cause is one entry: the pair's directory — where the
+            // sidecars live — may be exactly what is missing, and `write_atomically` would create
+            // it, which is a missing root brought back to life by a status write.
+            self.record_unavailable_status(&message);
+        } else {
+            // Before `record_status_history`, which snapshots into the metrics sidecar: refreshing
+            // after it would publish this pass's history beside the previous pass's corpus size.
+            // Runs on every outcome, not just `Ok` — see `index_totals_stale`.
+            self.refresh_index_totals();
+            self.record_status_history(&message);
+        }
         // The attempt is complete (recorded either way): bump the sequence a waiting client
         // watches, then publish the final state of this pass.
         self.pair_shared
@@ -3457,12 +5501,21 @@ impl<C: ProtonClient> PairPass<'_, C> {
     }
 
     fn reconcile_blocking_inner(&mut self) -> AppResult<PassOutcome> {
-        info!("starting reconciliation");
         // What this pass was asked to do (#100). Taken once, here, so every downstream branch —
         // warm start, incremental, bootstrap — reaches the same single check in
         // `execute_plan_and_commit`, whichever remote map it ends up planning against.
         self.pair.pass_intent = self.pair_shared.take_apply_request();
         self.pair.apply_report = None;
+        // **After the apply is taken and before anything else**, and both halves of that are the
+        // point. After: the request is this pass's, so `reconcile_blocking` seals it with the
+        // error — a client polling an apply must be answered. Before: the event-source reacquire
+        // below spawns a keyring read, and the `resync`/`reset_index` latches below are *consumed*
+        // by a `swap` — a latch consumed by a pass that did nothing is a request that evaporated,
+        // so a `reset-index` made while the folder is gone has to survive until it returns. It is
+        // also what stops the events-mode idle fast-path reporting `Clean` (and moving the cursor)
+        // over a folder that is not there.
+        self.ensure_root_available()?;
+        info!("starting reconciliation");
         // Recover event-driven detection if it was disabled at startup because the keyring was
         // still locked (the boot race). No-op once a source exists or when the feature is off.
         self.reacquire_event_source_if_needed();
@@ -3494,7 +5547,25 @@ impl<C: ProtonClient> PairPass<'_, C> {
             .pair_shared
             .force_full_walk
             .swap(false, Ordering::SeqCst);
+        let result = self.reconcile_with_latches(resync_requested);
+        // **A latch is consumed by being acted on.** A pass that ends because its folder went away
+        // or was replaced (the final check, after the work) did not do the full walk it was asked
+        // for, and the request must not evaporate with it: it is latched again, for the pass that
+        // does run. Any other ending keeps the old behaviour — a failed pass of another kind has
+        // not been asked to repeat itself.
+        if resync_requested
+            && matches!(&result, Err(error) if is_root_unavailable_error(error.as_ref()))
+        {
+            self.pair_shared
+                .force_full_walk
+                .store(true, Ordering::SeqCst);
+        }
+        result
+    }
 
+    /// The rest of [`Self::reconcile_blocking_inner`], once the `resync` latch has been taken:
+    /// `resync_requested` is what that latch said.
+    fn reconcile_with_latches(&mut self, resync_requested: bool) -> AppResult<PassOutcome> {
         // `reset_index` is applied BEFORE the baseline is loaded, or this pass would plan against
         // the very rows it just erased. Consumed with the same `swap`-once discipline as the
         // resync latch, and on the main loop — never from the IPC task, which holds its own
@@ -3515,6 +5586,11 @@ impl<C: ProtonClient> PairPass<'_, C> {
             self.pair.is_first_reconcile = true;
             self.pair.force_local_rescan = true;
             self.pair.incremental_passes_since_full_scan = 0;
+            // The user asked to start over: the baseline this stood in for is discarded with the
+            // rest (the persisted force went with the truncation; the in-memory one is spent by
+            // this pass, which plans no deletion).
+            self.pair.carried_recorded_items = CarriedCount::Absent;
+            self.pair.items_known_in_memory = 0;
             warn!("index reset: baseline, event cursors and delete approvals discarded");
         }
 
@@ -3981,6 +6057,12 @@ impl<C: ProtonClient> PairPass<'_, C> {
         }
 
         let local_scan = self.scan_local_entities_reporting_progress(base_records)?;
+        // Right after the scan, so a plan can only ever be derived from a scan of the directory
+        // `known_root` names: the window between the check at the top of the pass and the scan
+        // holds the keyring read, the event fetch and the cursor capture, and a folder swapped in
+        // during it used to be scanned as the user's own — an empty replacement reading as "delete
+        // everything recorded", executed before the final check could see it.
+        self.ensure_root_available()?;
         let local_files = local_files_from_entities(&local_scan.entities);
         let base_index = filter_base_index(base_records.clone(), &self.pair.scan_options);
 
@@ -4117,6 +6199,10 @@ impl<C: ProtonClient> PairPass<'_, C> {
         let pre_snapshot_cursor = self.capture_pre_snapshot_cursor(&base_records);
 
         let local_scan = self.scan_local_entities_reporting_progress(&base_records)?;
+        // Same check, same reason as the incremental path's: the scan this plan is derived from
+        // must be a scan of the directory the pair runs on. Here the window before the scan holds
+        // the event-source reacquire and the pre-snapshot cursor capture.
+        self.ensure_root_available()?;
         let local_files = local_files_from_entities(&local_scan.entities);
         // The client's progress sink updates the per-folder count/path from inside the walk;
         // this just flips the phase so status shows "listing remote" the moment it starts.
@@ -4518,6 +6604,18 @@ impl<C: ProtonClient> PairPass<'_, C> {
                 skip_destructive
             }
         };
+        // Before anything about the pass is mutated — the published summary, the withheld ages,
+        // the pending list: a directory swapped in since the scan (the remote walk between them
+        // can take minutes) is not the one this plan describes. Typed, so the pass ends with the
+        // cursor held and every latch where it was, and the next job judges the replacement. The
+        // side effects themselves are guarded one by one, at the top of the loop below.
+        //
+        // **What this pass knows, noted first**: a pass that ends `RootUnavailable` from here on —
+        // this look included — leaves the pair with a baseline that may not record what the pass
+        // had adopted (the default layout's index went with the folder), and the demotion reads
+        // this figure beside the database's.
+        self.pair.items_known_in_memory = items_known_to_a_pass(base_index, &plan);
+        self.ensure_root_available()?;
         let plan_summary = PlanSummary::from_outcome(&plan, matched_files);
         // Only a planned action mutates the index, so an empty plan provably cannot move the
         // totals — that is what keeps an idle pass free of the aggregate query.
@@ -4544,7 +6642,21 @@ impl<C: ProtonClient> PairPass<'_, C> {
             pending,
             consumed_approvals: approved_deletes,
             withheld: _,
+            forced,
         } = self.decide_delete_gate(&plan, base_index)?;
+        // Item 13: the force an accepted replacement put on this pair ends with the first pass that
+        // reaches its gate and withholds nothing for it — decided here, applied when the pass
+        // completes (the `Ok` below), so a pass that ends `RootUnavailable` after this point leaves
+        // the next one still owing it.
+        let replacement_settled = self.pair.force_delete_approval && forced == 0;
+        if forced > 0 {
+            info!(
+                withheld = forced,
+                "the folder was replaced or restored since the last pass, so the deletions this \
+                 pass plans wait for approval whatever the delete-approval policy says; approve \
+                 them, restore the files, or run `reset-index` to start the folder over"
+            );
+        }
         // A withheld deletion originates from ground truth (a remote-delete event, or a missing
         // local file). If any deletion is withheld this pass, do NOT advance the event cursor:
         // otherwise a withheld `LocalDelete`'s originating event would fall out of future deltas
@@ -4623,6 +6735,35 @@ impl<C: ProtonClient> PairPass<'_, C> {
                     "reconciliation cancelled: the daemon is shutting down",
                 ));
             }
+            // THE check that makes "nothing executes on another directory" true action by action
+            // (ADR 0005, the 4b note, item 14): one `stat` at the top of every action, for every
+            // arm, before anything in it runs. The check before this loop guards the pass's own
+            // state; this one guards each side effect, because the folder can be swapped between
+            // any two actions — a `LocalDelete` landing after the swap disposed of the
+            // replacement's own files at the planned paths (for good in `permanent` mode, a whole
+            // subtree for a directory), and an `Upload` pushed the replacement's bytes under the
+            // planned path while recording the scan's digest. Typed, so the pass ends with the
+            // cursor held, the checkpoints that landed kept, and this action without a side
+            // effect. The batched download run below checks the same way before each of its
+            // chunks, which are its side effects; the arms' own directory creation
+            // (`ensure_directory_below`) checks once more because it is the one place a directory
+            // is made and must not make the root — that is the creation primitive's rule, not a
+            // second statement of this one.
+            //
+            // **Before each action, and again immediately before an upload or a remote move**
+            // (item 15) — not "literally per action": the two arms with a CLI child of their own
+            // between this look and their side effect look again after it. **Fails closed on a
+            // look that failed** (`EIO`/`ESTALE` on a network mount is no answer and is treated as
+            // the folder not being available): the pass ends, and the index-only work it had
+            // accumulated is kept first, because that work was derived from the scan the post-scan
+            // check validated and is what the next checkpoint would have carried.
+            if let Err(error) = self.ensure_root_available() {
+                self.keep_accumulated_work(
+                    &mut index_mutations,
+                    &mut pending_approval_consumptions,
+                );
+                return Err(error);
+            }
             let action = &plan[action_number];
             // #192, and it is a skip at the executor rather than a filter over the plan.
             //
@@ -4658,7 +6799,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
                     .take_while(|action| action.action == SyncAction::Download)
                     .count();
                 if run_length > 1 {
-                    vanished_nodes += self.execute_download_run(
+                    match self.execute_download_run(
                         &plan[action_number..action_number + run_length],
                         action_number,
                         action_total,
@@ -4669,7 +6810,20 @@ impl<C: ProtonClient> PairPass<'_, C> {
                         &mut index_mutations,
                         &mut pending_approval_consumptions,
                         &mut failures,
-                    )?;
+                    ) {
+                        Ok(vanished) => vanished_nodes += vanished,
+                        Err(error) => {
+                            // A run that ends because its folder is not available keeps what the
+                            // loop had accumulated, like every other exit of it (item 15).
+                            if is_root_unavailable_error(error.as_ref()) {
+                                self.keep_accumulated_work(
+                                    &mut index_mutations,
+                                    &mut pending_approval_consumptions,
+                                );
+                            }
+                            return Err(error);
+                        }
+                    }
                     action_number += run_length;
                     continue;
                 }
@@ -4748,6 +6902,17 @@ impl<C: ProtonClient> PairPass<'_, C> {
                                     "uploading file to Proton Drive"
                                 );
                             }
+                            // **Again, immediately before the CLI child that reads the file**
+                            // (item 15). The look at the top of this action came before
+                            // `ensure_directory` — a child of its own that takes about a second —
+                            // and a folder swapped inside it had the replacement's bytes uploaded
+                            // under the planned path while the scan's digest was recorded. A swap
+                            // during the upload's own transfer cannot be closed by any look; the
+                            // check before the final commit holds the cursor for that one.
+                            if let Err(error) = self.ensure_root_available() {
+                                finish_transfer_spinner(spinner);
+                                return Err(error);
+                            }
                             let result = self.proton.upload(
                                 &local.absolute_path,
                                 &self.pair.config.remote_root,
@@ -4798,7 +6963,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
                             );
                             return Ok(());
                         };
-                        ensure_parent_directory(&destination)?;
+                        self.ensure_parent_directory(&destination)?;
                         transfer_index += 1;
                         // `bytes_total` stays unknown (the remote listing carries no size), but
                         // `bytes_done` is sampled live from the staging directory the client
@@ -4891,7 +7056,11 @@ impl<C: ProtonClient> PairPass<'_, C> {
                         if let Some(destination) =
                             safe_local_path(&self.pair.config.local_root, &action.path)
                         {
-                            fs::create_dir_all(&destination)?;
+                            ensure_directory_below(
+                                &self.pair.config.local_root,
+                                self.pair.known_root.expected(),
+                                &destination,
+                            )?;
                             let local_state =
                                 local_directory_state(&self.pair.config.local_root, &destination)?;
                             let record = FileRecord::from_local_directory(
@@ -4915,7 +7084,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
                             && let Some(destination) =
                                 safe_local_path(&self.pair.config.local_root, destination_path)
                         {
-                            ensure_parent_directory(&destination)?;
+                            self.ensure_parent_directory(&destination)?;
                             fs::rename(&source, &destination)?;
                             self.pair.pass_log.note_move(
                                 SyncAction::MoveLocal,
@@ -4997,6 +7166,10 @@ impl<C: ProtonClient> PairPass<'_, C> {
                                 self.proton
                                     .ensure_directory(&self.pair.config.remote_root, parent)?;
                             }
+                            // Again, after the CLI child above and immediately before the rename
+                            // it makes room for (item 15): the record written below is the scan's
+                            // view of a folder that must still be the one the pair runs on.
+                            self.ensure_root_available()?;
                             self.proton.rename_or_move(
                                 &self.pair.config.remote_root,
                                 &action.path,
@@ -5089,7 +7262,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
                                     }
                                 }
                                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                                    ensure_parent_directory(&destination)?;
+                                    self.ensure_parent_directory(&destination)?;
                                     copy_into_new_file(&local.absolute_path, &destination)?;
                                 }
                                 Err(error) => return Err(error.into()),
@@ -5101,7 +7274,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
                             && let Some(destination) =
                                 safe_local_path(&self.pair.config.local_root, conflict_path)
                         {
-                            ensure_parent_directory(&destination)?;
+                            self.ensure_parent_directory(&destination)?;
                             let result = self.proton.download(&remote_path, &destination);
                             // Skipping the sidecar means skipping the `Conflict` record below
                             // too: a conflict with no sidecar has no exit and is invisible to the
@@ -5152,7 +7325,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
                                 && let Some(destination) =
                                     safe_local_path(&self.pair.config.local_root, conflict_path)
                             {
-                                ensure_parent_directory(&destination)?;
+                                self.ensure_parent_directory(&destination)?;
                                 let result = self.proton.download(&remote_path, &destination);
                                 // Same whole-action skip as the `Conflict` arm: without its
                                 // sidecar the type clash has no exit, so the directory record is
@@ -5295,6 +7468,22 @@ impl<C: ProtonClient> PairPass<'_, C> {
                 if self.cancel_flag.load(Ordering::SeqCst) {
                     return Err(error);
                 }
+                // So does a folder that is gone, or is not the one this pass started on: it is
+                // not this action's fault either, and no action after it has anywhere to land.
+                // Typed so the pass ends `RootUnavailable` — cursor held, nothing recorded as a
+                // failed item — and not as an abandoned pass of N identical failures.
+                if is_root_unavailable_error(error.as_ref()) {
+                    // This action's own queue is discarded like any failed action's; what the
+                    // loop accumulated before it is kept (item 15).
+                    index_mutations.truncate(mutations_before);
+                    pending_approval_consumptions.truncate(consumptions_before);
+                    self.pair.pass_log.truncate(events_before);
+                    self.keep_accumulated_work(
+                        &mut index_mutations,
+                        &mut pending_approval_consumptions,
+                    );
+                    return Err(error);
+                }
                 // Discard whatever this action queued: its side effect did not land, so its index
                 // write must not either (the commit-after-side-effects invariant). It re-plans next
                 // pass, from ground truth, exactly as a pass-fatal failure used to.
@@ -5325,9 +7514,31 @@ impl<C: ProtonClient> PairPass<'_, C> {
             action_number += 1;
         }
 
-        // ONE cursor policy, four causes. A withheld delete (above), a node that vanished mid-pass,
-        // an item whose action failed, and a destructive row a filtered apply dropped are all the
-        // same statement: this pass did not apply everything the remote delta describes. Advancing
+        // The folder can go away after the check at the top of the pass — an unplugged drive, a
+        // deleted tree, while a walk or a transfer was running. Every download after that is
+        // refused (its destination no longer has a root) and logs a warning, which looks like
+        // nothing to the loop above: the pass would end `Clean` and claim the newer cursor, and the
+        // files it skipped would never be asked for again.
+        //
+        // **Before the final commit, and it returns**: the cursor is part of that commit, so it is
+        // held — the fifth cause of the one policy below. Checkpoints that landed stay (they are
+        // real side effects, already committed), and so does the index-only tail, as at the top of
+        // every action (item 15): it was derived from the scan the post-scan check validated, and
+        // dropping it only made a large adoption start over from the scan — or, worse, left an empty
+        // replacement of a first sync's folder with a baseline that recorded nothing to hold it
+        // by (with the state outside the folder; with the default layout the index went with the
+        // folder and this commit cannot land, so the count the pass planned with, noted in memory
+        // when the plan existed, holds the replacement instead). The next pass takes the missing-folder path and the pair's `force_local_rescan` is
+        // still owed.
+        if let Err(error) = self.ensure_root_available() {
+            self.keep_accumulated_work(&mut index_mutations, &mut pending_approval_consumptions);
+            return Err(error);
+        }
+
+        // ONE cursor policy, four causes (a fifth, a folder that vanished during the pass, is the
+        // return above). A withheld delete (above), a node that vanished mid-pass, an item whose
+        // action failed, and a destructive row a filtered apply dropped are all the same statement:
+        // this pass did not apply everything the remote delta describes. Advancing
         // past it would drop the originating event from every future delta — `reconstruct_remote`
         // overlays only the *new* delta onto the surviving baseline — so the unapplied change would
         // never be re-derived. Held, the next pass re-derives it from ground truth, which also keeps
@@ -5389,11 +7600,20 @@ impl<C: ProtonClient> PairPass<'_, C> {
         for (path, direction) in &pending_approval_consumptions {
             delete_delete_approval(&transaction, path, *direction)?;
         }
+        // The force is spent in the same transaction as the pass that spends it (item 14), so a
+        // restart between the two cannot find it standing or spent on its own.
+        if replacement_settled {
+            store_forced_delete_approval(&transaction, false)?;
+        }
         // Whatever the last checkpoint did not carry (an index-only tail, or the events of an
         // action that needs no checkpoint of its own).
         let pass_id = self.pair.pass_log.write_pending(&transaction)?;
         transaction.commit()?;
         self.pair.pass_log.note_committed(pass_id, self.pair_shared);
+        // A pass completed on this runtime, so its baseline is the real one and the count carried
+        // from before the demotion has nothing left to stand in for.
+        self.pair.carried_recorded_items = CarriedCount::Absent;
+        self.pair.items_known_in_memory = 0;
         // `pending_changes` is a wake-up/status hint, not a plan input, and every pass that
         // reaches this commit ran the local stat-walk (the events-mode idle fast-path returns
         // before `execute_plan_and_commit`), so clearing the whole set here cannot lose work: the
@@ -5415,6 +7635,13 @@ impl<C: ProtonClient> PairPass<'_, C> {
         let outcome = failures.outcome();
         self.pair.last_failed_items = std::mem::take(&mut failures.items);
         self.pair.last_failed_item_count = failures.count;
+        if replacement_settled {
+            self.pair.force_delete_approval = false;
+            info!(
+                "a pass completed with no deletion withheld for the replaced folder; deletions \
+                 follow the configured delete-approval policy again"
+            );
+        }
         // #100: the apply reached a verdict. Recorded here rather than by `seal_apply_outcome`
         // because only this frame knows what actually ran — and recorded on a partial pass too,
         // since "some of what you authorised failed" is an applied plan with failures, not a
@@ -5549,8 +7776,15 @@ impl<C: ProtonClient> PairPass<'_, C> {
         let mut vanished_nodes = 0usize;
         for (parent, members) in &groups {
             if let Some(first) = members.first()
-                && let Err(error) = ensure_parent_directory(&first.request.destination)
+                && let Err(error) = self.ensure_parent_directory(&first.request.destination)
             {
+                // The folder is gone, or is not the one this pass started on: that is the pass's
+                // story, not this group's, and no group after it has anywhere to land. Typed, so
+                // the pass ends `RootUnavailable` at once — the same rule as the per-action loop's
+                // — rather than recording every member as a failed item and running on.
+                if is_root_unavailable_error(error.as_ref()) {
+                    return Err(error);
+                }
                 // This group's destination directory cannot be made (a file squatting on the name,
                 // a permissions problem). That is a failure of THIS group's files, not of the pass:
                 // the single-file arm fails per item here, so failing the pass would make the same
@@ -5569,6 +7803,11 @@ impl<C: ProtonClient> PairPass<'_, C> {
                         "reconciliation cancelled: the daemon is shutting down",
                     ));
                 }
+                // Before EVERY chunk, not only before the group: the folder can go between two
+                // chunks of one group, and the next chunk's staging used to make it again (the
+                // client's `create_dir_all`), empty but for what that chunk fetched. One `stat` per
+                // chunk, against the directory the pass started on.
+                self.ensure_root_available()?;
                 vanished_nodes += self.execute_download_chunk(
                     parent,
                     chunk,
@@ -5784,15 +8023,18 @@ impl<C: ProtonClient> PairPass<'_, C> {
                 .into_iter()
                 .map(|item| ((item.path.clone(), item.direction), item))
                 .collect();
+        // Item 13: the first pass after an accepted replacement withholds every deletion, however
+        // the policy is configured — the same gate, the same pending list, the same cursor hold.
+        let forced = self.pair.force_delete_approval;
         for action in plan {
             let Some(direction) = action.action.delete_direction() else {
                 continue;
             };
             let is_directory = action.entity_kind == EntityKind::Directory;
-            if !resolver
+            let guarded = resolver
                 .resolve(&action.path, is_directory)
-                .requires_approval(direction)
-            {
+                .requires_approval(direction);
+            if !guarded && !forced {
                 continue; // guard off for this path/direction → execute normally
             }
             let fingerprint = delete_fingerprint(action, base_index);
@@ -5818,6 +8060,9 @@ impl<C: ProtonClient> PairPass<'_, C> {
                 } else {
                     (None, None)
                 };
+                if !guarded {
+                    gate.forced += 1;
+                }
                 gate.withheld_paths.insert(action.path.clone());
                 gate.pending.push(PendingDeletion {
                     path: action.path.clone(),
@@ -6366,6 +8611,10 @@ struct ControlPlanePair {
     /// pair that is not ready ([`PairSlot::Unavailable`]): the verbs that need it answer with the
     /// pair's reason (`unavailable_pair_message`) rather than dropping the connection.
     approvals: tokio::sync::Mutex<Option<Connection>>,
+    /// The [`PairShared::runtime_generation`] `approvals` was opened under. A connection opened
+    /// under an older one is on an index the daemon no longer holds (the pair was prepared again —
+    /// the default layout's index goes with a deleted folder) and is replaced, not used.
+    opened_under: AtomicU64,
     metrics_path: PathBuf,
     remote_root: PathBuf,
 }
@@ -6417,6 +8666,68 @@ fn unavailable_pair_message(pair: &PairShared) -> String {
         .clone()
         .unwrap_or_else(|| "its folder could not be prepared".to_owned());
     format!("folder pair '{}' is unavailable: {reason}", pair.name)
+}
+
+/// The IPC task's connection to a pair's index, for the verbs that read or write it (`approve`,
+/// `deny`, `keep`, `activity`) — `None` while the pair has no runtime.
+///
+/// **The pair's own `has_runtime` decides, in both directions.** A pair that became ready after the
+/// plane was built (an unavailable pair whose folder returned) gets its connection opened here, on
+/// first use; one that stopped being ready has the connection it held dropped, so no verb writes
+/// the index of a pair whose per-root lock this daemon no longer holds. A pair that was demoted and
+/// prepared again within one job never shows this task the flag false, so the connection also
+/// carries the [`PairShared::runtime_generation`] it was opened under and is replaced when that
+/// moves: an approval written to an index the daemon let go of would be accepted and applied to
+/// nothing.
+async fn approvals_connection<'a>(
+    plane_pair: &'a ControlPlanePair,
+    pair: &PairShared,
+) -> tokio::sync::MutexGuard<'a, Option<Connection>> {
+    let mut approvals = plane_pair.approvals.lock().await;
+    if !pair.has_runtime() {
+        *approvals = None;
+    } else {
+        // Read after the flag: `set_has_runtime(true)` bumps the generation first, so a reader that
+        // saw the flag set sees a generation at least as new as the runtime it stands for.
+        let generation = pair.runtime_generation();
+        if approvals.is_none() || plane_pair.opened_under.load(Ordering::SeqCst) != generation {
+            plane_pair.opened_under.store(generation, Ordering::SeqCst);
+            *approvals = None;
+            let db_path = pair
+                .snapshot
+                .lock()
+                .expect("control snapshot lock")
+                .config
+                .db_path
+                .clone();
+            match open_database(&db_path) {
+                Ok(connection) => *approvals = Some(connection),
+                Err(error) => warn!(
+                    %error,
+                    pair = %pair.name,
+                    "could not open an approvals connection for this folder pair"
+                ),
+            }
+        }
+    }
+    approvals
+}
+
+/// `pause`/`resume` persist the metrics sidecar so a GUI that has lost the socket still sees the
+/// pause (best effort, as ever). Two things it must not do: write for a pair that is not ready —
+/// the file belongs to whoever holds that pair's lock, and its directory may be what is missing —
+/// and bring a missing directory back, which the write would do (`write_atomically` creates the
+/// sidecar's directory, and with the default layout that directory is *inside* the root).
+fn persist_pause_state(shared: &ControlShared, pair: &PairShared, metrics_path: &Path) {
+    if !pair.has_runtime() {
+        debug!(pair = %pair.name, "no metrics file written: the folder pair is not ready");
+        return;
+    }
+    if metrics_path.parent().is_some_and(|parent| !parent.is_dir()) {
+        debug!(pair = %pair.name, "no metrics file written: its directory is gone");
+        return;
+    }
+    persist_metrics_best_effort(shared, pair, metrics_path);
 }
 
 /// A wire selector that did not resolve to any configured pair (#102 phase 3, ADR 0005 §4).
@@ -6507,13 +8818,13 @@ async fn handle_control_connection<C: ProtonClient + 'static>(
         ControlCommand::Pause => {
             pair.paused.store(true, Ordering::SeqCst);
             info!(pair = %pair.name, "sync paused");
-            persist_metrics_best_effort(shared, pair, &plane_pair.metrics_path);
+            persist_pause_state(shared, pair, &plane_pair.metrics_path);
             shared.response(pair, "sync paused")
         }
         ControlCommand::Resume => {
             pair.paused.store(false, Ordering::SeqCst);
             info!(pair = %pair.name, "sync resumed");
-            persist_metrics_best_effort(shared, pair, &plane_pair.metrics_path);
+            persist_pause_state(shared, pair, &plane_pair.metrics_path);
             shared.response(pair, "sync resumed")
         }
         ControlCommand::Syncnow => {
@@ -6582,7 +8893,7 @@ async fn handle_control_connection<C: ProtonClient + 'static>(
                 .pending_deletions
                 .clone();
             let message = {
-                let approvals = plane_pair.approvals.lock().await;
+                let approvals = approvals_connection(plane_pair, pair).await;
                 match approvals.as_ref() {
                     Some(connection) => Some(apply_approval_command(
                         connection,
@@ -6615,7 +8926,7 @@ async fn handle_control_connection<C: ProtonClient + 'static>(
             // Answered from the index on this task, like `approve`/`deny` — a bounded, indexed
             // read over the history tables, not daemon work.
             let outcome = {
-                let approvals = plane_pair.approvals.lock().await;
+                let approvals = approvals_connection(plane_pair, pair).await;
                 approvals
                     .as_ref()
                     .map(|connection| query_file_history(connection, &request))
@@ -6645,7 +8956,7 @@ async fn handle_control_connection<C: ProtonClient + 'static>(
                 .pending_deletions
                 .clone();
             let kept = {
-                let approvals = plane_pair.approvals.lock().await;
+                let approvals = approvals_connection(plane_pair, pair).await;
                 match approvals.as_ref() {
                     Some(connection) => Some(apply_keep_command(
                         connection,
@@ -7221,6 +9532,10 @@ struct DeleteGate {
     /// The same items as `pending`, in the shape the `withheld_deletions` table stores — the ages
     /// this pass carried forward, ready to be written back (see [`WithheldDeletion`]).
     withheld: Vec<WithheldDeletion>,
+    /// How many of `pending` were withheld **only** because an accepted replacement forces
+    /// approval ([`PairRuntime::force_delete_approval`]) — the configured policy would have let
+    /// them run. Zero on a pass that reached the gate is what ends the force.
+    forced: usize,
 }
 
 /// Files beneath `root` in the baseline index, and their total size (#208). Files only: a
@@ -7528,11 +9843,17 @@ fn write_metrics_snapshot(path: &Path, metrics: &MetricsSnapshot) -> AppResult<(
 /// Write `bytes` to `path` atomically: write a sibling temp file, fsync it, then rename over the
 /// destination. Rename is atomic within a filesystem, so a concurrent reader — e.g. a GUI polling
 /// `<db>.metrics.json` / `<db>.status.json`, or the CLI — never observes a partially written file.
+///
+/// **Never makes the directory.** The sidecars live beside the index, whose directory
+/// `prepare_pair_state` makes when the pair is prepared (at boot, and on a retry — after the folder
+/// is verified to be there); with the default layout that is inside the sync folder, so a write
+/// that made its directory would make a folder that went away mid-life again (ADR 0005, the 4b
+/// note, item 13). A missing directory is the write's error, which every caller warns about and
+/// carries on from.
 fn write_atomically(path: &Path, bytes: &[u8]) -> AppResult<()> {
     use std::io::{ErrorKind, Write};
     use std::sync::atomic::{AtomicU64, Ordering};
     static TMP_NONCE: AtomicU64 = AtomicU64::new(0);
-    ensure_parent_directory(path)?;
     let file_name = path
         .file_name()
         .and_then(|n| n.to_str())
@@ -8252,13 +10573,84 @@ fn build_watcher(
     Ok(watcher)
 }
 
-fn ensure_parent_directory(path: &Path) -> AppResult<()> {
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        fs::create_dir_all(parent)?;
+/// Makes the directories above `path`, **below `root` and never `root` itself** — see
+/// [`ensure_directory_below`], the one definition this is.
+fn ensure_parent_directory_below(
+    root: &Path,
+    expected: Option<RootIdentity>,
+    path: &Path,
+) -> AppResult<()> {
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => {
+            ensure_directory_below(root, expected, parent)
+        }
+        _ => Ok(()),
     }
+}
+
+/// Makes `directory` and the directories above it **down from `root`, which must already be the
+/// directory the caller runs on** — the one place the executor makes a directory, so there is one
+/// definition of what it may and may not bring back.
+///
+/// `create_dir_all` makes every missing ancestor, root included. A tree deleted while a pass ran
+/// (or an unmounted drive's mount point) was therefore made again by the next download's
+/// destination, empty but for that one folder; the pass ended over a folder holding a fraction of
+/// what it should, and the next planned the deletion of the rest. **Nothing makes the root
+/// mid-life** (only boot preparation does): a root that is missing, is not a directory, or is not
+/// the one the caller runs on fails with the typed [`RootUnavailable`], which ends the pass
+/// without moving the cursor. The check comes first, and the directories are then made one level at
+/// a time with `create_dir`, so a root that vanishes between the check and the call fails the call
+/// rather than being made by it (and the pass's final check turns that into the typed condition).
+///
+/// The rule reaches the client too: its download staging directory is made one level below the
+/// directory this made, never recursively (`proton::create_download_scratch_dir`), and the status
+/// sidecars' directory is made by `prepare_pair_state` alone ([`write_atomically`] makes none). So
+/// no code path a pass runs — executor or client — can make the root or an ancestor of it; only
+/// boot and the retry's preparation can, and the retry only below a root it has just found there.
+fn ensure_directory_below(
+    root: &Path,
+    expected: Option<RootIdentity>,
+    directory: &Path,
+) -> AppResult<()> {
+    ensure_directory_below_after(root, expected, directory, || {})
+}
+
+/// [`ensure_directory_below`] with `after_check` run between the availability check and the
+/// creation: the only way a test can make the root vanish in that window.
+fn ensure_directory_below_after(
+    root: &Path,
+    expected: Option<RootIdentity>,
+    directory: &Path,
+    after_check: impl FnOnce(),
+) -> AppResult<()> {
+    root_availability(root, expected)?;
+    after_check();
+    create_directories_below(root, directory)?;
     Ok(())
+}
+
+/// `create_dir_all`, stopped at `root`: what exists is left alone, a missing directory is made
+/// after the one above it, and `root` is **assumed to exist** and never made.
+fn create_directories_below(root: &Path, directory: &Path) -> std::io::Result<()> {
+    if directory == root {
+        return Ok(());
+    }
+    let make = || match fs::create_dir(directory) {
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && directory.is_dir() => {
+            Ok(())
+        }
+        other => other,
+    };
+    match make() {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let Some(parent) = directory.parent() else {
+                return Err(error);
+            };
+            create_directories_below(root, parent)?;
+            make()
+        }
+        other => other,
+    }
 }
 
 /// Copies `source` to `destination`, which must not exist. The destination is opened with
@@ -8432,15 +10824,25 @@ fn descendant_index_paths(
 /// leaves an empty file behind; `acquire` reuses it, so a leftover file never blocks a restart.
 struct LockGuard {
     file: File,
+    /// Whether the held file and its path name themselves the same way at all (a filesystem whose
+    /// handle and path disagree on inode numbers does not). When they do not, [`Self::is_the_file_at`]
+    /// can only ask whether the path exists: comparing would call every look a replacement.
+    comparable: bool,
 }
 
 impl LockGuard {
     fn acquire(path: &Path) -> AppResult<Self> {
-        if let Some(parent) = path.parent()
-            && !parent.as_os_str().is_empty()
-        {
-            fs::create_dir_all(parent)?;
-        }
+        Self::acquire_looking(path, &FileIdentity::look)
+    }
+
+    /// [`Self::acquire`] with the `stat` that names the lockfile injected: the only way a test can
+    /// make a path and the handle opened by it disagree, which is what `comparable` records.
+    ///
+    /// **Makes no directory** (ADR 0005, the 4b note, item 14): the lockfile's directory is the
+    /// caller's — `prepare_pair_state` makes a pair's below the folder it just found, and boot
+    /// makes the user-global lock's — because with the default layout it is inside the root, and a
+    /// `create_dir_all` here made a root that vanished since the preparation's look again.
+    fn acquire_looking(path: &Path, look: &dyn Fn(&Path) -> Look<FileIdentity>) -> AppResult<Self> {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -8455,10 +10857,10 @@ impl LockGuard {
             })?;
         file.try_lock_exclusive().map_err(|error| {
             if error.kind() == std::io::ErrorKind::WouldBlock {
-                boxed_error(format!(
-                    "daemon already running; lockfile is locked at {}",
-                    path.display()
-                ))
+                // Typed, so boot can refuse on it and a retry can keep its pair unavailable.
+                Box::new(LockHeld {
+                    path: path.to_path_buf(),
+                }) as Box<dyn std::error::Error + Send + Sync>
             } else {
                 boxed_error(format!(
                     "failed to lock lockfile {}: {error}",
@@ -8466,7 +10868,37 @@ impl LockGuard {
                 ))
             }
         })?;
-        Ok(Self { file })
+        let comparable = match (file.metadata(), look(path)) {
+            (Ok(held), Look::Present(named)) => FileIdentity::of(&held) == named,
+            _ => false,
+        };
+        Ok(Self { file, comparable })
+    }
+
+    /// Whether `path` still names the file this guard locks. `flock` binds to the inode, so a
+    /// lockfile deleted with its folder leaves the lock held on a file nobody can open — and the
+    /// path now names a fresh one that a second daemon can lock beside this one (#13's hazard,
+    /// reached by a deleted directory instead of an unlinking guard).
+    ///
+    /// [`Look::Present`] is "it is the file I hold"; [`Look::Gone`] is a path that names nothing
+    /// **or a different file**; [`Look::Unreadable`] is a look that failed, which says nothing
+    /// either way.
+    fn is_the_file_at(&self, path: &Path) -> Look<()> {
+        let named = match FileIdentity::look(path) {
+            Look::Present(named) => named,
+            Look::Gone => return Look::Gone,
+            Look::Unreadable(error) => return Look::Unreadable(error),
+        };
+        if !self.comparable {
+            return Look::Present(());
+        }
+        // A handle that cannot be examined is not evidence it is the right one: it reads as "not
+        // this file", the side that prepares the pair again rather than keeps running on a lock of
+        // unknown standing.
+        match self.file.metadata() {
+            Ok(held) if FileIdentity::of(&held) == named => Look::Present(()),
+            Ok(_) | Err(_) => Look::Gone,
+        }
     }
 }
 
@@ -9706,9 +12138,9 @@ mod tests {
                     ),
                 }));
             }
-            if let Some(parent) = destination.parent() {
-                fs::create_dir_all(parent)?;
-            }
+            // The destination's directory is the executor's to make (the real client makes only
+            // its own staging directory, one level down); a fake that made every ancestor would
+            // hide a root made again mid-life.
             let content = self
                 .remote_contents
                 .get(remote_path)
@@ -9755,9 +12187,6 @@ mod tests {
                     }
                     if self.unstaged_batch_downloads.contains(&request.remote_path) {
                         return Ok(());
-                    }
-                    if let Some(parent) = request.destination.parent() {
-                        fs::create_dir_all(parent)?;
                     }
                     let content = self
                         .remote_contents
@@ -15968,6 +18397,7 @@ mod tests {
                 approvals: tokio::sync::Mutex::new(Some(
                     open_database(&daemon.pair().config.db_path).expect("second connection"),
                 )),
+                opened_under: AtomicU64::new(daemon.shared.pairs[0].runtime_generation()),
                 metrics_path: daemon.pair().metrics_path.clone(),
                 remote_root: daemon.pair().config.remote_root.clone(),
             }],
@@ -16025,6 +18455,7 @@ mod tests {
                 approvals: tokio::sync::Mutex::new(Some(
                     open_database(&db_path).expect("open per-pair index"),
                 )),
+                opened_under: AtomicU64::new(0),
                 metrics_path: directory.join(format!("{name}.metrics.json")),
                 remote_root: PathBuf::from(format!("/Drive/{name}")),
             });
@@ -16051,8 +18482,8 @@ mod tests {
 
     /// Sends `request` over a fresh socket pair and reads back the reply — `handle_control_connection`
     /// end to end, exactly as the real control socket serves it.
-    async fn roundtrip(
-        plane: &ControlPlane<RecordingProtonClient>,
+    async fn roundtrip<C: ProtonClient + 'static>(
+        plane: &ControlPlane<C>,
         request: ControlRequest,
     ) -> ControlResponse {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
@@ -16881,9 +19312,9 @@ mod tests {
     #[test]
     fn the_global_lock_probe_answers_without_creating_or_keeping_anything() {
         let directory = tempdir().expect("tempdir");
-        // Deliberately under a directory that does not exist either: `LockGuard::acquire` would
-        // create both, and a dry run must leave nothing behind on a machine that has never run a
-        // daemon.
+        // Deliberately under a directory that does not exist either: a daemon's boot creates
+        // both (the directory, then the lockfile through `LockGuard::acquire`), and a dry run must
+        // leave nothing behind on a machine that has never run a daemon.
         let lock_path = directory.path().join("state").join("single-instance.lock");
 
         assert!(
@@ -16895,6 +19326,8 @@ mod tests {
             "and looking must not create it"
         );
 
+        // As boot does it: the directory first (`create_parent_directory`), then the lock.
+        create_parent_directory(&lock_path).expect("boot makes the lock's directory");
         let guard = LockGuard::acquire(&lock_path).expect("a daemon takes the lock");
         assert!(
             matches!(probe_daemon_lock(&lock_path), GlobalLockProbe::Held),
@@ -17195,9 +19628,7 @@ mod tests {
         }
 
         fn download(&self, _remote_path: &Path, destination: &Path) -> AppResult<()> {
-            if let Some(parent) = destination.parent() {
-                fs::create_dir_all(parent)?;
-            }
+            // No directory creation: see `MultiRootClient::download`.
             fs::write(destination, b"downloaded")?;
             Ok(())
         }
@@ -17214,6 +19645,9 @@ mod tests {
     /// A scriptable [`EventSource`]: `events_since` replays a queue of pages (an empty queue means
     /// "no changes"), `latest_cursor` returns a fixed cursor. Optionally fails to exercise the
     /// events-error fallback.
+    /// What [`FakeEventSource::events_since_hook`] hands out: the hook `events_since` runs first.
+    type EventsSinceHook = Arc<Mutex<Option<Box<dyn FnMut() + Send>>>>;
+
     struct FakeEventSource {
         pages: Mutex<Vec<VolumeEventPage>>,
         /// Shared so a test can watch it move: [`Self::latest_handle`] hands the same cell to a
@@ -17225,6 +19659,9 @@ mod tests {
         /// script (`AppResult` is not `Clone`, hence the queue rather than a stored result).
         scripted_latest: Mutex<Vec<Option<String>>>,
         fail_since: bool,
+        /// Runs at the start of every `events_since`: how something happens between the check at
+        /// the top of an event-driven pass and its local scan.
+        on_events_since: EventsSinceHook,
     }
 
     impl FakeEventSource {
@@ -17234,6 +19671,7 @@ mod tests {
                 latest: Arc::new(Mutex::new(latest.to_owned())),
                 scripted_latest: Mutex::new(Vec::new()),
                 fail_since: false,
+                on_events_since: Arc::new(Mutex::new(None)),
             }
         }
 
@@ -17243,6 +19681,7 @@ mod tests {
                 latest: Arc::new(Mutex::new(latest.to_owned())),
                 scripted_latest: Mutex::new(Vec::new()),
                 fail_since: false,
+                on_events_since: Arc::new(Mutex::new(None)),
             }
         }
 
@@ -17254,6 +19693,7 @@ mod tests {
                 latest: Arc::new(Mutex::new(latest.to_owned())),
                 scripted_latest: Mutex::new(scripted),
                 fail_since: false,
+                on_events_since: Arc::new(Mutex::new(None)),
             }
         }
 
@@ -17263,12 +19703,18 @@ mod tests {
                 latest: Arc::new(Mutex::new("c0".to_owned())),
                 scripted_latest: Mutex::new(Vec::new()),
                 fail_since: true,
+                on_events_since: Arc::new(Mutex::new(None)),
             }
         }
 
         /// The cell `latest_cursor` answers from, for a client that moves the remote mid-walk.
         fn latest_handle(&self) -> Arc<Mutex<String>> {
             Arc::clone(&self.latest)
+        }
+
+        /// The hook `events_since` runs first, for a test to install after the source is boxed.
+        fn events_since_hook(&self) -> EventsSinceHook {
+            Arc::clone(&self.on_events_since)
         }
     }
 
@@ -17284,6 +19730,9 @@ mod tests {
         }
 
         fn events_since(&self, _volume_id: &str, cursor: &str) -> AppResult<VolumeEventPage> {
+            if let Some(hook) = self.on_events_since.lock().expect("hook lock").as_mut() {
+                hook();
+            }
             if self.fail_since {
                 return Err(boxed_error("events fetch boom"));
             }
@@ -19069,7 +21518,10 @@ mod tests {
         assert!(daemon.pair().pending_changes.is_empty());
 
         let mut lost = LostEvents::default();
-        lost.note_error(&notify::Error::generic("watch descriptor limit reached"));
+        lost.note_error(
+            &notify::Error::generic("watch descriptor limit reached"),
+            BTreeSet::new(),
+        );
         daemon.latch_lost_events(&lost);
         daemon
             .reconcile_blocking()
@@ -21742,14 +24194,39 @@ mod tests {
         fn new<C: ProtonClient>(daemon: &mut Daemon<C>) -> Self {
             let clock = FakeClock::new();
             daemon.seed_schedule(clock.now());
-            Self::with_clock(clock)
+            Self::booted(daemon, clock, false)
         }
 
         /// For routing-only tests: the boot passes are an hour out, so a step only drains.
         fn quiet<C: ProtonClient>(daemon: &mut Daemon<C>) -> Self {
             let clock = FakeClock::new();
             daemon.seed_schedule(clock.now() + Duration::from_secs(3600));
-            Self::with_clock(clock)
+            Self::booted(daemon, clock, false)
+        }
+
+        /// [`Self::new`] over a watcher that refuses every registration, including the one boot makes.
+        fn new_with_a_watcher_that_fails<C: ProtonClient>(daemon: &mut Daemon<C>) -> Self {
+            let clock = FakeClock::new();
+            daemon.seed_schedule(clock.now());
+            Self::booted(daemon, clock, true)
+        }
+
+        /// Registers every ready root as `run` does before its loop, then forgets that it did: the
+        /// tests below assert what a *step* registers, not what boot did.
+        fn booted<C: ProtonClient>(
+            daemon: &mut Daemon<C>,
+            clock: FakeClock,
+            failing: bool,
+        ) -> Self {
+            let mut stepper = Self::with_clock(clock);
+            stepper.watcher_fails.store(failing, Ordering::SeqCst);
+            daemon.register_root_watches(stepper.inputs.watcher.as_mut());
+            stepper
+                .rewatched
+                .lock()
+                .expect("watched roots lock")
+                .clear();
+            stepper
         }
 
         fn with_clock(clock: FakeClock) -> Self {
@@ -21807,6 +24284,26 @@ mod tests {
         directories: Arc<Mutex<Vec<(PathBuf, PathBuf)>>>,
         /// Runs on every full walk, after it is recorded: how something happens "mid-pass".
         on_walk: Arc<Mutex<Option<WalkHook>>>,
+        /// Runs on every targeted directory listing — all an events-mode pass asks of the remote
+        /// tree — so "mid-pass" can be reached by a pass that never walks.
+        on_list_directory: Arc<Mutex<Option<WalkHook>>>,
+        /// Runs at the start of every upload, before it is recorded.
+        on_upload: Arc<Mutex<Option<WalkHook>>>,
+        /// Runs at the end of every `ensure_directory`, after it is recorded: the second the real
+        /// CLI child takes between an action's first look at the folder and its transfer.
+        on_ensure_directory: Arc<Mutex<Option<WalkHook>>>,
+        /// Runs at the start of every `rename_or_move`, before it is recorded.
+        on_rename: Arc<Mutex<Option<WalkHook>>>,
+        /// Every remote move that was carried out, `(old, new)`.
+        moves: Arc<Mutex<Vec<(PathBuf, PathBuf)>>>,
+        /// Runs after every download has written its file, with the destination: how the folder
+        /// goes away between one download group and the next.
+        on_download: Arc<Mutex<Option<WalkHook>>>,
+        /// Every destination a download was **attempted** for, recorded before the write — so a
+        /// test can tell "the chunk was never issued" from "it was issued and failed".
+        downloads: Arc<Mutex<Vec<PathBuf>>>,
+        /// Every remote path a pass asked to delete.
+        deletes: Arc<Mutex<Vec<PathBuf>>>,
         /// Each of these roots' next walk fails, once.
         fail_walk_once: Arc<Mutex<BTreeSet<PathBuf>>>,
         /// An upload under this root sets the installed cancel flag: a shutdown landing mid-pass.
@@ -21858,8 +24355,20 @@ mod tests {
             self.uploads.lock().expect("uploads lock").clone()
         }
 
+        fn deletes(&self) -> Vec<PathBuf> {
+            self.deletes.lock().expect("deletes lock").clone()
+        }
+
+        fn downloads(&self) -> Vec<PathBuf> {
+            self.downloads.lock().expect("downloads lock").clone()
+        }
+
         fn directories(&self) -> Vec<(PathBuf, PathBuf)> {
             self.directories.lock().expect("directories lock").clone()
+        }
+
+        fn moves(&self) -> Vec<(PathBuf, PathBuf)> {
+            self.moves.lock().expect("moves lock").clone()
         }
 
         fn cancelled(&self) -> bool {
@@ -21907,6 +24416,9 @@ mod tests {
             remote_root: &Path,
             relative_directory: &Path,
         ) -> AppResult<HashMap<PathBuf, RemoteEntity>> {
+            if let Some(hook) = self.on_list_directory.lock().expect("hook lock").as_mut() {
+                hook(remote_root);
+            }
             Ok(self
                 .tree(remote_root)
                 .into_iter()
@@ -21923,6 +24435,9 @@ mod tests {
                 .lock()
                 .expect("directories lock")
                 .push((remote_root.to_path_buf(), relative_path.to_path_buf()));
+            if let Some(hook) = self.on_ensure_directory.lock().expect("hook lock").as_mut() {
+                hook(remote_root);
+            }
             Ok(())
         }
 
@@ -21932,6 +24447,9 @@ mod tests {
             remote_root: &Path,
             relative_path: &Path,
         ) -> AppResult<()> {
+            if let Some(hook) = self.on_upload.lock().expect("hook lock").as_mut() {
+                hook(remote_root);
+            }
             if self
                 .cancel_on_upload_under
                 .lock()
@@ -21967,18 +24485,36 @@ mod tests {
         }
 
         fn download(&self, _remote_path: &Path, destination: &Path) -> AppResult<()> {
-            if let Some(parent) = destination.parent() {
-                fs::create_dir_all(parent)?;
-            }
+            self.downloads
+                .lock()
+                .expect("downloads lock")
+                .push(destination.to_path_buf());
+            // Like the real client since the third 4b round: the destination's directory is the
+            // executor's to make, and a download never makes a directory above its own staging.
+            // A fake that made every ancestor hid exactly the bug that round closes.
             fs::write(destination, b"downloaded")?;
+            if let Some(hook) = self.on_download.lock().expect("hook lock").as_mut() {
+                hook(destination);
+            }
             Ok(())
         }
 
-        fn delete(&self, _remote_path: &Path) -> AppResult<()> {
+        fn delete(&self, remote_path: &Path) -> AppResult<()> {
+            self.deletes
+                .lock()
+                .expect("deletes lock")
+                .push(remote_path.to_path_buf());
             Ok(())
         }
 
-        fn rename_or_move(&self, _r: &Path, _o: &Path, _n: &Path) -> AppResult<()> {
+        fn rename_or_move(&self, remote_root: &Path, old: &Path, new: &Path) -> AppResult<()> {
+            if let Some(hook) = self.on_rename.lock().expect("hook lock").as_mut() {
+                hook(remote_root);
+            }
+            self.moves
+                .lock()
+                .expect("moves lock")
+                .push((old.to_path_buf(), new.to_path_buf()));
             Ok(())
         }
 
@@ -22068,13 +24604,21 @@ mod tests {
         (daemon, client, stepper)
     }
 
-    /// Phase 4a builds `Unavailable` slots only in tests; 4b's boot preparation will build them the
-    /// same way (the runtime, and so its per-root lock, released).
-    fn make_unavailable<C: ProtonClient>(daemon: &mut Daemon<C>, pair: usize, reason: &str) {
+    /// Makes pair `pair` an unavailable slot that **stays** one: its runtime (and so its per-root
+    /// lock) is released and its folder removed, so a retry fails with the reason this returns. A
+    /// hand-picked reason with a folder that exists would be promoted by the first `Sync` job.
+    fn make_unavailable<C: ProtonClient>(daemon: &mut Daemon<C>, pair: usize) -> String {
         let config = daemon.pair_config(pair).clone();
+        fs::remove_dir_all(&config.local_root).expect("remove the folder");
+        let reason = prepare_pair_state(&config, RootMode::MustExist)
+            .err()
+            .expect("the folder is gone, so preparing it fails")
+            .reason();
         daemon.pairs[pair] =
-            PairSlot::Unavailable(Box::new(UnavailablePair::new(config, reason.to_owned())));
+            PairSlot::Unavailable(Box::new(UnavailablePair::new(config, reason.clone())));
+        daemon.shared.pairs[pair].set_has_runtime(false);
         daemon.publish_pair(pair);
+        reason
     }
 
     fn reviewed_token(pair: &PairShared) -> String {
@@ -23218,7 +25762,7 @@ mod tests {
             client.clone(),
             None,
         );
-        make_unavailable(&mut daemon, 1, "the folder /media/usb/b is missing");
+        make_unavailable(&mut daemon, 1);
         // A plan `b` reviewed while it was ready, an apply booked against it, and a new plan request.
         daemon.shared.pairs[1].replace_stored_plan(StoredPlan {
             token: "reviewed".to_owned(),
@@ -23249,7 +25793,7 @@ mod tests {
                 error,
             }) => {
                 assert_eq!(sealed, apply_seq);
-                assert!(error.contains("is missing"), "{error}");
+                assert!(error.contains("does not exist"), "{error}");
             }
             other => panic!("the apply is sealed, got {other:?}"),
         }
@@ -23259,7 +25803,7 @@ mod tests {
                 error,
             } => {
                 assert!(sealed >= plan_seq);
-                assert!(error.contains("is missing"), "{error}");
+                assert!(error.contains("does not exist"), "{error}");
             }
             other => panic!("the plan is sealed, got {other:?}"),
         }
@@ -23283,7 +25827,7 @@ mod tests {
         let configs = pair_configs(directory.path(), &["a"]);
         let db_path = configs[0].db_path.clone();
         let mut daemon = multi_pair_daemon(configs, MultiRootClient::default(), None);
-        make_unavailable(&mut daemon, 0, "the folder /media/usb/sync is missing");
+        let reason = make_unavailable(&mut daemon, 0);
 
         let reply = daemon
             .shared
@@ -23296,7 +25840,7 @@ mod tests {
         );
         assert_eq!(
             reply.last_error.as_deref(),
-            Some("the folder /media/usb/sync is missing"),
+            Some(reason.as_str()),
             "…and the error is what it reads instead: `Failed`"
         );
         assert!(!reply.paused && !reply.syncing && reply.auth != AuthState::SignedOut);
@@ -23306,7 +25850,11 @@ mod tests {
         let reply = daemon
             .shared
             .response(&daemon.shared.pairs[0], "daemon status");
-        assert_eq!(reply.status_history.len(), 2, "one entry per attempt");
+        assert_eq!(
+            reply.status_history.len(),
+            1,
+            "an attempt at the same cause moves the entry's time; it does not add one"
+        );
         assert_eq!(reply.reconcile_seq, 1);
         assert!(
             !status_history_path(&db_path).exists(),
@@ -23319,6 +25867,7 @@ mod tests {
         let directory = tempdir().expect("tempdir");
         let (mut plane, _loop_rx) = two_pair_control_plane(directory.path());
         plane.pairs[1].approvals = tokio::sync::Mutex::new(None);
+        plane.shared.pairs[1].set_has_runtime(false);
         plane.shared.pairs[1]
             .snapshot
             .lock()
@@ -24343,7 +26892,7 @@ mod tests {
             MultiRootClient::default(),
             None,
         );
-        make_unavailable(&mut daemon, 1, "the folder /media/usb/b is missing");
+        make_unavailable(&mut daemon, 1);
         daemon.shared.pairs[1].replace_stored_plan(StoredPlan {
             token: "reviewed".to_owned(),
             computed_epoch_secs: 1,
@@ -24554,5 +27103,6744 @@ mod tests {
             "the event the idle wait received was never routed: {:?}",
             client.directories()
         );
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // #102 phase 4b: a pair whose folder, lock or watch is not there keeps the daemon running
+    // (maintainer decisions M1/M1b). Every test drives the step function `run()` calls.
+    // ---------------------------------------------------------------------------------------
+
+    /// A config whose folder can never be created: its parent is a regular file. Its index and
+    /// lockfile sit under the same file, so nothing of the pair is reachable until that file goes.
+    /// Works for root and non-root alike, which a read-only directory would not.
+    fn unpreparable_config(directory: &Path, name: &str) -> DaemonConfig {
+        let blocker = directory.join(format!("{name}-blocker"));
+        fs::write(&blocker, b"a file where a directory would have to be").expect("blocker");
+        DaemonConfig {
+            name: name.to_owned(),
+            remote_root: remote_root_of(name),
+            local_root: blocker.join("local"),
+            db_path: blocker.join("state").join("sync_index.db"),
+            lockfile_path: blocker.join("state").join("daemon.lock"),
+            ..test_config(directory, &directory.join("unused"))
+        }
+    }
+
+    /// One events-driven pair `a`, past boot on a live fake session, `a.txt` in step on both sides.
+    /// `pages` are what its next event polls answer, so a test can see a cursor move.
+    fn steady_events_pair(
+        directory: &Path,
+        pages: Vec<VolumeEventPage>,
+    ) -> (Daemon<MultiRootClient>, MultiRootClient, Stepper) {
+        steady_events_pair_with(directory, pages, |_| {})
+    }
+
+    /// [`steady_events_pair`] with the pair's config adjusted before the daemon is built.
+    fn steady_events_pair_with(
+        directory: &Path,
+        pages: Vec<VolumeEventPage>,
+        tune: impl FnOnce(&mut DaemonConfig),
+    ) -> (Daemon<MultiRootClient>, MultiRootClient, Stepper) {
+        let mut configs = pair_configs(directory, &["a"]);
+        configs[0].events_driven = true;
+        tune(&mut configs[0]);
+        fs::write(configs[0].local_root.join("a.txt"), b"a").expect("local file");
+        let client = MultiRootClient::default().with_tree(
+            &configs[0].remote_root,
+            vec![remote_file_entity("a.txt", "vola~na", &sha1_bytes(b"a"))],
+        );
+        let mut daemon = multi_pair_daemon(
+            configs,
+            client.clone(),
+            Some(Box::new(FakeEventSource::with_pages("cursor-0", pages))),
+        );
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        assert!(
+            load_event_cursor(&daemon.runtime(0).expect("ready").connection, "vola")
+                .expect("cursor read")
+                .is_some(),
+            "precondition: `a` streams from here on"
+        );
+        client.clear_walks();
+        (daemon, client, stepper)
+    }
+
+    fn no_changes_page(latest: &str) -> VolumeEventPage {
+        VolumeEventPage {
+            latest_event_id: latest.to_owned(),
+            more: false,
+            refresh: false,
+            changes: Vec::new(),
+        }
+    }
+
+    fn published_error(daemon: &Daemon<impl ProtonClient>, pair: usize) -> Option<String> {
+        daemon.shared.pairs[pair]
+            .snapshot
+            .lock()
+            .expect("snapshot lock")
+            .last_error
+            .clone()
+    }
+
+    fn stored_cursor(daemon: &Daemon<impl ProtonClient>, pair: usize, volume: &str) -> String {
+        load_event_cursor(&daemon.runtime(pair).expect("ready").connection, volume)
+            .expect("cursor read")
+            .expect("a stored cursor")
+            .last_event_id
+    }
+
+    fn passes_recorded(daemon: &Daemon<impl ProtonClient>, pair: usize) -> usize {
+        recent_passes(&daemon.runtime(pair).expect("ready").connection, 100)
+            .expect("recent passes")
+            .len()
+    }
+
+    #[test]
+    fn a_missing_root_skips_that_pair_and_the_others_still_run() {
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a", "b"]);
+        let b_root = configs[1].local_root.clone();
+        let client = MultiRootClient::default();
+        let mut daemon = multi_pair_daemon(configs, client.clone(), None);
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        client.clear_walks();
+
+        fs::remove_dir_all(&b_root).expect("the folder goes away");
+        stepper.send(LoopCommand::SyncNow(1));
+        stepper.send(LoopCommand::SyncNow(0));
+        let log = capture_log("warn", || {
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        });
+
+        assert_eq!(
+            client.walks(),
+            [remote_root_of("a")],
+            "`a` ran; `b` listed nothing, because nothing of `b` ran"
+        );
+        let b = &daemon.shared.pairs[1];
+        assert_eq!(
+            b.reconcile_seq.load(Ordering::SeqCst),
+            2,
+            "boot, and this attempt: a waiting client is answered"
+        );
+        assert!(
+            published_error(&daemon, 1).is_some_and(|error| error.contains("is not available")),
+            "{:?}",
+            published_error(&daemon, 1)
+        );
+        assert_eq!(
+            daemon.shared.pairs[0].reconcile_seq.load(Ordering::SeqCst),
+            2
+        );
+        assert_eq!(published_error(&daemon, 0), None);
+        assert!(
+            !log.contains("scheduled reconciliation failed"),
+            "a missing folder is not a failed pass:\n{log}"
+        );
+        assert!(
+            log.contains("pair{name=b}") && log.contains("is not available"),
+            "and it is reported, under its pair:\n{log}"
+        );
+    }
+
+    #[test]
+    fn a_missing_root_is_reported_once_not_once_per_pass() {
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a"]);
+        let root = configs[0].local_root.clone();
+        let mut daemon = multi_pair_daemon(configs, MultiRootClient::default(), None);
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+
+        fs::remove_dir_all(&root).expect("the folder goes away");
+        let log = capture_log("info", || {
+            for _ in 0..3 {
+                stepper.send(LoopCommand::SyncNow(0));
+                assert_eq!(stepper.step(&mut daemon), Step::Idle);
+            }
+        });
+        assert_eq!(
+            log.matches("folder unavailable;").count(),
+            1,
+            "three attempts at one cause, one line:\n{log}"
+        );
+
+        // It comes back, says so, and a later loss is a new report: the latch re-arms.
+        fs::create_dir(&root).expect("the folder returns");
+        let log = capture_log("info", || {
+            stepper.send(LoopCommand::SyncNow(0));
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        });
+        assert!(log.contains("the folder is available again"), "{log}");
+        fs::remove_dir_all(&root).expect("and goes again");
+        let log = capture_log("warn", || {
+            stepper.send(LoopCommand::SyncNow(0));
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        });
+        assert_eq!(log.matches("folder unavailable;").count(), 1, "{log}");
+    }
+
+    #[test]
+    fn a_missing_root_writes_no_history_row_and_runs_no_cli_child() {
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a"]);
+        let root = configs[0].local_root.clone();
+        let db_path = configs[0].db_path.clone();
+        fs::write(root.join("a.txt"), b"a").expect("a file");
+        let client = MultiRootClient::default();
+        let mut daemon = multi_pair_daemon(configs, client.clone(), None);
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        let rows = passes_recorded(&daemon, 0);
+        assert!(
+            rows >= 1,
+            "precondition: the boot pass is a full sweep, recorded"
+        );
+        let history = daemon.runtime(0).expect("ready").status_history.clone();
+        let sidecar = fs::read(status_history_path(&db_path)).expect("status sidecar");
+        let metrics = fs::read(metrics_path(&db_path)).expect("metrics sidecar");
+        let last_sync = daemon.shared.pairs[0]
+            .snapshot
+            .lock()
+            .expect("snapshot lock")
+            .last_sync_epoch_secs;
+        assert!(last_sync.is_some(), "precondition: it has synced");
+        client.clear_walks();
+
+        fs::remove_dir_all(&root).expect("the folder goes away");
+        for _ in 0..40 {
+            stepper.send(LoopCommand::SyncNow(0));
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        }
+
+        assert_eq!(
+            passes_recorded(&daemon, 0),
+            rows,
+            "no `sync_passes` row per attempt"
+        );
+        assert!(
+            client.walks().is_empty(),
+            "no `proton-drive` child per attempt"
+        );
+        assert_eq!(
+            fs::read(status_history_path(&db_path)).expect("status sidecar"),
+            sidecar,
+            "no sidecar write: the directory may be the thing that is missing"
+        );
+        assert_eq!(fs::read(metrics_path(&db_path)).expect("metrics"), metrics);
+        // Forty attempts at one cause are one entry on the end of the real history, not forty.
+        let published = daemon.shared.pairs[0]
+            .snapshot
+            .lock()
+            .expect("snapshot lock")
+            .clone();
+        assert_eq!(
+            published.last_sync_epoch_secs, last_sync,
+            "still synced, as far as it knows"
+        );
+        assert_eq!(published.status_history.len(), history.len() + 1);
+        assert_eq!(&published.status_history[..history.len()], &history[..]);
+        assert!(
+            !root.exists(),
+            "and nothing — not a sidecar write, not a download — made the folder again"
+        );
+    }
+
+    #[test]
+    fn a_missing_root_never_takes_the_idle_fast_path() {
+        // Events live, an empty delta, nothing pending: the pass that would be `Clean` and move the
+        // cursor without ever looking at the folder.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) =
+            steady_events_pair(directory.path(), vec![no_changes_page("cursor-1")]);
+        let root = daemon.runtime(0).expect("ready").config.local_root.clone();
+        let last_sync = daemon.shared.pairs[0]
+            .snapshot
+            .lock()
+            .expect("snapshot lock")
+            .last_sync_epoch_secs;
+
+        fs::remove_dir_all(&root).expect("the folder goes away");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(
+            published_error(&daemon, 0).is_some_and(|error| error.contains("is not available")),
+            "not `Clean`: {:?}",
+            published_error(&daemon, 0)
+        );
+        assert_eq!(
+            stored_cursor(&daemon, 0, "vola"),
+            "cursor-0",
+            "the cursor claims events were applied; none were"
+        );
+        assert_eq!(
+            daemon.shared.pairs[0]
+                .snapshot
+                .lock()
+                .expect("snapshot lock")
+                .last_sync_epoch_secs,
+            last_sync
+        );
+        assert!(client.walks().is_empty());
+
+        // The folder returns: the very next pass is an ordinary one and takes the cursor.
+        fs::create_dir(&root).expect("the folder returns");
+        fs::write(root.join("a.txt"), b"a").expect("its file");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(published_error(&daemon, 0), None);
+        assert_eq!(stored_cursor(&daemon, 0, "vola"), "cursor-1");
+    }
+
+    #[test]
+    fn a_syncnow_an_apply_and_a_plan_for_a_pair_with_a_missing_root_are_sealed() {
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) = steady_events_pair(directory.path(), Vec::new());
+        let root = daemon.runtime(0).expect("ready").config.local_root.clone();
+        daemon.shared.pairs[0].replace_stored_plan(StoredPlan {
+            token: "reviewed".to_owned(),
+            computed_epoch_secs: 1,
+            summary: PlanSummary::default(),
+            actions: Vec::new(),
+            cannot_sync: Vec::new(),
+            local_disposal: LocalDisposal::Permanent,
+        });
+        let apply_seq = daemon.shared.pairs[0]
+            .book_apply_request("reviewed", false)
+            .expect("token accepted");
+        let seq_before = daemon.shared.pairs[0].reconcile_seq.load(Ordering::SeqCst);
+        let rows = passes_recorded(&daemon, 0);
+
+        fs::remove_dir_all(&root).expect("the folder goes away");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert_eq!(
+            daemon.shared.pairs[0].reconcile_seq.load(Ordering::SeqCst),
+            seq_before + 1,
+            "the sync a client is polling for ended"
+        );
+        match daemon.shared.pairs[0].apply_outcome() {
+            Some(ApplyOutcome::Failed {
+                apply_seq: sealed,
+                error,
+            }) => {
+                assert_eq!(sealed, apply_seq);
+                assert!(error.contains("is not available"), "{error}");
+            }
+            other => panic!("the apply is sealed, got {other:?}"),
+        }
+
+        // A plan is the one request that still goes to the scan, which fails on its own and seals.
+        let plan_seq = daemon.shared.pairs[0].book_plan_request();
+        stepper.send(LoopCommand::PlanNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        match daemon.shared.pairs[0].plan_outcome(None) {
+            PlanOutcome::Failed {
+                plan_seq: sealed, ..
+            } => assert!(sealed >= plan_seq),
+            other => panic!("the plan is sealed, got {other:?}"),
+        }
+        assert!(client.walks().is_empty(), "and neither listed the remote");
+        assert_eq!(
+            passes_recorded(&daemon, 0),
+            rows,
+            "and neither recorded a pass"
+        );
+    }
+
+    #[test]
+    fn a_reset_latched_while_the_root_is_missing_survives_until_it_returns() {
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) = steady_events_pair(directory.path(), Vec::new());
+        let root = daemon.runtime(0).expect("ready").config.local_root.clone();
+        let shared = &daemon.shared.pairs[0];
+        shared.reset_index.store(true, Ordering::SeqCst);
+        shared.force_full_walk.store(true, Ordering::SeqCst);
+
+        fs::remove_dir_all(&root).expect("the folder goes away");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        let shared = &daemon.shared.pairs[0];
+        assert!(
+            shared.reset_index.load(Ordering::SeqCst),
+            "a `reset-index` is a request the user confirmed; a pass that did nothing may not spend it"
+        );
+        assert!(shared.force_full_walk.load(Ordering::SeqCst));
+        assert!(
+            get_record(
+                &daemon.runtime(0).expect("ready").connection,
+                Path::new("a.txt")
+            )
+            .expect("index read")
+            .is_some(),
+            "and nothing was truncated"
+        );
+        assert!(client.walks().is_empty());
+
+        fs::create_dir(&root).expect("the folder returns");
+        fs::write(root.join("a.txt"), b"a").expect("its file");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        let shared = &daemon.shared.pairs[0];
+        assert!(
+            !shared.reset_index.load(Ordering::SeqCst)
+                && !shared.force_full_walk.load(Ordering::SeqCst),
+            "consumed by the first pass that could act on them"
+        );
+        assert_eq!(
+            client.walks(),
+            [remote_root_of("a")],
+            "and the full walk they asked for happened"
+        );
+    }
+
+    #[test]
+    fn a_root_deleted_and_recreated_between_passes_is_rewatched_and_rescanned() {
+        // The folder is a different directory at the same path: it passes an `is_dir()` check, and
+        // the kernel dropped the watch with the old one. Events live and idle, so only a local scan
+        // can find what no event announced.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) = steady_events_pair(directory.path(), Vec::new());
+        let root = daemon.runtime(0).expect("ready").config.local_root.clone();
+        // Really deleted, and a different directory put there (built beside the old one, so it has
+        // another inode, and swapped in whole: a replacement with files in it is not the empty one
+        // the daemon refuses to reconcile against a baseline).
+        replace_directory(&root, &[("a.txt", b"a"), ("new.txt", b"new")]);
+
+        stepper.send(LoopCommand::SyncNow(0));
+        let log = capture_log("warn", || {
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        });
+
+        assert_eq!(
+            stepper.rewatched(),
+            std::slice::from_ref(&root),
+            "registered again"
+        );
+        assert!(log.contains("was replaced"), "and said once:\n{log}");
+        assert!(
+            client
+                .uploads()
+                .contains(&(remote_root_of("a"), PathBuf::from("new.txt"))),
+            "scanned: {:?}",
+            client.uploads()
+        );
+
+        // Registered, so the pair is back on the idle fast path: a file no event announced waits.
+        fs::write(root.join("later.txt"), b"later").expect("another");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(
+            stepper.rewatched() == std::slice::from_ref(&root),
+            "not registered again"
+        );
+        assert!(
+            !client
+                .uploads()
+                .contains(&(remote_root_of("a"), PathBuf::from("later.txt")))
+        );
+    }
+
+    #[test]
+    fn a_pair_whose_root_cannot_be_prepared_at_boot_does_not_stop_the_others() {
+        let directory = tempdir().expect("tempdir");
+        let mut configs = pair_configs(directory.path(), &["a"]);
+        fs::write(configs[0].local_root.join("one.txt"), b"1").expect("a's file");
+        configs.push(unpreparable_config(directory.path(), "b"));
+        let client = MultiRootClient::default();
+        let mut daemon = multi_pair_daemon(configs, client.clone(), None);
+
+        assert!(daemon.runtime(0).is_some() && daemon.unavailable(1).is_some());
+        assert!(daemon.shared.pairs[0].has_runtime() && !daemon.shared.pairs[1].has_runtime());
+        // Published before any pass: M1b — the error, and a history, so gui-core reads `Failed`.
+        let reply = daemon
+            .shared
+            .response(&daemon.shared.pairs[1], "daemon status");
+        assert!(
+            reply
+                .last_error
+                .as_deref()
+                .is_some_and(|error| error.contains("could not be created")),
+            "{:?}",
+            reply.last_error
+        );
+        assert_eq!(reply.last_sync_epoch_secs, None);
+        assert!(!reply.status_history.is_empty(), "never empty");
+
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(
+            client.walks(),
+            [remote_root_of("a")],
+            "`a` synced; `b` did not"
+        );
+        assert_eq!(
+            client.uploads(),
+            [(remote_root_of("a"), PathBuf::from("one.txt"))]
+        );
+        assert_eq!(
+            daemon.shared.pairs[1].reconcile_seq.load(Ordering::SeqCst),
+            1,
+            "`b`'s attempt is an answer too"
+        );
+    }
+
+    #[test]
+    fn an_unavailable_pair_becomes_ready_when_its_root_appears_and_runs_a_first_pass() {
+        let directory = tempdir().expect("tempdir");
+        let mut configs = pair_configs(directory.path(), &["a"]);
+        configs.push(unpreparable_config(directory.path(), "b"));
+        let b_root = configs[1].local_root.clone();
+        let blocker = b_root.parent().expect("blocker").to_path_buf();
+        let client = MultiRootClient::default();
+        let mut daemon = multi_pair_daemon(configs, client.clone(), None);
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        client.clear_walks();
+
+        // What kept it unavailable goes away — but the folder is not made by anything.
+        fs::remove_file(&blocker).expect("the blocker goes");
+        stepper.send(LoopCommand::SyncNow(1));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(daemon.unavailable(1).is_some(), "still not ready");
+        assert!(
+            !blocker.exists() && !b_root.exists(),
+            "a retry never creates the folder"
+        );
+        assert!(
+            published_error(&daemon, 1).is_some_and(|error| error.contains("does not exist")),
+            "{:?}",
+            published_error(&daemon, 1)
+        );
+        assert!(client.walks().is_empty());
+
+        // The folder appears, with a file in it.
+        fs::create_dir_all(&b_root).expect("the folder appears");
+        fs::write(b_root.join("hello.txt"), b"hi").expect("a file");
+        stepper.send(LoopCommand::SyncNow(1));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(daemon.runtime(1).is_some() && daemon.shared.pairs[1].has_runtime());
+        assert_eq!(
+            client.walks(),
+            [remote_root_of("b")],
+            "its first pass ran in the same job that made it ready"
+        );
+        assert!(
+            client
+                .uploads()
+                .contains(&(remote_root_of("b"), PathBuf::from("hello.txt")))
+        );
+        assert!(!daemon.runtime(1).expect("ready").is_first_reconcile);
+        assert_eq!(published_error(&daemon, 1), None);
+        assert_eq!(stepper.rewatched(), [b_root], "watched before that pass");
+        let reply = daemon
+            .shared
+            .response(&daemon.shared.pairs[1], "daemon status");
+        assert!(reply.last_sync_epoch_secs.is_some());
+        assert!(!reply.status_history.is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_approval_on_a_pair_that_could_not_be_prepared_at_boot_answers_rather_than_dropping_the_connection()
+     {
+        // Built the way `run` builds it: through the daemon's own `control_plane_pair`, for a pair
+        // whose index cannot even be opened — the eager `open_database(..)?` of 4a would stop
+        // `run` here.
+        let directory = tempdir().expect("tempdir");
+        let mut configs = pair_configs(directory.path(), &["a"]);
+        configs.push(unpreparable_config(directory.path(), "b"));
+        let daemon = multi_pair_daemon(configs, MultiRootClient::default(), None);
+        let (loop_tx, _loop_rx) = mpsc::unbounded_channel();
+        let plane = ControlPlane {
+            shared: Arc::clone(&daemon.shared),
+            pairs: (0..2).map(|pair| daemon.control_plane_pair(pair)).collect(),
+            loop_tx,
+            io_timeout: Duration::from_secs(5),
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+            browse: BrowseContext {
+                proton: Arc::new(MultiRootClient::default()),
+                gate_wait: Duration::from_secs(5),
+            },
+        };
+        for command in [
+            ControlCommand::Approve,
+            ControlCommand::Deny,
+            ControlCommand::Keep,
+            ControlCommand::Activity,
+        ] {
+            let mut request = ControlRequest::new(command.clone());
+            request.pair = Some("b".to_owned());
+            request.argument = Some("a.txt".to_owned());
+            request.literal_path = true;
+            let response = roundtrip(&plane, request).await;
+            assert_eq!(response.pair.as_deref(), Some("b"), "{command:?}");
+            assert!(
+                response.message.contains("'b' is unavailable"),
+                "{command:?}: {}",
+                response.message
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_pair_that_becomes_ready_gets_its_approvals_connection_on_first_use() {
+        // The plane was built while the pair was unavailable. Once the daemon says it is ready the
+        // IPC task opens the connection itself — and drops it again if the pair stops being.
+        let directory = tempdir().expect("tempdir");
+        let (plane, _loop_rx) = two_pair_control_plane(directory.path());
+        *plane.pairs[1].approvals.lock().await = None;
+        let mut request = ControlRequest::new(ControlCommand::Approve);
+        request.pair = Some("beta".to_owned());
+        request.argument = Some("a.txt".to_owned());
+        request.literal_path = true;
+
+        let response = roundtrip(&plane, request.clone()).await;
+        assert!(
+            response.message.contains("no pending deletion matches"),
+            "the verb ran against the index: {}",
+            response.message
+        );
+        assert!(
+            plane.pairs[1].approvals.lock().await.is_some(),
+            "opened on first use"
+        );
+
+        plane.shared.pairs[1].set_has_runtime(false);
+        let response = roundtrip(&plane, request).await;
+        assert!(
+            response.message.contains("'beta' is unavailable"),
+            "{}",
+            response.message
+        );
+        assert!(
+            plane.pairs[1].approvals.lock().await.is_none(),
+            "and dropped with the runtime: the daemon no longer holds that pair's lock"
+        );
+    }
+
+    #[test]
+    fn a_per_root_lock_held_at_boot_refuses_startup_naming_the_pair() {
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a", "b"]);
+        // Another process holds `b`'s lock: what the lock exists to stop.
+        let _held = LockGuard::acquire(&configs[1].lockfile_path).expect("the other daemon");
+        let error = Daemon::from_pairs(configs, MultiRootClient::default(), None)
+            .err()
+            .expect("startup is refused");
+        let message = error.to_string();
+        assert!(
+            message.contains("folder pair 'b'") && message.contains("daemon already running"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_per_root_lock_held_mid_life_keeps_the_pair_unavailable_and_the_daemon_running() {
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a", "b"]);
+        let b_lockfile = configs[1].lockfile_path.clone();
+        let client = MultiRootClient::default();
+        let mut daemon = multi_pair_daemon(configs, client.clone(), None);
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        // `b` stops being ready (its lock is released with its runtime) and another process takes it.
+        daemon.demote_pair(1, "its metrics file could not be written".to_owned());
+        let held = LockGuard::acquire(&b_lockfile).expect("another process takes the lock");
+        daemon.shared.pairs[1].replace_stored_plan(StoredPlan {
+            token: "reviewed".to_owned(),
+            computed_epoch_secs: 1,
+            summary: PlanSummary::default(),
+            actions: Vec::new(),
+            cannot_sync: Vec::new(),
+            local_disposal: LocalDisposal::Permanent,
+        });
+        let apply_seq = daemon.shared.pairs[1]
+            .book_apply_request("reviewed", false)
+            .expect("token accepted");
+        client.clear_walks();
+
+        stepper.send(LoopCommand::SyncNow(1));
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        let reason = published_error(&daemon, 1).expect("it says why");
+        assert!(reason.contains("locked by another process"), "{reason}");
+        assert!(daemon.unavailable(1).is_some());
+        assert_eq!(
+            client.walks(),
+            [remote_root_of("a")],
+            "`a` is untouched, `b` ran nothing"
+        );
+        match daemon.shared.pairs[1].apply_outcome() {
+            Some(ApplyOutcome::Failed {
+                apply_seq: sealed,
+                error,
+            }) => {
+                assert_eq!(sealed, apply_seq);
+                assert!(error.contains("locked by another process"), "{error}");
+            }
+            other => panic!("the apply is sealed, got {other:?}"),
+        }
+
+        // The other process lets go: the next attempt takes it.
+        drop(held);
+        stepper.send(LoopCommand::SyncNow(1));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(daemon.runtime(1).is_some());
+        assert_eq!(client.walks(), [remote_root_of("a"), remote_root_of("b")]);
+    }
+
+    #[test]
+    fn a_root_the_watcher_cannot_watch_forces_a_local_scan_every_pass() {
+        // Events live and idle, so only a forced local scan can find an edit no event announced.
+        let directory = tempdir().expect("tempdir");
+        let mut configs = pair_configs(directory.path(), &["a"]);
+        configs[0].events_driven = true;
+        let root = configs[0].local_root.clone();
+        fs::write(root.join("a.txt"), b"a").expect("local file");
+        let client = MultiRootClient::default().with_tree(
+            &configs[0].remote_root,
+            vec![remote_file_entity("a.txt", "vola~na", &sha1_bytes(b"a"))],
+        );
+        let mut daemon = multi_pair_daemon(
+            configs,
+            client.clone(),
+            Some(Box::new(FakeEventSource::new("cursor-0"))),
+        );
+        let mut stepper = Stepper::new_with_a_watcher_that_fails(&mut daemon);
+        assert_eq!(
+            daemon.runtime(0).expect("ready").root_watch,
+            RootWatch::Incomplete,
+            "the daemon runs, with the watch it could not get marked as missing"
+        );
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        client.clear_walks();
+        assert_eq!(
+            stepper.rewatched().len(),
+            1,
+            "the boot pass tried the watch again"
+        );
+
+        for name in ["one.txt", "two.txt"] {
+            fs::write(root.join(name), name).expect("an edit nothing watched");
+            stepper.send(LoopCommand::SyncNow(0));
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+            assert!(
+                client
+                    .uploads()
+                    .contains(&(remote_root_of("a"), PathBuf::from(name))),
+                "{name}: scanned, because nothing is watching: {:?}",
+                client.uploads()
+            );
+        }
+        assert_eq!(
+            stepper.rewatched().len(),
+            3,
+            "and the watch was tried again before each of those passes"
+        );
+
+        // The watcher recovers: one more scan, then the pair is back on the idle fast path.
+        stepper.watcher_fails.store(false, Ordering::SeqCst);
+        fs::write(root.join("three.txt"), b"3").expect("an edit nothing watched");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(stepper.rewatched().len(), 4);
+        assert!(matches!(
+            daemon.runtime(0).expect("ready").root_watch,
+            RootWatch::Watching(_)
+        ));
+        assert!(
+            client
+                .uploads()
+                .contains(&(remote_root_of("a"), PathBuf::from("three.txt")))
+        );
+        fs::write(root.join("four.txt"), b"4").expect("an edit nothing watched");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(
+            stepper.rewatched().len(),
+            4,
+            "watched: no more registrations"
+        );
+        assert!(
+            !client
+                .uploads()
+                .contains(&(remote_root_of("a"), PathBuf::from("four.txt"))),
+            "watched again, so an unannounced edit waits for its event"
+        );
+    }
+
+    #[test]
+    fn a_watcher_error_that_left_a_folder_unwatched_registers_its_root_before_the_next_pass() {
+        // 4a latched a rescan for a `MaxFilesWatch` error and never registered the directory it
+        // could not watch. The error names the directory, so only its owner is registered again.
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a", "b"]);
+        let b_root = configs[1].local_root.clone();
+        let mut daemon = multi_pair_daemon(configs, MultiRootClient::default(), None);
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        assert!(stepper.rewatched().is_empty());
+
+        stepper
+            .watch_tx
+            .send(Err(notify::Error::new(notify::ErrorKind::MaxFilesWatch)
+                .add_path(b_root.join("a-folder-it-could-not-add"))))
+            .expect("watch channel open");
+        stepper.send(LoopCommand::SyncNow(0));
+        stepper.send(LoopCommand::SyncNow(1));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert_eq!(
+            stepper.rewatched(),
+            [b_root],
+            "`b`'s root, and only it, before `b`'s pass"
+        );
+        assert!(matches!(
+            daemon.runtime(1).expect("ready").root_watch,
+            RootWatch::Watching(_)
+        ));
+    }
+
+    #[test]
+    fn a_ready_pair_demoted_keeps_what_it_last_published() {
+        // Carried item 2 of the 4a note: `last_sync: None` is how the GUI tells a machine that has
+        // never synced, so a pair that was syncing may not start publishing it.
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a", "b"]);
+        fs::write(configs[1].local_root.join("kept.txt"), b"k").expect("a file");
+        let mut daemon = multi_pair_daemon(configs, MultiRootClient::default(), None);
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        let before = daemon.shared.pairs[1]
+            .snapshot
+            .lock()
+            .expect("snapshot lock")
+            .clone();
+        assert!(before.last_sync_epoch_secs.is_some());
+        assert!(before.last_successful_sync_summary.is_some());
+        assert!(!before.status_history.is_empty());
+        assert!(before.history.is_some() && before.index_totals.is_some());
+
+        daemon.demote_pair(1, "its metrics file could not be written".to_owned());
+
+        let after = daemon.shared.pairs[1]
+            .snapshot
+            .lock()
+            .expect("snapshot lock")
+            .clone();
+        assert_eq!(after.last_sync_epoch_secs, before.last_sync_epoch_secs);
+        assert_eq!(
+            after.last_successful_sync_summary,
+            before.last_successful_sync_summary
+        );
+        assert_eq!(after.index_totals, before.index_totals);
+        assert_eq!(
+            after.history.as_ref().map(|history| history.recent.len()),
+            before.history.as_ref().map(|history| history.recent.len())
+        );
+        assert_eq!(
+            &after.status_history[..before.status_history.len()],
+            &before.status_history[..],
+            "the real history is all still there, in order"
+        );
+        assert_eq!(after.status_history.len(), before.status_history.len() + 1);
+        assert_eq!(
+            after.last_error.as_deref(),
+            Some("its metrics file could not be written")
+        );
+        assert!(!daemon.shared.pairs[1].has_runtime());
+
+        // And it keeps them across the way back.
+        stepper.send(LoopCommand::SyncNow(1));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(daemon.runtime(1).is_some(), "the retry took");
+        assert!(
+            daemon.shared.pairs[1]
+                .snapshot
+                .lock()
+                .expect("snapshot lock")
+                .last_sync_epoch_secs
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn a_pair_whose_first_metrics_write_fails_is_unavailable_and_keeps_its_history() {
+        // The one production demotion: boot's first metrics write is part of preparing a pair.
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a", "b"]);
+        let b_db = configs[1].db_path.clone();
+        let earlier: Vec<StatusHistoryEntry> = (1..=5)
+            .map(|index| StatusHistoryEntry {
+                epoch_secs: 1_000 + index,
+                message: format!("sync {index}"),
+                last_error: None,
+                plan_summary: None,
+                successful_sync_summary: None,
+                failed_item_count: 0,
+            })
+            .collect();
+        write_status_history(&status_history_path(&b_db), &earlier)
+            .expect("a previous run's history");
+        // A directory where the sidecar's file would go: the write cannot land.
+        fs::create_dir_all(metrics_path(&b_db)).expect("an obstacle");
+
+        let daemon = multi_pair_daemon(configs, MultiRootClient::default(), None);
+
+        assert!(daemon.runtime(0).is_some(), "`a` is untouched");
+        let reason = daemon
+            .unavailable(1)
+            .expect("`b` is unavailable")
+            .reason
+            .clone();
+        assert!(
+            reason.contains("metrics file could not be written"),
+            "{reason}"
+        );
+        let reply = daemon
+            .shared
+            .response(&daemon.shared.pairs[1], "daemon status");
+        assert_eq!(reply.last_error.as_deref(), Some(reason.as_str()));
+        assert_eq!(
+            &reply.status_history[..5],
+            &earlier[..],
+            "the history the sidecar held is what is published, with the unavailable entry after it"
+        );
+        assert_eq!(reply.status_history.len(), 6);
+        assert!(!daemon.shared.pairs[1].has_runtime());
+    }
+
+    #[test]
+    fn a_standing_unavailable_cause_refreshes_one_entry_and_a_new_cause_adds_one() {
+        // Carried item 3 of the 4a note: an entry per attempt pushed the real history out of the
+        // 20-entry window in about ten minutes at the 30 s cadence.
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a"]);
+        let mut daemon = multi_pair_daemon(configs, MultiRootClient::default(), None);
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        let real = daemon.runtime(0).expect("ready").status_history.clone();
+        assert!(!real.is_empty());
+        let root = daemon.runtime(0).expect("ready").config.local_root.clone();
+
+        daemon.demote_pair(0, "locked by another process".to_owned());
+        fs::remove_dir_all(&root).expect("the folder goes away");
+        let reason = {
+            // The retry's own reason is a second cause: one more entry, then it stands.
+            stepper.send(LoopCommand::SyncNow(0));
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+            published_error(&daemon, 0).expect("a reason")
+        };
+        assert!(reason.contains("does not exist"), "{reason}");
+        let settled = daemon
+            .unavailable(0)
+            .expect("unavailable")
+            .status_history
+            .clone();
+        assert_eq!(settled.len(), real.len() + 2);
+        // Age the newest entry so a refresh is visible.
+        daemon
+            .unavailable_mut(0)
+            .expect("unavailable")
+            .status_history
+            .last_mut()
+            .expect("an entry")
+            .epoch_secs = 1;
+
+        for _ in 0..60 {
+            stepper.send(LoopCommand::SyncNow(0));
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        }
+
+        let history = &daemon.unavailable(0).expect("unavailable").status_history;
+        assert_eq!(
+            history.len(),
+            real.len() + 2,
+            "sixty attempts, no new entries"
+        );
+        assert_eq!(
+            &history[..real.len()],
+            &real[..],
+            "the real history is intact"
+        );
+        assert!(
+            history.last().expect("an entry").epoch_secs > 1,
+            "the newest entry's time moved: it means 'last seen'"
+        );
+    }
+
+    #[tokio::test]
+    async fn pause_and_resume_write_no_metrics_file_for_a_pair_that_is_not_ready() {
+        // Carried item 4: the file belongs to whoever holds that pair's lock, and its directory may
+        // be exactly what is missing.
+        let directory = tempdir().expect("tempdir");
+        let (plane, _loop_rx) = two_pair_control_plane(directory.path());
+        plane.shared.pairs[1].set_has_runtime(false);
+        let alpha = directory.path().join("alpha.metrics.json");
+        let beta = directory.path().join("beta.metrics.json");
+        for command in [ControlCommand::Pause, ControlCommand::Resume] {
+            for name in ["alpha", "beta"] {
+                let mut request = ControlRequest::new(command.clone());
+                request.pair = Some(name.to_owned());
+                roundtrip(&plane, request).await;
+            }
+            assert!(alpha.exists(), "{command:?}: a ready pair still records it");
+            assert!(
+                !beta.exists(),
+                "{command:?}: a pair that is not ready does not"
+            );
+            fs::remove_file(&alpha).expect("reset");
+        }
+    }
+
+    #[tokio::test]
+    async fn pause_never_brings_a_missing_state_directory_back() {
+        // `write_atomically` creates the sidecar's directory — which, with the default layout, is
+        // inside the root. A pause is not a way to make a folder that went away.
+        let directory = tempdir().expect("tempdir");
+        let (mut plane, _loop_rx) = two_pair_control_plane(directory.path());
+        let gone = directory.path().join("gone");
+        plane.pairs[0].metrics_path = gone.join("alpha.metrics.json");
+        let mut request = ControlRequest::new(ControlCommand::Pause);
+        request.pair = Some("alpha".to_owned());
+
+        let response = roundtrip(&plane, request).await;
+
+        assert_eq!(response.message, "sync paused");
+        assert!(
+            plane.shared.pairs[0].is_paused(),
+            "the pause itself took effect"
+        );
+        assert!(!gone.exists());
+    }
+
+    #[test]
+    fn a_standing_failure_to_become_ready_is_reported_once_not_once_per_attempt() {
+        // The first metrics write is part of preparing a pair, so a directory that stays unwritable
+        // promotes and demotes the pair on every retry. It is one cause, and it speaks once.
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a"]);
+        fs::create_dir_all(metrics_path(&configs[0].db_path)).expect("an obstacle");
+        let mut daemon = multi_pair_daemon(configs, MultiRootClient::default(), None);
+        let mut stepper = Stepper::new(&mut daemon);
+        assert!(
+            daemon.unavailable(0).is_some(),
+            "precondition: unavailable at boot"
+        );
+        let history = daemon
+            .unavailable(0)
+            .expect("unavailable")
+            .status_history
+            .len();
+
+        let log = capture_log("info", || {
+            for _ in 0..5 {
+                stepper.send(LoopCommand::SyncNow(0));
+                assert_eq!(stepper.step(&mut daemon), Step::Idle);
+            }
+        });
+
+        assert!(daemon.unavailable(0).is_some(), "and it stays so");
+        assert_eq!(
+            log.matches("folder pair still unavailable").count(),
+            0,
+            "the cause did not change, so nothing is said:\n{log}"
+        );
+        assert_eq!(
+            log.matches("folder pair is available again").count(),
+            0,
+            "and it never became available:\n{log}"
+        );
+        assert_eq!(
+            daemon
+                .unavailable(0)
+                .expect("unavailable")
+                .status_history
+                .len(),
+            history,
+            "one standing cause is one history entry"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_daemon_whose_only_pair_cannot_be_prepared_keeps_running_and_answers_status() {
+        // M1 with N = 1, through the real `run`: this used to exit at once, and systemd started it
+        // again every ten seconds.
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        let directory = tempdir().expect("tempdir");
+        let config = unpreparable_config(directory.path(), "default");
+        let socket_path = config.socket_path.clone();
+        let mut daemon = Daemon::from_pairs(vec![config], MultiRootClient::default(), None)
+            .expect("the daemon starts");
+        daemon.event_source_factory = Box::new(|| None);
+        let shared = Arc::clone(&daemon.shared);
+        let cancel = Arc::clone(&daemon.cancel_flag);
+        let notify = Arc::clone(&daemon.shutdown_notify);
+        let handle = tokio::spawn(daemon.run());
+        for _ in 0..200 {
+            if shared.pairs[0].reconcile_seq.load(Ordering::SeqCst) >= 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(
+            shared.pairs[0].reconcile_seq.load(Ordering::SeqCst) >= 1,
+            "precondition: its first attempt ran"
+        );
+        assert!(!handle.is_finished(), "the daemon is still running");
+
+        let mut stream = UnixStream::connect(&socket_path)
+            .await
+            .expect("the socket answers");
+        let request = serde_json::to_vec(&ControlRequest::new(ControlCommand::Status))
+            .expect("serialize request");
+        stream.write_all(&request).await.expect("write request");
+        stream.write_all(b"\n").await.expect("write newline");
+        let mut line = String::new();
+        tokio::io::BufReader::new(stream)
+            .read_line(&mut line)
+            .await
+            .expect("read response");
+        let reply: ControlResponse = serde_json::from_str(line.trim()).expect("parse response");
+        assert!(
+            reply
+                .last_error
+                .as_deref()
+                .is_some_and(|error| error.contains("default-blocker")),
+            "{:?}",
+            reply.last_error
+        );
+        assert_eq!(reply.last_sync_epoch_secs, None);
+        assert!(
+            !reply.status_history.is_empty(),
+            "so the GUI shows the error, not onboarding"
+        );
+
+        cancel.store(true, Ordering::SeqCst);
+        notify.notify_one();
+        tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("run() returns once shutdown is signalled")
+            .expect("join")
+            .expect("a clean exit");
+    }
+
+    #[test]
+    fn a_retry_never_creates_the_folder_it_is_waiting_for() {
+        // Only boot creates a missing folder. A retry that did would turn an unplugged drive's mount
+        // point into an empty tree that the next pass reconciles against the remote.
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a"]);
+        let root = configs[0].local_root.clone();
+        let mut daemon = multi_pair_daemon(configs, MultiRootClient::default(), None);
+        daemon.demote_pair(0, "locked by another process".to_owned());
+        fs::remove_dir_all(&root).expect("the folder goes away");
+        let mut stepper = Stepper::new(&mut daemon);
+
+        for _ in 0..3 {
+            stepper.send(LoopCommand::SyncNow(0));
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        }
+
+        assert!(daemon.unavailable(0).is_some(), "still waiting");
+        assert!(!root.exists(), "and nothing made the folder");
+    }
+
+    #[test]
+    fn a_paused_unavailable_pair_is_not_retried() {
+        // A pause means no work: no preparation either, which takes a lock and opens an index.
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a"]);
+        let mut daemon = multi_pair_daemon(configs, MultiRootClient::default(), None);
+        daemon.demote_pair(0, "locked by another process".to_owned());
+        daemon.shared.pairs[0].paused.store(true, Ordering::SeqCst);
+        let mut stepper = Stepper::new(&mut daemon);
+
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(daemon.unavailable(0).is_some(), "paused: not retried");
+
+        daemon.shared.pairs[0].paused.store(false, Ordering::SeqCst);
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(daemon.runtime(0).is_some(), "resumed: retried, and it took");
+    }
+
+    #[test]
+    fn a_pair_whose_index_cannot_be_opened_at_boot_publishes_the_history_its_sidecar_holds() {
+        // Boot's other unavailable path: the folder is fine, the index is not. The sidecar next to
+        // it is readable, so the real history is what is published — not just the one entry.
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a", "b"]);
+        let b_db = configs[1].db_path.clone();
+        let earlier: Vec<StatusHistoryEntry> = (1..=3)
+            .map(|index| StatusHistoryEntry {
+                epoch_secs: 2_000 + index,
+                message: format!("sync {index}"),
+                last_error: None,
+                plan_summary: None,
+                successful_sync_summary: None,
+                failed_item_count: 0,
+            })
+            .collect();
+        write_status_history(&status_history_path(&b_db), &earlier)
+            .expect("a previous run's history");
+        fs::create_dir_all(&b_db).expect("a directory where the database file belongs");
+
+        let daemon = multi_pair_daemon(configs, MultiRootClient::default(), None);
+
+        let reason = daemon
+            .unavailable(1)
+            .expect("`b` is unavailable")
+            .reason
+            .clone();
+        assert!(reason.contains("its state could not be opened"), "{reason}");
+        let reply = daemon
+            .shared
+            .response(&daemon.shared.pairs[1], "daemon status");
+        assert_eq!(&reply.status_history[..3], &earlier[..]);
+        assert_eq!(reply.status_history.len(), 4);
+        assert_eq!(reply.last_sync_epoch_secs, None);
+    }
+
+    #[test]
+    fn a_failed_re_registration_after_an_overflow_is_retried_before_the_next_pass() {
+        // The 4a arm warned that "a folder created meanwhile may stay unwatched" and had nothing to
+        // retry it with.
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a"]);
+        let root = configs[0].local_root.clone();
+        let mut daemon = multi_pair_daemon(configs, MultiRootClient::default(), None);
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        assert!(matches!(
+            daemon.runtime(0).expect("ready").root_watch,
+            RootWatch::Watching(_)
+        ));
+
+        stepper.watcher_fails.store(true, Ordering::SeqCst);
+        stepper.event(rescan_notice());
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(
+            stepper.rewatched(),
+            [root.clone(), root.clone()],
+            "the overflow's registration failed, and the pass tried it again"
+        );
+        assert_eq!(
+            daemon.runtime(0).expect("ready").root_watch,
+            RootWatch::Incomplete
+        );
+
+        stepper.watcher_fails.store(false, Ordering::SeqCst);
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(stepper.rewatched().len(), 3);
+        assert!(matches!(
+            daemon.runtime(0).expect("ready").root_watch,
+            RootWatch::Watching(_)
+        ));
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Review of #432: state that goes with the folder, a folder replaced by an empty one, a folder
+    // that vanishes during a pass, and the smaller findings. Every test drives the step function.
+    // ---------------------------------------------------------------------------------------
+
+    /// The layout every packaged unit uses: the index and the lockfile live inside the folder, so
+    /// they go wherever the folder goes. The real defaults, not hand-written paths.
+    fn state_inside_root(config: &mut DaemonConfig) {
+        config.db_path = crate::paths::default_state_db_path(&config.local_root);
+        config.lockfile_path = crate::paths::default_lockfile_path(&config.local_root);
+    }
+
+    /// Builds a directory holding `files` next to `path`, **while `path` still exists**, so it cannot
+    /// be given the old directory's inode. Returns where it is.
+    fn stage_replacement(path: &Path, files: &[(&str, &[u8])]) -> PathBuf {
+        let staging = path.with_file_name("replacement");
+        fs::create_dir(&staging).expect("the replacement is built beside the old folder");
+        for (name, contents) in files {
+            let file = staging.join(name);
+            fs::create_dir_all(file.parent().expect("a parent")).expect("its directory");
+            fs::write(file, contents).expect("a file of the replacement");
+        }
+        staging
+    }
+
+    /// Deletes the directory at `path` and puts a different one there, holding `files`. The swap is
+    /// a rename, so no pass can observe the path empty or missing in between — a test about a
+    /// replaced folder must not depend on when a job happens to run.
+    fn replace_directory(path: &Path, files: &[(&str, &[u8])]) {
+        let staging = stage_replacement(path, files);
+        fs::remove_dir_all(path).expect("the old folder is deleted");
+        fs::rename(&staging, path).expect("the replacement takes its place");
+    }
+
+    /// The control plane the daemon would serve, built from its own `control_plane_pair`.
+    fn plane_for(
+        daemon: &Daemon<MultiRootClient>,
+        stepper: &Stepper,
+    ) -> ControlPlane<MultiRootClient> {
+        ControlPlane {
+            shared: Arc::clone(&daemon.shared),
+            pairs: (0..daemon.pairs.len())
+                .map(|pair| daemon.control_plane_pair(pair))
+                .collect(),
+            loop_tx: stepper.loop_tx.clone(),
+            io_timeout: Duration::from_secs(5),
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+            browse: BrowseContext {
+                proton: Arc::new(MultiRootClient::default()),
+                gate_wait: Duration::from_secs(5),
+            },
+        }
+    }
+
+    /// One pair `a` past boot, with its state inside the folder and `a.txt` in step on both sides.
+    /// The content is what `MultiRootClient::download` writes, so a download leaves the file in step.
+    fn state_inside_root_pair(
+        directory: &Path,
+    ) -> (Daemon<MultiRootClient>, MultiRootClient, Stepper) {
+        state_inside_root_pair_with(directory, |_| {})
+    }
+
+    /// [`state_inside_root_pair`] with the pair's config adjusted before the daemon is built.
+    fn state_inside_root_pair_with(
+        directory: &Path,
+        tune: impl FnOnce(&mut DaemonConfig),
+    ) -> (Daemon<MultiRootClient>, MultiRootClient, Stepper) {
+        let mut configs = pair_configs(directory, &["a"]);
+        state_inside_root(&mut configs[0]);
+        tune(&mut configs[0]);
+        fs::write(configs[0].local_root.join("a.txt"), b"downloaded").expect("a file");
+        let client = MultiRootClient::default().with_tree(
+            &configs[0].remote_root,
+            vec![remote_file_entity(
+                "a.txt",
+                "vola~na",
+                &sha1_bytes(b"downloaded"),
+            )],
+        );
+        let mut daemon = multi_pair_daemon(configs, client.clone(), None);
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        let root = daemon.pair_config(0).local_root.clone();
+        assert!(
+            root.join(".sync").is_dir(),
+            "precondition: the state lives in the folder"
+        );
+        assert!(
+            get_record(
+                &daemon.runtime(0).expect("ready").connection,
+                Path::new("a.txt")
+            )
+            .expect("index read")
+            .is_some(),
+            "precondition: a.txt is in step"
+        );
+        client.clear_walks();
+        (daemon, client, stepper)
+    }
+
+    fn uploads_of(client: &MultiRootClient, name: &str) -> usize {
+        client
+            .uploads()
+            .iter()
+            .filter(|(_, path)| path == Path::new(name))
+            .count()
+    }
+
+    #[test]
+    fn a_folder_replaced_with_its_state_inside_it_is_prepared_again_and_bootstraps() {
+        // The index and the lock were files in the old folder. The pair used to stay ready on an
+        // index that no longer had a name: every pass failed to write its history, and the new file
+        // was uploaded again each time. Now it is prepared again, which is a first pass over an
+        // empty baseline — it adopts and downloads, and has nothing to plan a deletion from.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) = state_inside_root_pair(directory.path());
+        let root = daemon.pair_config(0).local_root.clone();
+        let lockfile = daemon.pair_config(0).lockfile_path.clone();
+        let seq = daemon.shared.pairs[0].reconcile_seq.load(Ordering::SeqCst);
+
+        replace_directory(&root, &[("b.txt", b"b")]);
+        let log = capture_log("warn", || {
+            stepper.send(LoopCommand::SyncNow(0));
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        });
+
+        assert!(
+            !log.contains("readonly"),
+            "a pass ran on an index with no name:\n{log}"
+        );
+        assert!(
+            daemon.runtime(0).is_some(),
+            "prepared again, not left unavailable: {:?}",
+            published_error(&daemon, 0)
+        );
+        assert_eq!(published_error(&daemon, 0), None);
+        assert_eq!(uploads_of(&client, "b.txt"), 1, "{:?}", client.uploads());
+        assert!(
+            client.deletes().is_empty(),
+            "an empty baseline plans no deletion: {:?}",
+            client.deletes()
+        );
+        assert!(
+            root.join("a.txt").is_file(),
+            "the remote file came down: the new folder is reconciled from nothing"
+        );
+        let runtime = daemon.runtime(0).expect("ready");
+        for name in ["a.txt", "b.txt"] {
+            assert!(
+                get_record(&runtime.connection, Path::new(name))
+                    .expect("index read")
+                    .is_some(),
+                "{name} is recorded in the NEW index"
+            );
+        }
+        assert!(runtime.pending_deletions.is_empty());
+        assert_eq!(
+            daemon.shared.pairs[0].reconcile_seq.load(Ordering::SeqCst),
+            seq + 1,
+            "one job is one attempt, preparing again included"
+        );
+        assert!(
+            LockGuard::acquire(&lockfile).is_err(),
+            "the lock this daemon holds is the new file's, not the deleted one's"
+        );
+
+        // And it stays prepared: the next pass is quiet.
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(published_error(&daemon, 0), None);
+        assert_eq!(uploads_of(&client, "b.txt"), 1);
+    }
+
+    #[test]
+    fn a_folder_replaced_with_only_its_lock_inside_it_takes_the_new_lock() {
+        // The index is elsewhere and survives; the lockfile was in the folder. The old lock is on a
+        // file with no name, so a second daemon could lock the new one beside this one. Once with
+        // no lockfile in the replacement, once with a different file already at its path: a path
+        // that stats is not thereby the file that is held.
+        for lockfile_in_replacement in [false, true] {
+            let directory = tempdir().expect("tempdir");
+            let mut configs = pair_configs(directory.path(), &["a"]);
+            configs[0].lockfile_path = crate::paths::default_lockfile_path(&configs[0].local_root);
+            let root = configs[0].local_root.clone();
+            let lockfile = configs[0].lockfile_path.clone();
+            let relative_lockfile = lockfile
+                .strip_prefix(&root)
+                .expect("inside the folder")
+                .to_str()
+                .expect("utf-8")
+                .to_owned();
+            fs::write(root.join("a.txt"), b"downloaded").expect("a file");
+            let client = MultiRootClient::default().with_tree(
+                &configs[0].remote_root,
+                vec![remote_file_entity(
+                    "a.txt",
+                    "vola~na",
+                    &sha1_bytes(b"downloaded"),
+                )],
+            );
+            let mut daemon = multi_pair_daemon(configs, client.clone(), None);
+            let mut stepper = Stepper::new(&mut daemon);
+            assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+            assert!(LockGuard::acquire(&lockfile).is_err(), "precondition: held");
+
+            let mut files: Vec<(&str, &[u8])> = vec![("a.txt", b"downloaded"), ("b.txt", b"b")];
+            if lockfile_in_replacement {
+                files.push((relative_lockfile.as_str(), b""));
+            }
+            replace_directory(&root, &files);
+            stepper.send(LoopCommand::SyncNow(0));
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+            assert!(daemon.runtime(0).is_some(), "{lockfile_in_replacement}");
+            assert_eq!(published_error(&daemon, 0), None);
+            assert!(
+                LockGuard::acquire(&lockfile).is_err(),
+                "lockfile_in_replacement {lockfile_in_replacement}: the new lockfile is held, by \
+                 this daemon"
+            );
+            assert_eq!(uploads_of(&client, "b.txt"), 1);
+            assert!(client.deletes().is_empty(), "{:?}", client.deletes());
+        }
+    }
+
+    #[test]
+    fn a_folder_replaced_with_only_its_index_inside_it_is_prepared_again() {
+        // The lock is elsewhere and is still the file at its path; the index was in the folder.
+        // Once with no index in the replacement, once with a different file already at its path
+        // (a restored backup, say): a path that stats is not thereby the file that is open.
+        for index_in_replacement in [false, true] {
+            let directory = tempdir().expect("tempdir");
+            let mut configs = pair_configs(directory.path(), &["a"]);
+            configs[0].db_path = crate::paths::default_state_db_path(&configs[0].local_root);
+            let root = configs[0].local_root.clone();
+            let relative_index = configs[0]
+                .db_path
+                .strip_prefix(&root)
+                .expect("inside the folder")
+                .to_str()
+                .expect("utf-8")
+                .to_owned();
+            fs::write(root.join("a.txt"), b"downloaded").expect("a file");
+            let client = MultiRootClient::default().with_tree(
+                &configs[0].remote_root,
+                vec![remote_file_entity(
+                    "a.txt",
+                    "vola~na",
+                    &sha1_bytes(b"downloaded"),
+                )],
+            );
+            let mut daemon = multi_pair_daemon(configs, client.clone(), None);
+            let mut stepper = Stepper::new(&mut daemon);
+            assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+
+            let mut files: Vec<(&str, &[u8])> = vec![("b.txt", b"b")];
+            if index_in_replacement {
+                files.push((relative_index.as_str(), b""));
+            }
+            replace_directory(&root, &files);
+            let log = capture_log("warn", || {
+                stepper.send(LoopCommand::SyncNow(0));
+                assert_eq!(stepper.step(&mut daemon), Step::Idle);
+            });
+
+            assert!(!log.contains("readonly"), "{index_in_replacement}: {log}");
+            assert!(
+                daemon.runtime(0).is_some(),
+                "{index_in_replacement}: {:?}",
+                published_error(&daemon, 0)
+            );
+            assert_eq!(published_error(&daemon, 0), None);
+            assert_eq!(uploads_of(&client, "b.txt"), 1, "{index_in_replacement}");
+            assert!(client.deletes().is_empty(), "{:?}", client.deletes());
+            let runtime = daemon.runtime(0).expect("ready");
+            for name in ["a.txt", "b.txt"] {
+                assert!(
+                    get_record(&runtime.connection, Path::new(name))
+                        .expect("index read")
+                        .is_some(),
+                    "{index_in_replacement}: {name} is recorded in the new index"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_folder_that_is_gone_with_its_state_inside_it_is_one_standing_cause_until_it_returns() {
+        // While the folder is missing its state is missing too, but that is the folder's story: the
+        // pair stays ready, says so once, and does not turn one cause into two history entries.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) = state_inside_root_pair(directory.path());
+        let root = daemon.pair_config(0).local_root.clone();
+        let entries = daemon.runtime(0).expect("ready").status_history.len();
+
+        fs::remove_dir_all(&root).expect("the folder goes away");
+        for _ in 0..3 {
+            stepper.send(LoopCommand::SyncNow(0));
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        }
+
+        assert!(
+            daemon.runtime(0).is_some(),
+            "not demoted while the folder is gone"
+        );
+        assert!(
+            published_error(&daemon, 0).is_some_and(|error| error.contains("is not available")),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        assert_eq!(
+            daemon.runtime(0).expect("ready").status_history.len(),
+            entries + 1,
+            "three attempts at one cause are one entry"
+        );
+        assert!(!root.exists(), "and nothing made the folder");
+
+        // It comes back with something in it.
+        fs::create_dir(&root).expect("the folder returns");
+        fs::write(root.join("b.txt"), b"b").expect("a file");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(published_error(&daemon, 0), None);
+        assert_eq!(uploads_of(&client, "b.txt"), 1);
+        assert!(daemon.runtime(0).is_some());
+    }
+
+    #[test]
+    fn a_plan_on_a_pair_whose_state_went_with_its_folder_is_refused_and_changes_nothing() {
+        // A plan is inert, so it demotes nothing; but it may not be computed against an index that
+        // has no name and handed over for review as the plan of the new folder.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) = state_inside_root_pair(directory.path());
+        let root = daemon.pair_config(0).local_root.clone();
+        replace_directory(&root, &[("b.txt", b"b")]);
+
+        daemon.shared.pairs[0].book_plan_request();
+        stepper.send(LoopCommand::PlanNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        match daemon.shared.pairs[0].plan_outcome(None) {
+            PlanOutcome::Failed { error, .. } => {
+                assert!(error.contains("state was removed"), "{error}");
+            }
+            other => panic!("the plan is refused, got {other:?}"),
+        }
+        assert!(daemon.runtime(0).is_some(), "a plan demotes nothing");
+        assert!(client.walks().is_empty(), "and lists nothing");
+
+        // The next sync is what repairs it.
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(published_error(&daemon, 0), None);
+        assert_eq!(uploads_of(&client, "b.txt"), 1);
+    }
+
+    #[tokio::test]
+    async fn the_ipc_tasks_index_connection_follows_a_pair_prepared_again_within_one_job() {
+        // `has_runtime` goes false and true again inside one job, so the IPC task may never see the
+        // false. A connection it opened on the old index would then write to a file with no name:
+        // an approval that is accepted and applied to nothing.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, _client, mut stepper) = state_inside_root_pair(directory.path());
+        let root = daemon.pair_config(0).local_root.clone();
+        let plane = plane_for(&daemon, &stepper);
+        {
+            let held = approvals_connection(&plane.pairs[0], &plane.shared.pairs[0]).await;
+            held.as_ref()
+                .expect("a connection")
+                .execute("CREATE TABLE IF NOT EXISTS probe_before (x INTEGER)", [])
+                .expect("precondition: the connection can write");
+        }
+
+        replace_directory(&root, &[("b.txt", b"b")]);
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(daemon.runtime(0).is_some(), "prepared again");
+
+        let held = approvals_connection(&plane.pairs[0], &plane.shared.pairs[0]).await;
+        held.as_ref()
+            .expect("a connection")
+            .execute("CREATE TABLE IF NOT EXISTS probe_after (x INTEGER)", [])
+            .expect("the connection writes to the index this daemon now holds");
+    }
+
+    /// `a` past boot on an events-driven session with guard settings from `tune`, its index outside
+    /// the folder (so it survives anything that happens to the folder), then its folder replaced by
+    /// a different empty directory. The returned stepper has not stepped since.
+    fn replaced_by_an_empty_folder(
+        directory: &Path,
+        tune: impl FnOnce(&mut DaemonConfig),
+    ) -> (Daemon<MultiRootClient>, MultiRootClient, Stepper) {
+        let (daemon, client, stepper) = steady_events_pair_with(directory, Vec::new(), tune);
+        let root = daemon.pair_config(0).local_root.clone();
+        replace_directory(&root, &[]);
+        (daemon, client, stepper)
+    }
+
+    #[test]
+    fn a_folder_replaced_by_an_empty_one_while_files_are_recorded_makes_the_pair_unavailable() {
+        // Guard on: the deletion used to be held for approval. Guard off: it used to be executed.
+        // Neither may even be planned — an empty folder over a surviving baseline is not an
+        // instruction to delete the recorded tree.
+        for guard in [true, false] {
+            let directory = tempdir().expect("tempdir");
+            let (mut daemon, client, mut stepper) =
+                replaced_by_an_empty_folder(directory.path(), |config| {
+                    config.delete_approval_remote = guard;
+                });
+            let db_path = daemon.pair_config(0).db_path.clone();
+            let seq = daemon.shared.pairs[0].reconcile_seq.load(Ordering::SeqCst);
+
+            let log = capture_log("warn", || {
+                stepper.send(LoopCommand::SyncNow(0));
+                assert_eq!(stepper.step(&mut daemon), Step::Idle);
+            });
+
+            let reason = published_error(&daemon, 0).unwrap_or_default();
+            assert!(
+                daemon.unavailable(0).is_some(),
+                "guard {guard}: still ready; {reason:?}"
+            );
+            assert!(
+                reason.contains("replaced by an empty folder")
+                    && reason.contains("nothing will be deleted"),
+                "guard {guard}: {reason}"
+            );
+            assert!(reason.contains("1 synced item"), "{reason}");
+            assert!(log.contains("replaced by an empty folder"), "{log}");
+            assert!(
+                client.deletes().is_empty(),
+                "guard {guard}: executed {:?}",
+                client.deletes()
+            );
+            assert!(
+                client.walks().is_empty(),
+                "guard {guard}: listed the remote"
+            );
+            let index = open_database(&db_path).expect("the index outlives the pair's runtime");
+            assert!(
+                get_record(&index, Path::new("a.txt"))
+                    .expect("index read")
+                    .is_some(),
+                "guard {guard}: the baseline record is untouched"
+            );
+            assert_eq!(
+                daemon.shared.pairs[0].reconcile_seq.load(Ordering::SeqCst),
+                seq + 1,
+                "guard {guard}: a waiting client is answered"
+            );
+            assert!(!daemon.shared.pairs[0].has_runtime());
+        }
+    }
+
+    #[test]
+    fn an_empty_replacement_stays_one_standing_cause_until_the_folder_has_content_again() {
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) =
+            replaced_by_an_empty_folder(directory.path(), |_| {});
+        let root = daemon.pair_config(0).local_root.clone();
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        let reason = published_error(&daemon, 0).expect("it says why");
+        assert!(daemon.unavailable(0).is_some(), "{reason}");
+        let entries = daemon
+            .unavailable(0)
+            .expect("unavailable")
+            .status_history
+            .len();
+        daemon
+            .unavailable_mut(0)
+            .expect("unavailable")
+            .status_history
+            .last_mut()
+            .expect("an entry")
+            .epoch_secs = 1;
+
+        // Still empty: every attempt re-checks, none of them says anything new.
+        let log = capture_log("info", || {
+            for _ in 0..5 {
+                stepper.send(LoopCommand::SyncNow(0));
+                assert_eq!(stepper.step(&mut daemon), Step::Idle);
+            }
+        });
+        let unavailable = daemon.unavailable(0).expect("still unavailable");
+        assert_eq!(published_error(&daemon, 0), Some(reason.clone()));
+        assert_eq!(
+            unavailable.status_history.len(),
+            entries,
+            "no entry per attempt"
+        );
+        assert!(
+            unavailable
+                .status_history
+                .last()
+                .expect("an entry")
+                .epoch_secs
+                > 1,
+            "the newest entry's time moved: it means 'last seen'"
+        );
+        assert!(
+            !log.contains("folder pair still unavailable") && !log.contains("available again"),
+            "{log}"
+        );
+        assert!(client.deletes().is_empty());
+
+        // The folder has its files again (and one more): the next attempt takes it.
+        fs::write(root.join("a.txt"), b"a").expect("restored");
+        fs::write(root.join("b.txt"), b"b").expect("new");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(
+            daemon.runtime(0).is_some(),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        assert_eq!(published_error(&daemon, 0), None);
+        assert_eq!(uploads_of(&client, "b.txt"), 1);
+        assert!(client.deletes().is_empty(), "{:?}", client.deletes());
+        assert_eq!(
+            stepper.rewatched(),
+            std::slice::from_ref(&root),
+            "watched again, in the same job"
+        );
+    }
+
+    #[test]
+    fn the_empty_replacement_cause_outlives_the_folder_vanishing_again() {
+        // Replaced, then gone, then back empty: the second return is no less an empty folder over a
+        // baseline, and nothing in between recorded that anything had changed.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) =
+            replaced_by_an_empty_folder(directory.path(), |_| {});
+        let root = daemon.pair_config(0).local_root.clone();
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(daemon.unavailable(0).is_some());
+
+        fs::remove_dir(&root).expect("the empty folder goes");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(
+            published_error(&daemon, 0).is_some_and(|error| error.contains("does not exist")),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        assert!(!root.exists(), "a retry never creates it");
+
+        fs::create_dir(&root).expect("and an empty one returns");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(
+            daemon.unavailable(0).is_some(),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        assert!(
+            published_error(&daemon, 0)
+                .is_some_and(|error| error.contains("replaced by an empty folder")),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+
+        // And the folder going away again is a new fact, not a repeat of the one on record.
+        fs::remove_dir(&root).expect("it goes again");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(
+            published_error(&daemon, 0).is_some_and(|error| error.contains("does not exist")),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        assert!(client.deletes().is_empty());
+    }
+
+    #[test]
+    fn a_folder_that_returns_empty_after_vanishing_is_held_like_a_replaced_one() {
+        // The pass that found the folder gone moved its watch state on; the empty directory that
+        // came back is a different one, and the baseline still describes the tree it replaced.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) = steady_events_pair(directory.path(), Vec::new());
+        let root = daemon.pair_config(0).local_root.clone();
+        let staging = stage_replacement(&root, &[]);
+
+        fs::remove_dir_all(&root).expect("the folder goes away");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(daemon.runtime(0).is_some(), "gone is the typed path");
+
+        fs::rename(&staging, &root).expect("an empty folder is at the path");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(
+            daemon.unavailable(0).is_some(),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        assert!(client.deletes().is_empty(), "{:?}", client.deletes());
+    }
+
+    #[test]
+    fn a_replaced_root_holding_only_what_the_engine_never_syncs_counts_as_empty() {
+        // The pair's own rules decide what is content: its state directory, a trash directory, the
+        // per-directory settings file and anything its exclude globs hide are not.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) =
+            steady_events_pair_with(directory.path(), Vec::new(), |config| {
+                config.exclude_patterns = vec!["*.tmp".to_owned(), "vendor".to_owned()];
+            });
+        let root = daemon.pair_config(0).local_root.clone();
+        // `vendor` is excluded as a directory: the files in it match no rule of their own, and are
+        // not content because the walk never goes in.
+        replace_directory(
+            &root,
+            &[
+                (".sync/leftover", b"x"),
+                (".proton-sync.toml", b""),
+                (".Trash-1000/files/old.txt", b"o"),
+                ("scratch.tmp", b"t"),
+                ("vendor/lib.rs", b"v"),
+            ],
+        );
+
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(
+            daemon.unavailable(0).is_some(),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        assert!(client.deletes().is_empty());
+    }
+
+    #[test]
+    fn a_replaced_empty_folder_is_accepted_when_only_filtered_out_records_remain() {
+        // "Recorded" is the baseline as the planner sees it: after the pair's own rules. A record
+        // those rules hide plans nothing, so an empty folder over it deletes nothing either.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) =
+            steady_events_pair_with(directory.path(), Vec::new(), |config| {
+                config.exclude_patterns = vec!["*.log".to_owned()];
+            });
+        let root = daemon.pair_config(0).local_root.clone();
+        let connection = &daemon.runtime(0).expect("ready").connection;
+        purge_record(connection, Path::new("a.txt")).expect("a.txt is not recorded");
+        upsert_record(connection, &base_record("old.log", Some("vola~nl"), "hash"))
+            .expect("a record the rules hide");
+        replace_directory(&root, &[]);
+
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(
+            daemon.runtime(0).is_some(),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        assert!(client.deletes().is_empty());
+    }
+
+    #[test]
+    fn a_replaced_empty_folder_is_accepted_while_nothing_is_recorded_for_it() {
+        // A pair that has synced nothing has nothing an empty folder could be mistaken for the
+        // deletion of: only the re-registration and the rescan, as for any replaced folder.
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a"]);
+        let root = configs[0].local_root.clone();
+        let mut daemon = multi_pair_daemon(configs, MultiRootClient::default(), None);
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+
+        replace_directory(&root, &[]);
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(
+            daemon.runtime(0).is_some(),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        assert_eq!(published_error(&daemon, 0), None);
+        assert_eq!(stepper.rewatched(), std::slice::from_ref(&root));
+    }
+
+    /// `a` past boot on events, `remote-only.txt` added to the remote since, a newer cursor on
+    /// offer, and the hook installed by `arm` ready to take the folder away mid-pass.
+    fn events_pair_with_something_to_download(
+        directory: &Path,
+    ) -> (
+        Daemon<MultiRootClient>,
+        MultiRootClient,
+        Stepper,
+        Arc<Mutex<String>>,
+    ) {
+        let mut configs = pair_configs(directory, &["a"]);
+        configs[0].events_driven = true;
+        let root = configs[0].local_root.clone();
+        let remote_root = configs[0].remote_root.clone();
+        fs::write(root.join("a.txt"), b"a").expect("local file");
+        let a = remote_file_entity("a.txt", "vola~na", &sha1_bytes(b"a"));
+        let client = MultiRootClient::default().with_tree(&remote_root, vec![a.clone()]);
+        let source = FakeEventSource::new("cursor-0");
+        let latest = source.latest_handle();
+        let mut daemon = multi_pair_daemon(configs, client.clone(), Some(Box::new(source)));
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        assert_eq!(stored_cursor(&daemon, 0, "vola"), "cursor-0");
+        let _ = client.clone().with_tree(
+            &remote_root,
+            vec![
+                a,
+                remote_file_entity("remote-only.txt", "vola~nr", &sha1_bytes(b"r")),
+            ],
+        );
+        *latest.lock().expect("latest lock") = "cursor-1".to_owned();
+        client.clear_walks();
+        (daemon, client, stepper, latest)
+    }
+
+    #[test]
+    fn a_folder_that_vanishes_during_a_full_walk_holds_the_cursor_and_ends_the_pass_unavailable() {
+        // The check at the top of the pass cannot see this. The downloads are refused (their
+        // destination no longer has a root), the rest of the plan is nothing, and the pass used to
+        // end clean and claim the newer cursor — so the files it skipped were never asked for again.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper, _latest) =
+            events_pair_with_something_to_download(directory.path());
+        let root = daemon.pair_config(0).local_root.clone();
+        let last_sync = daemon.shared.pairs[0]
+            .snapshot
+            .lock()
+            .expect("snapshot lock")
+            .last_sync_epoch_secs;
+        let rows = passes_recorded(&daemon, 0);
+        let doomed = root.clone();
+        *client.on_walk.lock().expect("hook lock") = Some(Box::new(move |_| {
+            let _ = fs::remove_dir_all(&doomed);
+        }));
+        daemon.shared.pairs[0]
+            .force_full_walk
+            .store(true, Ordering::SeqCst);
+
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert_eq!(
+            stored_cursor(&daemon, 0, "vola"),
+            "cursor-0",
+            "the cursor says everything up to it was applied; the download was not"
+        );
+        assert!(
+            published_error(&daemon, 0).is_some_and(|error| error.contains("is not available")),
+            "not clean: {:?}",
+            published_error(&daemon, 0)
+        );
+        assert_eq!(
+            daemon.shared.pairs[0]
+                .snapshot
+                .lock()
+                .expect("snapshot lock")
+                .last_sync_epoch_secs,
+            last_sync,
+            "and not a sync"
+        );
+        assert!(!root.exists(), "nothing made the folder again");
+        assert_eq!(
+            passes_recorded(&daemon, 0),
+            rows,
+            "nothing landed, so no row"
+        );
+
+        // The next pass is the missing-folder pass, and the walk is not repeated.
+        *client.on_walk.lock().expect("hook lock") = None;
+        client.clear_walks();
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(client.walks().is_empty());
+        assert!(
+            published_error(&daemon, 0).is_some_and(|error| error.contains("is not available"))
+        );
+    }
+
+    #[test]
+    fn a_folder_that_vanishes_during_an_events_pass_holds_the_cursor_and_keeps_what_landed() {
+        // The same, for the pass that never walks. An upload had already landed and been
+        // checkpointed: that stays, and the row describing it is sealed as failed rather than left
+        // `interrupted` — a state only a crash is supposed to leave.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) =
+            steady_events_pair(directory.path(), vec![no_changes_page("cursor-1")]);
+        let root = daemon.pair_config(0).local_root.clone();
+        fs::write(root.join("new.txt"), b"new").expect("a file no event announced");
+        daemon.runtime_mut(0).expect("ready").force_local_rescan = true;
+        let doomed = root.clone();
+        *client.on_upload.lock().expect("hook lock") = Some(Box::new(move |_| {
+            let _ = fs::remove_dir_all(&doomed);
+        }));
+
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert_eq!(uploads_of(&client, "new.txt"), 1, "it landed");
+        assert_eq!(stored_cursor(&daemon, 0, "vola"), "cursor-0");
+        assert!(
+            published_error(&daemon, 0).is_some_and(|error| error.contains("is not available")),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        let runtime = daemon.runtime(0).expect("ready");
+        assert!(
+            get_record(&runtime.connection, Path::new("new.txt"))
+                .expect("index read")
+                .is_some(),
+            "the checkpoint that landed stays"
+        );
+        assert!(runtime.force_local_rescan, "and the rescan is still owed");
+        let rows = recent_passes(&runtime.connection, 10).expect("recent passes");
+        assert!(
+            rows.iter().all(|row| row.outcome != "interrupted"),
+            "{rows:?}"
+        );
+        assert!(rows.iter().any(|row| row.outcome == "failed"), "{rows:?}");
+        assert!(!root.exists());
+    }
+
+    #[test]
+    fn a_retry_that_finds_the_boot_cause_still_standing_keeps_it_and_adds_no_entry() {
+        // The folder could not be created at boot (a file is where its parent should be). The first
+        // retry sees the same OS error from a plain `stat`; it used to replace the specific cause
+        // with a circular "does not exist … the daemon creates it when it starts", one entry for
+        // each of the two wordings of one condition.
+        let directory = tempdir().expect("tempdir");
+        let configs = vec![unpreparable_config(directory.path(), "a")];
+        let blocker = directory.path().join("a-blocker");
+        let mut daemon = multi_pair_daemon(configs, MultiRootClient::default(), None);
+        let boot_reason = published_error(&daemon, 0).expect("unavailable at boot");
+        assert!(
+            boot_reason.contains("could not be created"),
+            "{boot_reason}"
+        );
+        let entries = daemon
+            .unavailable(0)
+            .expect("unavailable")
+            .status_history
+            .len();
+        let mut stepper = Stepper::new(&mut daemon);
+
+        let log = capture_log("warn", || {
+            for _ in 0..3 {
+                stepper.send(LoopCommand::SyncNow(0));
+                assert_eq!(stepper.step(&mut daemon), Step::Idle);
+            }
+        });
+
+        assert_eq!(published_error(&daemon, 0), Some(boot_reason));
+        assert_eq!(
+            daemon
+                .unavailable(0)
+                .expect("unavailable")
+                .status_history
+                .len(),
+            entries,
+            "one standing cause is one entry"
+        );
+        assert!(!log.contains("folder pair still unavailable"), "{log}");
+
+        // When the condition really changes the reason does too.
+        fs::remove_file(&blocker).expect("the blocker goes");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(
+            published_error(&daemon, 0).is_some_and(|error| error.contains("does not exist")),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+    }
+
+    #[test]
+    fn a_plan_on_a_pair_whose_folder_is_gone_says_which_folder_in_the_words_a_sync_uses() {
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, _client, mut stepper) = steady_events_pair(directory.path(), Vec::new());
+        let root = daemon.pair_config(0).local_root.clone();
+        fs::remove_dir_all(&root).expect("the folder goes away");
+
+        daemon.shared.pairs[0].book_plan_request();
+        stepper.send(LoopCommand::PlanNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        let PlanOutcome::Failed { error: plan, .. } = daemon.shared.pairs[0].plan_outcome(None)
+        else {
+            panic!("the plan is sealed failed");
+        };
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        let sync = published_error(&daemon, 0).expect("the sync says why");
+
+        assert!(plan.contains(&root.display().to_string()), "{plan}");
+        assert_eq!(plan, sync, "one message for one condition");
+        assert!(!root.exists());
+    }
+
+    // ----- F4: the detectors for what the first review's poisons left green -----
+
+    #[test]
+    fn a_missing_root_never_reaches_the_event_source_reacquire() {
+        // The check comes before the keyring read the reacquire spawns, not after it.
+        let directory = tempdir().expect("tempdir");
+        let mut configs = pair_configs(directory.path(), &["a"]);
+        configs[0].events_driven = true;
+        let root = configs[0].local_root.clone();
+        let mut daemon = multi_pair_daemon(configs, MultiRootClient::default(), None);
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&calls);
+        daemon.event_source_factory = Box::new(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            None
+        });
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        let before = calls.load(Ordering::SeqCst);
+
+        fs::remove_dir_all(&root).expect("the folder goes away");
+        for _ in 0..4 {
+            stepper.send(LoopCommand::SyncNow(0));
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        }
+
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            before,
+            "a missing folder spawned the keyring read"
+        );
+    }
+
+    #[test]
+    fn a_retry_gives_back_what_the_demoted_pair_last_published() {
+        // The sidecar a previous run left is gone (a re-created folder holds none), so everything
+        // the promoted pair shows has to come from what the demoted one carried.
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a"]);
+        let db_path = configs[0].db_path.clone();
+        fs::write(configs[0].local_root.join("kept.txt"), b"k").expect("a file");
+        let mut daemon = multi_pair_daemon(configs, MultiRootClient::default(), None);
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        let last_sync = daemon.runtime(0).expect("ready").last_sync;
+        let plan = daemon.runtime(0).expect("ready").last_plan_summary.clone();
+        let summary = daemon
+            .runtime(0)
+            .expect("ready")
+            .last_successful_sync_summary
+            .clone();
+        assert!(last_sync.is_some() && plan.is_some() && summary.is_some());
+        let history = daemon.runtime(0).expect("ready").status_history.clone();
+        assert!(!history.is_empty());
+
+        daemon.demote_pair(0, "its metrics file could not be written".to_owned());
+        fs::remove_file(status_history_path(&db_path)).expect("sidecar removed");
+        daemon.retry_unavailable(0);
+
+        let runtime = daemon.runtime(0).expect("the retry took");
+        assert_eq!(runtime.last_sync, last_sync, "last_sync carried");
+        assert_eq!(runtime.last_plan_summary, plan, "last_plan_summary carried");
+        assert_eq!(
+            runtime.last_successful_sync_summary, summary,
+            "last_successful_sync_summary carried"
+        );
+        assert!(
+            runtime.status_history.len() >= history.len(),
+            "history carried when the sidecar held none: {}",
+            runtime.status_history.len()
+        );
+    }
+
+    #[test]
+    fn a_re_registration_that_takes_after_a_failed_one_leaves_the_root_watched() {
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a"]);
+        let mut daemon = multi_pair_daemon(configs, MultiRootClient::default(), None);
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        stepper.watcher_fails.store(true, Ordering::SeqCst);
+        stepper.event(rescan_notice());
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(
+            daemon.runtime(0).expect("ready").root_watch,
+            RootWatch::Incomplete
+        );
+
+        stepper.watcher_fails.store(false, Ordering::SeqCst);
+        stepper.event(rescan_notice());
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(matches!(
+            daemon.runtime(0).expect("ready").root_watch,
+            RootWatch::Watching(_)
+        ));
+    }
+
+    #[test]
+    fn the_unavailable_history_stays_within_its_limit_however_many_causes_arrive() {
+        let mut history = Vec::new();
+        for index in 0..(STATUS_HISTORY_LIMIT * 3) {
+            record_repeatable_status_entry(
+                &mut history,
+                StatusHistoryEntry {
+                    epoch_secs: index as u64,
+                    message: UNAVAILABLE_ENTRY_MESSAGE.to_owned(),
+                    last_error: Some(format!("cause {index}")),
+                    plan_summary: None,
+                    successful_sync_summary: None,
+                    failed_item_count: 0,
+                },
+            );
+        }
+        assert_eq!(history.len(), STATUS_HISTORY_LIMIT);
+    }
+
+    #[test]
+    fn a_root_that_returns_as_the_same_directory_is_watched_again() {
+        // Rename away and back: the same device, inode and birth time, and no watch — the kernel
+        // dropped it when the directory moved.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, _client, mut stepper) = steady_events_pair(directory.path(), Vec::new());
+        let root = daemon.pair_config(0).local_root.clone();
+        let away = root.with_file_name("local-away");
+        fs::rename(&root, &away).expect("away");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(published_error(&daemon, 0).is_some(), "reported while gone");
+
+        fs::rename(&away, &root).expect("back");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert_eq!(
+            stepper.rewatched(),
+            std::slice::from_ref(&root),
+            "registered again after being gone"
+        );
+        assert_eq!(published_error(&daemon, 0), None);
+    }
+
+    #[test]
+    fn a_file_in_place_of_the_root_is_an_unavailable_folder_not_a_failed_pass() {
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) = steady_events_pair(directory.path(), Vec::new());
+        let root = daemon.pair_config(0).local_root.clone();
+        let rows = passes_recorded(&daemon, 0);
+        fs::remove_dir_all(&root).expect("gone");
+        fs::write(&root, b"a file").expect("a file takes its place");
+
+        let log = capture_log("warn", || {
+            for _ in 0..3 {
+                stepper.send(LoopCommand::SyncNow(0));
+                assert_eq!(stepper.step(&mut daemon), Step::Idle);
+            }
+        });
+
+        assert!(
+            published_error(&daemon, 0).is_some_and(|error| error.contains("is not available")),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        assert!(!log.contains("scheduled reconciliation failed"), "{log}");
+        assert_eq!(passes_recorded(&daemon, 0), rows, "no history row");
+        assert!(client.walks().is_empty());
+    }
+
+    #[test]
+    fn a_watcher_error_naming_no_path_registers_every_root_before_its_next_pass() {
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a", "b"]);
+        let a_root = configs[0].local_root.clone();
+        let b_root = configs[1].local_root.clone();
+        let mut daemon = multi_pair_daemon(configs, MultiRootClient::default(), None);
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+
+        stepper
+            .watch_tx
+            .send(Err(notify::Error::generic("boom")))
+            .expect("channel");
+        stepper.send(LoopCommand::SyncNow(0));
+        stepper.send(LoopCommand::SyncNow(1));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert_eq!(stepper.rewatched(), [a_root, b_root]);
+    }
+
+    #[test]
+    fn the_same_inode_with_another_birth_time_is_a_different_directory() {
+        let born = SystemTime::now();
+        let one = RootIdentity {
+            device: 1,
+            inode: 2,
+            born: Some(born),
+        };
+        let other = RootIdentity {
+            device: 1,
+            inode: 2,
+            born: Some(born + Duration::from_secs(5)),
+        };
+        assert!(!one.is_same_directory(&other));
+        let none = RootIdentity {
+            device: 1,
+            inode: 2,
+            born: None,
+        };
+        assert!(
+            one.is_same_directory(&none),
+            "a birth time on one side only is no evidence"
+        );
+    }
+
+    #[tokio::test]
+    async fn nothing_makes_a_deleted_root_again_with_the_state_inside_it() {
+        // The default layout puts the index, the lockfile and every sidecar in the folder, so any
+        // write at all would bring a missing folder back.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) = state_inside_root_pair(directory.path());
+        let root = daemon.pair_config(0).local_root.clone();
+        let plane = plane_for(&daemon, &stepper);
+        fs::remove_dir_all(&root).expect("gone");
+
+        for _ in 0..3 {
+            stepper.send(LoopCommand::SyncNow(0));
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+            assert!(!root.exists(), "a pass made the folder again");
+        }
+        let mut request = ControlRequest::new(ControlCommand::Pause);
+        request.pair = Some("a".to_owned());
+        roundtrip(&plane, request).await;
+        assert!(!root.exists(), "pause made the folder again");
+        let mut request = ControlRequest::new(ControlCommand::Resume);
+        request.pair = Some("a".to_owned());
+        roundtrip(&plane, request).await;
+        assert!(!root.exists(), "resume made the folder again");
+        daemon.shared.pairs[0].book_plan_request();
+        stepper.send(LoopCommand::PlanNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(!root.exists(), "a plan made the folder again");
+        assert!(client.walks().is_empty());
+    }
+
+    #[test]
+    fn an_unavailable_pair_that_becomes_ready_costs_exactly_one_reconcile_seq() {
+        let directory = tempdir().expect("tempdir");
+        let mut configs = pair_configs(directory.path(), &["a"]);
+        configs.push(unpreparable_config(directory.path(), "b"));
+        let b_root = configs[1].local_root.clone();
+        let blocker = b_root.parent().expect("blocker").to_path_buf();
+        let mut daemon = multi_pair_daemon(configs, MultiRootClient::default(), None);
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        assert_eq!(
+            daemon.shared.pairs[1].reconcile_seq.load(Ordering::SeqCst),
+            1
+        );
+
+        fs::remove_file(&blocker).expect("blocker gone");
+        fs::create_dir_all(&b_root).expect("folder appears");
+        stepper.send(LoopCommand::SyncNow(1));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(daemon.runtime(1).is_some());
+        assert_eq!(
+            daemon.shared.pairs[1].reconcile_seq.load(Ordering::SeqCst),
+            2,
+            "the promoting job is one attempt, not two"
+        );
+    }
+
+    /// Real notify, real `run`: a folder deleted and replaced by a different one must keep streaming
+    /// events afterwards — the registration has to really take.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_replaced_root_keeps_streaming_events_under_a_real_watcher() {
+        let directory = tempdir().expect("tempdir");
+        let mut configs = pair_configs(directory.path(), &["a"]);
+        configs[0].events_driven = true;
+        configs[0].scan_interval = Duration::from_secs(3600);
+        configs[0].events_full_scan_every = 0;
+        let root = configs[0].local_root.clone();
+        fs::write(root.join("a.txt"), b"a").expect("local file");
+        let client = MultiRootClient::default().with_tree(
+            "/Drive/a",
+            vec![remote_file_entity("a.txt", "vola~na", &sha1_bytes(b"a"))],
+        );
+        let mut daemon = multi_pair_daemon(
+            configs,
+            client.clone(),
+            Some(Box::new(FakeEventSource::new("cursor-0"))),
+        );
+        daemon.events_poll_interval = Duration::from_millis(150);
+        let shared = Arc::clone(&daemon.shared);
+        let cancel = Arc::clone(&daemon.cancel_flag);
+        let notify = Arc::clone(&daemon.shutdown_notify);
+        let handle = tokio::spawn(daemon.run());
+        for _ in 0..200 {
+            if shared.pairs[0].reconcile_seq.load(Ordering::SeqCst) >= 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(shared.pairs[0].reconcile_seq.load(Ordering::SeqCst) >= 2);
+
+        // Swapped in one rename, so no job can see it empty (an empty folder is held, by design).
+        replace_directory(&root, &[("a.txt", b"a"), ("new.txt", b"new")]);
+        let upload = |name: &str| {
+            client
+                .uploads()
+                .contains(&(PathBuf::from("/Drive/a"), PathBuf::from(name)))
+        };
+        let mut scanned = false;
+        for _ in 0..200 {
+            if upload("new.txt") {
+                scanned = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        // Let the registration and the forced scan settle, then add a file only a LIVE watch sees.
+        let settled = shared.pairs[0].reconcile_seq.load(Ordering::SeqCst);
+        for _ in 0..200 {
+            if shared.pairs[0].reconcile_seq.load(Ordering::SeqCst) >= settled + 3 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        fs::write(root.join("later.txt"), b"later").expect("after");
+        let mut streamed = false;
+        for _ in 0..200 {
+            if upload("later.txt") {
+                streamed = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        cancel.store(true, Ordering::SeqCst);
+        notify.notify_one();
+        tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("run() returns")
+            .expect("join")
+            .expect("clean exit");
+        assert!(scanned, "the replaced folder was never rescanned");
+        assert!(
+            streamed,
+            "the replaced folder was rescanned but its watch is dead: {:?}",
+            client.uploads()
+        );
+    }
+
+    #[test]
+    fn an_overflow_notice_does_not_register_a_replaced_empty_folder_as_the_one_watched() {
+        // The notice registers the root again before the pair's next job. Recording the new
+        // directory as the watched one there would make the job see an unchanged folder — and plan
+        // the deletion of everything recorded, by a side door. Failed or not, the registration only
+        // re-arms the check; the judgement stays with the job.
+        for registration_fails in [false, true] {
+            let directory = tempdir().expect("tempdir");
+            let (mut daemon, client, mut stepper) =
+                replaced_by_an_empty_folder(directory.path(), |_| {});
+            stepper
+                .watcher_fails
+                .store(registration_fails, Ordering::SeqCst);
+            stepper.event(rescan_notice());
+            stepper.send(LoopCommand::SyncNow(0));
+
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+            assert!(
+                daemon.unavailable(0).is_some(),
+                "registration_fails {registration_fails}: {:?}",
+                published_error(&daemon, 0)
+            );
+            assert!(
+                client.deletes().is_empty(),
+                "registration_fails {registration_fails}: {:?}",
+                client.deletes()
+            );
+        }
+    }
+
+    #[test]
+    fn a_lock_guard_tells_a_replaced_lockfile_from_the_one_it_holds() {
+        let directory = tempdir().expect("tempdir");
+        let path = directory.path().join("daemon.lock");
+        let guard = LockGuard::acquire(&path).expect("the lock");
+        assert!(
+            matches!(guard.is_the_file_at(&path), Look::Present(())),
+            "the file it locked"
+        );
+
+        fs::remove_file(&path).expect("unlinked");
+        assert!(
+            matches!(guard.is_the_file_at(&path), Look::Gone),
+            "a path naming nothing"
+        );
+
+        fs::write(&path, b"").expect("another file at the same path");
+        assert!(
+            matches!(guard.is_the_file_at(&path), Look::Gone),
+            "a different file at the path"
+        );
+    }
+
+    #[test]
+    fn a_lock_guard_on_a_filesystem_that_cannot_compare_only_asks_whether_the_path_exists() {
+        // A handle and a path that name one file differently would read every look as a
+        // replacement, and the pair would be prepared again — a full first pass — at every attempt.
+        let directory = tempdir().expect("tempdir");
+        let path = directory.path().join("daemon.lock");
+        let mut guard = LockGuard::acquire(&path).expect("the lock");
+        guard.comparable = false;
+
+        fs::remove_file(&path).expect("unlinked");
+        assert!(
+            matches!(guard.is_the_file_at(&path), Look::Gone),
+            "still gone when it is gone"
+        );
+        fs::write(&path, b"").expect("another file at the same path");
+        assert!(
+            matches!(guard.is_the_file_at(&path), Look::Present(())),
+            "but no longer told apart"
+        );
+    }
+
+    #[test]
+    fn an_index_the_filesystem_cannot_name_consistently_is_only_checked_for_presence() {
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a"]);
+        let db_path = configs[0].db_path.clone();
+        let mut daemon = multi_pair_daemon(configs, MultiRootClient::default(), None);
+        assert_eq!(
+            daemon.runtime(0).expect("ready").removed_state(),
+            None,
+            "precondition: in place"
+        );
+        daemon.runtime_mut(0).expect("ready").db_identity = None;
+
+        assert_eq!(
+            daemon.runtime(0).expect("ready").removed_state(),
+            None,
+            "nothing to compare, so nothing replaced"
+        );
+        fs::remove_file(&db_path).expect("unlinked");
+        assert!(
+            daemon
+                .runtime(0)
+                .expect("ready")
+                .removed_state()
+                .is_some_and(|reason| reason.contains("the index")),
+            "but a missing index is still missing"
+        );
+    }
+
+    #[test]
+    fn a_folder_replaced_by_an_empty_one_with_only_its_lock_inside_it_is_held_not_prepared_again() {
+        // The index is elsewhere and survives with its baseline; only the lockfile went with the
+        // folder. Preparing the pair again would open that baseline over an empty folder, which is
+        // the deletion of everything it records by another road.
+        for guard in [true, false] {
+            let directory = tempdir().expect("tempdir");
+            let (mut daemon, client, mut stepper) =
+                steady_events_pair_with(directory.path(), Vec::new(), |config| {
+                    config.lockfile_path = crate::paths::default_lockfile_path(&config.local_root);
+                    config.delete_approval_remote = guard;
+                });
+            let db_path = daemon.pair_config(0).db_path.clone();
+            let root = daemon.pair_config(0).local_root.clone();
+            replace_directory(&root, &[]);
+
+            stepper.send(LoopCommand::SyncNow(0));
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+            assert!(
+                published_error(&daemon, 0)
+                    .is_some_and(|error| error.contains("replaced by an empty folder")),
+                "guard {guard}: {:?}",
+                published_error(&daemon, 0)
+            );
+            assert!(daemon.unavailable(0).is_some());
+            assert!(
+                client.deletes().is_empty(),
+                "guard {guard}: {:?}",
+                client.deletes()
+            );
+            let index = open_database(&db_path).expect("the index outlives the runtime");
+            assert!(
+                get_record(&index, Path::new("a.txt"))
+                    .expect("index read")
+                    .is_some()
+            );
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Second review of #432 (R1 to R5). The rule every one of these protects: a sync folder that
+    // is replaced or emptied while the daemon runs never makes the daemon delete remote files,
+    // and never fills the folder from Proton, without an explicit user action. Each test failed
+    // at 496752c for the reason its comment names.
+    // ---------------------------------------------------------------------------------------
+
+    #[test]
+    fn a_default_layout_folder_replaced_by_an_empty_one_is_held_and_nothing_is_created() {
+        // R1. The index and the lock were inside the folder, so the replacement took them with it.
+        // The pair used to be "prepared again" in the empty folder: a new `.sync`, a new index, a
+        // bootstrap that downloaded the whole remote into it. That is #426 reached mid-life, with
+        // no restart, whether or not the delete guard is on.
+        for guard in [true, false] {
+            let directory = tempdir().expect("tempdir");
+            let (mut daemon, client, mut stepper) =
+                state_inside_root_pair_with(directory.path(), |config| {
+                    config.delete_approval_remote = guard;
+                });
+            let root = daemon.pair_config(0).local_root.clone();
+            let seq = daemon.shared.pairs[0].reconcile_seq.load(Ordering::SeqCst);
+            replace_directory(&root, &[]);
+
+            for round in 1..=3 {
+                stepper.send(LoopCommand::SyncNow(0));
+                assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+                let reason = published_error(&daemon, 0).unwrap_or_default();
+                assert!(
+                    daemon.unavailable(0).is_some()
+                        && reason.contains("replaced by an empty folder"),
+                    "guard {guard}, round {round}: {reason:?}"
+                );
+                assert!(
+                    !root.join(".sync").exists(),
+                    "guard {guard}, round {round}: state was created in the empty folder"
+                );
+                assert_eq!(
+                    fs::read_dir(&root).expect("the folder").count(),
+                    0,
+                    "guard {guard}, round {round}: the folder was filled from Proton"
+                );
+                assert!(
+                    client.walks().is_empty(),
+                    "guard {guard}, round {round}: listed the remote"
+                );
+                assert!(
+                    client.deletes().is_empty(),
+                    "guard {guard}, round {round}: {:?}",
+                    client.deletes()
+                );
+                assert!(!daemon.shared.pairs[0].has_runtime());
+            }
+            assert_eq!(
+                daemon.shared.pairs[0].reconcile_seq.load(Ordering::SeqCst),
+                seq + 3,
+                "guard {guard}: a waiting client is answered each time"
+            );
+        }
+    }
+
+    #[test]
+    fn a_default_layout_hold_ends_when_the_folder_has_content_again_and_deletes_nothing() {
+        // R1. What the hold waits for is content. The state went with the folder, so the pair is
+        // prepared again from nothing: a first pass over an empty baseline adopts what is there.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) =
+            state_inside_root_pair_with(directory.path(), |config| {
+                config.delete_approval_remote = false;
+            });
+        let root = daemon.pair_config(0).local_root.clone();
+        replace_directory(&root, &[]);
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(daemon.unavailable(0).is_some(), "held");
+
+        fs::write(root.join("a.txt"), b"downloaded").expect("the file is put back");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(
+            daemon.runtime(0).is_some(),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        assert_eq!(published_error(&daemon, 0), None);
+        assert!(root.join(".sync").is_dir(), "its state is made now");
+        assert!(client.deletes().is_empty(), "{:?}", client.deletes());
+        assert!(
+            get_record(
+                &daemon.runtime(0).expect("ready").connection,
+                Path::new("a.txt")
+            )
+            .expect("index read")
+            .is_some(),
+            "adopted"
+        );
+    }
+
+    /// `a` past boot on events with `download_batch_size` 25, then two remote files in two
+    /// different folders to fetch, a newer cursor on offer. The caller latches the full walk.
+    fn events_pair_with_two_folders_to_download(
+        directory: &Path,
+        guard: bool,
+    ) -> (Daemon<MultiRootClient>, MultiRootClient, Stepper) {
+        let mut configs = pair_configs(directory, &["a"]);
+        configs[0].events_driven = true;
+        configs[0].download_batch_size = 25;
+        configs[0].delete_approval_remote = guard;
+        let root = configs[0].local_root.clone();
+        let remote_root = configs[0].remote_root.clone();
+        fs::write(root.join("a.txt"), b"a").expect("local file");
+        let a = remote_file_entity("a.txt", "vola~na", &sha1_bytes(b"a"));
+        let client = MultiRootClient::default().with_tree(&remote_root, vec![a.clone()]);
+        let source = FakeEventSource::new("cursor-0");
+        let latest = source.latest_handle();
+        let mut daemon = multi_pair_daemon(configs, client.clone(), Some(Box::new(source)));
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        assert_eq!(stored_cursor(&daemon, 0, "vola"), "cursor-0");
+        let _ = client.clone().with_tree(
+            &remote_root,
+            vec![
+                a,
+                remote_file_entity("d1/x.txt", "vola~nx", &sha1_bytes(b"x")),
+                remote_file_entity("d2/y.txt", "vola~ny", &sha1_bytes(b"y")),
+            ],
+        );
+        *latest.lock().expect("latest lock") = "cursor-1".to_owned();
+        client.clear_walks();
+        (daemon, client, stepper)
+    }
+
+    #[test]
+    fn a_download_group_after_the_folder_vanished_does_not_make_the_folder_again() {
+        // R2a. The tree is deleted while the first download group is being fetched. The second
+        // group's destination directory used to be made with `create_dir_all`, which made the
+        // folder too: the pass ended `Partial` over a folder holding only `d2/`, and the next
+        // pass planned the deletion of `a.txt` remotely (guard off).
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) =
+            events_pair_with_two_folders_to_download(directory.path(), false);
+        let root = daemon.pair_config(0).local_root.clone();
+        let doomed = root.clone();
+        *client.on_download.lock().expect("hook lock") = Some(Box::new(move |destination| {
+            if destination.ends_with("d1/x.txt") {
+                let _ = fs::remove_dir_all(&doomed);
+            }
+        }));
+        daemon.shared.pairs[0]
+            .force_full_walk
+            .store(true, Ordering::SeqCst);
+
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(!root.exists(), "a download made the folder again");
+        assert_eq!(
+            stored_cursor(&daemon, 0, "vola"),
+            "cursor-0",
+            "the cursor is held"
+        );
+        assert!(
+            published_error(&daemon, 0).is_some_and(|error| error.contains("is not available")),
+            "the pass ends unavailable, not partial: {:?}",
+            published_error(&daemon, 0)
+        );
+        assert!(daemon.runtime(0).is_some(), "the pair is not demoted");
+
+        // The next pass has no folder to reconcile against, so it plans nothing at all.
+        *client.on_download.lock().expect("hook lock") = None;
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(!root.exists());
+        assert!(
+            client.deletes().is_empty(),
+            "the guard is off, so this would have been executed: {:?}",
+            client.deletes()
+        );
+    }
+
+    #[test]
+    fn a_folder_swapped_for_another_directory_during_a_pass_ends_it_unavailable() {
+        // R2b. The folder is still a directory at the final check, so `is_dir()` passes, but it is
+        // not the directory the pair was running on. The cursor says everything up to it was
+        // applied, and the pass applied it to a folder that is gone.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) =
+            steady_events_pair(directory.path(), vec![no_changes_page("cursor-1")]);
+        let root = daemon.pair_config(0).local_root.clone();
+        fs::write(root.join("new.txt"), b"new").expect("a file no event announced");
+        daemon.runtime_mut(0).expect("ready").force_local_rescan = true;
+        let swapped = root.clone();
+        *client.on_upload.lock().expect("hook lock") = Some(Box::new(move |_| {
+            replace_directory(&swapped, &[("a.txt", b"a"), ("new.txt", b"new")]);
+        }));
+
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert_eq!(uploads_of(&client, "new.txt"), 1, "it landed");
+        assert_eq!(
+            stored_cursor(&daemon, 0, "vola"),
+            "cursor-0",
+            "the cursor is held"
+        );
+        assert!(
+            published_error(&daemon, 0).is_some_and(|error| error.contains("is not available")),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+
+        // The next job accepts the replacement (it has content) and the pair carries on.
+        *client.on_upload.lock().expect("hook lock") = None;
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(published_error(&daemon, 0), None);
+        assert!(daemon.runtime(0).is_some());
+        assert!(client.deletes().is_empty(), "{:?}", client.deletes());
+    }
+
+    #[test]
+    fn a_pair_whose_watch_never_registered_still_holds_a_folder_replaced_by_an_empty_one() {
+        // R3. The watcher refuses every registration from boot (the limit is spent), so no watch
+        // ever completed and the pair had no record of which folder it was running on. Replaced by
+        // an empty folder it was never held: with the guard off, the remote file was deleted.
+        for guard in [true, false] {
+            let directory = tempdir().expect("tempdir");
+            let mut configs = pair_configs(directory.path(), &["a"]);
+            configs[0].delete_approval_remote = guard;
+            let root = configs[0].local_root.clone();
+            fs::write(root.join("a.txt"), b"a").expect("local file");
+            let client = MultiRootClient::default().with_tree(
+                &configs[0].remote_root,
+                vec![remote_file_entity("a.txt", "vola~na", &sha1_bytes(b"a"))],
+            );
+            let mut daemon = multi_pair_daemon(configs, client.clone(), None);
+            let mut stepper = Stepper::new_with_a_watcher_that_fails(&mut daemon);
+            assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+            assert_eq!(
+                daemon.runtime(0).expect("ready").root_watch,
+                RootWatch::Incomplete,
+                "precondition: no registration ever completed"
+            );
+
+            replace_directory(&root, &[]);
+            stepper.send(LoopCommand::SyncNow(0));
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+            assert!(
+                daemon.unavailable(0).is_some(),
+                "guard {guard}: {:?}",
+                published_error(&daemon, 0)
+            );
+            assert!(
+                client.deletes().is_empty(),
+                "guard {guard}: {:?}",
+                client.deletes()
+            );
+        }
+    }
+
+    #[test]
+    fn a_resync_consumed_by_a_pass_that_ends_unavailable_is_asked_for_again() {
+        // R5c. The latch is taken at the top of the pass, before the final check can end it. The
+        // full walk the user asked for did not happen, so it is still owed.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper, _latest) =
+            events_pair_with_something_to_download(directory.path());
+        let root = daemon.pair_config(0).local_root.clone();
+        let doomed = root.clone();
+        *client.on_walk.lock().expect("hook lock") = Some(Box::new(move |_| {
+            let _ = fs::remove_dir_all(&doomed);
+        }));
+        daemon.shared.pairs[0]
+            .force_full_walk
+            .store(true, Ordering::SeqCst);
+
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(
+            published_error(&daemon, 0).is_some_and(|error| error.contains("is not available")),
+            "precondition: the pass ended at the final check: {:?}",
+            published_error(&daemon, 0)
+        );
+        assert!(
+            daemon.shared.pairs[0]
+                .force_full_walk
+                .load(Ordering::SeqCst),
+            "the requested full walk did not happen and is latched again"
+        );
+    }
+
+    /// Makes a directory unreadable to this user — so a `stat` of anything beneath it fails with
+    /// `EACCES`, which is neither "not found" nor an answer — and restores it on drop, so a failing
+    /// assertion cannot leave a temporary directory that cannot be removed.
+    struct Unreadable {
+        path: PathBuf,
+    }
+
+    impl Unreadable {
+        /// `None` when this process is not subject to permissions (root) or the filesystem does
+        /// not enforce them: there is nothing to examine, so there is nothing to test.
+        fn new(path: &Path, beneath: &Path) -> Option<Self> {
+            use std::os::unix::fs::PermissionsExt;
+            // SAFETY: `geteuid` takes no arguments, never fails, and touches no memory.
+            if unsafe { libc::geteuid() } == 0 {
+                return None;
+            }
+            fs::set_permissions(path, fs::Permissions::from_mode(0o000)).expect("chmod");
+            let unreadable = Self {
+                path: path.to_path_buf(),
+            };
+            fs::metadata(beneath).is_err().then_some(unreadable)
+        }
+    }
+
+    impl Drop for Unreadable {
+        fn drop(&mut self) {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&self.path, fs::Permissions::from_mode(0o755));
+        }
+    }
+
+    #[test]
+    fn state_that_cannot_be_examined_is_not_state_that_went_away() {
+        // R5a. Only "not found" says a file is gone. `EACCES` here (as `EIO` or `ESTALE` on a
+        // network mount would be) is no answer, and the pair used to read it as a replaced index
+        // and be prepared again: a first pass for a look that failed.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) =
+            state_inside_root_pair_with(directory.path(), |config| {
+                config.delete_approval_remote = false;
+            });
+        let root = daemon.pair_config(0).local_root.clone();
+        let state = root.join(".sync");
+        let generation = daemon.shared.pairs[0].runtime_generation();
+        let Some(unreadable) = Unreadable::new(&state, &state.join("daemon.lock")) else {
+            return;
+        };
+
+        let log = capture_log("warn", || {
+            for _ in 0..3 {
+                stepper.send(LoopCommand::SyncNow(0));
+                assert_eq!(stepper.step(&mut daemon), Step::Idle);
+            }
+        });
+        drop(unreadable);
+
+        assert!(
+            daemon.runtime(0).is_some(),
+            "a look that failed demoted the pair: {:?}",
+            published_error(&daemon, 0)
+        );
+        assert_eq!(
+            daemon.shared.pairs[0].runtime_generation(),
+            generation,
+            "and it was prepared again"
+        );
+        assert!(client.deletes().is_empty(), "{:?}", client.deletes());
+        assert_eq!(
+            log.matches("cannot be examined").count(),
+            1,
+            "said once for the cause, not once per attempt:\n{log}"
+        );
+    }
+
+    #[test]
+    fn a_folder_that_cannot_be_examined_is_not_a_folder_that_went_away() {
+        // R5a, for the folder itself: its watch is neither dropped nor re-registered by a look
+        // that failed, and nothing about holding it changes.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) =
+            steady_events_pair_with(directory.path(), Vec::new(), |config| {
+                config.delete_approval_remote = false;
+            });
+        let root = daemon.pair_config(0).local_root.clone();
+        let parent = root.parent().expect("a parent").to_path_buf();
+        assert!(matches!(
+            daemon.runtime(0).expect("ready").root_watch,
+            RootWatch::Watching(_)
+        ));
+        let Some(unreadable) = Unreadable::new(&parent, &root) else {
+            return;
+        };
+
+        let log = capture_log("warn", || {
+            for _ in 0..3 {
+                stepper.send(LoopCommand::SyncNow(0));
+                assert_eq!(stepper.step(&mut daemon), Step::Idle);
+            }
+        });
+        drop(unreadable);
+
+        assert!(
+            matches!(
+                daemon.runtime(0).expect("ready").root_watch,
+                RootWatch::Watching(_)
+            ),
+            "a folder nobody could look at was treated as gone"
+        );
+        assert_eq!(
+            log.matches("cannot be examined").count(),
+            1,
+            "said once for the cause, not once per attempt:\n{log}"
+        );
+
+        // It is readable again, and it is the directory that was watched: nothing is redone.
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(stepper.rewatched().is_empty(), "{:?}", stepper.rewatched());
+        assert!(daemon.runtime(0).is_some());
+        assert!(client.deletes().is_empty(), "{:?}", client.deletes());
+    }
+
+    #[test]
+    fn the_standing_cause_counts_its_items_in_the_singular_and_the_plural() {
+        // R4 (Q22). "1 synced item" is a prefix of "1 synced items", so a `contains` of the short
+        // form cannot tell the two apart; the verb is what follows the noun.
+        let root = Path::new("/mnt/drive/Sync");
+        let one = StandingCause::ReplacedByEmptyFolder { recorded: 1 }.reason(root);
+        let three = StandingCause::ReplacedByEmptyFolder { recorded: 3 }.reason(root);
+        assert!(one.contains("while 1 synced item is recorded;"), "{one}");
+        assert!(
+            three.contains("while 3 synced items are recorded;"),
+            "{three}"
+        );
+    }
+
+    #[test]
+    fn the_standing_cause_never_advises_a_restart_and_names_the_two_ways_out() {
+        // R4 (Q26) and R5b. With the delete guard off, a restart over an empty mount point is the
+        // deletion of everything remote (#426). The advice is the whole mitigation, so it is
+        // pinned: mount or put back, or start over from Proton explicitly.
+        let reason = StandingCause::ReplacedByEmptyFolder { recorded: 2 }
+            .reason(Path::new("/mnt/drive/Sync"));
+        assert!(!reason.to_lowercase().contains("restart"), "{reason}");
+        assert!(reason.contains("mount its drive"), "{reason}");
+        assert!(reason.contains("put the folder back"), "{reason}");
+        assert!(reason.contains("proton-sync reset-index --yes"), "{reason}");
+        assert!(reason.contains("deletes nothing"), "{reason}");
+        assert!(reason.contains("nothing will be deleted"), "{reason}");
+    }
+
+    #[tokio::test]
+    async fn reset_index_starts_a_held_pair_over_from_proton_and_deletes_nothing() {
+        // R5b. The user's explicit way out of the hold. Once with the index outside the folder
+        // (it survives, with its baseline) and once inside (it went with the folder), each with the
+        // delete guard on and off: the reset empties the baseline, so the pass that follows is a
+        // bootstrap — it downloads and adopts, and has nothing to plan a deletion from.
+        for state_inside in [false, true] {
+            for guard in [true, false] {
+                let directory = tempdir().expect("tempdir");
+                let tune = move |config: &mut DaemonConfig| {
+                    config.delete_approval_remote = guard;
+                };
+                let (mut daemon, client, mut stepper) = if state_inside {
+                    let (daemon, client, stepper) =
+                        state_inside_root_pair_with(directory.path(), tune);
+                    let root = daemon.pair_config(0).local_root.clone();
+                    replace_directory(&root, &[]);
+                    (daemon, client, stepper)
+                } else {
+                    replaced_by_an_empty_folder(directory.path(), tune)
+                };
+                let label = format!("state_inside {state_inside}, guard {guard}");
+                let root = daemon.pair_config(0).local_root.clone();
+                stepper.send(LoopCommand::SyncNow(0));
+                assert_eq!(stepper.step(&mut daemon), Step::Idle);
+                assert!(daemon.unavailable(0).is_some(), "{label}: held");
+                let plane = plane_for(&daemon, &stepper);
+                let seq = daemon.shared.pairs[0].reconcile_seq.load(Ordering::SeqCst);
+
+                let mut request = ControlRequest::new(ControlCommand::ResetIndex);
+                request.pair = Some("a".to_owned());
+                let reply = roundtrip(&plane, request).await;
+                assert!(
+                    reply.message.contains("index reset scheduled"),
+                    "{label}: {}",
+                    reply.message
+                );
+                assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+                assert!(
+                    daemon.runtime(0).is_some(),
+                    "{label}: {:?}",
+                    published_error(&daemon, 0)
+                );
+                assert_eq!(published_error(&daemon, 0), None, "{label}");
+                assert_eq!(
+                    fs::read(root.join("a.txt")).expect("downloaded from Proton"),
+                    b"downloaded",
+                    "{label}"
+                );
+                assert!(
+                    client.deletes().is_empty(),
+                    "{label}: {:?}",
+                    client.deletes()
+                );
+                let shared = &daemon.shared.pairs[0];
+                assert!(
+                    !shared.reset_index.load(Ordering::SeqCst),
+                    "{label}: consumed"
+                );
+                assert!(!shared.force_full_walk.load(Ordering::SeqCst), "{label}");
+                assert!(
+                    shared.reconcile_seq.load(Ordering::SeqCst) > seq,
+                    "{label}: a waiting client is answered"
+                );
+                assert!(
+                    get_record(
+                        &daemon.runtime(0).expect("ready").connection,
+                        Path::new("a.txt")
+                    )
+                    .expect("index read")
+                    .is_some(),
+                    "{label}: recorded in the rebuilt baseline"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn open_does_not_trust_an_index_identity_the_filesystem_gives_differently_on_each_look() {
+        // R4 (Q20). `open` looks at the index twice, because a filesystem that names one file
+        // differently on two looks in a row would make every later look read as a replacement. The
+        // looks are injected, since a real `stat` never disagrees with itself.
+        let directory = tempdir().expect("tempdir");
+        let config = {
+            let daemon = multi_pair_daemon(
+                pair_configs(directory.path(), &["a"]),
+                MultiRootClient::default(),
+                None,
+            );
+            daemon.pair_config(0).clone()
+        };
+        let open = |look: &dyn Fn(&Path) -> Look<FileIdentity>| {
+            let lock = prepare_pair_state(&config, RootMode::MustExist).expect("prepared");
+            PairRuntime::open_looking(config.clone(), lock, look, &look_at_root)
+        };
+
+        let calls = std::cell::Cell::new(0u64);
+        let flapping = |_: &Path| {
+            calls.set(calls.get() + 1);
+            Look::Present(FileIdentity {
+                device: 1,
+                inode: calls.get(),
+            })
+        };
+        let runtime = open(&flapping).expect("it opens");
+        assert_eq!(calls.get(), 2, "two looks");
+        assert_eq!(
+            runtime.db_identity, None,
+            "two different answers are no identity: only presence is checked"
+        );
+        drop(runtime);
+
+        let stable = |_: &Path| {
+            Look::Present(FileIdentity {
+                device: 1,
+                inode: 7,
+            })
+        };
+        let runtime = open(&stable).expect("it opens");
+        assert_eq!(
+            runtime.db_identity,
+            Some(FileIdentity {
+                device: 1,
+                inode: 7
+            })
+        );
+        drop(runtime);
+
+        let unreadable = |_: &Path| Look::Unreadable(std::io::ErrorKind::PermissionDenied.into());
+        let error = open(&unreadable)
+            .err()
+            .expect("an index that cannot be examined does not start");
+        assert!(error.to_string().contains("cannot be examined"), "{error}");
+    }
+
+    #[test]
+    fn a_lock_whose_path_and_handle_name_different_files_is_not_compared() {
+        // R4 (Q21). `comparable` is what keeps a filesystem with unstable inode numbers from
+        // reading every look at the lockfile as a replacement. It is decided when the lock is
+        // taken, from the handle and the path; the path's answer is injected, since a real one
+        // agrees with the handle it just opened.
+        let directory = tempdir().expect("tempdir");
+        let path = directory.path().join("daemon.lock");
+        let elsewhere = |_: &Path| {
+            Look::Present(FileIdentity {
+                device: u64::MAX,
+                inode: u64::MAX,
+            })
+        };
+        let guard = LockGuard::acquire_looking(&path, &elsewhere).expect("the lock");
+        assert!(
+            !guard.comparable,
+            "the path names another file than the handle"
+        );
+        fs::remove_file(&path).expect("unlinked");
+        fs::write(&path, b"").expect("another file at the same path");
+        assert!(
+            matches!(guard.is_the_file_at(&path), Look::Present(())),
+            "so a different file is not told apart, only its presence"
+        );
+        drop(guard);
+
+        let gone = |_: &Path| Look::Gone;
+        assert!(
+            !LockGuard::acquire_looking(&path, &gone)
+                .expect("lock")
+                .comparable
+        );
+        let ordinary = LockGuard::acquire(&path).expect("the lock");
+        assert!(ordinary.comparable, "and the ordinary case is compared");
+    }
+
+    #[test]
+    fn a_look_at_the_index_or_the_lock_that_fails_is_unreadable_not_removed() {
+        // R5a, one file at a time: the index and the lock live in different directories here, so
+        // one can be made unreadable while the other answers. A removal is a definite answer and
+        // wins over a look that failed, whichever file gave which.
+        let directory = tempdir().expect("tempdir");
+        let mut configs = pair_configs(directory.path(), &["a"]);
+        let index_dir = directory.path().join("a/index");
+        let lock_dir = directory.path().join("a/lock");
+        configs[0].db_path = index_dir.join("sync_index.db");
+        configs[0].lockfile_path = lock_dir.join("daemon.lock");
+        let index = configs[0].db_path.clone();
+        let lock = configs[0].lockfile_path.clone();
+        let daemon = multi_pair_daemon(configs, MultiRootClient::default(), None);
+        let runtime = daemon.runtime(0).expect("ready");
+        assert_eq!(runtime.state_status(), StateStatus::Intact);
+
+        {
+            let Some(_unreadable) = Unreadable::new(&index_dir, &index) else {
+                return;
+            };
+            let StateStatus::Unreadable(cause) = runtime.state_status() else {
+                panic!("an index that cannot be examined is not a removed one");
+            };
+            assert!(cause.contains("the index"), "{cause}");
+            assert_eq!(runtime.removed_state(), None);
+
+            // The lock is definitely gone, whatever the index's look said first.
+            fs::remove_file(&lock).expect("the lock is unlinked");
+            let StateStatus::Removed(reason) = runtime.state_status() else {
+                panic!("a removal beats a look that failed, whichever file answered first");
+            };
+            assert!(reason.contains("the lockfile"), "{reason}");
+        }
+        {
+            let Some(_unreadable) = Unreadable::new(&lock_dir, &lock) else {
+                return;
+            };
+            let StateStatus::Unreadable(cause) = runtime.state_status() else {
+                panic!("a lockfile that cannot be examined is not a removed one");
+            };
+            assert!(cause.contains("the lockfile"), "{cause}");
+            assert_eq!(runtime.removed_state(), None);
+
+            // The index is definitely gone, whatever the lock's look said.
+            fs::remove_file(&index).expect("the index is unlinked");
+            let StateStatus::Removed(reason) = runtime.state_status() else {
+                panic!("a removal beats a look that failed");
+            };
+            assert!(reason.contains("the index"), "{reason}");
+        }
+    }
+
+    #[test]
+    fn a_replaced_folder_that_cannot_be_judged_is_neither_accepted_nor_synced() {
+        // The baseline cannot be read, so whether this empty folder is the deletion of everything
+        // recorded cannot be told. Accepting it would forget which folder the pair ran on, and the
+        // pass would plan against it: it is left as it is, and its pass does not start.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) =
+            steady_events_pair_with(directory.path(), Vec::new(), |config| {
+                config.delete_approval_remote = false;
+            });
+        let root = daemon.pair_config(0).local_root.clone();
+        let before = daemon.runtime(0).expect("ready").known_root;
+        daemon
+            .runtime(0)
+            .expect("ready")
+            .connection
+            .execute("DROP TABLE file_index", [])
+            .expect("the baseline becomes unreadable");
+        replace_directory(&root, &[]);
+
+        for _ in 0..2 {
+            stepper.send(LoopCommand::SyncNow(0));
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        }
+
+        assert!(daemon.runtime(0).is_some(), "not demoted, not held");
+        assert_eq!(
+            daemon.runtime(0).expect("ready").known_root,
+            before,
+            "the replaced folder was not accepted"
+        );
+        let error = published_error(&daemon, 0).unwrap_or_default();
+        assert!(
+            error.contains("is not available") && error.contains("could not be established"),
+            "{error}"
+        );
+        assert!(client.deletes().is_empty(), "{:?}", client.deletes());
+        assert!(client.walks().is_empty(), "the pass did not start");
+    }
+
+    #[tokio::test]
+    async fn a_reset_index_asked_for_before_the_replacement_is_noticed_starts_over_too() {
+        // The same explicit action, arriving first: the pair is still ready when the job looks at
+        // its folder, holds for an instant, and is released by the latch in the same job.
+        for state_inside in [false, true] {
+            let directory = tempdir().expect("tempdir");
+            let tune = |config: &mut DaemonConfig| config.delete_approval_remote = false;
+            let (mut daemon, client, mut stepper) = if state_inside {
+                let (daemon, client, stepper) = state_inside_root_pair_with(directory.path(), tune);
+                let root = daemon.pair_config(0).local_root.clone();
+                replace_directory(&root, &[]);
+                (daemon, client, stepper)
+            } else {
+                replaced_by_an_empty_folder(directory.path(), tune)
+            };
+            let root = daemon.pair_config(0).local_root.clone();
+            let plane = plane_for(&daemon, &stepper);
+
+            let mut request = ControlRequest::new(ControlCommand::ResetIndex);
+            request.pair = Some("a".to_owned());
+            roundtrip(&plane, request).await;
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+            assert!(
+                daemon.runtime(0).is_some(),
+                "state_inside {state_inside}: {:?}",
+                published_error(&daemon, 0)
+            );
+            assert_eq!(published_error(&daemon, 0), None);
+            assert_eq!(
+                fs::read(root.join("a.txt")).expect("downloaded from Proton"),
+                b"downloaded"
+            );
+            assert!(client.deletes().is_empty(), "{:?}", client.deletes());
+        }
+    }
+
+    #[test]
+    fn a_folder_swapped_during_the_walk_ends_the_pass_unavailable_and_not_abandoned() {
+        // The swapped-in folder is a directory, so the downloads' destination check passes; what
+        // fails is the directory creation, which is no longer on the folder the pass started on.
+        // That is the folder's story, not twenty-five items': a pass that records each as a failed
+        // item trips the breaker and ends "abandoned", with the folder never mentioned as the cause.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) =
+            steady_events_pair_with(directory.path(), Vec::new(), |config| {
+                config.delete_approval_remote = false;
+            });
+        let root = daemon.pair_config(0).local_root.clone();
+        let remote_root = daemon.pair_config(0).remote_root.clone();
+        let mut entities = vec![remote_file_entity("a.txt", "vola~na", &sha1_bytes(b"a"))];
+        for index in 0..(CONSECUTIVE_FAILURE_LIMIT + 5) {
+            entities.push(remote_file_entity(
+                &format!("remote-{index}.txt"),
+                &format!("vola~n{index}"),
+                &sha1_bytes(b"r"),
+            ));
+        }
+        let _ = client.clone().with_tree(&remote_root, entities);
+        let swapped = root.clone();
+        *client.on_walk.lock().expect("hook lock") = Some(Box::new(move |_| {
+            replace_directory(&swapped, &[("a.txt", b"a")]);
+        }));
+        daemon.shared.pairs[0]
+            .force_full_walk
+            .store(true, Ordering::SeqCst);
+
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        let error = published_error(&daemon, 0).unwrap_or_default();
+        assert!(error.contains("is not available"), "{error}");
+        assert!(!error.contains("abandoned"), "{error}");
+        assert_eq!(
+            fs::read_dir(&root).expect("the folder").count(),
+            1,
+            "nothing was downloaded into a folder the pass did not start on"
+        );
+        assert!(client.deletes().is_empty(), "{:?}", client.deletes());
+    }
+
+    #[test]
+    fn a_folder_emptied_in_place_together_with_its_state_is_held() {
+        // R1, the case with no replacement at all: the same directory, and `rm -rf .sync *` inside
+        // it. The index is gone, so preparing the pair again would bootstrap and download the whole
+        // remote into a folder its owner emptied; the baseline in the connection still held says
+        // what an empty folder would be mistaken for.
+        for guard in [true, false] {
+            let directory = tempdir().expect("tempdir");
+            let (mut daemon, client, mut stepper) =
+                state_inside_root_pair_with(directory.path(), |config| {
+                    config.delete_approval_remote = guard;
+                });
+            let root = daemon.pair_config(0).local_root.clone();
+            for entry in fs::read_dir(&root).expect("the folder") {
+                let path = entry.expect("an entry").path();
+                if path.is_dir() {
+                    fs::remove_dir_all(&path).expect("removed");
+                } else {
+                    fs::remove_file(&path).expect("removed");
+                }
+            }
+
+            stepper.send(LoopCommand::SyncNow(0));
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+            assert!(
+                daemon
+                    .unavailable(0)
+                    .is_some_and(|pair| pair.standing.is_some()),
+                "guard {guard}: {:?}",
+                published_error(&daemon, 0)
+            );
+            assert_eq!(fs::read_dir(&root).expect("the folder").count(), 0);
+            assert!(client.walks().is_empty() && client.deletes().is_empty());
+        }
+    }
+
+    #[test]
+    fn a_folder_emptied_in_place_with_its_state_intact_is_the_users_own_deletion() {
+        // The boundary of the hold: the directory is the one the pair ran on and its state is
+        // there. Emptying it is a deletion like any other — withheld by the guard when it is on,
+        // executed when it is off — and nothing here may turn it into a hold.
+        for guard in [true, false] {
+            let directory = tempdir().expect("tempdir");
+            let (mut daemon, client, mut stepper) =
+                steady_events_pair_with(directory.path(), Vec::new(), |config| {
+                    config.delete_approval_remote = guard;
+                });
+            let root = daemon.pair_config(0).local_root.clone();
+            fs::remove_file(root.join("a.txt")).expect("the user deletes the file on purpose");
+            // No watcher runs here, so the removal is announced the way an overflow would.
+            daemon.runtime_mut(0).expect("ready").force_local_rescan = true;
+
+            stepper.send(LoopCommand::SyncNow(0));
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+            assert!(daemon.runtime(0).is_some(), "guard {guard}: not held");
+            if guard {
+                assert!(client.deletes().is_empty());
+                assert_eq!(daemon.runtime(0).expect("ready").pending_deletions.len(), 1);
+            } else {
+                assert_eq!(client.deletes(), [PathBuf::from("/Drive/a/a.txt")]);
+            }
+        }
+    }
+
+    #[test]
+    fn making_directories_never_makes_the_root() {
+        // R2a at its lowest level. `create_dir_all` makes every ancestor, so a destination under a
+        // root that is gone made the root too; this stops at the root, which is assumed to exist.
+        let directory = tempdir().expect("tempdir");
+        let root = directory.path().join("gone-drive");
+        let destination = root.join("d1/d2");
+        let error = create_directories_below(&root, &destination)
+            .expect_err("there is no root to make the directories in");
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        assert!(!root.exists(), "the root was made");
+
+        // With a root, the missing levels are made, the existing ones left alone, a file where a
+        // directory belongs is an error, and the root's own level asks for nothing.
+        fs::create_dir(&root).expect("the drive is mounted");
+        create_directories_below(&root, &destination).expect("made");
+        create_directories_below(&root, &destination).expect("made again is fine");
+        create_directories_below(&root, &root).expect("the root itself needs nothing");
+        assert!(destination.is_dir());
+        fs::write(root.join("file"), b"f").expect("a file");
+        assert!(create_directories_below(&root, &root.join("file/inside")).is_err());
+        assert!(create_directories_below(&root, &root.join("file")).is_err());
+    }
+
+    #[test]
+    fn a_directory_made_for_a_download_is_refused_unless_the_root_is_the_one_the_pass_runs_on() {
+        // R2 at the helper every executor arm goes through: a root that is missing, or is another
+        // directory than the expected one, is the typed condition and nothing is made; a root that
+        // vanishes between the check and the call fails the call and is not made by it.
+        let directory = tempdir().expect("tempdir");
+        let root = directory.path().join("drive");
+        let destination = root.join("d1/d2");
+        let missing =
+            ensure_directory_below(&root, None, &destination).expect_err("there is no root");
+        assert!(is_root_unavailable_error(missing.as_ref()), "{missing}");
+        assert!(!root.exists());
+
+        fs::create_dir(&root).expect("mounted");
+        let expected = look_at_root(&root).present().expect("a directory");
+        ensure_directory_below(&root, Some(expected), &destination).expect("made");
+        assert!(destination.is_dir());
+
+        replace_directory(&root, &[]);
+        let swapped = ensure_directory_below(&root, Some(expected), &destination)
+            .expect_err("another directory is at the path");
+        assert!(is_root_unavailable_error(swapped.as_ref()), "{swapped}");
+        assert!(
+            !destination.exists(),
+            "nothing was made in the other directory"
+        );
+
+        let vanishing = root.clone();
+        let raced = ensure_directory_below_after(&root, None, &destination, || {
+            fs::remove_dir_all(&vanishing).expect("the drive goes");
+        })
+        .expect_err("the root vanished after the check");
+        assert!(!root.exists(), "the root was made again: {raced}");
+    }
+
+    #[test]
+    fn an_unreadable_cause_is_said_once_and_again_after_the_looks_answer() {
+        // R5a: a standing failure is one line, a different cause speaks, and a look that answers
+        // again re-arms the latch, so the same failure coming back later is news again.
+        let mut latch = None;
+        let log = capture_log("info", || {
+            note_unreadable(&mut latch, "the folder /x: Permission denied");
+            note_unreadable(&mut latch, "the folder /x: Permission denied");
+            note_unreadable(&mut latch, "the folder /x: Input/output error");
+            clear_unreadable(&mut latch);
+            clear_unreadable(&mut latch);
+            note_unreadable(&mut latch, "the folder /x: Input/output error");
+        });
+        assert_eq!(log.matches("cannot be examined").count(), 3, "{log}");
+        assert_eq!(log.matches("can be examined again").count(), 1, "{log}");
+    }
+
+    #[test]
+    fn a_held_pair_whose_folder_cannot_be_examined_stays_held_with_its_reason() {
+        // R5a for the retry: a look at the folder that fails is not "the folder is gone" (which would
+        // fall through to an ordinary preparation and reword the reason) and not "content has
+        // returned". The hold stands, and it says why it could not be re-checked once.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) =
+            replaced_by_an_empty_folder(directory.path(), |config| {
+                config.delete_approval_remote = false;
+            });
+        let root = daemon.pair_config(0).local_root.clone();
+        let parent = root.parent().expect("a parent").to_path_buf();
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        let reason = published_error(&daemon, 0).expect("held, and says why");
+        assert!(daemon.unavailable(0).is_some(), "{reason}");
+        let Some(unreadable) = Unreadable::new(&parent, &root) else {
+            return;
+        };
+
+        let log = capture_log("warn", || {
+            for _ in 0..3 {
+                stepper.send(LoopCommand::SyncNow(0));
+                assert_eq!(stepper.step(&mut daemon), Step::Idle);
+            }
+        });
+        drop(unreadable);
+
+        assert!(
+            daemon
+                .unavailable(0)
+                .is_some_and(|pair| pair.standing.is_some()),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        assert_eq!(
+            published_error(&daemon, 0),
+            Some(reason),
+            "same cause, same words"
+        );
+        assert_eq!(log.matches("cannot be examined").count(), 1, "{log}");
+        assert!(client.deletes().is_empty(), "{:?}", client.deletes());
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Third review round of #432 (ADR 0005, the 4b note, item 13): the holes are closed by
+    // construction. Nothing a pass runs can make the root or an ancestor of it; a plan is only
+    // ever derived from a scan of the directory the pair runs on; the first pass after an
+    // accepted replacement withholds every deletion; a promotion is examined like a pass.
+    // ---------------------------------------------------------------------------------------
+
+    /// The paths of the deletions a ready pair is holding for approval.
+    fn pending_paths(daemon: &Daemon<MultiRootClient>, pair: usize) -> Vec<PathBuf> {
+        daemon
+            .runtime(pair)
+            .expect("ready")
+            .pending_deletions
+            .iter()
+            .map(|pending| pending.path.clone())
+            .collect()
+    }
+
+    #[test]
+    fn a_second_chunk_of_one_group_never_makes_the_folder_again() {
+        // S1. One download group, chunked by `download_batch_size`: the tree is deleted after
+        // the first chunk lands. The second chunk's staging used to make the root again (the
+        // client's `create_dir_all`), holding only what that chunk fetched, and the next job read
+        // the new folder as a replacement with content and accepted it — with the guard off, it
+        // deleted `a.txt` remotely. Now the root is checked before every chunk, and the client
+        // makes nothing above its own staging directory.
+        for guard in [false, true] {
+            let directory = tempdir().expect("tempdir");
+            let mut configs = pair_configs(directory.path(), &["a"]);
+            configs[0].events_driven = true;
+            configs[0].download_batch_size = 2;
+            configs[0].delete_approval_remote = guard;
+            let root = configs[0].local_root.clone();
+            let remote_root = configs[0].remote_root.clone();
+            fs::write(root.join("a.txt"), b"a").expect("local file");
+            let a = remote_file_entity("a.txt", "vola~na", &sha1_bytes(b"a"));
+            let client = MultiRootClient::default().with_tree(&remote_root, vec![a.clone()]);
+            let source = FakeEventSource::new("cursor-0");
+            let latest = source.latest_handle();
+            let mut daemon = multi_pair_daemon(configs, client.clone(), Some(Box::new(source)));
+            let mut stepper = Stepper::new(&mut daemon);
+            assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+            let mut tree = vec![a];
+            for index in 1..=4 {
+                tree.push(remote_file_entity(
+                    &format!("d1/x{index}.txt"),
+                    &format!("vola~nx{index}"),
+                    &sha1_bytes(b"x"),
+                ));
+            }
+            let _ = client.clone().with_tree(&remote_root, tree);
+            *latest.lock().expect("latest lock") = "cursor-1".to_owned();
+            client.clear_walks();
+            let doomed = root.clone();
+            *client.on_download.lock().expect("hook lock") = Some(Box::new(move |destination| {
+                // The first chunk (x1, x2) has just landed; the folder goes before the second.
+                if destination.ends_with("d1/x2.txt") {
+                    let _ = fs::remove_dir_all(&doomed);
+                }
+            }));
+            daemon.shared.pairs[0]
+                .force_full_walk
+                .store(true, Ordering::SeqCst);
+
+            stepper.send(LoopCommand::SyncNow(0));
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+            assert_eq!(
+                client.downloads(),
+                [root.join("d1/x1.txt"), root.join("d1/x2.txt")],
+                "guard {guard}: the second chunk was issued against a folder that is gone"
+            );
+            assert!(!root.exists(), "guard {guard}: the folder was made again");
+            assert_eq!(
+                stored_cursor(&daemon, 0, "vola"),
+                "cursor-0",
+                "guard {guard}: the cursor is held"
+            );
+            assert!(
+                published_error(&daemon, 0).is_some_and(|error| error.contains("is not available")),
+                "guard {guard}: {:?}",
+                published_error(&daemon, 0)
+            );
+
+            // The next job has no folder: nothing is accepted, nothing is planned.
+            *client.on_download.lock().expect("hook lock") = None;
+            stepper.send(LoopCommand::SyncNow(0));
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+            assert!(!root.exists(), "guard {guard}");
+            assert!(
+                client.deletes().is_empty(),
+                "guard {guard}: {:?}",
+                client.deletes()
+            );
+        }
+    }
+
+    #[test]
+    fn a_folder_replaced_between_the_top_check_and_the_scan_runs_nothing_on_it() {
+        // S2, the full-tree pass. The identity was checked at the top of the pass and before the
+        // final commit only; the window between the top check and the scan holds the keyring read
+        // and the cursor capture. A swap landing there was scanned as the user's own folder: the
+        // empty replacement planned `RemoteDelete a.txt`, which ran before the final check.
+        let directory = tempdir().expect("tempdir");
+        let mut configs = pair_configs(directory.path(), &["a"]);
+        configs[0].events_driven = true;
+        configs[0].delete_approval_remote = false;
+        let root = configs[0].local_root.clone();
+        fs::write(root.join("a.txt"), b"a").expect("local file");
+        let client = MultiRootClient::default().with_tree(
+            &configs[0].remote_root,
+            vec![remote_file_entity("a.txt", "vola~na", &sha1_bytes(b"a"))],
+        );
+        // Events on and no session: a degraded pair, whose every pass asks the factory for one —
+        // which is where the swap lands, after the top check and before the scan.
+        let mut daemon = multi_pair_daemon(configs, client.clone(), None);
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        client.clear_walks();
+        let armed = Arc::new(AtomicBool::new(true));
+        let swapped = root.clone();
+        let once = Arc::clone(&armed);
+        daemon.event_source_factory = Box::new(move || {
+            if once.swap(false, Ordering::SeqCst) {
+                replace_directory(&swapped, &[]);
+            }
+            None
+        });
+
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(!armed.load(Ordering::SeqCst), "the swap never happened");
+        assert!(
+            client.deletes().is_empty(),
+            "a pass that scanned a folder it did not start on deleted: {:?}",
+            client.deletes()
+        );
+        assert!(
+            published_error(&daemon, 0).is_some_and(|error| error.contains("is not available")),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        assert!(
+            get_record(
+                &daemon.runtime(0).expect("ready").connection,
+                Path::new("a.txt")
+            )
+            .expect("index read")
+            .is_some(),
+            "the baseline is untouched"
+        );
+        // The check is right after the scan, not only before the executor: the pass ends before
+        // it lists the remote at all, so a plan is never even computed from that scan.
+        assert!(
+            client.walks().is_empty(),
+            "the pass went on to list the remote after scanning another directory"
+        );
+
+        // The next job judges the replacement: empty over a baseline that records items, held.
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(
+            daemon
+                .unavailable(0)
+                .is_some_and(|pair| pair.standing.is_some()),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        assert!(client.deletes().is_empty(), "{:?}", client.deletes());
+    }
+
+    #[test]
+    fn a_folder_replaced_between_the_top_check_and_the_scan_of_an_events_pass_runs_nothing_on_it() {
+        // S2, the pass that never walks. The swap lands inside the event fetch, which is after the
+        // top check and before the scan; the scan then saw the empty replacement. The delta
+        // carries a created node, so a pass that went on past the scan would list its parent.
+        let directory = tempdir().expect("tempdir");
+        let mut configs = pair_configs(directory.path(), &["a"]);
+        configs[0].events_driven = true;
+        configs[0].delete_approval_remote = false;
+        let root = configs[0].local_root.clone();
+        let remote_root = configs[0].remote_root.clone();
+        fs::write(root.join("a.txt"), b"a").expect("local file");
+        let a = remote_file_entity("a.txt", "vola~na", &sha1_bytes(b"a"));
+        let client = MultiRootClient::default().with_tree(&remote_root, vec![a.clone()]);
+        let source = FakeEventSource::with_pages(
+            "cursor-0",
+            vec![one_page(
+                "cursor-1",
+                vec![change(RemoteChangeKind::Created, "nb", None, false)],
+            )],
+        );
+        let hook = source.events_since_hook();
+        let mut daemon = multi_pair_daemon(configs, client.clone(), Some(Box::new(source)));
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        assert_eq!(stored_cursor(&daemon, 0, "vola"), "cursor-0");
+        let _ = client.clone().with_tree(
+            &remote_root,
+            vec![a, remote_file_entity("b.txt", "vola~nb", &sha1_bytes(b"b"))],
+        );
+        client.clear_walks();
+        let listings = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&listings);
+        *client.on_list_directory.lock().expect("hook lock") = Some(Box::new(move |_| {
+            counted.fetch_add(1, Ordering::SeqCst);
+        }));
+        let armed = Arc::new(AtomicBool::new(true));
+        let swapped = root.clone();
+        let once = Arc::clone(&armed);
+        *hook.lock().expect("hook lock") = Some(Box::new(move || {
+            if once.swap(false, Ordering::SeqCst) {
+                replace_directory(&swapped, &[]);
+            }
+        }));
+
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(!armed.load(Ordering::SeqCst), "the swap never happened");
+        assert!(
+            client.deletes().is_empty(),
+            "a pass that scanned a folder it did not start on deleted: {:?}",
+            client.deletes()
+        );
+        assert!(
+            published_error(&daemon, 0).is_some_and(|error| error.contains("is not available")),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        assert_eq!(
+            stored_cursor(&daemon, 0, "vola"),
+            "cursor-0",
+            "the cursor is held"
+        );
+        assert!(client.walks().is_empty(), "no walk either");
+        assert_eq!(
+            listings.load(Ordering::SeqCst),
+            0,
+            "the pass went on to resolve the delta after scanning another directory"
+        );
+        assert!(
+            !root.join("b.txt").exists(),
+            "nothing was downloaded into it"
+        );
+
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(
+            daemon
+                .unavailable(0)
+                .is_some_and(|pair| pair.standing.is_some()),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        assert!(client.deletes().is_empty(), "{:?}", client.deletes());
+    }
+
+    #[test]
+    fn a_hold_lifted_by_a_stray_file_withholds_the_deletions_it_would_make() {
+        // S3. "Has content" is a binary test: a file manager's `.directory` in an otherwise empty
+        // replacement lifts the hold, and with the guard off the next pass deleted the remote copy
+        // of everything recorded. The first pass after an accepted replacement now withholds every
+        // deletion for approval, whatever the policy says; an approval lets it run, and once a
+        // pass withholds nothing for that reason the configured policy applies again.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) =
+            replaced_by_an_empty_folder(directory.path(), |config| {
+                config.delete_approval_remote = false;
+            });
+        let root = daemon.pair_config(0).local_root.clone();
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(daemon.unavailable(0).is_some(), "held");
+
+        fs::write(root.join(".directory"), b"[Dolphin]").expect("a stray file");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(
+            daemon.runtime(0).is_some(),
+            "the hold lifts on content: {:?}",
+            published_error(&daemon, 0)
+        );
+        assert!(
+            client.deletes().is_empty(),
+            "the guard is off, and the deletion ran anyway: {:?}",
+            client.deletes()
+        );
+        assert_eq!(
+            pending_paths(&daemon, 0),
+            [PathBuf::from("a.txt")],
+            "withheld for approval, exactly like a guarded deletion"
+        );
+        assert_eq!(
+            uploads_of(&client, ".directory"),
+            1,
+            "the rest of the plan ran"
+        );
+
+        // Approved, it runs on the next pass.
+        daemon
+            .apply_approval_command(Some("a.txt"), true)
+            .expect("approved");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(client.deletes(), [PathBuf::from("/Drive/a/a.txt")]);
+        assert!(pending_paths(&daemon, 0).is_empty());
+
+        // That pass withheld nothing for the replacement, so the force is spent: a later deletion
+        // of the user's own follows the configured policy, which is off.
+        fs::remove_file(root.join(".directory")).expect("the user deletes it");
+        daemon.runtime_mut(0).expect("ready").force_local_rescan = true;
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(
+            client.deletes(),
+            [
+                PathBuf::from("/Drive/a/a.txt"),
+                PathBuf::from("/Drive/a/.directory")
+            ],
+            "a normal deletion is unaffected once the force is spent"
+        );
+        assert!(pending_paths(&daemon, 0).is_empty());
+    }
+
+    #[test]
+    fn a_hold_lifted_by_an_empty_lost_and_found_withholds_the_deletions_it_would_make() {
+        // S3 with the other stray entry a fresh volume carries: an empty directory counts as
+        // content (a directory is a sync entity), so it lifts the hold.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) =
+            replaced_by_an_empty_folder(directory.path(), |config| {
+                config.delete_approval_remote = false;
+            });
+        let root = daemon.pair_config(0).local_root.clone();
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(daemon.unavailable(0).is_some(), "held");
+
+        fs::create_dir(root.join("lost+found")).expect("a fresh volume's directory");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(
+            daemon.runtime(0).is_some(),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        assert!(client.deletes().is_empty(), "{:?}", client.deletes());
+        assert_eq!(pending_paths(&daemon, 0), [PathBuf::from("a.txt")]);
+        assert_eq!(
+            client.directories(),
+            [(remote_root_of("a"), PathBuf::from("lost+found"))],
+            "the rest of the plan ran"
+        );
+
+        daemon
+            .apply_approval_command(Some("a.txt"), true)
+            .expect("approved");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(client.deletes(), [PathBuf::from("/Drive/a/a.txt")]);
+    }
+
+    #[test]
+    fn an_accepted_replacement_withholds_every_deletion_until_a_pass_withholds_none() {
+        // S3 for the replacement a ready pair accepts directly (content, no hold): the deletions
+        // its first pass plans wait, and so does every deletion of a later pass, until one pass
+        // withholds nothing for the replacement. `all` approves them together; after that the
+        // configured policy applies again.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) =
+            steady_events_pair_with(directory.path(), Vec::new(), |config| {
+                config.delete_approval_remote = false;
+            });
+        let root = daemon.pair_config(0).local_root.clone();
+        replace_directory(&root, &[("b.txt", b"b")]);
+
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(
+            daemon.runtime(0).is_some(),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        assert!(client.deletes().is_empty(), "{:?}", client.deletes());
+        assert_eq!(pending_paths(&daemon, 0), [PathBuf::from("a.txt")]);
+        assert_eq!(uploads_of(&client, "b.txt"), 1);
+
+        // Still owed: a deletion the user makes now is withheld too, because the pass that would
+        // have spent the force withheld `a.txt` for it.
+        fs::remove_file(root.join("b.txt")).expect("the user deletes it");
+        daemon.runtime_mut(0).expect("ready").force_local_rescan = true;
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(client.deletes().is_empty(), "{:?}", client.deletes());
+        let mut pending = pending_paths(&daemon, 0);
+        pending.sort();
+        assert_eq!(pending, [PathBuf::from("a.txt"), PathBuf::from("b.txt")]);
+
+        daemon
+            .apply_approval_command(Some("all"), true)
+            .expect("approved");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        let mut deletes = client.deletes();
+        deletes.sort();
+        assert_eq!(
+            deletes,
+            [
+                PathBuf::from("/Drive/a/a.txt"),
+                PathBuf::from("/Drive/a/b.txt")
+            ]
+        );
+        assert!(pending_paths(&daemon, 0).is_empty());
+
+        // Spent: the next deletion runs under the configured policy.
+        fs::write(root.join("c.txt"), b"c").expect("a new file");
+        daemon.runtime_mut(0).expect("ready").force_local_rescan = true;
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(uploads_of(&client, "c.txt"), 1);
+        fs::remove_file(root.join("c.txt")).expect("and deleted again");
+        daemon.runtime_mut(0).expect("ready").force_local_rescan = true;
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(client.deletes().len(), 3, "{:?}", client.deletes());
+        assert!(pending_paths(&daemon, 0).is_empty());
+    }
+
+    #[test]
+    fn a_held_pair_whose_replaced_folder_cannot_be_listed_stays_held() {
+        // S4. The replaced folder itself (not its parent) cannot be read: `stat` answers, so it is
+        // "present", and the content check fails with `EACCES`. That is no answer, and the hold
+        // stands; read as "cleared", the pair was prepared again over the empty replacement.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) =
+            replaced_by_an_empty_folder(directory.path(), |config| {
+                config.delete_approval_remote = false;
+            });
+        let root = daemon.pair_config(0).local_root.clone();
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        let reason = published_error(&daemon, 0).expect("held, and says why");
+        assert!(daemon.unavailable(0).is_some(), "{reason}");
+        let Some(unreadable) = Unreadable::new(&root, &root.join("probe")) else {
+            return;
+        };
+
+        for _ in 0..3 {
+            stepper.send(LoopCommand::SyncNow(0));
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        }
+        drop(unreadable);
+
+        assert!(
+            daemon
+                .unavailable(0)
+                .is_some_and(|pair| pair.standing.is_some()),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        assert_eq!(published_error(&daemon, 0), Some(reason), "same cause");
+        assert!(client.deletes().is_empty(), "{:?}", client.deletes());
+        assert!(client.walks().is_empty(), "no pass ran");
+    }
+
+    #[test]
+    fn a_ready_pair_whose_replaced_folder_cannot_be_listed_is_not_accepted() {
+        // S4. The empty replacement itself cannot be read, so whether it is the deletion of
+        // everything recorded cannot be told. Read as "nothing recorded under it", it was accepted
+        // — the pair forgot the folder it ran on — and once readable again it was scanned as the
+        // user's own empty folder.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) =
+            steady_events_pair_with(directory.path(), Vec::new(), |config| {
+                config.delete_approval_remote = false;
+            });
+        let root = daemon.pair_config(0).local_root.clone();
+        let before = daemon.runtime(0).expect("ready").known_root;
+        replace_directory(&root, &[]);
+        let Some(unreadable) = Unreadable::new(&root, &root.join("probe")) else {
+            return;
+        };
+
+        for _ in 0..2 {
+            stepper.send(LoopCommand::SyncNow(0));
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        }
+
+        assert!(daemon.runtime(0).is_some(), "not demoted, not held");
+        assert_eq!(
+            daemon.runtime(0).expect("ready").known_root,
+            before,
+            "the replaced folder was accepted while it could not be judged"
+        );
+        let error = published_error(&daemon, 0).unwrap_or_default();
+        assert!(
+            error.contains("is not available") && error.contains("could not be established"),
+            "{error}"
+        );
+        assert!(client.walks().is_empty(), "the pass did not start");
+
+        // Readable again, it is judged: empty over a baseline that records items, held.
+        drop(unreadable);
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(
+            daemon
+                .unavailable(0)
+                .is_some_and(|pair| pair.standing.is_some()),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        assert!(client.deletes().is_empty(), "{:?}", client.deletes());
+    }
+
+    #[test]
+    fn a_folder_swapped_during_the_walk_ends_a_batched_pass_at_once_too() {
+        // S5/S6 of the third round: the batch-1 variant above proves the per-action loop ends the
+        // pass on the typed error. The batched run used to record the group's typed error as one
+        // failed item per member and carry on to the final check — twenty warnings naming files
+        // as failed, for a folder that was the cause.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) =
+            steady_events_pair_with(directory.path(), Vec::new(), |config| {
+                config.delete_approval_remote = false;
+                config.download_batch_size = 25;
+            });
+        let root = daemon.pair_config(0).local_root.clone();
+        let remote_root = daemon.pair_config(0).remote_root.clone();
+        let mut entities = vec![remote_file_entity("a.txt", "vola~na", &sha1_bytes(b"a"))];
+        for index in 0..(CONSECUTIVE_FAILURE_LIMIT + 5) {
+            entities.push(remote_file_entity(
+                &format!("remote-{index}.txt"),
+                &format!("vola~n{index}"),
+                &sha1_bytes(b"r"),
+            ));
+        }
+        let _ = client.clone().with_tree(&remote_root, entities);
+        let swapped = root.clone();
+        *client.on_walk.lock().expect("hook lock") = Some(Box::new(move |_| {
+            replace_directory(&swapped, &[("a.txt", b"a")]);
+        }));
+        daemon.shared.pairs[0]
+            .force_full_walk
+            .store(true, Ordering::SeqCst);
+
+        let log = capture_log("warn", || {
+            stepper.send(LoopCommand::SyncNow(0));
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        });
+
+        let error = published_error(&daemon, 0).unwrap_or_default();
+        assert!(error.contains("is not available"), "{error}");
+        assert!(!error.contains("abandoned"), "{error}");
+        assert!(
+            !log.contains("sync action failed"),
+            "the folder's story was told as item failures: {log}"
+        );
+        assert!(client.downloads().is_empty(), "no chunk was issued");
+        assert_eq!(
+            fs::read_dir(&root).expect("the folder").count(),
+            1,
+            "nothing was downloaded into a folder the pass did not start on"
+        );
+        assert!(client.deletes().is_empty(), "{:?}", client.deletes());
+    }
+
+    #[test]
+    fn a_folder_swapped_between_two_download_groups_ends_a_batched_pass_at_once() {
+        // S5/S6 of the third round, at the one place the batched run's group-level arm is still
+        // reachable: the swap lands after the first group's chunk has landed, so the second
+        // group's directory creation is what meets it. That used to be recorded as one failed
+        // item per member of the group — twenty-five warnings naming files — and the pass carried
+        // on to the final check; now the typed error ends it at once, like the per-action loop.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) =
+            steady_events_pair_with(directory.path(), Vec::new(), |config| {
+                config.delete_approval_remote = false;
+                config.download_batch_size = 25;
+            });
+        let root = daemon.pair_config(0).local_root.clone();
+        let remote_root = daemon.pair_config(0).remote_root.clone();
+        let mut entities = vec![
+            remote_file_entity("a.txt", "vola~na", &sha1_bytes(b"a")),
+            remote_file_entity("d1/x.txt", "vola~nx", &sha1_bytes(b"downloaded")),
+        ];
+        for index in 0..(CONSECUTIVE_FAILURE_LIMIT + 5) {
+            entities.push(remote_file_entity(
+                &format!("d2/y{index}.txt"),
+                &format!("vola~ny{index}"),
+                &sha1_bytes(b"r"),
+            ));
+        }
+        let _ = client.clone().with_tree(&remote_root, entities);
+        let swapped = root.clone();
+        *client.on_download.lock().expect("hook lock") = Some(Box::new(move |destination| {
+            // The replacement carries the file that just landed, so the first group's record is
+            // not what fails: the second group's directory is.
+            if destination.ends_with("d1/x.txt") {
+                replace_directory(&swapped, &[("a.txt", b"a"), ("d1/x.txt", b"downloaded")]);
+            }
+        }));
+        daemon.shared.pairs[0]
+            .force_full_walk
+            .store(true, Ordering::SeqCst);
+
+        let log = capture_log("warn", || {
+            stepper.send(LoopCommand::SyncNow(0));
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        });
+
+        let error = published_error(&daemon, 0).unwrap_or_default();
+        assert!(error.contains("is not available"), "{error}");
+        assert!(!error.contains("abandoned"), "{error}");
+        assert!(
+            !log.contains("sync action failed"),
+            "the folder's story was told as item failures: {log}"
+        );
+        assert_eq!(
+            client.downloads(),
+            [root.join("d1/x.txt")],
+            "the second group was never issued"
+        );
+        assert!(
+            !root.join("d2").exists(),
+            "nothing was made in the replacement"
+        );
+        assert!(client.deletes().is_empty(), "{:?}", client.deletes());
+    }
+
+    #[test]
+    fn a_folder_swapped_during_the_walk_has_nothing_deleted_in_it() {
+        // S2, the window after the scan: the remote walk between the scan and the executor can
+        // take minutes. The scan was of the right directory, so the plan is right — `a.txt` was
+        // deleted remotely, so delete it locally — but the executor would run that on whatever
+        // directory is at the path by then, and the replacement's own `a.txt` went with it (the
+        // final check saw the swap only afterwards). The check before the loop refuses it.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) =
+            steady_events_pair_with(directory.path(), Vec::new(), |_| {});
+        let root = daemon.pair_config(0).local_root.clone();
+        let remote_root = daemon.pair_config(0).remote_root.clone();
+        let _ = client.clone().with_tree(&remote_root, Vec::new());
+        let swapped = root.clone();
+        *client.on_walk.lock().expect("hook lock") = Some(Box::new(move |_| {
+            replace_directory(&swapped, &[("a.txt", b"the replacement's own")]);
+        }));
+        daemon.shared.pairs[0]
+            .force_full_walk
+            .store(true, Ordering::SeqCst);
+
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(
+            published_error(&daemon, 0).is_some_and(|error| error.contains("is not available")),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        assert_eq!(
+            fs::read(root.join("a.txt")).expect("the replacement's file is still there"),
+            b"the replacement's own",
+            "a plan for another directory ran on this one"
+        );
+        assert!(
+            get_record(
+                &daemon.runtime(0).expect("ready").connection,
+                Path::new("a.txt")
+            )
+            .expect("index read")
+            .is_some(),
+            "nothing was purged"
+        );
+    }
+
+    #[test]
+    fn a_failed_pass_over_a_vanished_folder_does_not_make_it_again_to_write_its_status() {
+        // S1 for the status write. With the default layout the sidecars live in `<root>/.sync`,
+        // and `write_atomically` made that directory — root included — so a pass that failed for
+        // another reason after its folder went (here: the remote listing) brought the folder back
+        // as `.sync` alone, which the next job then judged. The write fails instead, once, and the
+        // folder stays gone.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) = state_inside_root_pair(directory.path());
+        let root = daemon.pair_config(0).local_root.clone();
+        let remote_root = daemon.pair_config(0).remote_root.clone();
+        let doomed = root.clone();
+        *client.on_walk.lock().expect("hook lock") = Some(Box::new(move |_| {
+            let _ = fs::remove_dir_all(&doomed);
+        }));
+        client
+            .fail_walk_once
+            .lock()
+            .expect("fail lock")
+            .insert(remote_root);
+
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(
+            published_error(&daemon, 0).is_some_and(|error| error.contains("list failed")),
+            "precondition: the pass failed on the listing, not on the folder: {:?}",
+            published_error(&daemon, 0)
+        );
+        assert!(!root.exists(), "the status write made the folder again");
+    }
+
+    #[test]
+    fn a_default_layout_folder_partly_restored_bootstraps_and_deletes_nothing() {
+        // S5. With the index inside the folder, the state went with it, so the pair prepared
+        // again after the hold lifts has an empty baseline: the pass is a bootstrap, which adopts
+        // and downloads and has nothing to plan a deletion from. The "partly restored folder"
+        // consequence is the external-index case's, and item 13 withholds it there.
+        let directory = tempdir().expect("tempdir");
+        let mut configs = pair_configs(directory.path(), &["a"]);
+        state_inside_root(&mut configs[0]);
+        configs[0].delete_approval_remote = false;
+        let root = configs[0].local_root.clone();
+        fs::write(root.join("a.txt"), b"downloaded").expect("a");
+        fs::write(root.join("b.txt"), b"downloaded").expect("b");
+        let client = MultiRootClient::default().with_tree(
+            &configs[0].remote_root,
+            vec![
+                remote_file_entity("a.txt", "vola~na", &sha1_bytes(b"downloaded")),
+                remote_file_entity("b.txt", "vola~nb", &sha1_bytes(b"downloaded")),
+            ],
+        );
+        let mut daemon = multi_pair_daemon(configs, client.clone(), None);
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        replace_directory(&root, &[]);
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(daemon.unavailable(0).is_some(), "held");
+
+        fs::write(root.join("a.txt"), b"downloaded").expect("only a is restored");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(
+            daemon.runtime(0).is_some(),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        assert!(client.deletes().is_empty(), "{:?}", client.deletes());
+        assert!(pending_paths(&daemon, 0).is_empty(), "nothing to withhold");
+        assert_eq!(
+            fs::read(root.join("b.txt")).expect("downloaded again"),
+            b"downloaded"
+        );
+    }
+
+    #[test]
+    fn a_pair_with_no_record_of_its_folder_records_it_at_the_first_look_and_holds_a_replacement() {
+        // S6. The look at open can fail (a `stat` that errs in the instant after the preparation's
+        // own), and nothing back-filled the record: that pair had no replacement protection for
+        // life. The first examination that can see the folder records it, and a replacement after
+        // that is judged.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) =
+            steady_events_pair_with(directory.path(), Vec::new(), |config| {
+                config.delete_approval_remote = false;
+            });
+        let root = daemon.pair_config(0).local_root.clone();
+        // As a look that failed at open leaves it.
+        daemon.runtime_mut(0).expect("ready").known_root = RootRecord::Unrecorded;
+
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(
+            matches!(
+                daemon.runtime(0).expect("ready").known_root,
+                RootRecord::Recorded(_)
+            ),
+            "recorded at the first look"
+        );
+        assert_eq!(published_error(&daemon, 0), None);
+
+        replace_directory(&root, &[]);
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(
+            daemon
+                .unavailable(0)
+                .is_some_and(|pair| pair.standing.is_some()),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        assert!(client.deletes().is_empty(), "{:?}", client.deletes());
+    }
+
+    #[test]
+    fn a_pair_prepared_again_over_an_empty_replacement_is_held_not_synced() {
+        // S6. A pair unavailable for a cause that is not a standing one (another process holds its
+        // lock) is prepared again when the cause clears — over whatever is at the path now. The
+        // identity it last ran on is carried through the demotion, and the promotion is examined
+        // against it exactly as a ready pair's folder is: an empty replacement over a baseline
+        // that records items is held. It used to be promoted and scanned: `RemoteDelete a.txt`.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) =
+            steady_events_pair_with(directory.path(), Vec::new(), |config| {
+                config.delete_approval_remote = false;
+            });
+        let root = daemon.pair_config(0).local_root.clone();
+        let lockfile = daemon.pair_config(0).lockfile_path.clone();
+        daemon.demote_pair(0, "its metrics file could not be written".to_owned());
+        let held = LockGuard::acquire(&lockfile).expect("another process takes the lock");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(
+            published_error(&daemon, 0)
+                .is_some_and(|reason| reason.contains("locked by another process")),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+
+        // While it is unavailable, the folder is replaced by an empty one; then the lock is free.
+        replace_directory(&root, &[]);
+        drop(held);
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(
+            daemon
+                .unavailable(0)
+                .is_some_and(|pair| pair.standing.is_some()),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        assert!(client.deletes().is_empty(), "{:?}", client.deletes());
+        assert!(client.walks().is_empty(), "no pass ran on it");
+    }
+
+    #[test]
+    fn a_pair_prepared_again_over_a_replacement_with_content_withholds_its_deletions() {
+        // S6 + S3: the same promotion over a replacement that has content is accepted, and its
+        // first pass withholds every deletion it plans.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) =
+            steady_events_pair_with(directory.path(), Vec::new(), |config| {
+                config.delete_approval_remote = false;
+            });
+        let root = daemon.pair_config(0).local_root.clone();
+        let lockfile = daemon.pair_config(0).lockfile_path.clone();
+        daemon.demote_pair(0, "its metrics file could not be written".to_owned());
+        let held = LockGuard::acquire(&lockfile).expect("another process takes the lock");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(daemon.unavailable(0).is_some());
+
+        replace_directory(&root, &[("b.txt", b"b")]);
+        drop(held);
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(
+            daemon.runtime(0).is_some(),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        assert!(client.deletes().is_empty(), "{:?}", client.deletes());
+        assert_eq!(pending_paths(&daemon, 0), [PathBuf::from("a.txt")]);
+        assert_eq!(uploads_of(&client, "b.txt"), 1);
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Fourth review of #432 (V1 to V6). The rule is unchanged: a sync folder replaced or emptied
+    // while the daemon runs never makes the daemon delete files (remote or local), upload a
+    // swapped-in folder's content, or populate the folder from Proton without an explicit user
+    // action. Each test failed at 1451c90 for the reason its comment names, except the three that
+    // need a seam this round adds (said in each).
+    // ---------------------------------------------------------------------------------------
+
+    /// [`steady_events_pair_with`] with `b.txt` in step beside `a.txt`, the remote tree then
+    /// emptied, and `0-new.txt` written locally: the next full walk plans `Upload 0-new.txt`,
+    /// `LocalDelete a.txt`, `LocalDelete b.txt`, in that order.
+    fn pair_about_to_delete_two_files_after_an_upload(
+        directory: &Path,
+    ) -> (Daemon<MultiRootClient>, MultiRootClient, Stepper) {
+        let (daemon, client, stepper) = steady_events_pair_with(directory, Vec::new(), |config| {
+            fs::write(config.local_root.join("b.txt"), b"b").expect("a second file");
+        });
+        let root = daemon.pair_config(0).local_root.clone();
+        let remote_root = daemon.pair_config(0).remote_root.clone();
+        assert_eq!(
+            uploads_of(&client, "b.txt"),
+            1,
+            "precondition: b.txt is in step"
+        );
+        let _ = client.clone().with_tree(&remote_root, Vec::new());
+        fs::write(root.join("0-new.txt"), b"new").expect("a file to upload first");
+        daemon.shared.pairs[0]
+            .force_full_walk
+            .store(true, Ordering::SeqCst);
+        (daemon, client, stepper)
+    }
+
+    #[test]
+    fn a_folder_swapped_between_two_actions_has_nothing_disposed_in_it() {
+        // V1. The identity was checked before the executor's loop and before every download
+        // chunk, and every other arm ran on whatever directory was at the path by then. The plan
+        // is right — `a.txt` and `b.txt` were deleted remotely, so delete them locally — and the
+        // folder is swapped during the upload ordered before them: the `LocalDelete` arm disposed
+        // of the replacement's own `a.txt` and `b.txt` (for good in `permanent` mode, a whole
+        // subtree for a directory), and the pass ended unavailable only at the final check. The
+        // root is checked at the top of every action now.
+        let directory = tempdir().expect("tempdir");
+        let _hook = crate::trash::test_hook::install_fake_trash(directory.path().join("trash"));
+        let (mut daemon, client, mut stepper) =
+            pair_about_to_delete_two_files_after_an_upload(directory.path());
+        let root = daemon.pair_config(0).local_root.clone();
+        let swapped = root.clone();
+        *client.on_upload.lock().expect("hook lock") = Some(Box::new(move |_| {
+            replace_directory(
+                &swapped,
+                &[
+                    ("a.txt", b"the replacement's own"),
+                    ("b.txt", b"the replacement's own"),
+                ],
+            );
+        }));
+
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(
+            crate::trash::test_hook::calls().is_empty(),
+            "disposed of the replacement's files: {:?}",
+            crate::trash::test_hook::calls()
+        );
+        for name in ["a.txt", "b.txt"] {
+            assert_eq!(
+                fs::read(root.join(name)).unwrap_or_default(),
+                b"the replacement's own",
+                "{name}: a plan for another directory ran on this one"
+            );
+        }
+        assert!(
+            published_error(&daemon, 0).is_some_and(|error| error.contains("is not available")),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        assert_eq!(
+            uploads_of(&client, "0-new.txt"),
+            1,
+            "the action before it landed"
+        );
+        let runtime = daemon.runtime(0).expect("not demoted");
+        for name in ["0-new.txt", "a.txt", "b.txt"] {
+            assert!(
+                get_record(&runtime.connection, Path::new(name))
+                    .expect("index read")
+                    .is_some(),
+                "{name}: the checkpoint that landed stays and nothing was purged"
+            );
+        }
+    }
+
+    #[test]
+    fn a_folder_swapped_between_two_actions_uploads_nothing_from_it() {
+        // V1, the `Upload` arm. The second upload read its bytes from the path at execution time
+        // — the replacement's file — and recorded the scan's digest for it: the swapped-in
+        // folder's content went to Proton under the planned path, as the user's own.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) =
+            steady_events_pair(directory.path(), vec![no_changes_page("cursor-1")]);
+        let root = daemon.pair_config(0).local_root.clone();
+        fs::write(root.join("0-new.txt"), b"new").expect("the first upload");
+        fs::write(root.join("1-other.txt"), b"other").expect("the second upload");
+        daemon.runtime_mut(0).expect("ready").force_local_rescan = true;
+        let swapped = root.clone();
+        let once = Arc::new(AtomicBool::new(true));
+        let armed = Arc::clone(&once);
+        *client.on_upload.lock().expect("hook lock") = Some(Box::new(move |_| {
+            if armed.swap(false, Ordering::SeqCst) {
+                replace_directory(
+                    &swapped,
+                    &[
+                        ("a.txt", b"a"),
+                        ("0-new.txt", b"new"),
+                        ("1-other.txt", b"the replacement's own"),
+                    ],
+                );
+            }
+        }));
+
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(!once.load(Ordering::SeqCst), "the swap happened");
+        assert_eq!(
+            uploads_of(&client, "0-new.txt"),
+            1,
+            "the action before it landed"
+        );
+        assert_eq!(
+            uploads_of(&client, "1-other.txt"),
+            0,
+            "the replacement's bytes were uploaded as the user's own"
+        );
+        assert!(
+            published_error(&daemon, 0).is_some_and(|error| error.contains("is not available")),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        let runtime = daemon.runtime(0).expect("not demoted");
+        assert!(
+            get_record(&runtime.connection, Path::new("1-other.txt"))
+                .expect("index read")
+                .is_none(),
+            "nothing was recorded for it"
+        );
+        assert_eq!(
+            stored_cursor(&daemon, 0, "vola"),
+            "cursor-0",
+            "the cursor is held"
+        );
+    }
+
+    #[test]
+    fn a_plan_on_a_replaced_folder_is_refused_and_publishes_no_rows() {
+        // V2. `examine_ready_pair` runs on `Sync` jobs only, and the plan verb asked whether a
+        // directory was there, not which one: a plan on a ready pair whose folder was replaced
+        // scanned the replacement and published `RemoteDelete a.txt` for review — rows the plan
+        // screen's typed-DELETE gate pins approvals to, which stand after the replacement is
+        // judged. The plan is refused in the sync's words, and nothing is stored.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) =
+            steady_events_pair_with(directory.path(), Vec::new(), |config| {
+                config.delete_approval_remote = false;
+            });
+        let root = daemon.pair_config(0).local_root.clone();
+        replace_directory(&root, &[]);
+
+        daemon.shared.pairs[0].book_plan_request();
+        stepper.send(LoopCommand::PlanNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        match daemon.shared.pairs[0].plan_outcome(None) {
+            PlanOutcome::Failed { error, .. } => {
+                assert!(
+                    error.contains("is not available")
+                        && error.contains("not the folder this pair was running on"),
+                    "{error}"
+                );
+            }
+            other => panic!("the plan is refused, got {other:?}"),
+        }
+        assert!(
+            daemon.shared.pairs[0].plan_slot().stored.is_none(),
+            "a plan of the replacement was published for review"
+        );
+        assert!(client.walks().is_empty(), "and the remote was never listed");
+        assert!(daemon.runtime(0).is_some(), "a plan demotes nothing");
+        assert!(client.deletes().is_empty());
+
+        // The next sync judges the replacement: empty over a baseline that records items, held.
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(
+            daemon
+                .unavailable(0)
+                .is_some_and(|pair| pair.standing.is_some()),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+    }
+
+    /// One events-driven pair `a` over `directory`, built the same way every time: what a daemon
+    /// restarted over the same config and index looks like. `remote` is the tree Proton holds at
+    /// that moment — the fake keeps no upload across a rebuild, so the caller says what landed.
+    fn restartable_pair(
+        directory: &Path,
+        remote: Vec<RemoteEntity>,
+    ) -> (Daemon<MultiRootClient>, MultiRootClient, Stepper) {
+        let mut configs = pair_configs(directory, &["a"]);
+        configs[0].events_driven = true;
+        configs[0].delete_approval_remote = false;
+        let client = MultiRootClient::default().with_tree(&configs[0].remote_root, remote);
+        let mut daemon = multi_pair_daemon(
+            configs,
+            client.clone(),
+            Some(Box::new(FakeEventSource::with_pages(
+                "cursor-0",
+                Vec::new(),
+            ))),
+        );
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        client.clear_walks();
+        (daemon, client, stepper)
+    }
+
+    #[test]
+    fn the_forced_approval_after_a_replacement_outlives_a_restart() {
+        // V3. The force was in memory only: a restart over an accepted replacement, with the
+        // guard off, executed the deletion the previous daemon had withheld — through the GUI's
+        // own restart-daemon flow, say. It is persisted in the pair's index now, beside the
+        // warm-start counter, and loaded when the pair is opened.
+        let directory = tempdir().expect("tempdir");
+        let root = directory.path().join("a").join("local");
+        fs::create_dir_all(&root).expect("local root");
+        fs::write(root.join("a.txt"), b"a").expect("local file");
+        let a = remote_file_entity("a.txt", "vola~na", &sha1_bytes(b"a"));
+        let b = remote_file_entity("b.txt", "vola~nb", &sha1_bytes(b"b"));
+        let (mut daemon, client, mut stepper) = restartable_pair(directory.path(), vec![a.clone()]);
+        replace_directory(&root, &[("b.txt", b"b")]);
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(
+            daemon.runtime(0).is_some(),
+            "precondition: accepted; {:?}",
+            published_error(&daemon, 0)
+        );
+        assert_eq!(pending_paths(&daemon, 0), [PathBuf::from("a.txt")]);
+        assert!(client.deletes().is_empty(), "{:?}", client.deletes());
+        assert_eq!(
+            uploads_of(&client, "b.txt"),
+            1,
+            "so Proton holds b.txt from here on"
+        );
+        drop(stepper);
+        drop(daemon);
+
+        let (mut daemon, client, mut stepper) =
+            restartable_pair(directory.path(), vec![a.clone(), b.clone()]);
+
+        assert!(
+            client.deletes().is_empty(),
+            "the restart spent the forced approval: {:?}",
+            client.deletes()
+        );
+        assert_eq!(
+            pending_paths(&daemon, 0),
+            [PathBuf::from("a.txt")],
+            "still withheld, whatever the policy says"
+        );
+        assert!(
+            daemon.runtime(0).expect("ready").force_delete_approval,
+            "loaded from the index"
+        );
+
+        // Approved, it runs; and the force is spent by that pass, across a restart too.
+        daemon
+            .apply_approval_command(Some("a.txt"), true)
+            .expect("approved");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(client.deletes(), [PathBuf::from("/Drive/a/a.txt")]);
+        assert!(!daemon.runtime(0).expect("ready").force_delete_approval);
+        drop(stepper);
+        drop(daemon);
+        // Read off the disk, before any boot pass can spend a force it loaded: an idle pass
+        // withholds nothing, so it would clear the in-memory flag and hide a row left standing.
+        let index = open_database(&directory.path().join("a").join("sync_index.db"))
+            .expect("the index outlives the daemon");
+        assert!(
+            !load_forced_delete_approval(&index).expect("read"),
+            "the pass that spent the force did not clear it on disk"
+        );
+        drop(index);
+        let (daemon, _client, _stepper) = restartable_pair(directory.path(), vec![b]);
+        assert!(
+            !daemon.runtime(0).expect("ready").force_delete_approval,
+            "a spent force stays spent"
+        );
+    }
+
+    #[test]
+    fn a_pair_whose_state_went_with_its_folder_is_held_if_the_folder_is_emptied_before_it_is_prepared_again()
+     {
+        // V5. With the default layout the demotion dropped the connection that held the only
+        // baseline, so a promotion over an empty replacement had nothing to judge it against: the
+        // retry made `.sync` and a fresh index in the empty folder, the examination read "nothing
+        // recorded", the replacement was accepted, and the bootstrap downloaded the whole remote
+        // into it. The count the baseline recorded is read before the connection is dropped,
+        // carried, and judged before anything is prepared.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) = state_inside_root_pair(directory.path());
+        let root = daemon.pair_config(0).local_root.clone();
+        let lockfile = daemon.pair_config(0).lockfile_path.clone();
+        // State removed with content: the pair is demoted and the same-job retry prepares it
+        // again — unless another process holds the lock the retry needs.
+        replace_directory(&root, &[("b.txt", b"b")]);
+        fs::create_dir_all(lockfile.parent().expect("a directory")).expect("the other's .sync");
+        let held = LockGuard::acquire(&lockfile).expect("another process takes the lock");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(
+            published_error(&daemon, 0)
+                .is_some_and(|reason| reason.contains("locked by another process")),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+
+        // While it waits, the folder is replaced by an empty one; then the lock is free.
+        replace_directory(&root, &[]);
+        drop(held);
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(
+            daemon
+                .unavailable(0)
+                .is_some_and(|pair| pair.standing.is_some()),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        assert!(
+            published_error(&daemon, 0).is_some_and(|reason| reason.contains("1 synced item")),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        assert!(
+            !root.join(".sync").exists(),
+            "the retry prepared the pair in the empty replacement"
+        );
+        assert_eq!(
+            fs::read_dir(&root).expect("the folder").count(),
+            0,
+            "something was created in it"
+        );
+        assert!(
+            client.downloads().is_empty(),
+            "the whole remote was downloaded into it: {:?}",
+            client.downloads()
+        );
+        assert!(client.walks().is_empty(), "no pass ran on it");
+        assert!(client.deletes().is_empty());
+    }
+
+    #[test]
+    fn a_plan_is_refused_when_the_folder_is_swapped_during_its_scan() {
+        // V2, after the scan: a sync checks the root right after its local scan, so the plan does
+        // too, inside the one body both share. Driven through the scan observer, the only hook a
+        // plan's scan has: the swap lands on the first file it reports, before that file is read,
+        // so the walk skips the vanished entry and finishes over the replacement. Needs the
+        // `expected` seam this round adds to `build_plan_report`, so it has no run at 1451c90; it
+        // fails under the revert of the post-scan check.
+        let directory = tempdir().expect("tempdir");
+        let (daemon, client, _stepper) =
+            steady_events_pair_with(directory.path(), Vec::new(), |_| {});
+        let root = daemon.pair_config(0).local_root.clone();
+        let runtime = daemon.runtime(0).expect("ready");
+        let expected = runtime.known_root.expected().expect("recorded at open");
+        let base_records = load_index(&runtime.connection).expect("baseline");
+        let swapped = std::cell::Cell::new(false);
+        let observer = |_: u64, _: &Path| {
+            if !swapped.replace(true) {
+                replace_directory(&root, &[]);
+            }
+        };
+
+        let error = build_plan_report(
+            &runtime.config,
+            Some(expected),
+            &client,
+            &runtime.scan_options,
+            base_records,
+            Some(&observer),
+            |_phase| {},
+        )
+        .expect_err("a plan of the replacement was computed");
+
+        assert!(swapped.get(), "the swap never happened");
+        assert!(
+            error
+                .to_string()
+                .contains("not the folder this pair was running on"),
+            "{error}"
+        );
+        assert!(
+            client.walks().is_empty(),
+            "the remote was listed after scanning another directory"
+        );
+    }
+
+    #[test]
+    fn preparing_a_pair_never_makes_a_folder_that_vanished_after_its_look() {
+        // V4. `prepare_pair_state` looked at the folder and then made `<root>/.sync` with
+        // `create_dir_all`, which made the root too when it vanished between the two — reached on
+        // every retry, mid-life. The state directories are made below the folder the look found,
+        // the way the executor makes its directories. Driven through the seam this round adds, so
+        // it has no run at 1451c90; it fails under the revert to `create_dir_all`.
+        let directory = tempdir().expect("tempdir");
+        let mut configs = pair_configs(directory.path(), &["a"]);
+        state_inside_root(&mut configs[0]);
+        let (_, config) = configs.remove(0).into_parts();
+        let root = config.local_root.clone();
+        assert!(
+            root.is_dir(),
+            "precondition: the folder is there at the look"
+        );
+
+        let vanishing = root.clone();
+        let failure = prepare_pair_state_after(&config, RootMode::MustExist, || {
+            fs::remove_dir_all(&vanishing).expect("the drive goes");
+        })
+        .err()
+        .expect("nothing to prepare the pair in");
+        assert!(
+            !root.exists(),
+            "the preparation made the folder again: {}",
+            failure.reason()
+        );
+
+        // The lock makes no directory either: a lockfile whose directory is gone is a failure,
+        // not a directory.
+        let orphan = directory.path().join("gone").join("daemon.lock");
+        assert!(LockGuard::acquire(&orphan).is_err());
+        assert!(
+            !orphan.parent().expect("a parent").exists(),
+            "the lock made its directory"
+        );
+
+        // Boot still creates the folder, and the state directories below it, as it always did.
+        prepare_pair_state(&config, RootMode::Create).expect("boot creates it");
+        assert!(root.join(".sync").is_dir());
+    }
+
+    #[test]
+    fn open_does_not_trust_a_folder_identity_the_filesystem_gives_differently_on_each_look() {
+        // V6. `known_root` came from one `stat` while the index got two: on a filesystem that
+        // names the folder differently on each look, every job was a replacement — forced approval
+        // every pass, and with the guard off every deletion withheld for ever, with nothing saying
+        // so. The index's two-look rule applies to the root: two different answers are no identity
+        // at all, said once. Needs the root-look seam this round adds to `open_looking`, so it has
+        // no run at 1451c90; it fails under the revert to one look.
+        let directory = tempdir().expect("tempdir");
+        let config = {
+            let daemon = multi_pair_daemon(
+                pair_configs(directory.path(), &["a"]),
+                MultiRootClient::default(),
+                None,
+            );
+            daemon.pair_config(0).clone()
+        };
+        let open = |look_root: &dyn Fn(&Path) -> Look<RootIdentity>| {
+            let lock = prepare_pair_state(&config, RootMode::MustExist).expect("prepared");
+            PairRuntime::open_looking(config.clone(), lock, &FileIdentity::look, look_root)
+        };
+
+        let calls = std::cell::Cell::new(0u64);
+        let flapping = |_: &Path| {
+            calls.set(calls.get() + 1);
+            Look::Present(RootIdentity {
+                device: 1,
+                inode: calls.get(),
+                born: None,
+            })
+        };
+        let log = capture_log("warn", || {
+            let runtime = open(&flapping).expect("it opens");
+            assert_eq!(calls.get(), 2, "two looks");
+            assert_eq!(
+                runtime.known_root,
+                RootRecord::PresenceOnly,
+                "two different answers are no identity: only presence is checked"
+            );
+        });
+        assert_eq!(
+            log.matches("names the folder differently on each look")
+                .count(),
+            1,
+            "said once, at open: {log}"
+        );
+
+        let stable = |_: &Path| {
+            Look::Present(RootIdentity {
+                device: 1,
+                inode: 7,
+                born: None,
+            })
+        };
+        let runtime = open(&stable).expect("it opens");
+        assert_eq!(
+            runtime.known_root,
+            RootRecord::Recorded(RootIdentity {
+                device: 1,
+                inode: 7,
+                born: None
+            })
+        );
+        drop(runtime);
+
+        let unreadable = |_: &Path| Look::Unreadable(std::io::ErrorKind::PermissionDenied.into());
+        assert_eq!(
+            open(&unreadable).expect("it opens").known_root,
+            RootRecord::Unrecorded,
+            "a look that failed is recorded by the first examination that can see the folder"
+        );
+    }
+
+    #[test]
+    fn a_folder_the_filesystem_cannot_name_consistently_keeps_the_configured_policy() {
+        // V6 at the pair: a root recorded as presence-only is never "replaced" — not recorded by
+        // the examination either, which would make the next job compare — so nothing is held or
+        // forced for it and the configured policy applies as it is: with the guard off, the
+        // deletion runs. That is what the warning at open says. The state's own presence is still
+        // checked (`a_default_layout_folder_replaced_by_an_empty_one_is_held_and_nothing_is_created`
+        // covers the index that went with the folder).
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) =
+            steady_events_pair_with(directory.path(), Vec::new(), |config| {
+                config.delete_approval_remote = false;
+            });
+        let root = daemon.pair_config(0).local_root.clone();
+        // As two looks that disagreed at open leave it.
+        daemon.runtime_mut(0).expect("ready").known_root = RootRecord::PresenceOnly;
+        replace_directory(&root, &[("b.txt", b"b")]);
+
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert_eq!(published_error(&daemon, 0), None);
+        let runtime = daemon.runtime(0).expect("not demoted, not held");
+        assert_eq!(
+            runtime.known_root,
+            RootRecord::PresenceOnly,
+            "never recorded, so never a replacement"
+        );
+        assert!(!runtime.force_delete_approval, "no replacement, no force");
+        assert!(pending_paths(&daemon, 0).is_empty());
+        assert_eq!(
+            client.deletes(),
+            [PathBuf::from("/Drive/a/a.txt")],
+            "the configured policy applied: guard off, so the deletion ran"
+        );
+        assert_eq!(uploads_of(&client, "b.txt"), 1);
+    }
+
+    #[test]
+    fn a_plan_on_a_folder_nobody_could_judge_is_refused_before_it_scans() {
+        // V2, the half the post-scan check cannot cover: a folder that could not be judged this
+        // job (`PairRuntime::unjudged`) IS the directory at the path, so a check after the scan
+        // against `known_root` finds nothing wrong with it — only the sync's own verdict, read
+        // before the scan, refuses it. Pinned so that removing the pre-scan verdict alone is
+        // caught; the swap tests are caught by the post-scan check.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) =
+            steady_events_pair_with(directory.path(), Vec::new(), |_| {});
+        daemon.runtime_mut(0).expect("ready").unjudged =
+            Some("the baseline could not be read".to_owned());
+
+        daemon.shared.pairs[0].book_plan_request();
+        stepper.send(LoopCommand::PlanNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        match daemon.shared.pairs[0].plan_outcome(None) {
+            PlanOutcome::Failed { error, .. } => {
+                assert!(
+                    error.contains("is not available") && error.contains("could not be read"),
+                    "{error}"
+                );
+            }
+            other => panic!("the plan is refused, got {other:?}"),
+        }
+        assert!(daemon.shared.pairs[0].plan_slot().stored.is_none());
+        assert!(client.walks().is_empty(), "the remote was listed");
+    }
+
+    #[test]
+    fn a_carried_count_stands_in_for_a_fresh_index_in_the_examination() {
+        // V5 at the examination: the index a promotion opened in the folder records nothing, and
+        // the count the dropped baseline recorded is what an empty folder would be the deletion
+        // of. Pinned here because the judgement before the preparation masks this one at the
+        // daemon.
+        let directory = tempdir().expect("tempdir");
+        let mut daemon = multi_pair_daemon(
+            pair_configs(directory.path(), &["a"]),
+            MultiRootClient::default(),
+            None,
+        );
+        let runtime = daemon.runtime_mut(0).expect("ready");
+        assert_eq!(
+            runtime.recorded_under_an_empty_folder(),
+            Recorded::Nothing,
+            "precondition: an empty folder over a fresh index"
+        );
+        runtime.carried_recorded_items = CarriedCount::Items(3);
+        assert_eq!(
+            runtime.recorded_under_an_empty_folder(),
+            Recorded::Items(3),
+            "the carried count is what the empty folder would delete"
+        );
+        fs::write(runtime.config.local_root.join("f.txt"), b"f").expect("content");
+        assert_eq!(
+            runtime.recorded_under_an_empty_folder(),
+            Recorded::Nothing,
+            "content is content, carried count or not"
+        );
+    }
+
+    #[test]
+    fn a_promoted_pair_replaced_again_by_an_empty_folder_before_its_first_pass_completes_is_held() {
+        // V5, the count carried onto the promoted runtime. A plain promotion over a replacement
+        // with content is accepted and its first pass bootstraps over a fresh index; when that
+        // pass fails to complete and the folder is then replaced by an empty one, the fresh index
+        // records nothing and the carried count is the only thing that says the empty folder is
+        // the deletion of everything — without it the replacement was accepted and the next pass
+        // downloaded the whole remote into it.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) = state_inside_root_pair(directory.path());
+        let root = daemon.pair_config(0).local_root.clone();
+        let remote_root = daemon.pair_config(0).remote_root.clone();
+        let lockfile = daemon.pair_config(0).lockfile_path.clone();
+        replace_directory(&root, &[("b.txt", b"b")]);
+        fs::create_dir_all(lockfile.parent().expect("a directory")).expect("the other's .sync");
+        let held = LockGuard::acquire(&lockfile).expect("another process takes the lock");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(daemon.unavailable(0).is_some(), "precondition: locked");
+
+        // The lock is free; the promotion is accepted (content) and its first pass fails on the
+        // listing, so no pass completes on the fresh index.
+        drop(held);
+        client
+            .fail_walk_once
+            .lock()
+            .expect("fail lock")
+            .insert(remote_root);
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(
+            daemon.runtime(0).is_some()
+                && published_error(&daemon, 0).is_some_and(|error| error.contains("list failed")),
+            "precondition: accepted, and the first pass failed: {:?}",
+            published_error(&daemon, 0)
+        );
+
+        replace_directory(&root, &[]);
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(
+            daemon
+                .unavailable(0)
+                .is_some_and(|pair| pair.standing.is_some()),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        assert!(
+            published_error(&daemon, 0).is_some_and(|reason| reason.contains("1 synced item")),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        assert!(
+            client.downloads().is_empty(),
+            "the whole remote was downloaded into it: {:?}",
+            client.downloads()
+        );
+        assert!(client.deletes().is_empty());
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Fifth review of #432 (ADR 0005, the 4b note, item 15). The rule is unchanged: a sync folder
+    // replaced or emptied while the daemon runs never makes the daemon delete files, upload a
+    // swapped-in folder's content, or populate the folder from Proton without an explicit user
+    // action. The tests of V1, V2 and V4 failed at 9176496 for the reason each comment names; the
+    // ones of V3 pin what already held and were found by poisoning it, said in each.
+    // ---------------------------------------------------------------------------------------
+
+    /// One events-driven pair `a`, past boot, with `directories` and `files` in step on both sides
+    /// (the remote tree holds exactly those). [`steady_events_pair_with`] holds `a.txt` alone; this
+    /// is the one for a test that needs a directory the pair already tracks, or a second file.
+    fn steady_pair_over_tree(
+        directory: &Path,
+        directories: &[&str],
+        files: &[(&str, &[u8])],
+        pages: Vec<VolumeEventPage>,
+        tune: impl FnOnce(&mut DaemonConfig),
+    ) -> (Daemon<MultiRootClient>, MultiRootClient, Stepper) {
+        let mut configs = pair_configs(directory, &["a"]);
+        configs[0].events_driven = true;
+        tune(&mut configs[0]);
+        let root = configs[0].local_root.clone();
+        let mut tree = Vec::new();
+        for name in directories {
+            fs::create_dir_all(root.join(name)).expect("a directory");
+            tree.push(remote_dir(
+                name,
+                &format!("vola~d{}", name.replace('/', "_")),
+            ));
+        }
+        for (name, contents) in files {
+            let file = root.join(name);
+            fs::create_dir_all(file.parent().expect("a parent")).expect("its directory");
+            fs::write(&file, contents).expect("a file");
+            tree.push(remote_file_entity(
+                name,
+                &format!("vola~n{}", name.replace('/', "_")),
+                &sha1_bytes(contents),
+            ));
+        }
+        let client = MultiRootClient::default().with_tree(&configs[0].remote_root, tree);
+        let mut daemon = multi_pair_daemon(
+            configs,
+            client.clone(),
+            Some(Box::new(FakeEventSource::with_pages("cursor-0", pages))),
+        );
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        assert!(
+            load_event_cursor(&daemon.runtime(0).expect("ready").connection, "vola")
+                .expect("cursor read")
+                .is_some(),
+            "precondition: `a` streams from here on"
+        );
+        client.clear_walks();
+        (daemon, client, stepper)
+    }
+
+    /// Runs `a.txt`'s pair to a held demotion: its state removed in place (the folder keeps its
+    /// content), the same-job retry failing on a lock another process holds. Returns the held lock.
+    fn pair_demoted_for_its_state_with_the_retry_failing(
+        daemon: &mut Daemon<MultiRootClient>,
+        stepper: &mut Stepper,
+        change_folder: impl FnOnce(&Path),
+    ) -> LockGuard {
+        let root = daemon.pair_config(0).local_root.clone();
+        let lockfile = daemon.pair_config(0).lockfile_path.clone();
+        change_folder(&root);
+        fs::create_dir_all(lockfile.parent().expect("a directory")).expect("the other's .sync");
+        let held = LockGuard::acquire(&lockfile).expect("another process takes the lock");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(daemon), Step::Idle);
+        assert!(
+            published_error(daemon, 0)
+                .is_some_and(|reason| reason.contains("locked by another process")),
+            "precondition: demoted, and the retry failed on the lock: {:?}",
+            published_error(daemon, 0)
+        );
+        held
+    }
+
+    #[test]
+    fn a_folder_emptied_in_place_after_a_failed_retry_is_held_not_repopulated() {
+        // C1. The state was removed in place (the folder kept its content), the pair was demoted
+        // and the same-job retry failed on a held lock. The user then empties the folder IN PLACE:
+        // same directory, so the promotion's judgement answered "proceed" (it asked whether the
+        // directory was a different one), prepared `.sync` and a fresh index in the emptied
+        // folder, read "nothing recorded", and the bootstrap downloaded the whole remote into it.
+        // The judgement asks only whether the folder holds nothing over a baseline that recorded
+        // items.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) = state_inside_root_pair(directory.path());
+        let held =
+            pair_demoted_for_its_state_with_the_retry_failing(&mut daemon, &mut stepper, |root| {
+                fs::remove_dir_all(root.join(".sync")).expect("state removed in place")
+            });
+        let root = daemon.pair_config(0).local_root.clone();
+
+        fs::remove_file(root.join("a.txt")).expect("the user empties the folder in place");
+        drop(held);
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(
+            daemon
+                .unavailable(0)
+                .is_some_and(|pair| pair.standing.is_some()),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        assert!(
+            published_error(&daemon, 0).is_some_and(|reason| reason.contains("1 synced item")),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        assert!(
+            !root.join(".sync").join("sync_index.db").exists(),
+            "the retry prepared the pair in the emptied folder"
+        );
+        assert!(
+            client.downloads().is_empty(),
+            "the whole remote was downloaded into the emptied folder: {:?}",
+            client.downloads()
+        );
+        assert!(client.walks().is_empty(), "no pass ran on it");
+        assert!(client.deletes().is_empty());
+    }
+
+    #[test]
+    fn a_baseline_that_could_not_be_counted_holds_an_empty_replacement() {
+        // C2. The count the demotion carries could not be read (the baseline was unreadable when
+        // the connection was about to be dropped), and an unknown count was filtered out as if it
+        // were zero: the judgement was skipped, the pair was prepared in an empty replacement and
+        // the bootstrap downloaded the whole remote into it. Every other unreadable input in the
+        // path fails closed; an unreadable count is "assume items".
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) = state_inside_root_pair(directory.path());
+        daemon
+            .runtime_mut(0)
+            .expect("ready")
+            .connection
+            .execute_batch("ALTER TABLE file_index RENAME TO file_index_unreadable;")
+            .expect("the baseline can no longer be read");
+        let held =
+            pair_demoted_for_its_state_with_the_retry_failing(&mut daemon, &mut stepper, |root| {
+                replace_directory(root, &[("b.txt", b"b")])
+            });
+        let root = daemon.pair_config(0).local_root.clone();
+
+        replace_directory(&root, &[]);
+        drop(held);
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(
+            daemon
+                .unavailable(0)
+                .is_some_and(|pair| pair.standing.is_some()),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        let reason = published_error(&daemon, 0).unwrap_or_default();
+        assert!(
+            reason.contains("could not be counted") && reason.contains("reset-index"),
+            "{reason}"
+        );
+        assert!(
+            !root.join(".sync").exists(),
+            "the retry prepared the pair in the empty replacement"
+        );
+        assert!(
+            client.downloads().is_empty(),
+            "the whole remote was downloaded into it: {:?}",
+            client.downloads()
+        );
+        assert!(client.walks().is_empty(), "no pass ran on it");
+    }
+
+    #[test]
+    fn a_presence_only_pair_demoted_for_its_state_is_held_when_replaced_by_an_empty_folder() {
+        // C3. The judgement ran for a pair that had recorded an identity and for no other, though
+        // "nothing in the folder over a baseline that recorded items" needs no identity at all. A
+        // pair whose folder the filesystem cannot name consistently (`PresenceOnly`) was demoted
+        // for its state, its retry failed, and the folder was replaced by an empty one: it was
+        // prepared there and populated. The control in the test below it is the same pair, ready,
+        // and was held already.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) = state_inside_root_pair(directory.path());
+        daemon.runtime_mut(0).expect("ready").known_root = RootRecord::PresenceOnly;
+        let held =
+            pair_demoted_for_its_state_with_the_retry_failing(&mut daemon, &mut stepper, |root| {
+                replace_directory(root, &[("b.txt", b"b")])
+            });
+        let root = daemon.pair_config(0).local_root.clone();
+
+        replace_directory(&root, &[]);
+        drop(held);
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(
+            daemon
+                .unavailable(0)
+                .is_some_and(|pair| pair.standing.is_some()),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        assert!(
+            client.downloads().is_empty(),
+            "the whole remote was downloaded into the empty replacement: {:?}",
+            client.downloads()
+        );
+        assert!(client.walks().is_empty(), "no pass ran on it");
+    }
+
+    #[test]
+    fn a_ready_presence_only_pair_emptied_together_with_its_state_is_held() {
+        // C3's control: the same pair, never demoted, is judged by the examination of a ready
+        // pair, which needs no identity either.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) = state_inside_root_pair(directory.path());
+        let root = daemon.pair_config(0).local_root.clone();
+        daemon.runtime_mut(0).expect("ready").known_root = RootRecord::PresenceOnly;
+        fs::remove_dir_all(root.join(".sync")).expect("state removed in place");
+        fs::remove_file(root.join("a.txt")).expect("emptied in place");
+
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(
+            daemon
+                .unavailable(0)
+                .is_some_and(|pair| pair.standing.is_some()),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        assert!(client.downloads().is_empty());
+    }
+
+    #[test]
+    fn a_folder_swapped_while_an_upload_makes_its_remote_directory_uploads_nothing_from_it() {
+        // V2. The top-of-action check came before `ensure_directory`, a CLI child that takes about
+        // a second, and the upload that follows reads the file at the path when its own child
+        // starts. A folder swapped inside that second had the replacement's bytes uploaded under
+        // the planned path. The root is looked at again immediately before the upload.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) = steady_pair_over_tree(
+            directory.path(),
+            &["sub"],
+            &[("sub/old.txt", b"old")],
+            vec![no_changes_page("cursor-1")],
+            |_| {},
+        );
+        let root = daemon.pair_config(0).local_root.clone();
+        fs::write(root.join("sub/new.txt"), b"new").expect("a new file below a tracked directory");
+        daemon.runtime_mut(0).expect("ready").force_local_rescan = true;
+        let swapped = root.clone();
+        *client.on_ensure_directory.lock().expect("hook lock") = Some(Box::new(move |_| {
+            replace_directory(
+                &swapped,
+                &[
+                    ("sub/old.txt", b"old"),
+                    ("sub/new.txt", b"the replacement's own"),
+                ],
+            );
+        }));
+
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert_eq!(
+            client.directories(),
+            [(
+                daemon.pair_config(0).remote_root.clone(),
+                PathBuf::from("sub")
+            )],
+            "precondition: the swap landed inside the upload's directory call"
+        );
+        assert_eq!(
+            uploads_of(&client, "sub/new.txt"),
+            0,
+            "the replacement's bytes were uploaded as the user's own"
+        );
+        assert!(
+            published_error(&daemon, 0).is_some_and(|error| error.contains("is not available")),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        let runtime = daemon.runtime(0).expect("not demoted");
+        assert!(
+            get_record(&runtime.connection, Path::new("sub/new.txt"))
+                .expect("index read")
+                .is_none(),
+            "nothing was recorded for it"
+        );
+        assert_eq!(
+            stored_cursor(&daemon, 0, "vola"),
+            "cursor-0",
+            "the cursor is held"
+        );
+    }
+
+    #[test]
+    fn a_folder_swapped_while_a_move_makes_its_remote_directory_moves_nothing() {
+        // V2, the other arm with a CLI child between its first look and its side effect: a
+        // `MoveRemote` ensures the destination's remote parent, and the rename that follows is
+        // recorded against the scan of a folder that is no longer there.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) = steady_pair_over_tree(
+            directory.path(),
+            &["sub"],
+            &[("a.txt", b"a")],
+            vec![no_changes_page("cursor-1")],
+            |_| {},
+        );
+        let root = daemon.pair_config(0).local_root.clone();
+        fs::rename(root.join("a.txt"), root.join("sub/a.txt")).expect("the user moves a.txt");
+        daemon.runtime_mut(0).expect("ready").force_local_rescan = true;
+        let swapped = root.clone();
+        *client.on_ensure_directory.lock().expect("hook lock") = Some(Box::new(move |_| {
+            replace_directory(&swapped, &[("sub/a.txt", b"the replacement's own")]);
+        }));
+
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert_eq!(
+            client.directories().len(),
+            1,
+            "precondition: the swap landed inside the move's directory call: {:?}",
+            client.directories()
+        );
+        assert!(
+            client.moves().is_empty(),
+            "the remote file was moved on the strength of a folder that was swapped: {:?}",
+            client.moves()
+        );
+        assert!(
+            published_error(&daemon, 0).is_some_and(|error| error.contains("is not available")),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        assert!(
+            get_record(
+                &daemon.runtime(0).expect("not demoted").connection,
+                Path::new("sub/a.txt")
+            )
+            .expect("index read")
+            .is_none(),
+            "nothing was recorded for the destination"
+        );
+    }
+
+    #[test]
+    fn a_look_that_fails_mid_pass_keeps_the_adoptions_made_before_it() {
+        // V4. A look at the folder that fails with something other than "not found" (`EIO` or
+        // `ESTALE` on a network mount) ends the pass `RootUnavailable`, and the index-only work the
+        // loop had accumulated since its last checkpoint — a first sync's adoptions are all
+        // index-only, so that is all of it — was discarded with it: a large adoption on a flaky
+        // mount started over from the scan every time. It is committed first, as the checkpoint
+        // it would have been carried by: those records were derived from the scan the post-scan
+        // identity check validated.
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a"]);
+        let root = configs[0].local_root.clone();
+        let mut tree = Vec::new();
+        for index in 0..100 {
+            let name = format!("f{index:03}.txt");
+            fs::write(root.join(&name), b"x").expect("a local file");
+            tree.push(remote_file_entity(
+                &name,
+                &format!("vola~n{index}"),
+                &sha1_bytes(b"x"),
+            ));
+        }
+        let client = MultiRootClient::default().with_tree(&configs[0].remote_root, tree);
+        // Armed once the remote listing has run, so the fault lands among the executor's looks.
+        *client.on_walk.lock().expect("hook lock") = Some(Box::new(|_| {
+            test_root_look_fault::arm(50);
+        }));
+        let mut daemon = multi_pair_daemon(configs, client.clone(), None);
+        let mut stepper = Stepper::new(&mut daemon);
+
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+
+        assert!(
+            published_error(&daemon, 0)
+                .is_some_and(|error| error.contains("is not available")
+                    && error.contains("Input/output error")),
+            "precondition: the pass ended on the failed look: {:?}",
+            published_error(&daemon, 0)
+        );
+        let adopted = load_index(&daemon.runtime(0).expect("not demoted").connection)
+            .expect("baseline")
+            .len();
+        assert!(
+            (40..100).contains(&adopted),
+            "the adoptions before the failed look are durable: {adopted} of 100"
+        );
+
+        // The next job finishes the adoption from where it stopped: nothing moves in either
+        // direction, and every record is there.
+        *client.on_walk.lock().expect("hook lock") = None;
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(published_error(&daemon, 0), None);
+        assert_eq!(
+            load_index(&daemon.runtime(0).expect("ready").connection)
+                .expect("baseline")
+                .len(),
+            100
+        );
+        assert!(client.uploads().is_empty(), "{:?}", client.uploads());
+        assert!(client.downloads().is_empty(), "{:?}", client.downloads());
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Fifth review of #432, V3: the guards poison-testing found nothing pinning. Each of these
+    // passed at 9176496 and fails under the single-line mutation its comment names.
+    // ---------------------------------------------------------------------------------------
+
+    /// The files under `root` (relative path to contents), directories left out.
+    fn files_under(root: &Path) -> BTreeMap<String, Vec<u8>> {
+        fn walk(root: &Path, directory: &Path, found: &mut BTreeMap<String, Vec<u8>>) {
+            for entry in fs::read_dir(directory).expect("a readable directory") {
+                let path = entry.expect("an entry").path();
+                if path.is_dir() {
+                    walk(root, &path, found);
+                } else {
+                    let relative = path.strip_prefix(root).expect("below the root");
+                    found.insert(
+                        relative.to_string_lossy().into_owned(),
+                        fs::read(&path).expect("a readable file"),
+                    );
+                }
+            }
+        }
+        let mut found = BTreeMap::new();
+        walk(root, root, &mut found);
+        found
+    }
+
+    /// The client call whose first occurrence carries the swap in [`a_swap_before_an_arm_runs_nothing_of_it`].
+    #[derive(Clone, Copy)]
+    enum Carrier {
+        /// The first upload (`0-new.txt`, written by the case).
+        Upload,
+        /// The first remote move.
+        Move,
+    }
+
+    /// One row of the table: a pair with `directories` and `files` in step, the case's own
+    /// arrangement on top, and a folder swapped for `replacement` while the **first** action of the
+    /// plan runs. Whatever the plan ordered after it must then do nothing — and `held_to` says what
+    /// "nothing" means for the arm under test beyond the folder being exactly what the replacement
+    /// was.
+    #[allow(clippy::too_many_arguments)]
+    fn swap_before_an_arm(
+        arm: &str,
+        directories: &[&str],
+        files: &[(&str, &[u8])],
+        tune: impl FnOnce(&mut DaemonConfig),
+        arrange: impl FnOnce(&Path, &MultiRootClient, &Path),
+        carrier: Carrier,
+        planned: impl FnOnce(&PlanSummary) -> bool,
+        replacement: &[(&str, &[u8])],
+        held_to: impl FnOnce(&MultiRootClient, &Path),
+    ) {
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) = steady_pair_over_tree(
+            directory.path(),
+            directories,
+            files,
+            vec![no_changes_page("cursor-1")],
+            tune,
+        );
+        let root = daemon.pair_config(0).local_root.clone();
+        let remote_root = daemon.pair_config(0).remote_root.clone();
+        arrange(&root, &client, &remote_root);
+        daemon.shared.pairs[0]
+            .force_full_walk
+            .store(true, Ordering::SeqCst);
+        let swapped = Arc::new(AtomicBool::new(false));
+        let owned: Vec<(String, Vec<u8>)> = replacement
+            .iter()
+            .map(|(name, contents)| ((*name).to_owned(), contents.to_vec()))
+            .collect();
+        let hook: WalkHook = {
+            let root = root.clone();
+            let swapped = Arc::clone(&swapped);
+            Box::new(move |_| {
+                if !swapped.swap(true, Ordering::SeqCst) {
+                    let files: Vec<(&str, &[u8])> = owned
+                        .iter()
+                        .map(|(name, contents)| (name.as_str(), contents.as_slice()))
+                        .collect();
+                    replace_directory(&root, &files);
+                }
+            })
+        };
+        match carrier {
+            Carrier::Upload => *client.on_upload.lock().expect("hook lock") = Some(hook),
+            Carrier::Move => *client.on_rename.lock().expect("hook lock") = Some(hook),
+        }
+
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "{arm}");
+
+        assert!(
+            swapped.load(Ordering::SeqCst),
+            "{arm}: the swap never happened"
+        );
+        let plan = daemon
+            .runtime(0)
+            .and_then(|runtime| runtime.last_plan_summary.clone())
+            .expect("a plan was made");
+        assert!(
+            planned(&plan),
+            "{arm}: the plan is not the one the row is about: {plan:?}"
+        );
+        assert!(
+            published_error(&daemon, 0).is_some_and(|error| error.contains("is not available")),
+            "{arm}: the pass ends unavailable: {:?}",
+            published_error(&daemon, 0)
+        );
+        assert_eq!(
+            files_under(&root),
+            replacement
+                .iter()
+                .map(|(name, contents)| ((*name).to_owned(), contents.to_vec()))
+                .collect::<BTreeMap<_, _>>(),
+            "{arm}: something ran on the replacement"
+        );
+        held_to(&client, &root);
+    }
+
+    /// A tracked file's remote entity, with the id [`steady_pair_over_tree`] gives it.
+    fn tracked_file(name: &str, contents: &[u8]) -> RemoteEntity {
+        remote_file_entity(
+            name,
+            &format!("vola~n{}", name.replace('/', "_")),
+            &sha1_bytes(contents),
+        )
+    }
+
+    #[test]
+    fn a_swap_before_an_arm_runs_nothing_of_it() {
+        // M30. The root is looked at at the top of every action, for every arm. The two V1 tests
+        // drove two arms (`Upload`, `LocalDelete`), and removing the look from every other arm
+        // left the suite green: the arms without a look of their own — `RemoteDelete`,
+        // `CreateRemoteDirectory`, `MoveRemote` — were pinned by nothing, and the rest are
+        // protected by their directory primitive today and by nothing the day that changes. One
+        // row per remaining side-effecting arm (`Upload` and `LocalDelete` are the V1 tests' own;
+        // `AutoLink`, `Purge` and `SkipUnsupported` are index-only and have nothing to guard): a
+        // folder swapped during the first action, and the arm that follows must leave the
+        // replacement exactly as it was.
+        let own: &[(&str, &[u8])] = &[("a.txt", b"the replacement's own")];
+        let sidecar_free = |client: &MultiRootClient, _: &Path| {
+            assert!(client.downloads().is_empty(), "{:?}", client.downloads());
+        };
+        // Every row runs, so a mutation that blinds several arms names all of them, not the first.
+        let mut failed: Vec<&str> = Vec::new();
+        let mut row = |arm: &'static str, run: &dyn Fn()| {
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)).is_err() {
+                failed.push(arm);
+            }
+        };
+
+        // `Download`: one remote file the folder does not have.
+        row("Download", &|| {
+            swap_before_an_arm(
+                "Download",
+                &[],
+                &[("a.txt", b"a")],
+                |_| {},
+                |root, client, remote_root| {
+                    fs::write(root.join("0-new.txt"), b"new").expect("the first upload");
+                    let _ = client.clone().with_tree(
+                        remote_root,
+                        vec![tracked_file("a.txt", b"a"), tracked_file("z.txt", b"z")],
+                    );
+                },
+                Carrier::Upload,
+                |plan| plan.uploads == 1 && plan.downloads == 1,
+                own,
+                sidecar_free,
+            );
+        });
+
+        // A batched download: two consecutive downloads are one chunked run.
+        row("a batched download", &|| {
+            swap_before_an_arm(
+                "a batched download",
+                &[],
+                &[("a.txt", b"a")],
+                |_| {},
+                |root, client, remote_root| {
+                    fs::write(root.join("0-new.txt"), b"new").expect("the first upload");
+                    let _ = client.clone().with_tree(
+                        remote_root,
+                        vec![
+                            tracked_file("a.txt", b"a"),
+                            tracked_file("z1.txt", b"1"),
+                            tracked_file("z2.txt", b"2"),
+                        ],
+                    );
+                },
+                Carrier::Upload,
+                |plan| plan.uploads == 1 && plan.downloads == 2,
+                own,
+                sidecar_free,
+            );
+        });
+
+        // `CreateLocalDirectory`: a remote directory the folder does not have.
+        row("CreateLocalDirectory", &|| {
+            swap_before_an_arm(
+                "CreateLocalDirectory",
+                &[],
+                &[("a.txt", b"a")],
+                |_| {},
+                |root, client, remote_root| {
+                    fs::write(root.join("0-new.txt"), b"new").expect("the first upload");
+                    let _ = client.clone().with_tree(
+                        remote_root,
+                        vec![tracked_file("a.txt", b"a"), remote_dir("z-dir", "volz~dir")],
+                    );
+                },
+                Carrier::Upload,
+                |plan| plan.uploads == 1 && plan.local_directories_created == 1,
+                own,
+                |_, root| {
+                    assert!(
+                        !root.join("z-dir").exists(),
+                        "a directory was made in the replacement"
+                    );
+                },
+            );
+        });
+
+        // `Conflict`: both sides changed `a.txt`, so the remote revision is downloaded as a sidecar.
+        row("Conflict", &|| {
+            swap_before_an_arm(
+                "Conflict",
+                &[],
+                &[("a.txt", b"a")],
+                |_| {},
+                |root, client, remote_root| {
+                    fs::write(root.join("0-new.txt"), b"new").expect("the first upload");
+                    fs::write(root.join("a.txt"), b"a, edited here").expect("a local edit");
+                    let _ = client
+                        .clone()
+                        .with_tree(remote_root, vec![tracked_file("a.txt", b"a, edited there")]);
+                },
+                Carrier::Upload,
+                |plan| plan.uploads == 1 && plan.conflicts == 1,
+                own,
+                sidecar_free,
+            );
+        });
+
+        // `TypeConflict`: a local directory against a remote file of the same name, whose content
+        // is kept as a sidecar beside it.
+        row("TypeConflict", &|| {
+            swap_before_an_arm(
+                "TypeConflict",
+                &[],
+                &[("a.txt", b"a")],
+                |_| {},
+                |root, client, remote_root| {
+                    fs::write(root.join("0-new.txt"), b"new").expect("the first upload");
+                    fs::create_dir(root.join("z-clash")).expect("a local directory");
+                    let _ = client.clone().with_tree(
+                        remote_root,
+                        vec![tracked_file("a.txt", b"a"), tracked_file("z-clash", b"x")],
+                    );
+                },
+                Carrier::Upload,
+                |plan| plan.uploads == 1 && plan.type_conflicts == 1,
+                own,
+                sidecar_free,
+            );
+        });
+
+        // `RemoteDelete`, with the guard off: the user deleted `a.txt` here.
+        row("RemoteDelete", &|| {
+            swap_before_an_arm(
+                "RemoteDelete",
+                &[],
+                &[("a.txt", b"a")],
+                |config| config.delete_approval_remote = false,
+                |root, _, _| {
+                    fs::write(root.join("0-new.txt"), b"new").expect("the first upload");
+                    fs::remove_file(root.join("a.txt")).expect("the user deletes a.txt");
+                },
+                Carrier::Upload,
+                |plan| plan.uploads == 1 && plan.remote_deletes == 1,
+                &[("b.txt", b"the replacement's own")],
+                |client, _| {
+                    assert!(
+                        client.deletes().is_empty(),
+                        "the remote file was deleted on the strength of a swapped folder: {:?}",
+                        client.deletes()
+                    );
+                },
+            );
+        });
+
+        // `CreateRemoteDirectory`: a directory the user made.
+        row("CreateRemoteDirectory", &|| {
+            swap_before_an_arm(
+                "CreateRemoteDirectory",
+                &[],
+                &[("a.txt", b"a")],
+                |_| {},
+                |root, _, _| {
+                    fs::write(root.join("0-new.txt"), b"new").expect("the first upload");
+                    fs::create_dir(root.join("z-dir")).expect("the user makes a directory");
+                },
+                Carrier::Upload,
+                |plan| plan.uploads == 1 && plan.remote_directories_created == 1,
+                own,
+                |client, _| {
+                    assert!(
+                        client.directories().is_empty(),
+                        "a remote directory was made for a swapped folder: {:?}",
+                        client.directories()
+                    );
+                },
+            );
+        });
+
+        // `MoveRemote`: the user renamed two files; the swap lands in the first move.
+        row("MoveRemote", &|| {
+            swap_before_an_arm(
+                "MoveRemote",
+                &[],
+                &[("a.txt", b"a"), ("b.txt", b"b")],
+                |_| {},
+                |root, _, _| {
+                    fs::rename(root.join("a.txt"), root.join("a-renamed.txt")).expect("a rename");
+                    fs::rename(root.join("b.txt"), root.join("b-renamed.txt")).expect("a rename");
+                },
+                Carrier::Move,
+                |plan| plan.remote_moves == 2,
+                &[("b.txt", b"the replacement's own")],
+                |client, _| {
+                    assert_eq!(
+                        client.moves(),
+                        [(PathBuf::from("a.txt"), PathBuf::from("a-renamed.txt"))],
+                        "the second move ran on the strength of a swapped folder"
+                    );
+                },
+            );
+        });
+
+        // `MoveLocal`: the user renamed `a.txt` here and `b.txt` was renamed on Proton; the swap
+        // lands in the first (remote) move, and the local rename that follows must not touch the
+        // replacement's own `b.txt`.
+        row("MoveLocal", &|| {
+            swap_before_an_arm(
+                "MoveLocal",
+                &[],
+                &[("a.txt", b"a"), ("b.txt", b"b")],
+                |_| {},
+                |root, client, remote_root| {
+                    fs::rename(root.join("a.txt"), root.join("a-renamed.txt")).expect("a rename");
+                    let _ = client.clone().with_tree(
+                        remote_root,
+                        vec![
+                            tracked_file("a.txt", b"a"),
+                            remote_file_entity("b-renamed.txt", "vola~nb.txt", &sha1_bytes(b"b")),
+                        ],
+                    );
+                },
+                Carrier::Move,
+                |plan| plan.remote_moves == 1 && plan.local_moves == 1,
+                &[("b.txt", b"the replacement's own")],
+                |client, _| {
+                    assert_eq!(client.moves().len(), 1, "{:?}", client.moves());
+                },
+            );
+        });
+        assert!(
+            failed.is_empty(),
+            "arms that ran something on a swapped folder: {failed:?}"
+        );
+    }
+
+    #[test]
+    fn a_baseline_that_recorded_nothing_is_not_held_when_the_folder_is_replaced_by_an_empty_one() {
+        // M37. A promotion judges a folder only over a baseline that recorded something: `0`
+        // items is a pair that had nothing to lose, and holding it would strand a first sync
+        // whose folder was legitimately empty behind a hold only `reset-index` releases.
+        let directory = tempdir().expect("tempdir");
+        let mut configs = pair_configs(directory.path(), &["a"]);
+        state_inside_root(&mut configs[0]);
+        let client = MultiRootClient::default();
+        let mut daemon = multi_pair_daemon(configs, client.clone(), None);
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        let root = daemon.pair_config(0).local_root.clone();
+        assert_eq!(
+            daemon.runtime(0).expect("ready").recorded_items_to_carry(),
+            CarriedCount::Items(0),
+            "precondition: nothing is recorded"
+        );
+
+        replace_directory(&root, &[]);
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(
+            daemon.runtime(0).is_some(),
+            "held over a baseline that recorded nothing: {:?}",
+            published_error(&daemon, 0)
+        );
+        assert_eq!(published_error(&daemon, 0), None);
+    }
+
+    #[test]
+    fn a_count_that_cannot_be_read_is_carried_as_unknown_and_never_as_nothing() {
+        // C2's other half, at the function that makes the count: a baseline that cannot be read
+        // is `Unreadable` unless a positive count is already known, and a known one is never
+        // lowered by it.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, _client, _stepper) = state_inside_root_pair(directory.path());
+        let runtime = daemon.runtime_mut(0).expect("ready");
+        assert_eq!(runtime.recorded_items_to_carry(), CarriedCount::Items(1));
+        runtime.carried_recorded_items = CarriedCount::Items(4);
+        assert_eq!(
+            runtime.recorded_items_to_carry(),
+            CarriedCount::Items(4),
+            "the larger of the baseline and what it carried"
+        );
+        runtime.carried_recorded_items = CarriedCount::Unreadable;
+        assert_eq!(
+            runtime.recorded_items_to_carry(),
+            CarriedCount::Items(1),
+            "a positive count is known whatever the carried one was"
+        );
+        // F-1: what the last pass knew in memory counts beside the database's, so a baseline the
+        // default layout lost with its folder cannot read as smaller than the pass that planned.
+        runtime.carried_recorded_items = CarriedCount::Absent;
+        runtime.items_known_in_memory = 7;
+        assert_eq!(
+            runtime.recorded_items_to_carry(),
+            CarriedCount::Items(7),
+            "the greater of the database and the pass's own figure"
+        );
+        runtime.items_known_in_memory = 0;
+
+        runtime
+            .connection
+            .execute_batch("ALTER TABLE file_index RENAME TO file_index_unreadable;")
+            .expect("the baseline can no longer be read");
+        runtime.carried_recorded_items = CarriedCount::Absent;
+        assert_eq!(runtime.recorded_items_to_carry(), CarriedCount::Unreadable);
+        runtime.carried_recorded_items = CarriedCount::Items(0);
+        assert_eq!(
+            runtime.recorded_items_to_carry(),
+            CarriedCount::Unreadable,
+            "a carried zero says nothing about a baseline nobody can read"
+        );
+        runtime.carried_recorded_items = CarriedCount::Items(4);
+        assert_eq!(runtime.recorded_items_to_carry(), CarriedCount::Items(4));
+        runtime.carried_recorded_items = CarriedCount::Unreadable;
+        assert_eq!(runtime.recorded_items_to_carry(), CarriedCount::Unreadable);
+        // The in-memory figure does not turn an unreadable database into a count: that stays
+        // unknown, as before.
+        runtime.carried_recorded_items = CarriedCount::Absent;
+        runtime.items_known_in_memory = 7;
+        assert_eq!(runtime.recorded_items_to_carry(), CarriedCount::Unreadable);
+    }
+
+    #[test]
+    fn a_promoted_pair_whose_open_found_no_stable_identity_keeps_that_record() {
+        // M5. A promotion hands the pair the identity it last ran on, unless this open found the
+        // folder cannot be named consistently: that is the fresher judgement, and overwriting it
+        // with the carried identity read every later job as a replacement (forced approval at every
+        // pass), the pathology the two-look rule exists to end. Driven through the root-look
+        // seam, because no directory on a local filesystem answers differently twice.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, _client, mut stepper) = state_inside_root_pair(directory.path());
+        let held =
+            pair_demoted_for_its_state_with_the_retry_failing(&mut daemon, &mut stepper, |root| {
+                replace_directory(root, &[("b.txt", b"b")])
+            });
+        let looks = std::cell::Cell::new(0u64);
+        test_open_root_look::install(Box::new(move |_| {
+            looks.set(looks.get() + 1);
+            Look::Present(RootIdentity {
+                device: 1,
+                inode: looks.get(),
+                born: None,
+            })
+        }));
+
+        drop(held);
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        let runtime = daemon.runtime(0).expect("promoted");
+        assert_eq!(
+            runtime.known_root,
+            RootRecord::PresenceOnly,
+            "the carried identity overwrote the fresher judgement"
+        );
+        assert!(
+            !runtime.force_delete_approval,
+            "a pair with no identity to compare is never forced"
+        );
+    }
+
+    #[test]
+    fn a_promotion_over_a_folder_nobody_can_look_at_prepares_nothing_and_says_why() {
+        // M9. The judgement's first fail-closed arm: the look at the folder failed with something
+        // other than "not found". The preparation would fail on the same look, so nothing
+        // observable changed except the reason — which is the point: the pair is not prepared on a
+        // folder nobody could judge, and it says so in the judgement's words.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) = state_inside_root_pair(directory.path());
+        let held =
+            pair_demoted_for_its_state_with_the_retry_failing(&mut daemon, &mut stepper, |root| {
+                replace_directory(root, &[("b.txt", b"b")])
+            });
+        let root = daemon.pair_config(0).local_root.clone();
+        let parent = root.parent().expect("a parent").to_path_buf();
+        let Some(unreadable) = Unreadable::new(&parent, &root) else {
+            return;
+        };
+
+        drop(held);
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        drop(unreadable);
+
+        let reason = published_error(&daemon, 0).unwrap_or_default();
+        assert!(
+            reason.contains("could not be judged") && reason.contains("could not be established"),
+            "{reason}"
+        );
+        assert!(
+            daemon
+                .unavailable(0)
+                .is_some_and(|pair| pair.standing.is_none()),
+            "a look that failed holds nothing for ever"
+        );
+        assert!(client.walks().is_empty());
+    }
+
+    #[test]
+    fn a_promotion_over_a_folder_nobody_can_search_prepares_nothing_and_says_why() {
+        // M10. The second arm: the folder is there and cannot be read, which is not evidence it is
+        // empty.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) = state_inside_root_pair(directory.path());
+        let held =
+            pair_demoted_for_its_state_with_the_retry_failing(&mut daemon, &mut stepper, |root| {
+                replace_directory(root, &[("b.txt", b"b")])
+            });
+        let root = daemon.pair_config(0).local_root.clone();
+        let Some(unreadable) = Unreadable::new(&root, &root.join("b.txt")) else {
+            return;
+        };
+
+        drop(held);
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        drop(unreadable);
+
+        let reason = published_error(&daemon, 0).unwrap_or_default();
+        assert!(
+            reason.contains("could not be judged") && reason.contains("could not be searched"),
+            "{reason}"
+        );
+        assert!(
+            daemon
+                .unavailable(0)
+                .is_some_and(|pair| pair.standing.is_none())
+        );
+        assert!(client.walks().is_empty());
+    }
+
+    #[test]
+    fn a_promotion_whose_rules_cannot_be_built_prepares_nothing_and_says_why() {
+        // M9/M10's sibling: the third arm. Rules that cannot be built are no evidence that the
+        // folder holds nothing the pair would keep.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) = state_inside_root_pair(directory.path());
+        let held =
+            pair_demoted_for_its_state_with_the_retry_failing(&mut daemon, &mut stepper, |root| {
+                replace_directory(root, &[("b.txt", b"b")])
+            });
+        daemon
+            .unavailable_mut(0)
+            .expect("demoted")
+            .config
+            .exclude_patterns = vec!["[".to_owned()];
+
+        drop(held);
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        let reason = published_error(&daemon, 0).unwrap_or_default();
+        assert!(
+            reason.contains("could not be judged") && reason.contains("rules could not be built"),
+            "{reason}"
+        );
+        assert!(client.walks().is_empty());
+    }
+
+    #[test]
+    fn a_forced_approval_that_cannot_be_read_withholds_deletions_for_the_pass() {
+        // M13. The record of the force is read when the pair is opened, and a read that fails
+        // fails closed: a restart over a damaged record must not be the one thing that spends a
+        // force the previous daemon owed. Here the user deleted the file while the daemon was
+        // down, the guard is off, and the record turned unreadable.
+        let directory = tempdir().expect("tempdir");
+        let root = directory.path().join("a").join("local");
+        fs::create_dir_all(&root).expect("local root");
+        fs::write(root.join("a.txt"), b"a").expect("local file");
+        let a = remote_file_entity("a.txt", "vola~na", &sha1_bytes(b"a"));
+        let (daemon, _client, stepper) = restartable_pair(directory.path(), vec![a.clone()]);
+        drop(stepper);
+        drop(daemon);
+        fs::remove_file(root.join("a.txt")).expect("the user deletes it while the daemon is down");
+        let index = open_database(&directory.path().join("a").join("sync_index.db"))
+            .expect("the index outlives the daemon");
+        index
+            .execute_batch(
+                "DROP TABLE forced_delete_approval;
+                 CREATE TABLE forced_delete_approval (id INTEGER PRIMARY KEY, unrelated INTEGER);",
+            )
+            .expect("the record turns unreadable");
+        assert!(load_forced_delete_approval(&index).is_err(), "precondition");
+        drop(index);
+
+        let (daemon, client, _stepper) = restartable_pair(directory.path(), vec![a]);
+
+        assert!(
+            client.deletes().is_empty(),
+            "a record that could not be read spent the force: {:?}",
+            client.deletes()
+        );
+        assert_eq!(pending_paths(&daemon, 0), [PathBuf::from("a.txt")]);
+    }
+
+    #[test]
+    fn a_carried_count_is_spent_by_the_pass_that_completes_on_its_runtime() {
+        // M7. After a pass completes on the promoted runtime its own baseline is the real one,
+        // and the count the demotion carried has nothing left to stand in for. Left standing it
+        // held a later empty replacement over a baseline that legitimately recorded nothing.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, _client, mut stepper) = state_inside_root_pair(directory.path());
+        let held =
+            pair_demoted_for_its_state_with_the_retry_failing(&mut daemon, &mut stepper, |root| {
+                replace_directory(root, &[("b.txt", b"b")])
+            });
+        let root = daemon.pair_config(0).local_root.clone();
+        drop(held);
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(
+            daemon.runtime(0).is_some() && published_error(&daemon, 0).is_none(),
+            "precondition: promoted, and its first pass completed: {:?}",
+            published_error(&daemon, 0)
+        );
+        // A pass that plans something notes what it knew (the idle fast-path never reaches the
+        // executor), and completing spends it.
+        fs::write(root.join("fresh.txt"), b"fresh").expect("a new file to upload");
+        daemon.runtime_mut(0).expect("ready").force_local_rescan = true;
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(
+            published_error(&daemon, 0).is_none() && daemon.runtime(0).is_some(),
+            "precondition: the pass that planned an upload completed: {:?}",
+            published_error(&daemon, 0)
+        );
+        assert_eq!(
+            daemon.runtime(0).expect("ready").items_known_in_memory,
+            0,
+            "the figure the pass planned with is spent when the pass completes"
+        );
+        // Everything that was recorded is gone from both sides, as a tree emptied by its owner
+        // looks to the baseline once the passes have followed.
+        daemon
+            .runtime(0)
+            .expect("ready")
+            .connection
+            .execute_batch("DELETE FROM file_index;")
+            .expect("an empty baseline");
+
+        replace_directory(&root, &[]);
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(
+            daemon.runtime(0).is_some(),
+            "a count carried from before a completed pass held an empty replacement: {:?}",
+            published_error(&daemon, 0)
+        );
+        assert_eq!(
+            daemon.runtime(0).expect("ready").carried_recorded_items,
+            CarriedCount::Absent
+        );
+    }
+
+    #[test]
+    fn a_reset_index_discards_the_count_a_demotion_carried_even_when_its_pass_fails() {
+        // M16. A `reset-index` empties the baseline the carried count stood in for, at the moment
+        // it truncates — not at the end of the pass it starts, which may fail on the listing that
+        // follows. A count left standing held a replacement over a baseline the user had just
+        // asked to start over.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) = state_inside_root_pair(directory.path());
+        let remote_root = daemon.pair_config(0).remote_root.clone();
+        let held =
+            pair_demoted_for_its_state_with_the_retry_failing(&mut daemon, &mut stepper, |root| {
+                replace_directory(root, &[("b.txt", b"b")])
+            });
+        let root = daemon.pair_config(0).local_root.clone();
+        // The promotion is accepted and its first pass fails on the listing, so the carried count
+        // is still the only thing that remembers the old baseline.
+        drop(held);
+        client
+            .fail_walk_once
+            .lock()
+            .expect("fail lock")
+            .insert(remote_root.clone());
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(
+            daemon.runtime(0).expect("promoted").carried_recorded_items,
+            CarriedCount::Items(1),
+            "precondition: nothing completed"
+        );
+
+        // The user starts over, and that pass fails on the listing too — after the truncation.
+        // A figure a failed pass had planned with is discarded with the baseline it described.
+        daemon
+            .runtime_mut(0)
+            .expect("promoted")
+            .items_known_in_memory = 5;
+        daemon.shared.pairs[0]
+            .reset_index
+            .store(true, Ordering::SeqCst);
+        client
+            .fail_walk_once
+            .lock()
+            .expect("fail lock")
+            .insert(remote_root);
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(
+            daemon
+                .runtime(0)
+                .expect("still ready")
+                .carried_recorded_items,
+            CarriedCount::Absent,
+            "the reset left a count standing for a baseline it emptied"
+        );
+        assert_eq!(
+            daemon
+                .runtime(0)
+                .expect("still ready")
+                .items_known_in_memory,
+            0,
+            "the reset left the planned figure standing for a baseline it emptied"
+        );
+
+        replace_directory(&root, &[]);
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(
+            daemon.runtime(0).is_some(),
+            "held over a baseline the user had asked to discard: {:?}",
+            published_error(&daemon, 0)
+        );
+    }
+
+    #[test]
+    fn a_force_owed_before_a_demotion_is_owed_after_it_with_the_default_layout() {
+        // M3. With the state inside the folder the index went with the demotion, so the persisted
+        // copy of the force is gone and only the flag the demotion carried can restore it. The
+        // first pass fails on the listing, so nothing has spent it.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) = state_inside_root_pair(directory.path());
+        let root = daemon.pair_config(0).local_root.clone();
+        let remote_root = daemon.pair_config(0).remote_root.clone();
+        daemon
+            .runtime_mut(0)
+            .expect("ready")
+            .force_delete_approval_until_settled();
+        fs::remove_dir_all(root.join(".sync")).expect("state removed in place");
+        client
+            .fail_walk_once
+            .lock()
+            .expect("fail lock")
+            .insert(remote_root);
+
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        let runtime = daemon.runtime(0).expect("prepared again");
+        assert!(
+            runtime.force_delete_approval,
+            "the demotion spent a force the pair was owed"
+        );
+        assert!(
+            load_forced_delete_approval(&runtime.connection).expect("read"),
+            "and the fresh index does not remember it"
+        );
+    }
+
+    /// What one first sync of thirty identical files (and `extra` files only Proton has) did, with
+    /// one look at the folder made to fail ([`test_root_look_fault`]).
+    struct AdoptionPass {
+        /// How many looks the pass made after the remote listing, when it was only counting.
+        looks: u32,
+        /// How many records its baseline holds when the pass is over.
+        adopted: usize,
+        /// The error the pass published.
+        error: Option<String>,
+        /// The destinations a download was attempted for.
+        downloads: Vec<PathBuf>,
+    }
+
+    /// Which look of [`adoption_pass`] fails.
+    enum FailedLook {
+        /// No look fails: the pass runs, and the looks it makes are counted.
+        Counting,
+        /// This many looks after the remote listing pass, and the next one fails.
+        After(u32),
+    }
+
+    fn adoption_pass(extra: &[&str], failed: FailedLook) -> AdoptionPass {
+        let directory = tempdir().expect("tempdir");
+        let mut configs = pair_configs(directory.path(), &["a"]);
+        configs[0].download_batch_size = 25;
+        let root = configs[0].local_root.clone();
+        let mut tree = Vec::new();
+        for index in 0..30 {
+            let name = format!("f{index:02}.txt");
+            fs::write(root.join(&name), b"x").expect("a local file");
+            tree.push(remote_file_entity(
+                &name,
+                &format!("vola~n{index}"),
+                &sha1_bytes(b"x"),
+            ));
+        }
+        for name in extra {
+            tree.push(remote_file_entity(
+                name,
+                &format!("vola~n{name}"),
+                &sha1_bytes(b"y"),
+            ));
+        }
+        let client = MultiRootClient::default().with_tree(&configs[0].remote_root, tree);
+        // Armed once the remote listing has run, so the counting and the fault start among the
+        // executor's looks and both runs of a test agree on where they start.
+        *client.on_walk.lock().expect("hook lock") = Some(match failed {
+            FailedLook::Counting => Box::new(|_| test_root_look_fault::start_counting()),
+            FailedLook::After(looks) => Box::new(move |_| test_root_look_fault::arm(looks)),
+        });
+        let mut daemon = multi_pair_daemon(configs, client.clone(), None);
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        AdoptionPass {
+            looks: test_root_look_fault::stop_counting(),
+            adopted: load_index(&daemon.runtime(0).expect("not demoted").connection)
+                .expect("baseline")
+                .len(),
+            error: published_error(&daemon, 0),
+            downloads: client.downloads(),
+        }
+    }
+
+    #[test]
+    fn every_exit_of_the_loop_for_an_unavailable_folder_keeps_the_adoptions_before_it() {
+        // V4, at each place the executor ends a pass `RootUnavailable`: the look at the top of an
+        // action (the test above), the look inside an arm, the two looks of a batched download run,
+        // and the look after the loop. Each is the pass's Nth look, found by running it once
+        // without a fault and counting; a second run fails exactly that look. The thirty adoptions
+        // are index-only, so nothing but this commit can make them durable.
+        let eio = |pass: &AdoptionPass| {
+            assert!(
+                pass.error.as_deref().is_some_and(|error| {
+                    error.contains("is not available") && error.contains("Input/output error")
+                }),
+                "precondition: the pass ended on the failed look: {:?}",
+                pass.error
+            );
+        };
+
+        // After the loop: the pass did all its work and the folder fails the final look.
+        let whole = adoption_pass(&[], FailedLook::Counting);
+        assert_eq!((whole.adopted, whole.error.clone()), (30, None));
+        let last = adoption_pass(&[], FailedLook::After(whole.looks - 1));
+        eio(&last);
+        assert_eq!(
+            last.adopted, 30,
+            "the check after the loop dropped the adoptions"
+        );
+
+        // Inside an arm: the single download's own directory look is the one before the last.
+        let whole = adoption_pass(&["z.txt"], FailedLook::Counting);
+        assert_eq!((whole.adopted, whole.error.clone()), (31, None));
+        let in_arm = adoption_pass(&["z.txt"], FailedLook::After(whole.looks - 2));
+        eio(&in_arm);
+        assert_eq!(
+            in_arm.adopted, 30,
+            "an arm that met the cause dropped the adoptions"
+        );
+        assert!(in_arm.downloads.is_empty(), "{:?}", in_arm.downloads);
+
+        // Inside a batched run: the group's directory look and the chunk's look.
+        let whole = adoption_pass(&["z1.txt", "z2.txt"], FailedLook::Counting);
+        assert_eq!((whole.adopted, whole.error.clone()), (32, None));
+        for back in [2, 3] {
+            let in_run =
+                adoption_pass(&["z1.txt", "z2.txt"], FailedLook::After(whole.looks - back));
+            eio(&in_run);
+            assert_eq!(
+                in_run.adopted, 30,
+                "a download run that met the cause dropped the adoptions (look {back} from the end)"
+            );
+            assert!(in_run.downloads.is_empty(), "{:?}", in_run.downloads);
+        }
+    }
+
+    #[test]
+    fn a_promoted_pair_whose_baseline_could_not_be_counted_is_held_when_its_folder_is_emptied_before_its_first_pass_completes()
+     {
+        // C2 at the examination, and the way out. The promotion is accepted over a folder with
+        // content (nothing to hold it on), the baseline it carried could not be counted, and the
+        // first pass fails before it completes. The folder is then emptied: the fresh index
+        // records nothing, and "uncounted" is the only thing that says the empty folder is the
+        // deletion of something. It is released the way every hold is — content returns.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) = state_inside_root_pair(directory.path());
+        let remote_root = daemon.pair_config(0).remote_root.clone();
+        daemon
+            .runtime_mut(0)
+            .expect("ready")
+            .connection
+            .execute_batch("ALTER TABLE file_index RENAME TO file_index_unreadable;")
+            .expect("the baseline can no longer be read");
+        let held =
+            pair_demoted_for_its_state_with_the_retry_failing(&mut daemon, &mut stepper, |root| {
+                replace_directory(root, &[("b.txt", b"b")])
+            });
+        let root = daemon.pair_config(0).local_root.clone();
+        drop(held);
+        client
+            .fail_walk_once
+            .lock()
+            .expect("fail lock")
+            .insert(remote_root);
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(
+            daemon
+                .runtime(0)
+                .expect("accepted over content")
+                .carried_recorded_items,
+            CarriedCount::Unreadable,
+            "precondition: promoted, and its first pass failed"
+        );
+
+        let removals_in = |history: &[StatusHistoryEntry]| {
+            history
+                .iter()
+                .filter(|entry| {
+                    entry
+                        .last_error
+                        .as_deref()
+                        .is_some_and(|error| error.contains("its state was removed"))
+                })
+                .count()
+        };
+        let removals_before = removals_in(&daemon.runtime(0).expect("ready").status_history);
+
+        replace_directory(&root, &[]);
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(
+            daemon.unavailable(0).is_some_and(|pair| {
+                pair.standing == Some(StandingCause::ReplacedByEmptyFolderUncounted)
+            }),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        // Held by the examination itself, in one step: the history names the cause that holds the
+        // pair, not a removed state that was only the way it got there (which the retry's own
+        // judgement would reach the same hold through, a step later, and leave in the history).
+        let published = published_error(&daemon, 0).unwrap_or_default();
+        assert!(published.contains("could not be counted"), "{published}");
+        let history = &daemon.unavailable(0).expect("held").status_history;
+        assert_eq!(
+            history.last().and_then(|entry| entry.last_error.clone()),
+            Some(published)
+        );
+        assert_eq!(
+            removals_in(history),
+            removals_before,
+            "the pair was demoted for a removed state first: {history:?}"
+        );
+        assert!(client.downloads().is_empty(), "{:?}", client.downloads());
+
+        fs::write(root.join("c.txt"), b"c").expect("the folder has content again");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(
+            daemon.runtime(0).is_some() && published_error(&daemon, 0).is_none(),
+            "content returning released the hold: {:?}",
+            published_error(&daemon, 0)
+        );
+    }
+
+    // ---- Item 15, F-1: a first sync whose folder is swapped for an empty one, in both layouts ----
+
+    /// A first sync adopts 31 items and plans one upload (its parent already on Proton, so
+    /// `ensure_directory` runs); that call swaps the folder for an EMPTY one. With the state inside
+    /// the folder (the default layout) the index went with it, so the adoptions the pass kept cannot
+    /// land anywhere; with the state outside they land. Returns the daemon, the client and the
+    /// stepper after the pass that met the swap, with the hook removed.
+    fn first_sync_with_an_upload_time_swap(
+        directory: &Path,
+        default_layout: bool,
+    ) -> (Daemon<MultiRootClient>, MultiRootClient, Stepper) {
+        let mut configs = pair_configs(directory, &["a"]);
+        if default_layout {
+            state_inside_root(&mut configs[0]);
+        }
+        let root = configs[0].local_root.clone();
+        let mut tree = vec![remote_dir("sub", "vola~dsub")];
+        for index in 0..30 {
+            let name = format!("f{index:02}.txt");
+            fs::write(root.join(&name), b"x").expect("a local file");
+            tree.push(remote_file_entity(
+                &name,
+                &format!("vola~n{index}"),
+                &sha1_bytes(b"x"),
+            ));
+        }
+        fs::create_dir_all(root.join("sub")).expect("sub");
+        fs::write(root.join("sub/old.txt"), b"old").expect("old");
+        tree.push(remote_file_entity(
+            "sub/old.txt",
+            "vola~nold",
+            &sha1_bytes(b"old"),
+        ));
+        fs::write(root.join("sub/new.txt"), b"new").expect("new, local only");
+        let client = MultiRootClient::default().with_tree(&configs[0].remote_root, tree);
+        let swapped = root.clone();
+        *client.on_ensure_directory.lock().expect("hook lock") = Some(Box::new(move |_| {
+            replace_directory(&swapped, &[]);
+        }));
+        let mut daemon = multi_pair_daemon(configs, client.clone(), None);
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        assert!(
+            published_error(&daemon, 0).is_some_and(|error| error.contains("is not available")),
+            "the upload's look ended the pass: {:?}",
+            published_error(&daemon, 0)
+        );
+        assert!(
+            client.uploads().is_empty(),
+            "nothing uploaded from the empty folder"
+        );
+        *client.on_ensure_directory.lock().expect("hook lock") = None;
+        (daemon, client, stepper)
+    }
+
+    /// What the next job does about the empty replacement: held, and nothing downloaded into it.
+    fn assert_the_empty_replacement_is_held(
+        daemon: &mut Daemon<MultiRootClient>,
+        client: &MultiRootClient,
+        stepper: &mut Stepper,
+    ) -> Option<StandingCause> {
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(daemon), Step::Idle);
+        assert!(
+            client.downloads().is_empty(),
+            "the remote was downloaded into the empty replacement: {} files",
+            client.downloads().len()
+        );
+        let standing = daemon.unavailable(0).map(|pair| pair.standing);
+        assert!(
+            standing.is_some_and(|standing| standing.is_some()),
+            "held: {standing:?} {:?}",
+            published_error(daemon, 0)
+        );
+        standing.flatten()
+    }
+
+    #[test]
+    fn a_first_sync_swapped_for_an_empty_folder_is_held_with_the_state_outside_the_folder() {
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) =
+            first_sync_with_an_upload_time_swap(directory.path(), false);
+        let adopted = load_index(&daemon.runtime(0).expect("not demoted").connection)
+            .expect("baseline")
+            .len();
+        assert!(adopted >= 31, "the adoptions landed: {adopted}");
+        let standing = assert_the_empty_replacement_is_held(&mut daemon, &client, &mut stepper);
+        assert_eq!(
+            standing,
+            Some(StandingCause::ReplacedByEmptyFolder { recorded: adopted })
+        );
+    }
+
+    #[test]
+    fn a_first_sync_swapped_for_an_empty_folder_is_held_with_the_state_inside_the_folder() {
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) =
+            first_sync_with_an_upload_time_swap(directory.path(), true);
+        // The index went with the folder: the adoptions the pass kept have nowhere to land, so the
+        // baseline cannot be what holds the replacement. The count the pass knew in memory is: the
+        // 32 adoptions its plan made (30 files, `sub`, `sub/old.txt` — the last one planned after
+        // the upload that met the swap, so it is counted though it was never accumulated).
+        let standing = assert_the_empty_replacement_is_held(&mut daemon, &client, &mut stepper);
+        assert_eq!(
+            standing,
+            Some(StandingCause::ReplacedByEmptyFolder { recorded: 32 })
+        );
+    }
+
+    #[test]
+    fn a_failed_look_with_the_folder_intact_keeps_a_first_syncs_adoptions_in_the_default_layout() {
+        let directory = tempdir().expect("tempdir");
+        let mut configs = pair_configs(directory.path(), &["a"]);
+        state_inside_root(&mut configs[0]);
+        let root = configs[0].local_root.clone();
+        let mut tree = Vec::new();
+        for index in 0..100 {
+            let name = format!("f{index:03}.txt");
+            fs::write(root.join(&name), b"x").expect("a local file");
+            tree.push(remote_file_entity(
+                &name,
+                &format!("vola~n{index}"),
+                &sha1_bytes(b"x"),
+            ));
+        }
+        let client = MultiRootClient::default().with_tree(&configs[0].remote_root, tree);
+        *client.on_walk.lock().expect("hook lock") = Some(Box::new(|_| {
+            test_root_look_fault::arm(50);
+        }));
+        let mut daemon = multi_pair_daemon(configs, client, None);
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        let adopted = load_index(&daemon.runtime(0).expect("not demoted").connection)
+            .expect("baseline")
+            .len();
+        assert!((40..100).contains(&adopted), "{adopted}");
     }
 }
