@@ -20,6 +20,7 @@ import {
   isDialog,
   nextOnboardingLatch,
   releasesOnboarding,
+  configHasPair,
   entersOnboardingTakeover,
 } from "./routes.js";
 import { el } from "./ui/el.js";
@@ -46,6 +47,7 @@ import {
   unmountDeletions,
   armedItem,
   itemKey,
+  statusKey,
   BULK_KEY,
 } from "./screens/deletions.js";
 import {
@@ -151,6 +153,14 @@ function toggleTheme() {
   document.documentElement.setAttribute("data-theme", next);
   localStorage.setItem("theme", next);
   render();
+}
+
+/**
+ * How many folder pairs the app knows of: the daemon's list or the config file's, whichever is
+ * longer (see `render`). Never reads a state a screen could mistake for "the daemon is down".
+ */
+function pairCountNow() {
+  return Math.max(store.select.pairs().length, configInfo?.pairs?.length ?? 0);
 }
 
 // ---- the status chip ----
@@ -713,6 +723,7 @@ function reportTrayHeight() {
 }
 
 function render() {
+  noticeSelection();
   const root = document.getElementById("app-root");
   // The preview's own pages — the frame index, and the diagnostic for a `?frame=` label that has no
   // fixture. Both take the window: the shell never renders behind them. (The poll still runs — this
@@ -745,6 +756,11 @@ function render() {
   const live = store.select.response()?.config ?? null;
   const localRoot = live?.local_root ?? configInfo?.local_root ?? null;
   const remoteRoot = live?.remote_root ?? configInfo?.remote_root ?? null;
+  // How many folder pairs there are, from the running daemon's list and from the config file's, taking
+  // the larger: either one saying "two" is enough for the takeover to stay shut (E14), and a stopped
+  // daemon has no list at all. Both are zero for a legacy daemon with no `[[pair]]` tables, so the
+  // one-folder app reads zero or one here and nothing below moves.
+  const pairCount = pairCountNow();
 
   // Latched, not a raw read of the daemon state — see routes.js for the whole reason.
   //
@@ -805,9 +821,13 @@ function render() {
         : nextOnboardingLatch(
             onboardingLatch,
             st,
-            Boolean(localRoot && remoteRoot),
+            // The roots the daemon reports or the file's top level, OR a pair the file declares in a
+            // `[[pair]]` table — those roots are in no top-level key, and with the daemon stopped a
+            // check made of the first two alone called that machine fresh (F-J).
+            Boolean(localRoot && remoteRoot) || configHasPair(configInfo),
             configLoaded,
             statusPolled,
+            pairCount,
           );
   // ENTERING the takeover discards three things left behind by whatever ran before it. Hiding them
   // is not enough: the latch releases when the daemon comes up, and anything still held would be
@@ -1453,7 +1473,9 @@ async function ensureConflictPair(conflict) {
   conflictPairInFlight = requested;
   let pair = null;
   try {
-    pair = await api.readConflictPair(conflict);
+    // The pair the conflict was FOUND in, which travels on the conflict (`store` tags every list it
+    // hands out): its paths are relative to that pair's root, and the selection can have moved on.
+    pair = await api.readConflictPair(conflict, { pair: conflict.pair });
   } catch (error) {
     // Not fatal and not a placeholder: the cards fall back to the metadata row alone, which is what
     // `04-conflicts.md` asks for when the content cannot be read. A pair invented here would be a
@@ -1469,7 +1491,7 @@ async function ensureConflictPair(conflict) {
 
 async function chooseConflict(conflict, choice) {
   try {
-    await api.resolveConflict(conflict, choice);
+    await api.resolveConflict(conflict, choice, { pair: conflict.pair });
   } catch (error) {
     console.error("resolve_conflict failed:", error);
     return;
@@ -1483,8 +1505,8 @@ async function chooseConflict(conflict, choice) {
   // adjusting against. Keeping the old length here is what makes the last conflict dead-end.
   let next = store.select.conflicts();
   try {
-    next = await api.scanConflicts();
-    store.setConflicts(next);
+    next = await api.scanConflicts({ pair: conflict.pair });
+    store.setConflicts(next, conflict.pair);
   } catch (error) {
     console.error("scan_conflicts failed:", error);
   }
@@ -1538,7 +1560,9 @@ function conflictsProps() {
     // two forms (`{stem}.proton-cloud.{ext}` and the extensionless `{name}.proton-cloud`) and
     // `gui_core::conflicts` is the one place that knows which this is; deriving it in JS would be a
     // second copy of that rule, which is this project's most-recorded bug shape.
-    onOpenBoth: conflict ? () => runOpener(() => api.openPaths([conflict.original, conflict.sidecar])) : null,
+    onOpenBoth: conflict
+      ? () => runOpener(() => api.openPaths([conflict.original, conflict.sidecar], { pair: conflict.pair }))
+      : null,
     openError: openerError,
     onBack: () => navigate("main"),
     onPrev: () => stepConflict(-1),
@@ -1596,7 +1620,7 @@ function crossfadeConflictBody(nodes, showing) {
  * which is what the daemon pins its own approvals to.
  */
 let deletionArmed = null;
-/** `path_sync_status` replies, by path — the size and mtime a file card draws. */
+/** `path_sync_status` replies, by `statusKey` (pair and path) — the size and mtime a file card draws. */
 const deletionStatuses = new Map();
 const deletionStatusInFlight = new Set();
 /** Item keys with a control command in flight, plus `"all"` for the bulk one. */
@@ -1629,14 +1653,21 @@ const deletionsDecided = new Map();
 function visibleDeletions() {
   const live = store.select.pendingDeletions();
   const queued = new Set(live.map(itemKey));
-  for (const key of deletionsDecided.keys()) if (!queued.has(key)) deletionsDecided.delete(key);
+  // Pruned for THIS pair only: the keys carry their pair, and what the selected queue no longer holds
+  // says nothing about another pair's — a decision recorded there is still waiting for its pass.
+  const mine = `${store.select.pairName()}\u0000`;
+  for (const key of deletionsDecided.keys()) {
+    if (key.startsWith(mine) && !queued.has(key)) deletionsDecided.delete(key);
+  }
   // The size-and-mtime cache is pruned on the same signal, and for a sharper reason: it is keyed by
   // PATH, so a `notes.txt` that is deleted, settled, replaced and deleted again would otherwise draw
   // the first file's `4 KB` and `last edited Jan 2026` on a card about the second. Dropping the
   // entry when the deletion leaves the queue makes the next one ask again — which also gives a read
   // that failed on a busy index a second chance instead of remembering the failure for the session.
-  const paths = new Set(live.map((item) => item.path));
-  for (const path of deletionStatuses.keys()) if (!paths.has(path)) deletionStatuses.delete(path);
+  const statuses = new Set(live.map(statusKey));
+  for (const key of deletionStatuses.keys()) {
+    if (key.startsWith(mine) && !statuses.has(key)) deletionStatuses.delete(key);
+  }
   return live.filter((item) => deletionsDecided.get(itemKey(item)) !== item.fingerprint);
 }
 
@@ -1653,17 +1684,19 @@ function visibleDeletions() {
  */
 async function ensurePathStatus(item) {
   if (item.entity_kind === "directory") return;
-  const path = item.path;
-  if (deletionStatuses.has(path) || deletionStatusInFlight.has(path)) return;
-  deletionStatusInFlight.add(path);
+  // Keyed by pair AND path: two folders can each be about to lose a `notes.txt`, and the size and
+  // mtime of the one are not the other's. The lookup is the pair the ROW belongs to.
+  const key = statusKey(item);
+  if (deletionStatuses.has(key) || deletionStatusInFlight.has(key)) return;
+  deletionStatusInFlight.add(key);
   let status = null;
   try {
-    status = await api.pathSyncStatus(path);
+    status = await api.pathSyncStatus(item.path, { pair: item.pair });
   } catch (error) {
     console.error("path_sync_status failed:", error);
   }
-  deletionStatusInFlight.delete(path);
-  deletionStatuses.set(path, status);
+  deletionStatusInFlight.delete(key);
+  deletionStatuses.set(key, status);
   render();
 }
 
@@ -1690,7 +1723,11 @@ async function decideDeletion(item, approve) {
 
   let settled = false;
   try {
-    const reply = await (approve ? api.approve(item.path) : api.keep(item.path));
+    // THE ROW'S PAIR, not the selected one: the path is relative to that pair's root, and the
+    // selection can move while the round trip is in flight (two webviews, a banner action).
+    const reply = await (approve
+      ? api.approve(item.path, true, null, { pair: item.pair })
+      : api.keep(item.path, true, { pair: item.pair }));
     settled = acknowledged(reply);
   } catch (error) {
     console.error(approve ? "approve failed:" : "keep failed:", error);
@@ -1704,7 +1741,8 @@ async function decideDeletion(item, approve) {
   }
   if (settled && approve) {
     try {
-      await api.syncNow();
+      // And the nudge goes to the pair the approval was for, not to wherever the selection is now.
+      await api.syncNow({ pair: item.pair });
     } catch (error) {
       console.error("sync_now failed:", error);
     }
@@ -1726,6 +1764,9 @@ async function decideDeletion(item, approve) {
 async function keepAllDeletions() {
   const items = store.select.pendingDeletions();
   if (!visibleDeletions().length || deletionBusy.has(BULK_KEY)) return;
+  // One queue, one pair: every item the screen holds was filed under the same one, and `all` means
+  // all of THAT pair's. Captured before the round trip, which is when the selection can move.
+  const pair = items[0].pair;
   deletionBusy.add(BULK_KEY);
   render();
   let settled = false;
@@ -1733,7 +1774,7 @@ async function keepAllDeletions() {
     // `literalPath: false` with the explicit "all" selector. A file literally named `all` is a real
     // path and would otherwise be the only thing kept (#60); the flag is what keeps the reserved
     // word and a filename apart on this wire.
-    const reply = await api.keep(BULK_KEY, false);
+    const reply = await api.keep(BULK_KEY, false, { pair });
     settled = acknowledged(reply);
   } catch (error) {
     console.error("keep all failed:", error);
@@ -1831,6 +1872,14 @@ let planCheckedAt = null;
 let planSeq = 0;
 let planWaiting = null;
 let planAnswered = null;
+/**
+ * THE PAIR THE PLAN IN HAND WAS MADE FOR — and therefore the pair `Run this sync` applies to. A token
+ * is a plan's identity within ONE pair, and the selection can move after the rehearsal (two
+ * webviews, a banner action): an apply that asked "which pair is selected?" when it was pressed
+ * would run A's reviewed deletions against B, where the token is `stale` at best. The plan carries
+ * its pair, set with the answer it describes and cleared with it.
+ */
+let planPair = null;
 
 /** Entering or leaving the screen: no plan, no error, and a rehearsal on its way. */
 function resetPlanScreen() {
@@ -1838,6 +1887,7 @@ function resetPlanScreen() {
   planError = null;
   planCheckedAt = null;
   planAnswered = null;
+  planPair = null;
   planSeq += 1;
 }
 
@@ -1858,10 +1908,12 @@ async function ensurePlan() {
   if (planWaiting !== null || planAnswered === planSeq) return;
   const seq = planSeq;
   planWaiting = seq;
+  // The pair this rehearsal is FOR, captured before it leaves.
+  const pair = store.select.pairName();
   let payload = null;
   let error = null;
   try {
-    payload = await api.runDryRun();
+    payload = await api.runDryRun({ pair });
   } catch (e) {
     // The daemon's own string, verbatim: `14-behaviour-and-state.md` shows it on a failed
     // rehearsal, and voice rule 4 forbids paraphrasing one.
@@ -1878,6 +1930,7 @@ async function ensurePlan() {
   planAnswered = seq;
   if (payload?.report) {
     planDryRun = payload;
+    planPair = pair;
     planError = null;
   } else {
     // A resolved reply that is not a report is not a plan: `run_dry_run` either returns a
@@ -1885,6 +1938,7 @@ async function ensurePlan() {
     // that describes no rehearsal. Treating it as an empty plan would claim the next sync moves
     // nothing, over a screen that has been told nothing.
     planDryRun = null;
+    planPair = null;
     planError = error ?? "the rehearsal returned no plan";
   }
   planCheckedAt = Math.floor(Date.now() / 1000);
@@ -1906,16 +1960,29 @@ async function ensurePlan() {
  * match, which is why a failure here is worth nothing more than a log: the pass withholds that one
  * and it arrives on the Deletions screen.
  */
-async function approvePlannedDeletions(plan) {
+async function approvePlannedDeletions(plan, pair) {
   for (const row of plan) {
     if (!isGated(row.action)) continue;
     const direction = row.action === "remote_delete" ? "remote" : "local";
     try {
-      await api.approve(String(row.path), true, direction);
+      await api.approve(String(row.path), true, direction, { pair });
     } catch (error) {
       console.error("approve failed:", error);
     }
   }
+}
+
+/**
+ * What a press of `Run this sync` commits to, read once: the pair the plan was made for, the token
+ * that names that plan, and its rows. A token is a plan's identity within ONE pair, so the two travel
+ * together from the moment of the press — see `onRun`.
+ */
+function pressedPlan() {
+  return {
+    pair: planPair,
+    token: planDryRun?.token ?? null,
+    rows: planDryRun?.report?.plan ?? [],
+  };
 }
 
 /** Everything the plan screen reads, plus the actions it can take. */
@@ -1973,13 +2040,18 @@ function planProps() {
       // rather than rejects on a dead socket, so a failure here is silent, and the main screen is
       // where both outcomes are legible (syncing hero vs unreachable).
       onRun: async () => {
-        await approvePlannedDeletions(planDryRun?.report?.plan ?? []);
-        await runReviewedPlan(false);
+        // THE PRESS IS THE COMMIT POINT: the plan's pair AND its token are taken once, here. A
+        // selection change while the approvals are being sent resets the plan screen (and with it
+        // `planPair` and the plan in hand), and the apply that follows must still be the one that was
+        // reviewed, for the pair it was reviewed for — the approvals have already gone there.
+        const press = pressedPlan();
+        await approvePlannedDeletions(press.rows, press.pair);
+        await runReviewedPlan(false, press);
       },
       // `Run it without the deletion` (#192). No approvals: the deletions are what is being left
       // out, and approving them here would authorise on the Deletions screen exactly what this
       // button says it is not doing.
-      onRunWithout: () => runReviewedPlan(true),
+      onRunWithout: () => runReviewedPlan(true, pressedPlan()),
     },
   };
 }
@@ -2010,16 +2082,17 @@ function planProgress() {
  * Without a token (the `--dry-run` child path, i.e. onboarding before a daemon exists) there is
  * nothing holding the plan to apply by name, so this falls back to the pre-#100 `syncnow`.
  */
-async function runReviewedPlan(skipDestructive) {
-  const token = planDryRun?.token ?? null;
+async function runReviewedPlan(skipDestructive, { pair, token }) {
   if (!token) {
-    await command(api.syncNow);
+    await command(() => api.syncNow({ pair }));
     navigate("main");
     return;
   }
   let outcome;
   try {
-    outcome = await api.applyPlan(token, skipDestructive);
+    // `pair` is the one the plan was made for — never "the selected pair", which is exactly the
+    // wrong-target apply the token cannot catch: it names a plan within a pair, not a pair.
+    outcome = await api.applyPlan(token, skipDestructive, { pair });
   } catch (error) {
     // A dead socket. Reported where every socket failure is legible.
     console.error("apply failed:", error);
@@ -2105,9 +2178,11 @@ async function runOpener(call) {
 
 /** The three handlers every screen with an opener passes down, plus the reason the last one failed. */
 function openerProps() {
+  // The pair the screen is drawn for, taken as the props are built (see `mainProps`).
+  const pair = store.select.pairName();
   return {
     openError: openerError,
-    onOpenFolder: (path) => runOpener(() => api.openFolder(path)),
+    onOpenFolder: (path) => runOpener(() => api.openFolder(path, { pair })),
     onOpenRemote: () => runOpener(() => api.openRemote()),
     onOpenLog: () => runOpener(() => api.openSystemLog()),
   };
@@ -2115,7 +2190,14 @@ function openerProps() {
 
 /** Everything the main screen reads, plus the actions it can take. */
 function mainProps(localRoot, remoteRoot) {
+  // THE PAIR THIS SCREEN IS DRAWN FOR, captured as the props are built — not read when a button is
+  // pressed. The selection can move between the render and the click (two webviews, a banner action),
+  // and a `Pause` that read it then would pause whichever folder was selected by the time it ran
+  // rather than the one whose hero the person was looking at. The hero's buttons call through the
+  // LATEST props (`main.js`), so this is always the pair on screen.
+  const pair = store.select.pairName();
   return {
+    pairCount: pairCountNow(),
     daemonState: store.select.daemonState(),
     response: store.select.response(),
     conflicts: store.select.conflicts(),
@@ -2127,9 +2209,9 @@ function mainProps(localRoot, remoteRoot) {
     starting: serviceStarting,
     startError: serviceStartError,
     handlers: {
-      onSyncNow: () => command(api.syncNow),
-      onPause: () => command(api.pause),
-      onResume: () => command(api.resume),
+      onSyncNow: () => command(() => api.syncNow({ pair })),
+      onPause: () => command(() => api.pause({ pair })),
+      onResume: () => command(() => api.resume({ pair })),
       onStartService: startService,
       onConflicts: () => navigate("conflicts"),
       onDeletions: () => navigate("deletions"),
@@ -2235,12 +2317,16 @@ async function ensureSkipRules() {
   // genuinely known is what makes "no rules" mean no rules.
   if (skipRuleAsked || !configLoaded) return;
   skipRuleAsked = true;
+  // The pair this walk is for. A switch resets the screen (and `skipRuleAsked` with it), and a walk
+  // that was already running must not land on the pair that replaced it.
+  const pair = store.select.pairName();
   const exclude = configInfo?.exclude ?? [];
   // Nothing excluded is not a reason to walk the tree: the band counts files a RULE hides, and with
   // no rules the answer is known without asking.
   if (exclude.length === 0) return;
   try {
-    skipRuleReport = await api.skipRuleUsage(exclude, configInfo?.include ?? []);
+    const report = await api.skipRuleUsage(exclude, configInfo?.include ?? [], { pair });
+    if (pair === store.select.pairName()) skipRuleReport = report;
   } catch (error) {
     console.error("skip_rule_usage failed:", error);
   }
@@ -2273,6 +2359,9 @@ async function lookupPath(query) {
   // Latest-wins. Typing outruns the round trip, and an early reply landing after a later one would
   // put the verdict for `doc` under the word `docs/spec.md`.
   activityLookupInFlight = typed;
+  // The pair the lookup is ABOUT, captured with it. A switch resets the screen and clears the
+  // in-flight marker, which is what drops a reply that lands afterwards.
+  const lookupFor = store.select.pairName();
   let reply = null;
   let failure = null;
   try {
@@ -2282,7 +2371,7 @@ async function lookupPath(query) {
     // pasted `/home/me/ProtonDrive/docs/spec.md` reached the index as the literal
     // `home/me/ProtonDrive/docs/spec.md` and matched nothing, which is exactly the input
     // `relative_query` exists to serve.
-    reply = await api.searchFiles(String(query ?? "").trim());
+    reply = await api.searchFiles(String(query ?? "").trim(), undefined, { pair: lookupFor });
   } catch (error) {
     console.error("search_files failed:", error);
     // KEPT, not swallowed. A caught error and a name nothing matches both leave the screen with no
@@ -2766,6 +2855,8 @@ function stageSetting(key, value) {
  * both rather than one merged view.
  */
 function settingsProps() {
+  // The pair a `Sweep now` is for, taken as the props are built (see `mainProps`).
+  const sweepPair = store.select.pairName();
   const ui = activeFixture()?.ui ?? null;
   const saved = activeFixture()?.config ?? configInfo ?? {};
   const tab = ui?.tab ?? settingsTab;
@@ -2932,7 +3023,7 @@ function settingsProps() {
       onAddInclude: () => addPattern("include"),
       onRemoveInclude: (pattern) => removePattern("include", pattern),
       onChoose: chooseLocalRoot,
-      onSweep: sweepNow,
+      onSweep: () => sweepNow(sweepPair),
       onSave: saveSettings,
       onDiscard: () => {
         settingsEdits = {};
@@ -2984,7 +3075,7 @@ async function chooseLocalRoot() {
 }
 
 /** `Sweep now` — a full-tree walk on the next pass, which `sync_now` is not. */
-async function sweepNow() {
+async function sweepNow(pair) {
   if (settingsSweeping) return;
   settingsSweeping = true;
   settingsNotice = SETTINGS.sweeping;
@@ -2994,7 +3085,7 @@ async function sweepNow() {
     // them folds a socket failure into the payload rather than rejecting (`commands.rs`) — so
     // against a stopped daemon, or one older than `ControlCommand::Resync`, the `catch` below never
     // fires and an unread reply is a button that does nothing and says nothing.
-    const reply = await api.resync();
+    const reply = await api.resync({ pair });
     settingsNotice = reply?.error ? SETTINGS.sweepFailed(reply.error) : null;
   } catch (error) {
     settingsNotice = SETTINGS.sweepFailed(String(error?.message ?? error));
@@ -3321,6 +3412,14 @@ async function ensureFreeSpace(root) {
   render();
 }
 
+/**
+ * The pair the first-run flow runs against. THE TAKEOVER NEVER ARMS AT TWO PAIRS (E14), so while it is
+ * up there is exactly one, and the selection IS it — which is the only reason this may read the
+ * selection when a class-W command runs instead of carrying a captured value. Anything that can run
+ * at two pairs carries its pair (`item.pair`, `planPair`, the props' `pair`).
+ */
+const onboardingPair = () => store.select.pairName();
+
 /** The rehearsal behind step 2 — one child at a time, the same token discipline as `ensurePlan`. */
 async function ensureOnboardingPlan() {
   if (onboardingWaiting !== null || onboardingAnswered === onboardingSeq) return;
@@ -3329,7 +3428,7 @@ async function ensureOnboardingPlan() {
   let payload = null;
   let error = null;
   try {
-    payload = await api.runDryRun();
+    payload = await api.runDryRun({ pair: onboardingPair() });
   } catch (e) {
     error = String(e);
   }
@@ -3561,7 +3660,8 @@ function onboardingDialogContent(id) {
           // delete guard is on by default, so every deletion still goes through the Deletions
           // screen. §79k.
           onPause: async () => {
-            await command(api.pause);
+            const pair = onboardingPair();
+            await command(() => api.pause({ pair }));
             resetOnboardingFlow();
             render();
           },
@@ -3597,7 +3697,8 @@ function onboardingDialogContent(id) {
             // and the same call S4's `Run this sync` makes: the main screen behind is where both
             // outcomes are legible (`Resume` on a paused daemon, `Try again now` on an unreachable
             // one), and holding someone inside a consent they have already given is worse.
-            await command(api.resume);
+            const pair = onboardingPair();
+            await command(() => api.resume({ pair }));
             resetOnboardingFlow();
             render();
             // The dialogs are not opened through `openOverlay`, so there is no `dialogReturn` to
@@ -3691,7 +3792,8 @@ function advanceOnboardingStage() {
     }
     if (onboardingPauseTries < PAUSE_ATTEMPTS) {
       onboardingPauseTries += 1;
-      command(api.pause);
+      const pair = onboardingPair();
+      command(() => api.pause({ pair }));
     }
     return;
   }
@@ -3852,7 +3954,9 @@ async function keepPermanentDeletions() {
     if (deletionBusy.has(key)) continue;
     deletionBusy.add(key);
     try {
-      if (acknowledged(await api.keep(item.path))) deletionsDecided.set(key, item.fingerprint);
+      if (acknowledged(await api.keep(item.path, true, { pair: item.pair }))) {
+        deletionsDecided.set(key, item.fingerprint);
+      }
     } catch (error) {
       console.error("keep failed:", error);
     }
@@ -3907,13 +4011,61 @@ function trayActionStatus(id) {
   return api.trayAction(id).then((payload) => store.setStatus(payload, issue));
 }
 
+/**
+ * What this webview's status poll asks about. The WINDOW asks for nothing in particular, which means
+ * the selected pair (Rust holds the selection). The TRAY PANEL is pinned to the pair its rows act on
+ * — the default pair until phase 5d teaches them to name one — and names it once the daemon has
+ * listed its pairs; before that its request is unaddressed, which is the default pair on any daemon.
+ * A panel that showed the selected pair beside a `Pause` row that pauses the default one would be the
+ * wrong-target action this phase exists to prevent.
+ */
+function pollTarget() {
+  return isTraySurface() ? { pair: store.select.pairs()[0]?.name } : undefined;
+}
+
+/**
+ * The pair the screens were last drawn for, so a change of it is noticed once.
+ *
+ * `null` until a status has said: the first answer is not a SWITCH, and nothing is reset by it.
+ */
+let viewedPair = null;
+
+/**
+ * Called at the top of every render: when the pair on screen is not the one the screens were built
+ * for, drop what describes the old one BEFORE anything is drawn from it. A switch is a shape change,
+ * not an update (4.6): a plan rehearsed for A, an armed deletion on one of A's rows, A's conflict
+ * position and a lookup half-typed against A's index mean nothing for B, and a deletions view
+ * patched from A's rows into B's would carry A's `armed` state onto B's nodes.
+ *
+ * What is reset and what is not is `gui/test/pair-ledger.test.js`'s table, enforced against this
+ * function's source: every PER-PAIR-RESET binding must be cleared here (or by a reset it calls).
+ */
+function noticeSelection() {
+  // `settledPair`, not `pairName`: before any status has said, `pairName` is the placeholder
+  // `default`, and the first real answer ("docs", for a daemon whose default pair has another name)
+  // would read as a switch away from it and reset screens nothing has drawn yet.
+  const now = store.select.settledPair();
+  if (now === null) return;
+  const was = viewedPair;
+  viewedPair = now;
+  if (was === null || was === now) return;
+  resetConflictScreen();
+  resetPlanScreen();
+  resetActivityScreen();
+  deletionArmed = null;
+  deletionBusy.clear();
+  deletionStatusInFlight.clear();
+  // So the first conflict scan of the pair now shown is immediate, not up to 15 s away.
+  lastConflictScan = 0;
+}
+
 async function poll() {
   let payload = null;
   // ALLOCATED BEFORE THE REQUEST GOES OUT, so the answer can be compared against things that
   // happened while it was in flight (#335). See `store.beginStatus`.
   const issue = store.beginStatus();
   try {
-    payload = await api.getStatus();
+    payload = await api.getStatus(pollTarget());
     // Set before setStatus (which synchronously re-renders) so the onboarding-routing gate sees that
     // a real poll has now completed — only then may an `unreachable` reply mean a genuinely fresh
     // machine rather than the pre-poll default.
@@ -3926,17 +4078,23 @@ async function poll() {
   const now = Date.now();
   if (now - lastConflictScan > 15000) {
     lastConflictScan = now;
+    // Scanned for the pair that is shown NOW and filed under it, so a scan that lands after the
+    // selection has moved is a fact about a pair that is no longer on screen and not a replacement
+    // for the one that is (the store keys it by pair; see `store.js`).
+    const pair = store.select.pairName();
     try {
-      store.setConflicts(await api.scanConflicts());
+      store.setConflicts(await api.scanConflicts({ pair }), pair);
     } catch (_) {
-      store.setConflicts([]);
+      store.setConflicts([], pair);
     }
     // Re-read the GUI config file on the same slow cadence: onboarding or an external edit may
     // have (re)written it since boot, and it also drives the no-daemon fallback pair display.
     refreshConfig();
   }
   // Pending deletions ride on the status reply itself — no second IPC round trip per tick.
-  if (payload?.response) store.setPendingDeletions(payload.response.pending_deletions ?? []);
+  if (payload?.response) {
+    store.setPendingDeletions(payload.response.pending_deletions ?? [], store.pairOf(payload));
+  }
   // LAST, and after the conflict scan above, so the four triggers see one consistent picture.
   //
   // TWO EXCLUSIONS, AND THE SECOND IS THE ONE THAT BITES. A frame preview never notifies: `?frame=`
@@ -3958,6 +4116,9 @@ function scheduleNextPoll() {
 // ---- boot ----
 function main() {
   initTheme();
+  // The tray panel runs this same file and follows the pair its REPLIES describe, not the window's
+  // selection (see `pollTarget`).
+  if (isTraySurface()) store.configure({ follows: "reply" });
   store.subscribe(render);
   render();
   refreshConfig();
@@ -3972,6 +4133,13 @@ function main() {
   // same file — would run the handler a second time for one click: two deny sweeps over the queue,
   // and a `navigate()` that moves the panel's own route to a screen it cannot draw.
   if (!isTraySurface()) api.onNotificationAction(onNotificationAction);
+
+  // `select_pair` ran (from this webview or the other): poll at once rather than showing the old pair
+  // for up to two seconds. The store follows the reply, and `noticeSelection` does the rest.
+  api.onPairSelected(() => {
+    clearTimeout(pollTimer);
+    poll();
+  });
 
   api.onTrayNavigate((id) => {
     if (typeof id !== "string") return;

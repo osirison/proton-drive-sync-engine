@@ -80,7 +80,7 @@ export const clearsStartError = (daemonState) => daemonState !== "unreachable";
  * state where nothing else on the screen can be trusted to be current; paused outranks a decision
  * because the sentence "nothing will move until you resume" is true of the decisions too.
  */
-export function heroStateOf({ daemonState, syncing, waiting, pending = 0 }) {
+export function heroStateOf({ daemonState, syncing, waiting, pending = 0, drawsFirstRun = false }) {
   if (daemonState === "unreachable") return "unreachable";
   // BEFORE `syncing`, and before the settled fall-through, which is where it landed first and is a
   // false all-clear: a daemon whose Proton session has lapsed is reachable, reports nothing in
@@ -97,6 +97,23 @@ export function heroStateOf({ daemonState, syncing, waiting, pending = 0 }) {
   // cannot hide live work.
   if (daemonState === "failed") return "failed";
   if (daemonState === "paused") return "paused";
+  // A REACHABLE DAEMON THAT HAS NEVER SYNCED THIS PAIR (#102 phase 5a-2, E14), for the surfaces that
+  // have no takeover to hide behind: it used to fall through to `settled` below — `Everything is up to
+  // date` over a folder nothing has copied, which is #246's false all-clear in a state the window
+  // used to be unable to reach.
+  //
+  // `drawsFirstRun` is the caller saying THIS SURFACE may show it, and it exists because the window
+  // does not always: at one pair the first-run takeover owns this state (`routes.js`), so the main
+  // screen behind it is only ever drawn for `firstRun` under the first-sync dialogs, where it has
+  // always been `settled` and must stay byte for byte what it was — "a one-folder user sees nothing
+  // new" (D2). The window passes `pairCount >= 2`, where the takeover never arms and this is the
+  // only thing between a new pair and that false all-clear; the tray passes `true`, having no
+  // takeover at any count. ONE definition of the rule for both, in place of the tray's own copy of
+  // it that used to sit in `trayView`.
+  //
+  // BEFORE the `pending` rule: `derive_state` decides `firstRun` ahead of the queue, and a watch
+  // event for the new pair's folder is not a reason to call it syncing.
+  if (daemonState === "firstRun" && drawsFirstRun) return "firstRun";
   // `pending` AS WELL AS `syncing`, and leaving it out put two contradictory sentences in one
   // window. A filesystem-watch event only accumulates `pending_changes`; it never starts a reconcile
   // (`daemon.rs`), so for up to a scan interval after an edit the daemon reports `syncing: false`
@@ -128,6 +145,9 @@ export function mainView(props = {}) {
     remoteRoot = null,
     starting = false,
     startError = null,
+    // How many folder pairs there are. Only ever read to decide whether a never-synced pair may be
+    // drawn as one (`heroStateOf`'s `drawsFirstRun`); 0 is every caller written before pairs.
+    pairCount = 0,
   } = props;
 
   const activity = response?.activity ?? null;
@@ -139,6 +159,7 @@ export function mainView(props = {}) {
     syncing: Boolean(response?.syncing),
     waiting,
     pending: queued ?? 0,
+    drawsFirstRun: pairCount >= 2,
   });
 
   /**
@@ -287,6 +308,11 @@ export function headlineOf(v) {
       return MAIN.failed;
     case "decision":
       return MAIN.compact.needYou(v.waiting);
+    case "firstRun":
+      // The tray's sentence, not a second one (`screens/tray.js` says the same two things). UNDRAWN
+      // by any frame — the window reaches it only at two pairs or more — so it is a deck string
+      // spoken twice rather than a frame's, and `13-copy-deck.md` carries it under the tray's rows.
+      return TRAY.nothingSyncedYet;
     default:
       return MAIN.settled;
   }
@@ -330,6 +356,8 @@ export function subOf(v) {
       // length at all. See `fillFailed`, which puts `.main-failed-error` inside the `.main-failed`
       // block `renderMain` creates.
       return MAIN.failedSub(v.pending);
+    case "firstRun":
+      return TRAY.nothingSyncedYetSub;
     default:
       return MAIN.settledSubTime(since(v.lastSync));
   }
@@ -358,13 +386,16 @@ function subTextOf(v) {
  * `14-behaviour-and-state.md`'s state diagram already says where it goes: "unreachable is entered
  * after a failed pass and retry". The mark is the same; the sentence and the quoted string differ.
  */
-const MARK_STATE = {
+export const MARK_STATE = {
   syncing: "syncing",
   decision: "needsNumeral",
   paused: "paused",
   unreachable: "unreachable",
   authExpired: "unreachable",
   failed: "unreachable",
+  // The tray's own pairing (`PANEL_STATE.firstRun`): the attention form with NO numeral. A count
+  // inside the mark would be a queue of zero things presented as a decision.
+  firstRun: "needsNumeral",
   settled: "settled",
 };
 
@@ -472,9 +503,25 @@ export function heroActionsOf(v) {
  */
 function heroActions(v, handlers) {
   const buttons = heroActionsOf(v).map((spec) =>
-    action(spec.label, spec.kind, spec.on ? handlers[spec.on] : null, Boolean(spec.disabled)),
+    action(spec.label, spec.kind, spec.on ? calledThrough(spec.on, handlers) : null, Boolean(spec.disabled)),
   );
   return el("div", { class: "main-actions" }, buttons);
+}
+
+/**
+ * A hero button's click, resolved against the LATEST props at the moment of the click rather than the
+ * props it was built with.
+ *
+ * The buttons are rebuilt only when the hero changes (`updateMain`), so a handler bound at build time
+ * outlives every poll in between. Each handler closes over the folder pair its props were built for
+ * (`app.js`'s `mainProps`), and a bound one would go on acting on the pair that was drawn when the
+ * button was made after the screen has moved to showing another — a `Pause` on a hero that says
+ * `photos` pausing `docs`. Called through `view.handlers`, the button always acts on the pair the
+ * hero currently on screen is about. Before the first render has settled `view` is null, and the
+ * handlers it was built with are the latest there are.
+ */
+function calledThrough(key, built) {
+  return (...args) => (view?.handlers ?? built)[key]?.(...args);
 }
 
 function action(label, kind, onClick, disabled = false) {

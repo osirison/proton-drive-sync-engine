@@ -16,7 +16,8 @@
 //! what is singular in the daemon: the config path, the control socket, the `proton-drive` command.
 
 use gui_core::config_io::{ConflictNaming, DEFAULT_PAIR_NAME};
-use gui_core::pairs::{wire_selector, PairCapability};
+use gui_core::gui_prefs;
+use gui_core::pairs::{resolve_selection, wire_selector, PairCapability};
 use gui_core::wire::ControlResponse;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -73,6 +74,38 @@ pub struct RuntimePaths {
     /// What the running daemon last said, per pair. Fallbacks only: an explicit value in the GUI
     /// config always wins.
     pub daemon: DaemonView,
+    /// The pair the person last chose, as `gui.toml` holds it (#102 phase 5a-2) — **a remembered
+    /// preference, not a fact**: it may name a pair that no longer exists, and is never rewritten on
+    /// that evidence (a daemon that is restarting, or on an older config, momentarily knows fewer
+    /// pairs than the person has). [`Self::selected_pair`] is what the app acts on.
+    ///
+    /// Loaded by [`Self::resolve_at`] from the `gui.toml` beside `config_path`, so every
+    /// re-resolve — a save, a restart — re-reads the one file that holds it instead of each having
+    /// to remember to carry it across; written only by `commands::select_pair`.
+    pub selected: Option<String>,
+}
+
+/// Which pair a command means. The three questions are different and none may stand in for another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ask<'a> {
+    /// The default pair — what a request naming none reaches, and what the tray acts on until it
+    /// learns to name a pair (phase 5d).
+    Default,
+    /// The pair the person has selected, validated against what exists. **Only a class-R read asks
+    /// this** (a wrong pair costs a wrong screen, not data); a write, a deletion or the start of a
+    /// multi-step flow names its pair ([`Self::Named`]), so the selection moving between a click and
+    /// its execution can make a screen stale and never make a deletion land elsewhere.
+    Selected,
+    /// A pair by name, byte-exactly, which must be one the app knows.
+    Named(&'a str),
+}
+
+impl<'a> Ask<'a> {
+    /// A class-R command's optional `pair` argument: naming one overrides the selection, naming
+    /// none means the selection.
+    pub fn read(pair: Option<&'a str>) -> Self {
+        pair.map_or(Ask::Selected, Ask::Named)
+    }
 }
 
 /// One folder pair as the GUI config file states it.
@@ -215,6 +248,7 @@ impl RuntimePaths {
             pairs,
             config_error,
             daemon: DaemonView::default(),
+            selected: gui_prefs::load_selected_pair(&gui_prefs::gui_prefs_path(config_path)),
         }
     }
 
@@ -303,9 +337,11 @@ impl RuntimePaths {
                 let known = self.known_pair_names();
                 if !known.contains(&requested) {
                     return Err(if known.is_empty() {
-                        format!(
+                        // Nothing known is either "nothing configured" or "a file the engine
+                        // refuses", and only the second has a reason worth giving: the file's own.
+                        self.unplaced(&format!(
                             "no folder pair named {requested:?}: no folder pairs are configured"
-                        )
+                        ))
                     } else {
                         format!(
                             "no folder pair named {requested:?}: the configured pairs are {}",
@@ -324,6 +360,50 @@ impl RuntimePaths {
             selector: wire_selector(&selected, &default),
             name: selected,
         })
+    }
+
+    /// Resolve a command's [`Ask`] to the pair it addresses.
+    pub fn resolve_ask(&self, ask: Ask<'_>) -> Result<PairRef, String> {
+        match ask {
+            Ask::Default => self.resolve_pair(None),
+            Ask::Selected => Ok(self.selected_pair()),
+            Ask::Named(name) => self.resolve_pair(Some(name)),
+        }
+    }
+
+    /// The pair the app acts on when nothing names one: the remembered choice, **validated on every
+    /// call and never written back**, and the default pair whenever it cannot be trusted.
+    ///
+    /// - The choice counts only while the daemon is known to read a selector
+    ///   ([`PairCapability::MultiPair`]). Before its first reply (`Unknown`) and against one that
+    ///   predates the field (`Legacy`) the answer is the default pair, so every request goes out
+    ///   unaddressed — the one shape a daemon of any age acts on correctly. A selector sent to a
+    ///   daemon that ignores it is not an error it reports: it acts on its only pair.
+    /// - A choice that names no pair the daemon runs is the default pair
+    ///   ([`resolve_selection`]).
+    ///
+    /// So `Unknown` costs one poll at start-up, showing the default pair before the capability is
+    /// learned. That is the price of not guessing.
+    pub fn selected_pair(&self) -> PairRef {
+        let default = self.default_pair_name();
+        let name = if self.daemon.capability == PairCapability::MultiPair {
+            resolve_selection(self.selected.as_deref(), &self.known_pair_names())
+                .map_or_else(|| default.clone(), str::to_owned)
+        } else {
+            default.clone()
+        };
+        PairRef {
+            selector: wire_selector(&name, &default),
+            name,
+        }
+    }
+
+    /// Remember `name` as the choice, if it is a pair this app knows. Memory only: the caller writes
+    /// `gui.toml` first, so a failed write leaves the choice unchanged rather than half made.
+    pub fn select(&mut self, name: &str) -> Result<(), String> {
+        self.resolve_pair(Some(name))?;
+        self.selected = Some(name.to_owned());
+        Ok(())
     }
 
     /// The name the config FILE gives the pair `selected` — what the child `proton-syncd --dry-run`
@@ -725,8 +805,10 @@ conflict_suffix = \"beta\"
             .manage(std::sync::Mutex::new(paths))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("mock app should build");
-        let payload =
-            tauri::async_runtime::block_on(crate::commands::pause(app.handle().clone(), None));
+        let payload = tauri::async_runtime::block_on(crate::commands::pause(
+            app.handle().clone(),
+            "default".to_owned(),
+        ));
         let error = serde_json::to_value(&payload).unwrap()["error"]
             .as_str()
             .expect("no socket is an error, not a state")

@@ -240,7 +240,27 @@ export function releasesOnboarding(daemonState) {
   );
 }
 
-export function nextOnboardingLatch(prev, daemonState, hasConfigPair, configLoaded, statusPolled) {
+export function nextOnboardingLatch(
+  prev,
+  daemonState,
+  hasConfigPair,
+  configLoaded,
+  statusPolled,
+  pairCount = 0,
+) {
+  // NEVER AT TWO OR MORE PAIRS (#102 phase 5a-2, E14), whatever the state and whatever came before.
+  // The takeover is the FIRST-folder flow: its `Next` writes `local_root`/`remote_root` as top-level
+  // keys, and the engine refuses a `[[pair]]` file that also sets them, so at N>=2 the wizard could
+  // only be opened on a state it cannot fix. It is not just "not entered": a pair added behind a
+  // running takeover's back releases it, because there is no step of it that is right any more.
+  //
+  // FIRST, ahead of the release set and the entry triggers: a `firstRun` reply at N>=2 is a NEW
+  // pair that has not synced yet, which is exactly the state that used to open the wizard over a
+  // running app. `main.js` draws it as a `firstRun` hero instead (never `Everything is up to date`).
+  //
+  // `pairCount` defaults to 0 so every caller written before pairs existed — and every fixture — is
+  // the one-pair case it always was.
+  if (pairCount >= 2) return false;
   if (releasesOnboarding(daemonState)) return false;
   // Reachable daemon that has never synced: the original firstRun takeover.
   if (daemonState === "firstRun") return true;
@@ -249,6 +269,28 @@ export function nextOnboardingLatch(prev, daemonState, hasConfigPair, configLoad
   // Anything else (notably `unreachable` right after step 2 wrote the config, or before the first
   // poll): hold whatever we were doing so the flow isn't interrupted.
   return prev;
+}
+
+/**
+ * Whether the GUI config file places a folder pair — the "has anyone chosen a folder yet?" half of
+ * the fresh-machine test (`nextOnboardingLatch`'s `hasConfigPair`).
+ *
+ * **Read from the pairs the engine lists, not from the flat top-level roots** (F-J). In a `[[pair]]`
+ * file every root sits inside a table, so `config.local_root` and `config.remote_root` are `null`;
+ * with the daemon stopped there is no live reply to fall back on either, and a check made of those
+ * two alone called that machine fresh and opened a wizard whose `Next` writes top-level roots into a
+ * file that refuses them. The list is `read_config.pairs` (the engine's own `pair_views`, so the
+ * `~` rule and the implicit pair are the engine's and not a second reading here).
+ *
+ * The flat roots remain the answer when there is no list: an older reply, and a file the engine
+ * cannot read as a config at all (which lists nothing but may still carry both keys).
+ */
+export function configHasPair(config) {
+  const pairs = config?.pairs;
+  if (Array.isArray(pairs) && pairs.length > 0) {
+    return pairs.some((pair) => Boolean(pair?.local_root && pair?.remote_root));
+  }
+  return Boolean(config?.local_root && config?.remote_root);
 }
 
 /**

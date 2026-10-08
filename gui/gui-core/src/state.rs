@@ -6,7 +6,7 @@
 //! and can't disagree across screens.
 
 use crate::ipc::IpcError;
-use crate::wire::{AuthState, ControlResponse};
+use crate::wire::{AuthState, ControlResponse, PairSummary};
 
 /// The seven reachable UI states (design §6). `Running` is primarily the daemon's own `syncing`
 /// flag (a reconcile pass is in flight); `pending_changes > 0` is kept as a secondary signal so
@@ -88,17 +88,109 @@ pub fn looks_like_auth_error(message: &str) -> bool {
     NEEDLES.iter().any(|needle| m.contains(needle))
 }
 
+/// Everything [`derive`] reads, as plain values — the one input both ways of knowing a pair's state
+/// are reduced to (#102 phase 5a-2, brief section 4.3).
+///
+/// There are two ways to know a pair. A **full reply** (`ControlResponse`) describes the pair it is
+/// about, and carries its status history. A **summary** (`PairSummary`, one entry of the reply's
+/// `pairs`) is all the app knows about every *other* pair, and it carries no history. Two functions
+/// deriving a state from those two would be sixty lines of ordered rules, each paid for by a bug
+/// (#103, #246, #311), written twice — so there is one [`derive`] and two adapters
+/// ([`PairFacts::from`] a reply, [`facts_of`] a summary) that fill this in.
+#[derive(Debug, Clone, Copy)]
+pub struct PairFacts<'a> {
+    pub paused: bool,
+    pub syncing: bool,
+    pub last_error: Option<&'a str>,
+    pub pending_changes: usize,
+    pub last_sync: Option<u64>,
+    /// Whether the pair's status history is empty — **`None` is "not known"**, which is what a
+    /// summary has. `FirstRun` is entered only on `Some(true)`, so a pair known by its summary alone
+    /// can never be called first-run: the wrong answer there would be a wizard (or "nothing synced
+    /// yet") drawn over an established pair after a daemon restart, when `last_sync` is also `None`
+    /// until the next pass succeeds. The safe direction is to draw `Idle`/`Running`/`Failed` for it.
+    pub history_empty: Option<bool>,
+    /// Daemon-wide: the session is per user, so every pair's facts carry the one verdict.
+    pub auth: AuthState,
+}
+
+impl<'a> From<&'a ControlResponse> for PairFacts<'a> {
+    /// A full reply: history is known, so `FirstRun` is reachable.
+    fn from(response: &'a ControlResponse) -> Self {
+        Self {
+            paused: response.paused,
+            syncing: response.syncing,
+            last_error: response.last_error.as_deref(),
+            pending_changes: response.pending_changes,
+            last_sync: response.last_sync_epoch_secs,
+            history_empty: Some(response.status_history.is_empty()),
+            auth: response.auth,
+        }
+    }
+}
+
+/// A pair known only by its summary. `auth` is the daemon-wide verdict from the reply the summary
+/// arrived in (a summary has none of its own).
+///
+/// **`history_empty` is `None`, not `Some(true)`** (`a_summary_can_never_derive_first_run`), and
+/// **`last_error` is carried** (`an_unavailable_pair_derives_failed_from_its_summary`): a pair whose
+/// folder is missing publishes its reason there (phase 4b), and dropping it would draw an unplugged
+/// drive as `Idle`.
+pub fn facts_of(summary: &PairSummary, auth: AuthState) -> PairFacts<'_> {
+    PairFacts {
+        paused: summary.paused,
+        syncing: summary.syncing,
+        last_error: summary.last_error.as_deref(),
+        pending_changes: summary.pending_changes,
+        last_sync: summary.last_sync_epoch_secs,
+        history_empty: None,
+        auth,
+    }
+}
+
+/// One pair's derived state, by name — what the status payload carries so the webview, the tray and
+/// the selector all read one answer per pair instead of deriving their own.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct PairState {
+    pub name: String,
+    pub state: DaemonState,
+}
+
+/// The state of every pair a reply lists.
+///
+/// **The pair the reply is about gets `described`, the state derived from the full reply**: its
+/// history is known, so it is the only one that can be `FirstRun`. Every other pair is derived from
+/// its summary ([`facts_of`]), which is the safe direction (see [`PairFacts::history_empty`]). A
+/// reply that lists no pairs (a daemon older than the selector) lists none here.
+pub fn pair_states(response: &ControlResponse, described: DaemonState) -> Vec<PairState> {
+    response
+        .pairs
+        .iter()
+        .map(|summary| PairState {
+            name: summary.name.clone(),
+            state: if response.pair.as_deref() == Some(summary.name.as_str()) {
+                described
+            } else {
+                derive(&facts_of(summary, response.auth))
+            },
+        })
+        .collect()
+}
+
 /// Derive the UI state from a status round trip. Pass `Ok(&response)` on success or `Err(&error)`
 /// when the socket call failed.
 pub fn derive_state(reply: Result<&ControlResponse, &IpcError>) -> DaemonState {
-    let response = match reply {
+    match reply {
         // A protocol error means the daemon is there but its reply can't be trusted; fall back to
         // unreachable rather than rendering possibly-wrong numbers.
-        Err(_) => return DaemonState::Unreachable,
-        Ok(response) => response,
-    };
+        Err(_) => DaemonState::Unreachable,
+        Ok(response) => derive(&PairFacts::from(response)),
+    }
+}
 
-    if response.paused {
+/// The ordered rules, over facts. **The only place a pair's state is decided.**
+pub fn derive(facts: &PairFacts<'_>) -> DaemonState {
+    if facts.paused {
         return DaemonState::Paused;
     }
     // THE DAEMON'S VERDICT, AND THE NEEDLE LIST ONLY WHERE IT HAS NONE (#103/#311).
@@ -117,21 +209,22 @@ pub fn derive_state(reply: Result<&ControlResponse, &IpcError>) -> DaemonState {
     //     positive daemon-side classification exists to remove. It falls through to `Failed` below.
     //   · `Unknown` is no verdict at all (a daemon older than #103, or one whose only failures were
     //     of another kind), so the pre-#103 heuristic answers, exactly as it did before.
-    match response.auth {
+    match facts.auth {
         AuthState::SignedOut => return DaemonState::AuthExpired,
         AuthState::SignedIn => {}
         AuthState::Unknown => {
-            if let Some(error) = &response.last_error
+            if let Some(error) = facts.last_error
                 && looks_like_auth_error(error)
             {
                 return DaemonState::AuthExpired;
             }
         }
     }
-    if response.syncing {
+    if facts.syncing {
         return DaemonState::Running;
     }
-    if response.last_sync_epoch_secs.is_none() && response.status_history.is_empty() {
+    // `Some(true)` and no other value: see `PairFacts::history_empty`.
+    if facts.last_sync.is_none() && facts.history_empty == Some(true) {
         return DaemonState::FirstRun;
     }
     // AFTER `syncing` and `FirstRun`, BEFORE the queue and the settled fall-through, and every one
@@ -145,10 +238,10 @@ pub fn derive_state(reply: Result<&ControlResponse, &IpcError>) -> DaemonState {
     //     runs on both arms of a pass — but the wizard is the better answer when both could apply;
     //   · before `pending_changes`, because a failure with a queue behind it is still a failure. The
     //     queue is why it matters, not a reason to call it `Running`.
-    if response.last_error.is_some() {
+    if facts.last_error.is_some() {
         return DaemonState::Failed;
     }
-    if response.pending_changes > 0 {
+    if facts.pending_changes > 0 {
         DaemonState::Running
     } else {
         DaemonState::Idle
@@ -396,6 +489,211 @@ mod tests {
         assert_eq!(name(DaemonState::AuthExpired), "\"authExpired\"");
         assert_eq!(name(DaemonState::FirstRun), "\"firstRun\"");
         assert_eq!(name(DaemonState::Idle), "\"idle\"");
+    }
+
+    // ---- one derivation, two adapters (#102 phase 5a-2) ----
+
+    /// A summary built from the numbers a full reply carries — what the daemon's `pairs` entry for
+    /// that same pair would say.
+    fn summary_of(r: &ControlResponse) -> PairSummary {
+        PairSummary {
+            name: "p".to_owned(),
+            local_root: "/l".into(),
+            remote_root: "/r".into(),
+            db_path: "/d".into(),
+            paused: r.paused,
+            syncing: r.syncing,
+            reconcile_seq: r.reconcile_seq,
+            last_sync_epoch_secs: r.last_sync_epoch_secs,
+            last_error: r.last_error.clone(),
+            pending_changes: r.pending_changes,
+            pending_deletions: 0,
+        }
+    }
+
+    /// Every combination of the inputs `derive` reads, with the error text varied across the kinds
+    /// that route differently (none, auth-shaped, plain) — 2·2·3·3·2·2·3 = 432 replies.
+    fn corpus() -> Vec<ControlResponse> {
+        let mut out = Vec::new();
+        for paused in [false, true] {
+            for syncing in [false, true] {
+                for error in [
+                    None,
+                    Some("401 Unauthorized"),
+                    Some("proton-drive list failed: timed out"),
+                ] {
+                    for pending in [0usize, 3] {
+                        for last_sync in [None, Some(1_750_000_000u64)] {
+                            for history_empty in [true, false] {
+                                for auth in [
+                                    AuthState::Unknown,
+                                    AuthState::SignedIn,
+                                    AuthState::SignedOut,
+                                ] {
+                                    let mut r = response();
+                                    r.paused = paused;
+                                    r.syncing = syncing;
+                                    r.last_error = error.map(str::to_owned);
+                                    r.pending_changes = pending;
+                                    r.last_sync_epoch_secs = last_sync;
+                                    r.status_history = if history_empty {
+                                        vec![]
+                                    } else {
+                                        vec![crate::wire::StatusHistoryEntry {
+                                            epoch_secs: 1,
+                                            message: "sync completed".into(),
+                                            last_error: None,
+                                            plan_summary: None,
+                                            successful_sync_summary: None,
+                                            failed_item_count: 0,
+                                        }]
+                                    };
+                                    r.auth = auth;
+                                    out.push(r);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Acceptance 2: the reply entry point is the shared derivation over the reply's facts, for every
+    /// reply there is — and the corpus really reaches every state, or this would pass trivially.
+    #[test]
+    fn a_full_reply_derives_the_same_state_through_either_entry_point() {
+        let mut reached = std::collections::HashSet::new();
+        for r in corpus() {
+            let via_facts = derive(&PairFacts::from(&r));
+            assert_eq!(derive_state(Ok(&r)), via_facts);
+            reached.insert(format!("{via_facts:?}"));
+        }
+        for state in [
+            "Running",
+            "Idle",
+            "Paused",
+            "AuthExpired",
+            "Failed",
+            "FirstRun",
+        ] {
+            assert!(reached.contains(state), "the corpus never derives {state}");
+        }
+    }
+
+    /// The other half of the brief's property: a pair known by its summary alone derives the same
+    /// state as the full reply for the same numbers — **except** `FirstRun`, which a summary can
+    /// never be (it has no history), and which lands on the state the reply would have had without
+    /// that one rule.
+    #[test]
+    fn a_summary_derives_what_the_reply_would_except_first_run() {
+        let mut first_runs = 0;
+        for r in corpus() {
+            let full = derive_state(Ok(&r));
+            let from_summary = derive(&facts_of(&summary_of(&r), r.auth));
+            if full == DaemonState::FirstRun {
+                first_runs += 1;
+                assert_ne!(from_summary, DaemonState::FirstRun);
+            } else {
+                assert_eq!(from_summary, full, "{r:?}");
+            }
+        }
+        assert!(first_runs > 0, "the corpus never reaches first run");
+    }
+
+    /// `a_summary_can_never_derive_first_run`. The setting where it matters: a daemon that has just
+    /// restarted. `last_sync_epoch_secs` is `None` for EVERY pair until its first pass succeeds, so
+    /// "no last sync" is true of a pair that has synced for a year. The reply for the selected pair
+    /// can tell (its history is on disk); a summary cannot, and must not guess.
+    #[test]
+    fn a_summary_can_never_derive_first_run() {
+        let mut r = response();
+        r.last_sync_epoch_secs = None;
+        r.status_history = vec![];
+        let summary = summary_of(&r);
+        let facts = facts_of(&summary, AuthState::SignedIn);
+        assert_eq!(
+            facts.history_empty, None,
+            "a summary has no history to read"
+        );
+        assert_ne!(derive(&facts), DaemonState::FirstRun);
+        assert_eq!(derive(&facts), DaemonState::Idle);
+        // The same numbers as a full reply ARE first run: the difference is only what is known.
+        assert_eq!(derive_state(Ok(&r)), DaemonState::FirstRun);
+        // And nothing else a summary says reaches it either.
+        for pending in [0, 5] {
+            for error in [None, Some("x".to_owned())] {
+                let mut s = summary.clone();
+                s.pending_changes = pending;
+                s.last_error = error;
+                assert_ne!(
+                    derive(&facts_of(&s, AuthState::Unknown)),
+                    DaemonState::FirstRun
+                );
+            }
+        }
+    }
+
+    /// `an_unavailable_pair_derives_failed_from_its_summary` (maintainer decision M1b). A pair whose
+    /// folder is missing (an unplugged drive) is never synced, publishes its reason as `last_error`
+    /// and carries its last successful sync forward. Built from that summary it is `Failed` — not
+    /// `Idle`, which would be a green tick over a folder nothing is syncing.
+    #[test]
+    fn an_unavailable_pair_derives_failed_from_its_summary() {
+        let summary = PairSummary {
+            name: "drive".to_owned(),
+            local_root: "/mnt/usb/Sync".into(),
+            remote_root: "/Drive/Usb".into(),
+            db_path: "/mnt/usb/Sync/.sync/sync_index.db".into(),
+            paused: false,
+            syncing: false,
+            reconcile_seq: 3,
+            last_sync_epoch_secs: Some(1_750_000_000),
+            last_error: Some("the sync folder /mnt/usb/Sync is not available".to_owned()),
+            pending_changes: 0,
+            pending_deletions: 0,
+        };
+        assert_eq!(
+            derive(&facts_of(&summary, AuthState::SignedIn)),
+            DaemonState::Failed
+        );
+        // With no carried last sync too (a pair that was unavailable from the first boot): still
+        // not first run — a summary cannot be — so still `Failed`.
+        let mut never = summary.clone();
+        never.last_sync_epoch_secs = None;
+        assert_eq!(
+            derive(&facts_of(&never, AuthState::SignedIn)),
+            DaemonState::Failed
+        );
+    }
+
+    /// The pair a reply is about is derived from the reply; the rest from their summaries.
+    #[test]
+    fn the_described_pair_gets_the_full_state_and_the_others_their_summaries() {
+        let mut r = response();
+        r.pair = Some("a".to_owned());
+        r.last_sync_epoch_secs = None;
+        r.status_history = vec![];
+        let mut a = summary_of(&r);
+        a.name = "a".to_owned();
+        // `b` has never synced as far as its summary says, but a summary cannot call that first run.
+        let mut b = a.clone();
+        b.name = "b".to_owned();
+        let mut c = a.clone();
+        c.name = "c".to_owned();
+        c.paused = true;
+        r.pairs = vec![a, b, c];
+        let described = derive_state(Ok(&r));
+        assert_eq!(described, DaemonState::FirstRun);
+        let states = pair_states(&r, described);
+        let named = |name: &str| states.iter().find(|s| s.name == name).unwrap().state;
+        assert_eq!(named("a"), DaemonState::FirstRun);
+        assert_eq!(named("b"), DaemonState::Idle);
+        assert_eq!(named("c"), DaemonState::Paused);
+        // A legacy-shaped reply lists nothing.
+        r.pairs.clear();
+        assert!(pair_states(&r, described).is_empty());
     }
 
     #[test]
