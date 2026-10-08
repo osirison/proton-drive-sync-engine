@@ -10,6 +10,8 @@
 //! rendered stdout/stderr, so it catches exactly that regression.
 #![cfg(unix)]
 
+mod common;
+
 use proton_drive_sync_engine::index::EntityKind;
 use proton_drive_sync_engine::ipc::{
     ApplyOutcome, ControlRequest, ControlResponse, ListingOutcome, LocalDisposal, PairSummary,
@@ -19,7 +21,6 @@ use proton_drive_sync_engine::sync::{DeleteDirection, PlanSummary};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -148,12 +149,13 @@ fn drive(args: &[&str], replies: Vec<ControlResponse>) -> Run {
             (&stream).flush().expect("flush reply");
         }
     });
-    let output = Command::new(env!("CARGO_BIN_EXE_proton-sync"))
-        .arg("--socket-path")
-        .arg(&socket_path)
-        .args(args)
-        .output()
-        .expect("run proton-sync");
+    let output = common::run_bounded(
+        common::sandboxed(env!("CARGO_BIN_EXE_proton-sync"), directory.path())
+            .arg("--socket-path")
+            .arg(&socket_path)
+            .args(args),
+        common::RUN_BOUND,
+    );
     server.join().expect("fake daemon thread panicked");
     let requests = seen.lock().expect("seen lock").clone();
     Run {

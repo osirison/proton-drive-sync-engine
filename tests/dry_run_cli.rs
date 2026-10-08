@@ -1,11 +1,14 @@
+mod common;
+
 #[cfg(unix)]
 mod unix_tests {
+    use crate::common;
     use serde_json::Value;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
-    use std::process::{Command, Output, Stdio};
-    use std::time::{Duration, Instant};
+    use std::process::{Command, Output};
+    use std::time::Duration;
     use tempfile::tempdir;
 
     #[test]
@@ -30,19 +33,18 @@ mod unix_tests {
     }"#,
         );
 
-        let output = Command::new(env!("CARGO_BIN_EXE_proton-syncd"))
-            .arg("--local-root")
-            .arg(&local_root)
-            .arg("--remote-root")
-            .arg("/Drive/RemoteFolder")
-            .arg("--db-path")
-            .arg(&db_path)
-            .arg("--proton-cli")
-            .arg(&fake_proton_drive)
-            .arg("--dry-run")
-            .env("RUST_LOG", "error")
-            .output()
-            .expect("run proton-syncd dry-run");
+        let output = run_to_completion(
+            syncd_command(directory.path())
+                .arg("--local-root")
+                .arg(&local_root)
+                .arg("--remote-root")
+                .arg("/Drive/RemoteFolder")
+                .arg("--db-path")
+                .arg(&db_path)
+                .arg("--proton-cli")
+                .arg(&fake_proton_drive)
+                .arg("--dry-run"),
+        );
 
         assert_success(&output);
         assert!(
@@ -84,19 +86,18 @@ mod unix_tests {
             "Node not found: demo",
         );
 
-        let output = Command::new(env!("CARGO_BIN_EXE_proton-syncd"))
-            .arg("--local-root")
-            .arg(&local_root)
-            .arg("--remote-root")
-            .arg("/my-files/demo/")
-            .arg("--db-path")
-            .arg(&db_path)
-            .arg("--proton-cli")
-            .arg(&fake_proton_drive)
-            .arg("--dry-run")
-            .env("RUST_LOG", "error")
-            .output()
-            .expect("run proton-syncd dry-run with missing remote root");
+        let output = run_to_completion(
+            syncd_command(directory.path())
+                .arg("--local-root")
+                .arg(&local_root)
+                .arg("--remote-root")
+                .arg("/my-files/demo/")
+                .arg("--db-path")
+                .arg(&db_path)
+                .arg("--proton-cli")
+                .arg(&fake_proton_drive)
+                .arg("--dry-run"),
+        );
 
         assert_success(&output);
         assert!(
@@ -159,12 +160,11 @@ dry_run = true
         )
         .expect("write config");
 
-        let output = Command::new(env!("CARGO_BIN_EXE_proton-syncd"))
-            .arg("--config")
-            .arg(&config_path)
-            .env("RUST_LOG", "error")
-            .output()
-            .expect("run proton-syncd dry-run from config");
+        let output = run_to_completion(
+            syncd_command(directory.path())
+                .arg("--config")
+                .arg(&config_path),
+        );
 
         assert_success(&output);
         assert!(
@@ -234,23 +234,22 @@ dry_run = true
     }"#,
         );
 
-        let output = Command::new(env!("CARGO_BIN_EXE_proton-syncd"))
-            .arg("--local-root")
-            .arg(&local_root)
-            .arg("--remote-root")
-            .arg("/Drive/RemoteFolder")
-            .arg("--db-path")
-            .arg(&db_path)
-            .arg("--proton-cli")
-            .arg(&fake_proton_drive)
-            .arg("--include")
-            .arg("Documents/**")
-            .arg("--exclude")
-            .arg("**/*.tmp")
-            .arg("--dry-run")
-            .env("RUST_LOG", "error")
-            .output()
-            .expect("run proton-syncd filtered dry-run");
+        let output = run_to_completion(
+            syncd_command(directory.path())
+                .arg("--local-root")
+                .arg(&local_root)
+                .arg("--remote-root")
+                .arg("/Drive/RemoteFolder")
+                .arg("--db-path")
+                .arg(&db_path)
+                .arg("--proton-cli")
+                .arg(&fake_proton_drive)
+                .arg("--include")
+                .arg("Documents/**")
+                .arg("--exclude")
+                .arg("**/*.tmp")
+                .arg("--dry-run"),
+        );
 
         assert_success(&output);
         let report = parse_report(&output.stdout);
@@ -321,19 +320,18 @@ dry_run = true
         let fake_proton_drive =
             write_fake_proton_drive(directory.path(), "/Drive/RemoteFolder", "");
 
-        let output = Command::new(env!("CARGO_BIN_EXE_proton-syncd"))
-            .arg("--local-root")
-            .arg(&local_root)
-            .arg("--remote-root")
-            .arg("/Drive/RemoteFolder")
-            .arg("--db-path")
-            .arg(&db_path)
-            .arg("--proton-cli")
-            .arg(&fake_proton_drive)
-            .arg("--dry-run")
-            .env("RUST_LOG", "error")
-            .output()
-            .expect("run proton-syncd dry-run");
+        let output = run_to_completion(
+            syncd_command(directory.path())
+                .arg("--local-root")
+                .arg(&local_root)
+                .arg("--remote-root")
+                .arg("/Drive/RemoteFolder")
+                .arg("--db-path")
+                .arg(&db_path)
+                .arg("--proton-cli")
+                .arg(&fake_proton_drive)
+                .arg("--dry-run"),
+        );
 
         assert_success(&output);
         let report = parse_report(&output.stdout);
@@ -443,46 +441,43 @@ exit 64
         (config, a, b)
     }
 
-    /// `proton-syncd --config <config> <args>`, run to completion **in a sandbox of its own**.
+    /// How long a preview or a refusal may take. Both are over in well under a second; a run
+    /// still going after this is no longer one of those.
+    const RUN_BOUND: Duration = Duration::from_secs(20);
+
+    /// A `proton-syncd` command **in a sandbox of its own**, for [`run_to_completion`].
     ///
-    /// Every process-global default a daemon would reach is pointed into `directory`: the control
-    /// socket (an explicit `--socket-path` AND `XDG_RUNTIME_DIR`, which is where the default one
-    /// lives), the user-global lock (`XDG_STATE_HOME`) and the trash (`XDG_DATA_HOME`). These
-    /// tests exist to show that a run is previewed or REFUSED, and the way such a test fails is that
-    /// the run turns into a real daemon: one that bound the machine's default socket would replace
-    /// the live daemon's control socket and delete it on exit. (That happened, once, under a
-    /// deliberately broken `--pair` check.) So the sandbox is not optional, and the wait is bounded:
-    /// a child still running after 20 s is killed and the test fails saying so, instead of hanging.
-    fn run_syncd(config: &Path, directory: &Path, args: &[&str]) -> Output {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_proton-syncd"))
-            .arg("--config")
-            .arg(config)
-            .args(args)
+    /// Every process-global default a daemon would reach is pointed into `directory`
+    /// (`common::sandboxed`: `HOME`, the runtime dir, the state dir with the user-global lock,
+    /// the data dir with the trash) and the control socket is named explicitly as well. These
+    /// tests exist to show that a run is previewed or REFUSED, and the way such a test fails is
+    /// that the run turns into a real daemon: one that bound the machine's default socket would
+    /// replace the live daemon's control socket and delete it on exit. (That happened, once,
+    /// under a deliberately broken `--pair` check.) So the sandbox is not optional, and it lives
+    /// in one place: every run in this file starts here.
+    fn syncd_command(directory: &Path) -> Command {
+        let mut command = common::sandboxed(env!("CARGO_BIN_EXE_proton-syncd"), directory);
+        command
             .arg("--socket-path")
             .arg(directory.join("never-bound.sock"))
-            .env("RUST_LOG", "error")
-            .env("XDG_RUNTIME_DIR", directory)
-            .env("XDG_STATE_HOME", directory)
-            .env("XDG_DATA_HOME", directory)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn proton-syncd");
-        let deadline = Instant::now() + Duration::from_secs(20);
-        while child.try_wait().expect("child status").is_none() {
-            if Instant::now() >= deadline {
-                let _ = child.kill();
-                let _ = child.wait();
-                panic!(
-                    "proton-syncd {args:?} was still running after 20 s: a run that should have \
-                     been previewed or refused started a daemon"
-                );
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        child
-            .wait_with_output()
-            .expect("collect proton-syncd output")
+            .env("RUST_LOG", "error");
+        command
+    }
+
+    /// Runs `command` to completion, bounded: a child still running after [`RUN_BOUND`] is killed
+    /// and the test fails saying so, instead of hanging.
+    fn run_to_completion(command: &mut Command) -> Output {
+        common::run_bounded(command, RUN_BOUND)
+    }
+
+    /// `proton-syncd --config <config> <args>`, run to completion in [`syncd_command`]'s sandbox.
+    fn run_syncd(config: &Path, directory: &Path, args: &[&str]) -> Output {
+        run_to_completion(
+            syncd_command(directory)
+                .arg("--config")
+                .arg(config)
+                .args(args),
+        )
     }
 
     fn preview(config: &Path, directory: &Path, extra_args: &[&str]) -> Output {

@@ -1,13 +1,17 @@
+mod common;
+
 #[cfg(unix)]
 mod unix_tests {
+    use crate::common;
     use proton_drive_sync_engine::index::load_existing_index;
     use serde_json::Value;
+    use std::ffi::OsStr;
     use std::fs;
     use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixStream;
     use std::path::{Path, PathBuf};
-    use std::process::{Child, Command, ExitStatus, Stdio};
+    use std::process::{Child, Command, ExitStatus, Output};
     use std::thread;
     use std::time::{Duration, Instant};
     use tempfile::tempdir;
@@ -134,34 +138,26 @@ mod unix_tests {
         .expect("write config");
 
         // This daemon is configured entirely from the file, so it cannot go through
-        // `DaemonProcess::spawn_with_args` — but it captures its stderr the same way, so a
-        // timeout here can still say what the daemon was complaining about.
-        let stderr_path = directory.path().join("daemon.stderr");
-        let stderr_file = fs::File::create(&stderr_path).expect("create daemon stderr log");
-        let child = Command::new(env!("CARGO_BIN_EXE_proton-syncd"))
-            .arg("--config")
-            .arg(&config_path)
-            .env("XDG_STATE_HOME", directory.path())
-            .env("RUST_LOG", "warn")
-            .stdout(Stdio::null())
-            .stderr(Stdio::from(stderr_file))
-            .spawn()
-            .expect("spawn proton-syncd");
-        let mut daemon = DaemonProcess { child, stderr_path };
+        // `DaemonProcess::spawn_with_args` — but it starts through the same `start`, so it has the
+        // same sandbox and a timeout here can still say what the daemon was complaining about.
+        let mut daemon = DaemonProcess::start(
+            directory.path(),
+            [OsStr::new("--config"), config_path.as_os_str()],
+        );
         wait_for_socket(&socket_path, &mut daemon);
 
         // An empty XDG_RUNTIME_DIR, so the default socket path resolves somewhere the daemon is
         // NOT listening: only the config file can produce a successful round trip here.
         let empty_runtime_dir = directory.path().join("runtime");
         fs::create_dir(&empty_runtime_dir).expect("runtime dir");
-        let output = Command::new(env!("CARGO_BIN_EXE_proton-sync"))
-            .arg("--config")
-            .arg(&config_path)
-            .arg("--json")
-            .arg("status")
-            .env("XDG_RUNTIME_DIR", &empty_runtime_dir)
-            .output()
-            .expect("run proton-sync");
+        let output = run_client(
+            proton_sync(directory.path())
+                .arg("--config")
+                .arg(&config_path)
+                .arg("--json")
+                .arg("status")
+                .env("XDG_RUNTIME_DIR", &empty_runtime_dir),
+        );
 
         assert!(
             output.status.success(),
@@ -186,12 +182,12 @@ mod unix_tests {
 
         // Without --config the same invocation looks in $XDG_RUNTIME_DIR and finds nothing, which
         // is what made the flag necessary.
-        let without_config = Command::new(env!("CARGO_BIN_EXE_proton-sync"))
-            .arg("--json")
-            .arg("status")
-            .env("XDG_RUNTIME_DIR", &empty_runtime_dir)
-            .output()
-            .expect("run proton-sync");
+        let without_config = run_client(
+            proton_sync(directory.path())
+                .arg("--json")
+                .arg("status")
+                .env("XDG_RUNTIME_DIR", &empty_runtime_dir),
+        );
         assert!(
             !without_config.status.success(),
             "the default socket path must not reach this daemon, or the test proves nothing"
@@ -1208,14 +1204,12 @@ exit 64
             }
         });
 
-        let output = Command::new(env!("CARGO_BIN_EXE_proton-sync"))
-            .arg("--socket-path")
-            .arg(&socket_path)
-            .arg("--pair")
-            .arg("photos")
-            .arg("status")
-            .output()
-            .expect("run proton-sync");
+        let output = run_client(
+            control_command(&socket_path)
+                .arg("--pair")
+                .arg("photos")
+                .arg("status"),
+        );
         server.join().expect("fake old daemon thread");
 
         assert!(
@@ -1590,31 +1584,30 @@ exit 64
         );
         // Sandboxed and bounded: if the flag rule were gone this would be a running daemon, and an
         // unbounded wait for it would hang the suite (and, with the machine's own socket and
-        // runtime directory, put it on the real control socket).
-        let stderr_path = directory.path().join("refused.stderr");
-        let mut child = Command::new(env!("CARGO_BIN_EXE_proton-syncd"))
-            .arg("--config")
-            .arg(&config)
-            .arg("--socket-path")
-            .arg(directory.path().join("never-bound.sock"))
-            // The opt-outs are per-pair flags too: a safeguard turned off for "the" pair, with
-            // several, is the worst of the three ways to read it.
-            .arg("--no-delete-approval")
-            .arg("--scan-interval-secs")
-            .arg("5")
-            .env("XDG_RUNTIME_DIR", directory.path())
-            .env("XDG_STATE_HOME", directory.path())
-            .env("XDG_DATA_HOME", directory.path())
-            .env("RUST_LOG", "warn")
-            .stdout(Stdio::null())
-            .stderr(Stdio::from(
-                fs::File::create(&stderr_path).expect("create stderr log"),
-            ))
-            .spawn()
-            .expect("spawn proton-syncd");
-        let Some(status) = wait_for_exit(&mut child, Duration::from_secs(10)) else {
-            let _ = child.kill();
-            let _ = child.wait();
+        // runtime directory, put it on the real control socket). `DaemonProcess::start` is the
+        // sandbox, and its drop kills whatever the bound below gives up on.
+        let never_bound = directory.path().join("never-bound.sock");
+        let fake = write_multi_root_proton_drive(directory.path(), None);
+        let mut daemon = DaemonProcess::start(
+            directory.path(),
+            [
+                OsStr::new("--config"),
+                config.as_os_str(),
+                OsStr::new("--socket-path"),
+                never_bound.as_os_str(),
+                // Without a CLI of its own this would be a daemon over the machine's real
+                // `proton-drive` the moment the flag rule went.
+                OsStr::new("--proton-cli"),
+                fake.as_os_str(),
+                // The opt-outs are per-pair flags too: a safeguard turned off for "the" pair, with
+                // several, is the worst of the three ways to read it.
+                OsStr::new("--no-delete-approval"),
+                OsStr::new("--scan-interval-secs"),
+                OsStr::new("5"),
+            ],
+        );
+        let stderr_path = daemon.stderr_path.clone();
+        let Some(status) = wait_for_exit(&mut daemon.child, Duration::from_secs(10)) else {
             panic!("a per-pair flag beside two pairs started a daemon instead of being refused");
         };
         assert!(
@@ -1631,7 +1624,6 @@ exit 64
         );
 
         // The daemon-wide flags are not per-pair: the same config starts with them.
-        let fake = write_multi_root_proton_drive(directory.path(), None);
         let socket_path = directory.path().join("daemon.sock");
         let mut daemon = DaemonProcess::spawn_with_config(&config, &socket_path, &fake);
         wait_for_socket(&socket_path, &mut daemon);
@@ -1655,6 +1647,24 @@ exit 64
         path
     }
 
+    /// A `proton-sync` command in the sandbox of `directory` (`common::sandboxed`): the control
+    /// CLI resolves its default socket under `XDG_RUNTIME_DIR`, which is where the live daemon's is.
+    fn proton_sync(directory: &Path) -> Command {
+        common::sandboxed(env!("CARGO_BIN_EXE_proton-sync"), directory)
+    }
+
+    /// `proton-sync --socket-path <socket_path>` in the sandbox of the socket's own directory.
+    fn control_command(socket_path: &Path) -> Command {
+        let mut command = proton_sync(socket_path.parent().expect("socket has a parent dir"));
+        command.arg("--socket-path").arg(socket_path);
+        command
+    }
+
+    /// Runs a control-CLI `command` to completion, bounded. **The one way these tests run it.**
+    fn run_client(command: &mut Command) -> Output {
+        common::run_bounded(command, common::RUN_BOUND)
+    }
+
     /// `proton-sync <args...> --json`, parsed. Unlike `run_control` this takes the whole argument
     /// vector, so a subcommand with its own positional argument (`list photos`) can be driven.
     fn run_control_args(socket_path: &Path, args: &[&str]) -> Value {
@@ -1667,12 +1677,7 @@ exit 64
     /// deliberately exits non-zero when nothing was listed, so a script can branch on the code
     /// rather than on the payload.
     fn run_control_args_any_exit(socket_path: &Path, args: &[&str]) -> (Value, bool) {
-        let output = Command::new(env!("CARGO_BIN_EXE_proton-sync"))
-            .arg("--socket-path")
-            .arg(socket_path)
-            .args(args)
-            .output()
-            .expect("run proton-sync");
+        let output = run_client(control_command(socket_path).args(args));
         let value = serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
             panic!(
                 "proton-sync {args:?} did not print JSON ({error}); stdout: {}; stderr: {}",
@@ -1730,9 +1735,9 @@ exit 64
             )
         }
 
-        /// The one spawn body: every daemon these tests start differs only by extra flags, so
-        /// three near-identical copies of the argument list meant three places to keep the
-        /// isolation environment and the log capture in step.
+        /// A daemon over one folder pair given by flags, plus `extra_args`. Every daemon these
+        /// tests start differs only by extra flags, so the argument list is written once here and
+        /// the isolation environment and log capture once in `start`.
         fn spawn_with_args(
             local_root: &Path,
             socket_path: &Path,
@@ -1741,84 +1746,71 @@ exit 64
             proton_cli: &Path,
             extra_args: &[&str],
         ) -> Self {
-            let stderr_path = db_path
-                .parent()
-                .expect("db path has a parent dir")
-                .join("daemon.stderr");
-            let stderr_file = fs::File::create(&stderr_path).expect("create daemon stderr log");
-            let child = Command::new(env!("CARGO_BIN_EXE_proton-syncd"))
-                .arg("--local-root")
-                .arg(local_root)
-                .arg("--remote-root")
-                .arg("/Drive/RemoteFolder")
-                .arg("--socket-path")
-                .arg(socket_path)
-                .arg("--lockfile-path")
-                .arg(lockfile_path)
-                .arg("--db-path")
-                .arg(db_path)
-                .arg("--proton-cli")
-                .arg(proton_cli)
-                .arg("--scan-interval-secs")
-                .arg("60")
+            // The sandbox is the lockfile's directory (every caller keeps the lockfile, the index
+            // and the socket together in the test's own tempdir).
+            let sandbox = lockfile_path.parent().expect("lockfile has a parent dir");
+            let mut args: Vec<&OsStr> = vec![
+                OsStr::new("--local-root"),
+                local_root.as_os_str(),
+                OsStr::new("--remote-root"),
+                OsStr::new("/Drive/RemoteFolder"),
+                OsStr::new("--socket-path"),
+                socket_path.as_os_str(),
+                OsStr::new("--lockfile-path"),
+                lockfile_path.as_os_str(),
+                OsStr::new("--db-path"),
+                db_path.as_os_str(),
+                OsStr::new("--proton-cli"),
+                proton_cli.as_os_str(),
+                OsStr::new("--scan-interval-secs"),
+                OsStr::new("60"),
                 // Keep these process-level tests on the full-tree snapshot path (the default is
                 // now event-driven, which would try to read the CLI keyring session at startup).
-                .arg("--no-events-driven")
-                .args(extra_args)
-                // Isolate the user-global single-instance lock per test: `default_global_lock_path`
-                // keys on `$XDG_STATE_HOME`, so pointing it at this test's tempdir stops parallel
-                // ipc_cli daemons contending on one machine-global lock (they would else exit 1,
-                // and a real proton-syncd on this machine would win — #77).
-                .env(
-                    "XDG_STATE_HOME",
-                    lockfile_path.parent().expect("lockfile has a parent dir"),
-                )
-                // AND ISOLATE THE TRASH. Local deletions default to `local_delete_mode = "trash"`,
-                // and these tests spawn REAL daemons — so without this any test whose plan holds a
-                // LocalDelete moves its temp files into the developer's own
-                // `~/.local/share/Trash`, on every `cargo test`. Set for every spawn rather than
-                // for the tests that need it: the hazard belongs to the default, so a test that
-                // acquires a local delete later must not have to remember this.
-                .env(
-                    "XDG_DATA_HOME",
-                    lockfile_path.parent().expect("lockfile has a parent dir"),
-                )
-                .env("RUST_LOG", "warn")
-                .stdout(Stdio::null())
-                .stderr(Stdio::from(stderr_file))
-                .spawn()
-                .expect("spawn proton-syncd");
-            Self { child, stderr_path }
+                OsStr::new("--no-events-driven"),
+            ];
+            args.extend(extra_args.iter().map(OsStr::new));
+            Self::start(sandbox, args)
         }
 
         /// A daemon over a config file of several pairs, started with **only daemon-wide flags**
         /// (`--config`, `--socket-path`, `--proton-cli`): beside several pairs every per-pair flag
         /// — `--local-root`, `--no-events-driven`, `--scan-interval-secs` — is refused, which is why
         /// `spawn_with_args` cannot start one. The tables carry `events_driven = false` and a scan
-        /// interval themselves. The isolation is `spawn_with_args`'s: the user-global lock and the
-        /// trash are redirected into the test's directory, and `RUST_LOG` is `warn` (a failed
-        /// action is reported at `warn`).
+        /// interval themselves. The isolation is `start`'s, like every other daemon here.
         fn spawn_with_config(config_path: &Path, socket_path: &Path, proton_cli: &Path) -> Self {
-            let directory = socket_path.parent().expect("socket has a parent dir");
-            let stderr_path = directory.join("daemon.stderr");
-            let stderr_file = fs::File::create(&stderr_path).expect("create daemon stderr log");
-            let child = Command::new(env!("CARGO_BIN_EXE_proton-syncd"))
-                .arg("--config")
-                .arg(config_path)
-                .arg("--socket-path")
-                .arg(socket_path)
-                .arg("--proton-cli")
-                .arg(proton_cli)
-                // The runtime directory is where the DEFAULT control socket lives. It is passed
-                // explicitly above, but a sandbox that relies on one flag is a sandbox with a hole.
-                .env("XDG_RUNTIME_DIR", directory)
-                .env("XDG_STATE_HOME", directory)
-                .env("XDG_DATA_HOME", directory)
-                .env("RUST_LOG", "warn")
-                .stdout(Stdio::null())
-                .stderr(Stdio::from(stderr_file))
-                .spawn()
-                .expect("spawn proton-syncd");
+            Self::start(
+                socket_path.parent().expect("socket has a parent dir"),
+                [
+                    OsStr::new("--config"),
+                    config_path.as_os_str(),
+                    OsStr::new("--socket-path"),
+                    socket_path.as_os_str(),
+                    OsStr::new("--proton-cli"),
+                    proton_cli.as_os_str(),
+                ],
+            )
+        }
+
+        /// **The one place a `proton-syncd` is started.** Every daemon these tests run — and every
+        /// one that is meant to be refused and must not become one — differs only by its flags, so
+        /// the isolation, the log capture and the kill-on-drop live here once.
+        ///
+        /// `sandbox` is the test's own directory. `common::sandboxed` points `HOME`, the runtime
+        /// dir, the state dir (the user-global single-instance lock: parallel daemons would
+        /// contend on one machine-global `flock`, and a real `proton-syncd` on this machine would
+        /// win — #77) and the data dir at it. The data dir is the trash: local deletions default
+        /// to `local_delete_mode = "trash"`, and these are REAL daemons, so without it any test
+        /// whose plan holds a LocalDelete moves its temp files into the developer's own
+        /// `~/.local/share/Trash` on every `cargo test`. It is set for every start rather than for
+        /// the tests that need it: the hazard belongs to the default, so a test that acquires a
+        /// local delete later must not have to remember it. And the control socket is under the
+        /// runtime dir by default: a start that forgot `--socket-path` would otherwise replace the
+        /// live daemon's.
+        fn start<S: AsRef<OsStr>>(sandbox: &Path, args: impl IntoIterator<Item = S>) -> Self {
+            let stderr_path = sandbox.join("daemon.stderr");
+            let mut command = common::sandboxed(env!("CARGO_BIN_EXE_proton-syncd"), sandbox);
+            command.args(args).env("RUST_LOG", "warn");
+            let child = common::spawn_logging(&mut command, &stderr_path);
             Self { child, stderr_path }
         }
 
@@ -1982,13 +1974,7 @@ exit 64
     /// Runs the control CLI with `--json` and parses the response. The human-readable output is
     /// the CLI's default now; these process-level tests assert on the machine-readable form.
     fn run_control(socket_path: &Path, command: &str) -> Value {
-        let output = Command::new(env!("CARGO_BIN_EXE_proton-sync"))
-            .arg("--socket-path")
-            .arg(socket_path)
-            .arg("--json")
-            .arg(command)
-            .output()
-            .expect("run proton-sync");
+        let output = run_client(control_command(socket_path).arg("--json").arg(command));
         assert!(
             output.status.success(),
             "proton-sync {command} failed: {}",
@@ -2000,13 +1986,7 @@ exit 64
     /// As `run_control`, but tolerates a non-zero exit — `syncnow --json` exits 1 when the pass
     /// it watched failed, and some tests exercise exactly that.
     fn run_control_any_exit(socket_path: &Path, command: &str) -> Value {
-        let output = Command::new(env!("CARGO_BIN_EXE_proton-sync"))
-            .arg("--socket-path")
-            .arg(socket_path)
-            .arg("--json")
-            .arg(command)
-            .output()
-            .expect("run proton-sync");
+        let output = run_client(control_command(socket_path).arg("--json").arg(command));
         serde_json::from_slice(&output.stdout).expect("control response JSON")
     }
 
@@ -2067,12 +2047,7 @@ exit 64
     /// Runs the control CLI and returns its raw stdout, for subcommands whose output is
     /// human-readable text rather than JSON (`pending`, `approve`, `deny`).
     fn run_control_raw(socket_path: &Path, args: &[&str]) -> String {
-        let output = Command::new(env!("CARGO_BIN_EXE_proton-sync"))
-            .arg("--socket-path")
-            .arg(socket_path)
-            .args(args)
-            .output()
-            .expect("run proton-sync");
+        let output = run_client(control_command(socket_path).args(args));
         assert!(
             output.status.success(),
             "proton-sync {args:?} failed: {}",
