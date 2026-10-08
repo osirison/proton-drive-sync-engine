@@ -438,11 +438,13 @@ async fn status_round_trip<R: tauri::Runtime>(
             return refusal.payload(&app.state());
         }
     }
-    // A selection READ is re-validated against what the daemon just said, once. Two things it can
-    // have said change the answer: that the pair asked for does not exist (below), and — on the very
-    // first read, when the daemon had not yet shown it reads a selector — that it does. Both are
-    // fixed by asking again, so the reply that is drawn always describes the pair that is selected
-    // and a start-up never flashes the default pair for one poll before the real one.
+    // A selection READ is re-validated against what the daemon just said, once. Three things it can
+    // have said change the answer: that the pair asked for does not exist (below); — on the very
+    // first read, when the daemon had not yet shown it reads a selector — that it does; and, the
+    // mirror of that, that it no longer does (a daemon replaced by an older one mid-session answers an
+    // addressed read without a `pair`). Each is fixed by asking again, so the reply that is drawn
+    // always describes the pair that is selected and a start-up never flashes the default pair for
+    // one poll before the real one.
     let revalidates = ask == Ask::Selected && command == ControlCommand::Status;
     let mut asked_again = false;
     let mut fell_back_from: Option<String> = None;
@@ -459,9 +461,16 @@ async fn status_round_trip<R: tauri::Runtime>(
         .await;
         let answer = reply.and_then(|reply| classify(pair.selector.as_deref(), reply));
         // File what the daemon said before deciding what it means: the list of pairs it carries is
-        // what the selection is validated against.
+        // what the selection is validated against. **All three kinds are filed**, `NotUnderstood`
+        // included: a selector that reached a daemon downgraded since it was last heard from is
+        // answered by a reply with no `pair` and no `pairs`, and filing it is what shows the
+        // capability is gone — so the selection read below stops addressing the request and the read
+        // is repeated unaddressed, instead of the poll being reported as an outage with the one
+        // sentence (`NOT_MULTI_PAIR`) that is true of the daemon and false of the poll.
         let unresolved = matches!(answer, Ok(Answer::Unresolved(_)));
-        if let Ok(Answer::Unresolved(reply) | Answer::About(reply)) = &answer {
+        if let Ok(Answer::Unresolved(reply) | Answer::About(reply) | Answer::NotUnderstood(reply)) =
+            &answer
+        {
             app.state::<Mutex<RuntimePaths>>()
                 .lock()
                 .unwrap()

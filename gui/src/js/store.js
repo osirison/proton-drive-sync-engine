@@ -116,9 +116,9 @@ export function pairOf(payload) {
  * stamp a request issued *before* some event as though it had been issued after, which is the one
  * direction that is unsafe.
  *
- * The reply is filed under the pair it describes. The selected pair moves only if this reply is the
- * newest to say so (`issue` ≥ the last that did): replies can arrive out of order, and an old one
- * reporting the previous selection must not win it back.
+ * The reply is filed under the pair it describes. The selected pair moves only if this reply is ABOUT
+ * the pair it selects, and is the newest to say so (`issue` ≥ the last that did): replies can arrive
+ * out of order, and an old one reporting the previous selection must not win it back.
  */
 export function setStatus(payload, issue) {
   const name = pairOf(payload);
@@ -144,8 +144,15 @@ export function setStatus(payload, issue) {
     state.pairStates = [];
   }
 
+  // THE SELECTION MOVES ONLY ON A REPLY THAT DESCRIBES THE PAIR IT SELECTS. Rust stamps `selected` when
+  // it BUILDS the payload, so a read that left for pair A before `select_pair(B)` and landed after it
+  // describes A and says B: taking that `selected` moved the window to a pair with no status of its own
+  // yet, and the hero drew "unreachable" until B's first reply arrived. Not moving leaves the window on
+  // the pair it already has a status for (A, filed just above), and the first reply that is ABOUT B —
+  // the next poll — carries it there with that status in hand. The same rule keeps a read that NAMES
+  // another pair (`get_status(pair)`) from relocating the window, which its reply would otherwise do.
   const next = state.follows === "selection" ? (payload?.selected ?? name) : name;
-  if (issue >= state.selectedIssue) {
+  if (next === name && issue >= state.selectedIssue) {
     state.selected = next;
     state.selectedIssue = issue;
   }

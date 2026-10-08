@@ -483,6 +483,56 @@ fn a_destructive_verb_rereads_status_first() {
     }
 }
 
+/// A daemon downgraded to one that predates the selector, WHILE a non-default pair is selected: the
+/// next read of the selection is addressed (the app still believes the daemon reads a selector), the
+/// legacy daemon drops the field and answers about its one pair, and that reply is not the answer to
+/// anything that was asked. It must not be drawn as an outage — the daemon is up — and it must not
+/// cost a poll: the reply shows the daemon cannot read a selector, so the read is repeated
+/// unaddressed, once, exactly as an unresolved selector is (`an_unresolved_selector_is_not_unreachable`).
+#[test]
+fn a_selected_read_after_a_downgrade_is_retried_unaddressed_not_reported_unreachable() {
+    let downgrade = downgraded_after_being_heard_from();
+    let h = &downgrade.h;
+    let handle = || h.app.handle().clone();
+    run!(select_pair(handle(), "photos".to_owned())).unwrap();
+    assert_eq!(
+        h.state().lock().unwrap().daemon.capability,
+        PairCapability::MultiPair,
+        "the premise: the app still believes the daemon reads a selector"
+    );
+    h.daemon.clear_requests();
+
+    let first = run!(get_status(handle(), None));
+
+    assert_ne!(
+        first.state,
+        DaemonState::Unreachable,
+        "the daemon answered: {:?}",
+        first.error
+    );
+    assert!(first.error.is_none(), "{:?}", first.error);
+    assert_eq!(first.state, DaemonState::Idle);
+    assert_eq!(
+        selectors(&h.daemon),
+        [some("photos"), None],
+        "asked for photos, was not understood, asked again unaddressed"
+    );
+    assert_eq!(first.selected.as_deref(), Some("default"));
+    assert!(
+        first.pair_unknown.is_none(),
+        "a downgrade is not a missing pair"
+    );
+    assert_eq!(
+        h.state().lock().unwrap().daemon.capability,
+        PairCapability::Legacy
+    );
+    // And the memory survives: the preference is not the daemon's to erase.
+    assert_eq!(
+        gui_core::gui_prefs::load_selected_pair(&prefs_of(h)).as_deref(),
+        Some("photos")
+    );
+}
+
 /// The gate asks about a daemon's ability and not about the verb's name only: a verb for the DEFAULT
 /// pair is addressed by omission, which every daemon of any age acts on correctly, so nothing is
 /// asked and nothing is refused.

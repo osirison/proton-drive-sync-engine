@@ -106,6 +106,31 @@ test("a slow old reply cannot move the selection back", () => {
   assert.equal(store.select.pairName(), "docs");
 });
 
+test("a reply in flight across a switch is filed under its own pair and does not move the selection to one with no status", () => {
+  store.configure({ follows: "selection" });
+  store.setStatus(payload(["docs", "photos"], "docs", "docs", { pending_changes: 4 }), next());
+  assert.equal(store.select.pairName(), "docs");
+  // `select_pair(photos)` lands while a status read for docs is out. Rust stamps `selected` when the
+  // reply is BUILT, so the reply describes docs and says photos is selected.
+  store.setStatus(payload(["docs", "photos"], "docs", "photos", { pending_changes: 5 }), next());
+  assert.equal(store.select.pairName(), "docs", "a reply about docs cannot carry the window to photos");
+  assert.equal(
+    store.select.daemonState(),
+    "idle",
+    "photos has no status yet and must not be drawn as unreachable",
+  );
+  assert.equal(
+    store.select.response().pending_changes,
+    5,
+    "the reply is still filed, under the pair it described",
+  );
+  // The first reply that DESCRIBES photos is what moves the window there, with its own status in hand.
+  store.setStatus(payload(["docs", "photos"], "photos", "photos", { pending_changes: 9 }), next());
+  assert.equal(store.select.pairName(), "photos");
+  assert.equal(store.select.daemonState(), "idle");
+  assert.equal(store.select.response().pending_changes, 9);
+});
+
 test("a payload with no reply keeps the roster, and a reply that lists none clears it", () => {
   store.configure({ follows: "selection" });
   store.setStatus(payload(["docs", "photos"], "docs", "docs"), next());
