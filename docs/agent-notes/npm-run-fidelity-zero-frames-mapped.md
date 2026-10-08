@@ -9,7 +9,7 @@ recorded: 2026-08-16
 **Symptom:** `npm run fidelity` reports
 
 ```
-fidelity:assert — 0/51 frames mapped, 5 assertions, 11 failures
+fidelity:assert — 0/55 frames mapped, 5 assertions, 11 failures
   ...
   100 stale deviation(s) in known-deviations.mjs.
 Frames with a fid mapping that stamped none of it — built, and rendering nothing:
@@ -57,8 +57,8 @@ seconds. It is easy to run `check` once, then keep editing JS while iterating on
 node with a frame, a key and a property, so the instinct is to read the list. A
 total render failure produces the *longest* output of any failure mode while
 containing the least information about its own cause. The one line that
-distinguishes it is the ratio at the top: `0/51 frames mapped` against a healthy
-run's `51/51 frames mapped, 96500 assertions, 0 failures`.
+distinguishes it is the ratio at the top: `0/55 frames mapped` against a healthy
+run's `55/55 frames mapped, 103090 assertions, 0 failures`.
 
 `serve()` returns `{ port, server }`, not `{ port, close }` — call
 `process.exit(0)` rather than trying to close it.

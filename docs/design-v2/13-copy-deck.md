@@ -163,6 +163,13 @@ Footer doors: `Activity` · `Plan a sync` · `Settings` · `Details`
 `Close window` + `keeps syncing` · `Quit` + `stops syncing`
 `Can't reach Proton Drive` / `Nothing is lost. 4 changes are waiting and will go as soon as it's back.` / `retrying in 40s · last reached 13:58`
 
+Two folders or more (`10-tray.md`, DEVIATIONS §107): `Pause syncing` and `Resume syncing` become one row per
+folder, `Pause {name}` / `Resume {name}` (`Pause documents`, `Resume photos`) — the folder's name is the
+only word added, and the row is never `Pause all`. The panel's last row past five folders is `{n} more
+folders` (`2 more folders`; `1 more folder`), and it opens the window. A failed folder's panel says `The last
+sync didn't finish` / `Nothing is lost. 4 changes are waiting and will go on the next try.` — the same two
+sentences the window says (`MAIN.failed`), not the outage banner's.
+
 ## Notifications
 
 See `11-notifications.md` — all four are quoted verbatim there.
