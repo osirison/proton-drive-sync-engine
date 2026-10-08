@@ -14,20 +14,20 @@ npm run fidelity:pairs      # the pair-routing gate on its own
 
 ## The twelve gates
 
-| Gate                               | Compares                                                                        | Runs today?                        |
-| ---------------------------------- | ------------------------------------------------------------------------------- | ---------------------------------- |
-| **style** `assert.mjs`             | every mapped app node's computed styles against the drawn node                  | on whatever carries a `data-fid`   |
-| **unstamped** `assert.mjs`         | a frame's declared fid slots against the ones the app stamped                   | yes, every declared slot           |
-| **unclaimed** `assert.mjs`         | every drawn node against the slots that name it — the mirror of the row above   | yes, 268 declared in 29 entries    |
-| **collision** `assert.mjs`         | two elements carrying one `data-fid` — a duplication no per-node gate counts    | yes, every stamped node            |
-| **fit** `assert.mjs`               | every full window renders at exactly 1040×764, nothing painting over the footer | yes                                |
-| **hue** `assert.mjs`               | a settled surface contains no saturated colour anywhere                         | yes, all 5 settled frames          |
-| **squeeze** `assert.mjs`           | a compact panel keeps its drawn height in a window too short for it             | yes, all 11 compact frames         |
-| **copy** `copy-gate.mjs`           | every fixed string in `ui/copy.js` appears verbatim in the frames               | yes, every string and 74 templates |
-| **contrast** `check-contrast.mjs`  | every text node is legible against what is actually behind it, in both themes   | yes, 1233 nodes across 51 frames   |
-| **fixtures** `check-fixtures.mjs`  | every in-scope frame has a dataset, of the shape its class implies              | yes, all 51                        |
-| **n1** `check-n1-identity.mjs`     | every frame renders the same bytes when the daemon lists one folder pair        | yes, all 51 — see its reach below  |
-| **pairs** `check-pair-routing.mjs` | a write acts on the pair it was drawn for, not the one selected when it runs    | yes, 9 scenarios (#102 phase 5a-2) |
+| Gate                               | Compares                                                                        | Runs today?                         |
+| ---------------------------------- | ------------------------------------------------------------------------------- | ----------------------------------- |
+| **style** `assert.mjs`             | every mapped app node's computed styles against the drawn node                  | on whatever carries a `data-fid`    |
+| **unstamped** `assert.mjs`         | a frame's declared fid slots against the ones the app stamped                   | yes, every declared slot            |
+| **unclaimed** `assert.mjs`         | every drawn node against the slots that name it — the mirror of the row above   | yes, 268 declared in 29 entries     |
+| **collision** `assert.mjs`         | two elements carrying one `data-fid` — a duplication no per-node gate counts    | yes, every stamped node             |
+| **fit** `assert.mjs`               | every full window renders at exactly 1040×764, nothing painting over the footer | yes                                 |
+| **hue** `assert.mjs`               | a settled surface contains no saturated colour anywhere                         | yes, all 5 settled frames           |
+| **squeeze** `assert.mjs`           | a compact panel keeps its drawn height in a window too short for it             | yes, all 11 compact frames          |
+| **copy** `copy-gate.mjs`           | every fixed string in `ui/copy.js` appears verbatim in the frames               | yes, every string and 74 templates  |
+| **contrast** `check-contrast.mjs`  | every text node is legible against what is actually behind it, in both themes   | yes, 1233 nodes across 51 frames    |
+| **fixtures** `check-fixtures.mjs`  | every in-scope frame has a dataset, of the shape its class implies              | yes, all 51                         |
+| **n1** `check-n1-identity.mjs`     | every frame renders the same bytes when the daemon lists one folder pair        | yes, all 51 — see its reach below   |
+| **pairs** `check-pair-routing.mjs` | a write acts on the pair it was drawn for, not the one selected when it runs    | yes, 10 scenarios (#102 phase 5a-2) |
 
 Seven of the twelve are `assert.mjs` and need a browser. **contrast**, **n1** and **pairs** need one
 too. **copy** does
@@ -46,11 +46,20 @@ rendering of one drawing at one instant cannot make.
   `pairs`). `?pairs=1` (`fixtures/preview.js`) answers the same frame the way a current daemon with one
   pair does, and the gate requires the two `outerHTML`s of the app root to be equal — no tolerance, no
   stored digest. A frame that does not render the same bytes twice from one URL fails as such, so the
-  comparison cannot fail at random — which is true because **the clock is pinned** (below), and was not
-  before. It cannot see a state no frame draws (the never-synced hero is reachable only at two folders).
+  comparison does not fail at random — which holds because **the clock is pinned** (below) and because a
+  frame is sampled only when it has **settled**: three samples 100 ms apart, each taken with no finite
+  animation running (`document.getAnimations()`), and a page that has not settled within 8 s fails
+  rather than passes. The first rule alone was not enough: three equal samples span 200 ms, the band's
+  entrance animation lasts 220 ms and removes `is-entering` only on `animationend`, so a run under load
+  could sample a frame inside it (`9a Consent`, about 1 run in 10 with five runs in parallel). Measured
+  after the fix: **16 of 16 runs passed**, 5 alone, 6 with 3 runs in parallel and 5 with 5 in parallel. It cannot see a state no frame draws (the never-synced hero is reachable only at two folders).
 
-  **What "51/51" reaches** is printed on the line under the result, counted from the fixtures, because
-  the number alone reads as fifty-one frames each rewritten end to end. Today: the **status** reply is
+  **What "51/51" reaches** is printed on the line under the result, **measured** by running
+  `withOnePair`/`withOnePairConfig` on every fixture and counting the replies that came back different
+  (it was counted from the fixtures with a copy of the injection's test, which printed the same figures
+  for an injection that reached no config reply at all), because the number alone reads as fifty-one
+  frames each rewritten end to end. The gate fails outright if the status reply or the config was
+  rewritten on none; the per-shape decision is pinned by `gui/test/preview-pairs.test.js`. Today: the **status** reply is
   rewritten on the **27** frames whose fixture carries one, **3** more carry a payload with no reply and
   gain `selected` alone, and **21** describe no status and are answered by the generic mock, which the
   listing does not touch. The **`read_config`** reply is asked for by every frame and rewritten on **46**
@@ -62,12 +71,13 @@ rendering of one drawing at one instant cannot make.
 - **pairs.** `app.js` cannot be imported, so this runs the real page against a scripted stand-in for the
   Tauri bridge that answers each command and can hold a reply open — for a named pair, so two reads of one
   command for two folders can be released in either order — which is what makes the gap between a press and
-  the daemon's answer something a test can stand in. Nine scenarios: the follow-up to an approval; the press
+  the daemon's answer something a test can stand in. Ten scenarios: the follow-up to an approval; the press
   of `Run this sync` (pair and token are committed at the press); a switch between two folders that draw
   identical cards; the hero's buttons after a switch that patches the hero in place; a never-synced pair at
   two folders and at one; a **late conflict read** for the folder that was left (two folders in conflict at
   one path, the older read answering after the newer was issued); a **decision on a conflict** pressed after
-  the selection moved; and the **tray panel's pin** to the default pair. Its waits are conditions: a reply
+  the selection moved, and the **continuation of a late decision** (it must not move the card the other
+  folder is now showing); and the **tray panel's pin** to the default pair. Its waits are conditions: a reply
   is "landed" when a later call to the bridge has come back, because replies reach the page in the order
   they were sent. It proves the facade and the screens agree; Rust's half is `selection_tests.rs`.
 

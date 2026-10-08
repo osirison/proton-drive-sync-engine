@@ -1,6 +1,6 @@
 ---
-trigger: npm run fidelity, fidelity:n1, "the SAME url rendered two different DOMs", since 15:17, FIDELITY_CLOCK_POISON, clock-pin, armClock, fixtures/clock.js
-depends_on: gui/tools/fidelity/clock-pin.mjs, gui/tools/fidelity/check-n1-identity.mjs, gui/src/js/fixtures/clock.js
+trigger: npm run fidelity, fidelity:n1, "the SAME url rendered two different DOMs", "never stopped changing", is-entering, since 15:17, FIDELITY_CLOCK_POISON, clock-pin, armClock, fixtures/clock.js
+depends_on: gui/src/js/screens/main.js, gui/tools/fidelity/clock-pin.mjs, gui/tools/fidelity/check-n1-identity.mjs, gui/src/js/fixtures/clock.js
 recorded: 2026-10-08
 ---
 
@@ -30,6 +30,17 @@ loads frames must do the same — `gui/test/clock-pin.test.js` fails if it does 
 **Prove the pin is holding:** `FIDELITY_CLOCK_POISON=1 npm run fidelity:n1` drops the pin and keeps the
 skew the gate adds (each load's real clock reads 61 seconds more than the previous load's). It must exit
 1 and name exactly those eight frames. If it passes, the pin is not what the gate is running on.
+
+**A second cause, same message (fixed after the clock pin):** the clock pin took the failure from one run
+in three to about one in ten, and the remainder was a frame caught inside the band's 220 ms entrance
+animation. `settledHtml` called the DOM settled after three equal samples 100 ms apart, which spans 200 ms;
+`fillBand` takes `is-entering` off only on `animationend`, so under load a load's samples could all fall
+before the class came off and the next load's after (`9a Consent`, reproduced 1 run in 10 with five n1
+runs in parallel). `settledHtml` now also requires `document.getAnimations()` to hold no FINITE animation
+(an infinite one, `breathe` or `blip`, changes no markup and never ends) on each of the three samples, and
+a page that has not settled in 8 s FAILS. To see the difference on demand, set `--t-appear: 1500ms` in
+`tokens.css` and settle `9a Consent` both ways: the old rule returns a DOM with `is-entering` on it, the
+new one waits it out.
 
 **Do not fix it in the fixtures.** The frames exist to exercise the app formatting an epoch; writing
 the times as literals would stop testing that. `clock.js`'s header says absolute times should be

@@ -45,6 +45,8 @@ import puppeteer from "puppeteer";
 import { armClock, SKEW_STEP_MS } from "./clock-pin.mjs";
 import { serve } from "./serve.mjs";
 import { FIXTURES } from "../../src/js/fixtures/frames.js";
+import { withOnePair, withOnePairConfig } from "../../src/js/fixtures/preview.js";
+import { EMPTY_CONFIG } from "../../src/js/api.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const index = JSON.parse(readFileSync(join(HERE, "frames", "index.json"), "utf8"));
@@ -56,20 +58,40 @@ const page = await browser.newPage();
 // (the squeeze gate re-opens compact frames at 200px) should see the same viewport it always does.
 await page.setViewport({ width: 1040, height: 764, deviceScaleFactor: 1 });
 
-/** The app root after it has stopped changing: the same bytes on three samples 100ms apart. */
+/** How long the page may take to settle before it is called unsettled. */
+const SETTLE_BUDGET_MS = 8000;
+
+/**
+ * The app root after it has stopped changing: three samples 100ms apart that are the same bytes AND
+ * were each taken with no finite animation running. Both conditions are needed. Equal bytes alone span
+ * only 200ms and the band entrance animation lasts 220ms (`--t-appear`), whose `animationend` handler is
+ * what removes `is-entering`, so three equal samples could fall inside it and the next load's differed
+ * (one run in ten under parallel load: `9a Consent`). An infinite animation (`breathe`, `blip`) is not
+ * waited for: it never ends and changes no markup. A page that has not settled inside the budget FAILS
+ * (`settled: false`); it is never passed.
+ */
 async function settledHtml() {
-  const html = () => page.evaluate(() => document.getElementById("app-root")?.outerHTML ?? "");
-  let last = await html();
-  let stable = 1;
-  for (let i = 0; i < 30 && stable < 3; i += 1) {
+  const sample = () =>
+    page.evaluate(() => ({
+      html: document.getElementById("app-root")?.outerHTML ?? "",
+      running: document
+        .getAnimations()
+        .filter((animation) => Number.isFinite(animation.effect?.getComputedTiming().endTime)).length,
+    }));
+  const deadline = Date.now() + SETTLE_BUDGET_MS;
+  let last = "";
+  let stable = 0;
+  while (Date.now() < deadline) {
+    const { html, running } = await sample();
+    // A sample taken while something finite runs counts for nothing, not even as the first of three.
+    stable = running > 0 ? 0 : stable > 0 && html === last ? stable + 1 : 1;
+    last = html;
+    if (stable >= 3) return { html: last, settled: true };
     await new Promise((resolve) => {
       setTimeout(resolve, 100);
     });
-    const now = await html();
-    stable = now === last ? stable + 1 : 1;
-    last = now;
   }
-  return { html: last, settled: stable >= 3 };
+  return { html: last, settled: false };
 }
 
 let loads = 0;
@@ -146,7 +168,8 @@ if (problems.length) {
 }
 
 /**
- * WHAT THE LISTING ACTUALLY REACHES, counted from the fixtures rather than assumed — "51/51" reads as
+ * WHAT THE LISTING ACTUALLY REACHES, MEASURED: each fixture is handed to the injection the app itself
+ * calls, and a reply counts as rewritten when what came back is not what went in. "51/51" reads as
  * fifty-one frames each rewritten end to end, and that is not what happens. The injection rewrites two
  * replies, and a frame only has what it has:
  *
@@ -158,27 +181,50 @@ if (problems.length) {
  *     when it describes one and from the empty one when it does not. A config that already lists a pair
  *     keeps it, so only those that list none are rewritten.
  *
- * The comparison is exact on every frame, and the printed counts say how many of them it can have
- * moved. They are printed rather than written here because the fixtures are what they are counted from.
+ * These were first counted from the fixtures with the same test the injection was thought to use, which
+ * is how an injection that reached NO config reply printed the same figures as one that reached 46
+ * (K8). The count now comes from `withOnePair`/`withOnePairConfig` themselves, and the gate refuses
+ * to pass when either reached nothing: a comparison of replies the injection never touched is two
+ * copies of one rendering.
  */
 function reach() {
-  const labels = index.map((frame) => frame.label);
-  const count = (test) => labels.filter((label) => test(FIXTURES[label])).length;
-  const listsPairs = (fixture) => (fixture.config?.pairs?.length ?? 0) > 0;
-  return {
-    reply: count((f) => Boolean(f.status?.response)),
-    selectedOnly: count((f) => Boolean(f.status) && !f.status.response),
-    noStatus: count((f) => !f.status),
-    ownConfig: count((f) => Boolean(f.config)),
-    emptyConfig: count((f) => !f.config),
-    configRewritten: count((f) => !listsPairs(f)),
-    configAuthored: count(listsPairs),
+  const tally = {
+    reply: 0,
+    selectedOnly: 0,
+    noStatus: 0,
+    ownConfig: 0,
+    emptyConfig: 0,
+    configRewritten: 0,
+    configAuthored: 0,
   };
+  for (const { label } of index) {
+    const fixture = FIXTURES[label];
+    if (!fixture.status) tally.noStatus += 1;
+    else {
+      const after = withOnePair(fixture.status);
+      if (after.response !== fixture.status.response) tally.reply += 1;
+      else if (after !== fixture.status) tally.selectedOnly += 1;
+    }
+    if (fixture.config) tally.ownConfig += 1;
+    else tally.emptyConfig += 1;
+    const served = fixture.config ?? EMPTY_CONFIG;
+    if (withOnePairConfig(served) !== served) tally.configRewritten += 1;
+    else tally.configAuthored += 1;
+  }
+  return tally;
 }
 const r = reach();
+if (r.reply === 0 || r.configRewritten === 0) {
+  console.error(
+    `fidelity:n1 — the one-pair injection reached nothing it should have (status reply rewritten on ${r.reply}, ` +
+      `read_config rewritten on ${r.configRewritten}), so the comparison above compared replies with themselves.`,
+  );
+  process.exit(1);
+}
 console.log(
   `fidelity:n1 — ${identical}/${index.length} frames render the same bytes with one pair listed\n` +
-    `  reach: status reply rewritten on ${r.reply}, \`selected\` alone on ${r.selectedOnly}, no status on ${r.noStatus}; ` +
+    `  reach (measured by running the injection on every fixture): status reply rewritten on ${r.reply}, ` +
+    `\`selected\` alone on ${r.selectedOnly}, no status on ${r.noStatus}; ` +
     `read_config rewritten on ${r.configRewritten} (${r.ownConfig} describe a config, ${r.emptyConfig} take the empty one), ` +
     `already listing a pair on ${r.configAuthored}`,
 );
