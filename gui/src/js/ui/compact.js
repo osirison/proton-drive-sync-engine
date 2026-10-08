@@ -307,6 +307,22 @@ function deletionRow({ severity, name, note }, i) {
   );
 }
 
+/**
+ * The folder the hero is about, as one mono line ABOVE it (#102 phase 5d, decision D3).
+ *
+ * With two folders or more the panel shows the worst folder's own hero — its unchanged headline and
+ * sub-line — and this is the line that says whose it is. A panel block of its own and not a child of
+ * the hero, so it works the same for all six arrangements (the syncing hero is a different tree from
+ * the others), and so a one-folder panel, which draws none, is the same tree it always was.
+ *
+ * One line, truncated with an ellipsis: a folder name is up to 64 characters and the panel is 362px.
+ * The tier is the sub-line's mono one (11.5px, `--text-5`), because it is a caption for the hero
+ * and not a statement of its own.
+ */
+function pairLine(name) {
+  return fid(el("div", { class: "compact-pair" }, name), "pair");
+}
+
 // -------------------------------------------------------------------------------- the panel ----
 
 /**
@@ -334,6 +350,7 @@ export function renderCompactPanel(opts = {}) {
     action = null,
     footer = null,
     menu = null,
+    pair = null,
   } = opts;
 
   if (!STATES.includes(state)) {
@@ -491,6 +508,7 @@ export function renderCompactPanel(opts = {}) {
       // off what was drawn cannot drift from it. Found by review, #246.
       "data-menu": menu ? menuSignature(menu) : null,
     },
+    pair == null ? null : pairLine(pair),
     hero,
     rows,
     actionBlock,
@@ -526,8 +544,13 @@ export function renderCompactPanel(opts = {}) {
  */
 export function updateCompactPanel(node, opts = {}) {
   if (!node) return false;
-  const { state, headline: headlineText, sub, meta, count, transfers, footer, menu } = opts;
+  const { state, headline: headlineText, sub, meta, count, transfers, footer, menu, pair } = opts;
   if (state && node.dataset.state !== state) return false;
+  // THE FOLDER LINE IS PART OF THE PANEL'S SHAPE: drawn at two folders or more and not below. A panel
+  // that has one when it should not (or lacks one it should) is rebuilt, never patched toward it.
+  // `undefined` means the caller does not say (the fixtures' panels); `null` says there is none.
+  const pairNode = node.querySelector(":scope > .compact-pair");
+  if (pair !== undefined && Boolean(pairNode) !== (pair != null)) return false;
   // The rows are NOT patched — `trayMenu`'s handlers are bound at build time — so a different menu
   // is a shape change like any other, and the caller renders a fresh panel. See `data-menu`.
   if (menu && node.dataset.menu !== menuSignature(menu)) return false;
@@ -545,6 +568,7 @@ export function updateCompactPanel(node, opts = {}) {
     return Boolean(target);
   };
 
+  if (pair != null && pairNode) writes.push([pairNode, pair]);
   if (headlineText != null && !need(".compact-headline", headlineText)) return false;
   // Only the single-line form is patched. A multi-line sub is a `<br>` between text nodes, and
   // rewriting it through textContent would collapse the break the design put there on purpose —
@@ -697,14 +721,84 @@ export function menuSignature(rows) {
   return JSON.stringify(rows.map((row) => (row.separator ? null : row.id)));
 }
 
-export function trayMenu(state, onSelect = null) {
-  const rows = TRAY_MENU[state];
-  if (!rows) {
+/**
+ * The rows of a menu with a handler bound to every row. `onSelect(id)` rather than a handler per row,
+ * for the reason `trayMenu` gives; no handler binds `null`, which is how `menuSignature` reads a menu
+ * without a click behind it.
+ */
+export function bindMenu(rows, onSelect = null) {
+  return rows.map((row) =>
+    row.separator ? row : { ...row, onClick: onSelect ? () => onSelect(row.id) : null },
+  );
+}
+
+/**
+ * How many folders the PANEL draws a pause row for before it says `N more folders` (decision D13).
+ * The native menus have no cap — they scroll — so this is the panel's number alone, and the corpus the
+ * panel and the native rows are both held to is written below it.
+ */
+export const TRAY_FOLDER_CAP = 5;
+
+/**
+ * The rows for a state when there are TWO FOLDERS OR MORE (#102 phase 5d) — `tray_menu.rs`'s `rows_for`,
+ * in the panel's vocabulary, and held to it by `gui/test/tray-menu-corpus.json` on both sides.
+ *
+ * `pairs` is the daemon's list as the payload carries it: `{ name, paused, syncing, rank }` per folder
+ * (`rank` is Rust's `severity`, which this file does not recompute — two places deciding how bad a
+ * state is would disagree). The folder group is the worst first, ties in the daemon's order; each row is
+ * `pause@name` or `resume@name` by that folder's own flag. There is NO row that pauses them all.
+ *
+ * The set is chosen from the folder list and not from the state alone (decision D5): `Sync now` is
+ * there while some unpaused folder is idle, `Close window — keeps syncing` while some folder is
+ * unpaused. An expired session, a folder that has never synced and a stopped daemon keep their sets —
+ * there is nothing to pause, or nobody to send it to.
+ *
+ * `cap` bounds the folder rows (the panel's), replacing the rest with one `N more folders` row that
+ * does what `Open Drive Sync` does; `null` draws every folder, as the native menus do.
+ */
+export function folderMenuRows(state, pairs, { cap = null } = {}) {
+  const fixed = TRAY_MENU[state];
+  if (!fixed) {
     throw new Error(
       `compact: no tray menu for state "${state}". Known: ${Object.keys(TRAY_MENU).join(", ")}`,
     );
   }
-  return rows.map((row) =>
-    row.separator ? row : { ...row, onClick: onSelect ? () => onSelect(row.id) : null },
+  // One folder, or a daemon that lists none: exactly the rows this panel has always had.
+  if (!Array.isArray(pairs) || pairs.length < 2) return fixed;
+  if (state === "notRunning" || state === "deferToWindow") return fixed;
+
+  // Array.prototype.sort is stable, so equal ranks keep the daemon's order.
+  const ordered = [...pairs].sort((a, b) => b.rank - a.rank);
+  const shown = cap == null ? ordered : ordered.slice(0, cap);
+  const group = shown.map((pair) =>
+    pair.paused
+      ? { id: `resume@${pair.name}`, label: TRAY.resumePair(pair.name) }
+      : { id: `pause@${pair.name}`, label: TRAY.pausePair(pair.name) },
   );
+  if (shown.length < ordered.length) {
+    group.push({ id: "more", label: TRAY.moreFolders(ordered.length - shown.length) });
+  }
+
+  const open = { id: "open", label: TRAY.open };
+  const quit = { id: "quit", label: TRAY.quit, sub: TRAY.quitSub };
+  const sep = { separator: true };
+  if (state === "outage") {
+    return [{ id: "tryAgain", label: TRAY.tryAgain }, open, sep, ...group, sep, quit];
+  }
+  // settled, needsYou, syncing, paused.
+  return [
+    open,
+    ...(pairs.some((pair) => !pair.paused && !pair.syncing) ? [{ id: "syncNow", label: TRAY.syncNow }] : []),
+    sep,
+    ...group,
+    sep,
+    ...(pairs.some((pair) => !pair.paused)
+      ? [{ id: "closeWindow", label: TRAY.closeWindow, sub: TRAY.closeWindowSub }]
+      : []),
+    quit,
+  ];
+}
+
+export function trayMenu(state, onSelect = null, pairs = [], opts = {}) {
+  return bindMenu(folderMenuRows(state, pairs, opts), onSelect);
 }

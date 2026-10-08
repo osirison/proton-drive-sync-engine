@@ -5870,3 +5870,111 @@ of its keys.**
 Round 3 also observed that `classifyUnclaimed` had no test — its four schema arms were verified by
 six hand-run poisons and nothing in CI. `test/known-unclaimed.test.js` closes that: nine cases,
 each counterfactualled by deleting the arm it covers.
+
+## The tray at two folders or more (#102 phase 5d, 2026-10-08)
+
+## 107. Four tray frames the design never drew, the rule that keeps a one-folder user out of them, and what each leaves undrawn
+
+`design-v2` had no mention of more than one folder (a grep over this directory found none), so
+the tray's behaviour with two or more is new normative text (`10-tray.md` §"Two folders or more",
+`13-copy-deck.md` §Tray) and four new frames — `10a Two folders`, `10a Two folders paused`,
+`10a Two folders failed`, `10a Many folders`. Dark only, 362px, the compact panel's `tray` family. They
+are drawn in the same change that builds them and gate-checked on arrival: a frame drawn alone fails
+the unclaimed census for every node no slot names (the brief's correction A1), so there is no
+design-only commit.
+
+### §107a · R-N1: below two folders nothing new draws
+
+The rule every decision below depends on, stated once: **a node that exists only for several folders
+is drawn only when the daemon lists two or more.** A person with one folder — and a daemon that lists
+none, which is every daemon older than folder pairs — sees the same glyph, title, panel and rows as
+before, down to the dbusmenu ids and the labels (`n1_rows_are_todays_rows`,
+`sync_now_at_one_folder_is_todays_single_request`, `pause_at_one_folder_is_todays_unaddressed_request`).
+So all 51 earlier frames, their fixtures and their 22 pinned header spacers are untouched, and the
+change to `frames/` is additions only (four files and 24 lines of `index.json`; `fidelity:stale`
+compares the old ones with tolerance and none moved).
+
+### §107b · The decisions applied (maintainer, issue #102, 2026-10-08)
+
+- **Every folder has its own pause.** No `Pause all` row, no daemon-wide state, on any surface
+  (`no_row_offers_pause_all`). `Pause {name}` / `Resume {name}` (D11) — `TRAY.pausePair` and
+  `TRAY.resumePair`, one line each so `tray_menu.rs` reads them.
+- **D3.** The glyph is the worst folder's state, from the five forms that exist (`glyphs:check` is
+  unchanged). The rank is `gui_core::state::severity`, an exhaustive `match`, and the webview is sent
+  the rank with each folder's state and never recomputes it. The title names the folders the glyph
+  cannot — `documents paused, photos up to date` — worst first, three at most, then `+n more`. The
+  panel is the worst folder's own hero, preceded by its name.
+- **D5.** One `Sync now`, present while some unpaused folder is idle, sending `syncnow` to every
+  unpaused folder; chosen from the folder list, not from the aggregate state alone.
+- **D13.** The panel draws pause rows for five folders, worst first, then `N more folders`, which
+  opens the window. The native menus have no cap.
+- **D2** is §107a.
+
+### §107c · What the frames draw that no earlier frame did
+
+1. **The folder line** (`div[0]` of the panel): 11.5px mono `#6D7783`, centred, one line with an
+   ellipsis, `padding:14px 22px 0`. A block of the panel and not a child of the hero, so it is the
+   same over all six arrangements; the hero's own paddings (which are a table, not a range, §58) are
+   unchanged. Stamped `pair` in `fids.js`; `compactFids` gained `lead` to shift the keys below it.
+2. **The folder group** in the menu, between two rules. The second rule needs its own dbusmenu id
+   (a layout cannot hold two items with one), `SECOND_SEPARATOR_ID` = 91; the first stays 90.
+3. **`MAIN.failed` / `MAIN.failedSub(4)`** on a panel, in `10a Two folders failed`. A failed folder
+   is not "Proton cannot be reached" (§95): its pass failed with Proton reachable, and that is what
+   these two sentences say. Both were exempt from the copy gate ("no frame draws a pass that
+   failed"); the frame draws them, so the exemption and the ungated-template row are gone and
+   `MAIN.failedSub` has a `DRAWN` row at `[4]`. The zero branch stays ungated for the original
+   reason (`failedSub(0)` is the bare `Nothing is lost.` that `10a Offline` also contains).
+4. **The tray's desktop-facing edge** (`rgba(255,255,255,.1)`, #261) on all four, so they add no
+   `decision` rows to `known-deviations.mjs`; the four old `10a` panels keep theirs (§101).
+5. **`10a Two folders` joins the hue gate's settled list**: it is a settled surface with no colour.
+6. **A paused hero names its folder** (`TRAY.pausedSubPair`, review of #443): `10a Two folders paused` and
+   `10a Many folders` draw `7 changes have piled up since 13:20. Nothing in documents will move until
+   you resume.` (and `archive`), where `10a Paused` — one folder — keeps `Nothing will move until you
+   resume.`. Another folder keeps syncing under a paused one, so the unscoped sentence was untrue of the
+   app. Drawn in the prototype first (both blocks), extracted (text only: the two frame files differ in
+   those three strings and nowhere else), then the fixtures and the template with a `DRAWN` row for each
+   frame. The first sentence is shared with `MAIN.pausedSub`, so the two cannot drift.
+
+### §107d · What is deliberately not drawn, and why
+
+- **A sub-line total.** `10a Two folders` says `2 minutes ago`, not `2 minutes ago · 12,480 files`: no
+  command reports an index-wide count (G7, #207), and a new frame has no reason to draw what the app
+  cannot say.
+- **A needs-you panel at several folders.** The panel counts the withheld deletions of every folder
+  (each summary carries its own) and the conflicts of the one folder it scans (a disk walk the tray does
+  not run for the others, brief E6). The limit is stated in the frame's caption and in `10-tray.md`, not
+  filled. No frame draws the form; `tray-view.test.js` and the pair-routing gate's eleventh scenario hold
+  it. **This bullet said "the deletions across folders" for as long as the code counted the panel
+  folder's own** (review of #443, F1): a deletion in another folder was hidden behind `Up to date` or
+  `Paused`, with no way in. The rule is now that the panel's folder is the worst by rank, except that a
+  folder that is up to date and has a decision waiting outranks one that is merely paused or has nothing
+  to decide — never one that is syncing, failed, signed out or stopped, which outrank a decision at one
+  folder too. `Review them` names its folder (`review@photos`) and opens the window with it selected,
+  through the one writer of the selection (`select_pair`).
+- **A syncing panel at several folders.** The worst folder's transfer rows are drawn only when the
+  worst folder is the one the reply describes (the reply's `activity` belongs to the folder that is
+  syncing and rides on that folder's reply). Another folder syncing draws its count and no rows.
+  No frame draws it, and the unit tests (`another folder syncing is drawn from its summary`) hold the
+  shape.
+- **`pause_unsaved`, which the daemon sets when it applied a pause or resume and could not save it**
+  (#441). It is not shown on the panel, and cannot be on the native menus. Every row dismisses the
+  panel before its reply arrives (`tray_action` hides it first), the reply is not repeated on `status`,
+  and the panel has no notice or error element to put it in — drawing one would be a new node for a
+  one-shot event whose truth ends at the next daemon restart. Every row that pauses or resumes writes
+  it to stderr — a folder's, and (since the review of #443) the one-folder `Pause syncing`/`Resume
+  syncing` too, which logged nothing. **Showing it stays deferred to the app PR.** The way to show it as
+  state is a `pause_unsaved` field on the folder's summary, which is engine work; recorded as deferred
+  in the PR.
+- **A pair-specific sixth glyph**, which `10-tray.md` forbids ("Only five forms exist"). The cost is
+  the one the brief named: a folder whose directory is missing derives `Failed`, so the glyph becomes
+  the struck form that elsewhere means Proton is out of reach, while Proton is reachable and the other
+  folders sync. The title carries the difference; the glyph cannot.
+
+### §107e · Counts that moved
+
+51 in-scope frames became 55; compact frames 11 became 15 (the squeeze gate re-opens all of them in a
+200px window); settled frames in the hue gate 5 became 6; `assert.mjs` 55/55 mapped. The `51` is
+quoted in `frame-classes.mjs`, `extract.mjs`, `check-fixtures.mjs`, `fidelity/README.md`,
+`known-deviations.mjs`, `IMPLEMENTATION-PLAN.md` and the notes of the places it was a current-state
+count; measurements dated to a past run (`35/51 frames mapped`, `11/51`) are left as they were
+measured.

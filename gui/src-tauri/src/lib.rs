@@ -136,6 +136,7 @@ pub fn run() {
             // The tray panel (S8): its rows, and the two things only the webview knows — how tall it
             // came out, and when Esc was pressed.
             commands::tray_action,
+            commands::tray_status,
             commands::resize_tray_panel,
             commands::hide_tray_panel,
         ])

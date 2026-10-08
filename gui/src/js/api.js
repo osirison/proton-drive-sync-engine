@@ -51,6 +51,9 @@ const wireConflict = ({ original, sidecar, kind }) => ({ original, sidecar, kind
 // Thin named wrappers over the fixed command surface.
 export const api = {
   getStatus: (opts) => invoke("get_status", readArgs(undefined, opts)),
+  // The tray panel's poll: always the DEFAULT pair, with no pair to name (class "default pair" in
+  // `pair_tests.rs`). `getStatus()` with nothing means the SELECTED pair, which is the window's.
+  getTrayStatus: () => invoke("tray_status"),
   pause: ({ pair } = {}) => write("pause", {}, pair),
   resume: ({ pair } = {}) => write("resume", {}, pair),
   syncNow: ({ pair } = {}) => write("sync_now", {}, pair),
@@ -243,6 +246,7 @@ function mockInvoke(cmd, args) {
     // keeps a partly-described frame useful rather than blank.
     switch (cmd) {
       case "get_status":
+      case "tray_status":
         // `?pairs=1`: the same frame, answered as a daemon that lists one pair would (N=1 identity).
         return Promise.resolve(previewPairs() ? withOnePair(fixture.status) : fixture.status);
       case "scan_conflicts":
@@ -359,6 +363,7 @@ function mockInvoke(cmd, args) {
   }
   switch (cmd) {
     case "get_status":
+    case "tray_status":
       return Promise.resolve({
         state: "running",
         response: {

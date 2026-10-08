@@ -1,4 +1,9 @@
-// The system tray's datasets (F9) — `10a`, six frames that split two ways.
+// The system tray's datasets (F9) — `10a`, ten frames that split three ways.
+//
+// FOUR MORE ARE THE SAME PANEL AT TWO FOLDERS OR MORE (#102 phase 5d). `10a Two folders`, `Two folders
+// paused`, `Two folders failed` and `Many folders` are the compact panel with the folder line above the
+// hero and a pause row per folder in the menu — its arguments, like the four above them, plus `pair`
+// (the line) and `pairs` (the folder list the menu is built from, as the payload carries it).
 //
 // FOUR ARE THE COMPACT PANEL IN A STATE. `10a Settled/Syncing/Offline/Paused` are `ui/compact.js`
 // with the tray menu as its tail, so their fixture is that component's arguments and not a status
@@ -19,6 +24,20 @@
 
 import { MAIN, TRAY } from "../ui/copy.js";
 import { compactFids, glyphFids, without } from "./fids.js";
+
+/**
+ * A folder as the payload carries it into the menu (`foldersOf` in `screens/tray.js`), with `rank` as
+ * Rust's `gui_core::state::severity` sends it: idle 0, paused 1, failed 4. Data, like the rest of a
+ * fixture — the panel sorts by it and never recomputes it.
+ */
+const folder = (name, { paused = false, rank = 0 } = {}) => ({ name, paused, syncing: false, rank });
+
+/**
+ * The slots a two-folders panel does not draw. `compactFids` is a factory over every arrangement and
+ * declares them all; a map shifted down a block cannot ride along on a frame that has the node
+ * unshifted (see `without`).
+ */
+const NOT_DRAWN_AT_TWO_FOLDERS = ["meta", "action", "subBreak"];
 
 export const TRAY_FIXTURES = {
   // The swatch sheet behind `10-tray.md` §"The glyph": two columns (`mono`, `colour`) × five rows,
@@ -148,6 +167,96 @@ export const TRAY_FIXTURES = {
       family: "tray",
       headline: MAIN.paused,
       sub: MAIN.pausedSub(7, "13:20"),
+      menu: true,
+    },
+  },
+
+  // ---- the same panel at two folders or more (#102 phase 5d). The worst folder's own panel, named
+  // by one mono line above it, over the menu with a pause row for each folder (decisions D3, D5, D11,
+  // D13). Nothing here draws below two folders: a one-folder panel is the four above, unchanged.
+  //
+  // `2 minutes ago` and no file total in the settled sub-line: the live panel has the first and not
+  // the second (no command reports an index-wide count, G7 #207), and a frame at two folders is new
+  // enough that there is no reason to draw what the app cannot say.
+  "10a Two folders": {
+    fids: without(
+      compactFids({ state: "settled", tail: "menu", tailAt: 1, lead: 1 }),
+      ...NOT_DRAWN_AT_TWO_FOLDERS,
+    ),
+    panel: {
+      state: "settled",
+      family: "tray",
+      pair: "documents",
+      pairs: [folder("documents"), folder("photos")],
+      headline: MAIN.compact.upToDate,
+      sub: "2 minutes ago",
+      subMono: true,
+      menu: true,
+    },
+  },
+
+  // `documents` is paused and `photos` is fine: the aggregate is `paused` (it outranks `idle`), the
+  // panel is the paused folder's, and its row offers `Resume` while the other still offers `Pause`.
+  "10a Two folders paused": {
+    fids: without(
+      compactFids({ state: "paused", tail: "menu", tailAt: 1, lead: 1 }),
+      ...NOT_DRAWN_AT_TWO_FOLDERS,
+    ),
+    panel: {
+      state: "paused",
+      family: "tray",
+      pair: "documents",
+      pairs: [folder("documents", { paused: true, rank: 1 }), folder("photos")],
+      headline: MAIN.paused,
+      // The folder is named: `photos` keeps syncing beside it, so "nothing will move" would not be true.
+      sub: TRAY.pausedSubPair(7, "13:20", "documents"),
+      menu: true,
+    },
+  },
+
+  // `photos`' last sync did not finish: the struck form (a failed pass shares it with an expired
+  // session and a stopped daemon) over the `outage` rows — `Try again now` first — gaining the folder
+  // group. Not `10a Offline`'s words: that frame says Proton cannot be reached, and a folder whose
+  // pass failed with Proton reachable is the case `MAIN.failed` exists for (#246, DEVIATIONS §95).
+  "10a Two folders failed": {
+    fids: without(
+      compactFids({ state: "unreachable", tail: "menu", tailAt: 1, lead: 1 }),
+      ...NOT_DRAWN_AT_TWO_FOLDERS,
+    ),
+    panel: {
+      state: "unreachable",
+      menuState: "outage",
+      family: "tray",
+      pair: "photos",
+      pairs: [folder("documents"), folder("photos", { rank: 4 })],
+      headline: MAIN.failed,
+      sub: MAIN.failedSub(4),
+      menu: true,
+    },
+  },
+
+  // Seven folders, one paused: the panel draws pause rows for five, worst first (`archive` leads, then
+  // the daemon's order), and one row for the other two. The native menus would draw all seven.
+  "10a Many folders": {
+    fids: without(
+      compactFids({ state: "paused", tail: "menu", tailAt: 1, lead: 1 }),
+      ...NOT_DRAWN_AT_TWO_FOLDERS,
+    ),
+    panel: {
+      state: "paused",
+      family: "tray",
+      pair: "archive",
+      pairs: [
+        folder("documents"),
+        folder("photos"),
+        folder("music"),
+        folder("projects"),
+        folder("archive", { paused: true, rank: 1 }),
+        folder("notes"),
+        folder("backups"),
+      ],
+      headline: MAIN.paused,
+      sub: TRAY.pausedSubPair(7, "13:20", "archive"),
       menu: true,
     },
   },

@@ -98,6 +98,16 @@ pub enum Ask<'a> {
     Selected,
     /// A pair by name, byte-exactly, which must be one the app knows.
     Named(&'a str),
+    /// [`Self::Named`], with the name **always written on the wire**, the default pair's included.
+    ///
+    /// The default pair is addressed by omission (`wire_selector`), and a row drawn for a folder that
+    /// WAS the default is the one place that goes wrong: a click on a stale `Pause documents`, after a
+    /// daemon restart changed which folder stands first, reaches the daemon unaddressed and pauses
+    /// whichever folder is the default now. Written out, the daemon's own byte-exact selector rule
+    /// answers "no such pair" and nothing is paused. Only a request that can be sent to a daemon known
+    /// to list its folders may use it — an older daemon ignores a selector it does not read, which
+    /// the reply's shape reports (`Answer::NotUnderstood`) and the caller refuses.
+    Explicit(&'a str),
 }
 
 impl<'a> Ask<'a> {
@@ -368,6 +378,11 @@ impl RuntimePaths {
             Ask::Default => self.resolve_pair(None),
             Ask::Selected => Ok(self.selected_pair()),
             Ask::Named(name) => self.resolve_pair(Some(name)),
+            Ask::Explicit(name) => {
+                let mut pair = self.resolve_pair(Some(name))?;
+                pair.selector = Some(pair.name.clone());
+                Ok(pair)
+            }
         }
     }
 

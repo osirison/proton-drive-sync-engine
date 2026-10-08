@@ -12,6 +12,12 @@
     "nodes": 34
   },
   {
+    "label": "10a Many folders",
+    "kind": "compact",
+    "file": "10a-many-folders.json",
+    "nodes": 26
+  },
+  {
     "label": "10a Offline",
     "kind": "compact",
     "file": "10a-offline.json",
@@ -34,6 +40,24 @@
     "kind": "compact",
     "file": "10a-syncing.json",
     "nodes": 41
+  },
+  {
+    "label": "10a Two folders",
+    "kind": "compact",
+    "file": "10a-two-folders.json",
+    "nodes": 21
+  },
+  {
+    "label": "10a Two folders failed",
+    "kind": "compact",
+    "file": "10a-two-folders-failed.json",
+    "nodes": 18
+  },
+  {
+    "label": "10a Two folders paused",
+    "kind": "compact",
+    "file": "10a-two-folders-paused.json",
+    "nodes": 22
   },
   {
     "label": "11a Grouped",

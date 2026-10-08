@@ -119,6 +119,23 @@
   text-align: start;
 }
 
+/* The folder a hero is about, drawn only at TWO FOLDERS OR MORE (#102 phase 5d, `10a Two folders`).
+   A block of the panel above the hero and not a child of it, so it reads the same over all six
+   arrangements and a one-folder panel is the tree it always was. The sub-line's mono tier, because it
+   is a caption for what is underneath; centred over the centred mark; one line, since a folder name
+   is up to 64 characters and the panel 362px. */
+.compact-pair {
+  padding: 14px 22px 0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: normal;
+  color: var(--text-5);
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* `retrying in 40s · last reached 13:58`. Only the can't-reach panel draws it, and it comes AFTER
    the reassurance — voice rule 3, and the reason this line is a third tier rather than part of the
    sentence above it. */

@@ -59,10 +59,11 @@ Read [How sync works](/concepts/how-sync-works/) for the full model.
 
 - **Unix-only.** Control-plane IPC uses Unix domain sockets, so Windows is out of scope
   for now. Linux is the primary target (Fedora, Ubuntu, Arch).
-- **The desktop app shows one folder pair.** One daemon can sync several (`[[pair]]` tables in
-  its config; see [Multiple folder pairs](/daemon/folder-pairs/)), and the control CLI
-  addresses any of them by name with `--pair`, but the desktop app, the tray's *Pause
-  syncing* and the notifications act on the first one only, and the app cannot add a pair.
+- **The desktop app's window shows one folder pair.** One daemon can sync several (`[[pair]]`
+  tables in its config; see [Multiple folder pairs](/daemon/folder-pairs/)), and the control CLI
+  addresses any of them by name with `--pair`. The window and the notifications act on the first
+  one only, and the app cannot add a pair; its [tray](/desktop/tray/#two-or-more-folders) is the
+  exception, listing every pair with a pause row for each.
 - **No symlink sync.** Symlinks under the local root are skipped in both directions — along
   with sockets, named pipes and device nodes. All of them are *reported* by name under
   `proton-sync status`'s `can't sync`, so nothing is skipped in silence.

@@ -79,6 +79,39 @@ blocking socket never freezes the UI, and **Start the sync service** asks system
 (`systemctl --user start proton-syncd`) and, when there is no unit to ask, falls back to
 launching `proton-syncd` directly against the saved config.
 
+## Two or more folders
+
+With one folder the tray is exactly what is described above. When the daemon runs two or more
+[folder pairs](/daemon/folder-pairs/), it grows in four ways, and **every folder has its own
+pause** — there is no *Pause all*:
+
+- **The icon shows the worst state any folder is in**, from the same five forms: a daemon that
+  cannot be reached, then a signed-out session, then a folder whose last sync failed, then one that
+  has never synced, then syncing, then paused, then up to date. One folder paused and the other up
+  to date shows the paused icon; one paused and the other syncing shows the syncing icon; one failed
+  and anything else shows the struck icon — which then means *that folder's last sync failed*, not
+  that Proton is out of reach.
+- **The tooltip says which folder is which**, worst first, naming at most three and then
+  *+n more*: *documents paused, photos up to date*.
+- **The menu has one row per folder**: *Pause documents* — or *Resume documents* while that folder is
+  paused — and *Pause photos*, between two rules. **Sync now** is one row that asks every folder you
+  have not paused to sync; it is there while any of them is idle. **Close window · keeps syncing**
+  is there while any folder is unpaused. A menu you opened before a folder came or went acts on the
+  folder its label named, or on nothing if that folder is gone.
+- **The panel is the worst folder's own**: its hexagon and sentence, with the folder's name in a
+  line above. A paused folder's sentence names it — *Nothing in documents will move until you
+  resume* — because another folder may be syncing. It lists pause rows for five folders, worst
+  first, then one row — *2 more folders* — that opens the window; the right-click menu lists every
+  folder.
+- **A deletion waiting in any folder is counted on the panel**, not only in the folder it shows: an
+  up-to-date folder with a deletion waiting is shown ahead of a paused one, and *Review them* opens
+  the window with that folder selected. (Conflicts are counted for the one folder the tray scans.)
+
+An expired session, a folder that has never synced and a stopped daemon keep their short menus:
+there is nothing to pause, or nobody to send it to. When a pause cannot be saved to the folder's
+index the daemon says so on the command line (`proton-sync pause` prints *Not saved*); the tray has
+no place to show that, so it writes a line about it to the app's log.
+
 ## Desktop notifications
 
 The app can fire native desktop notifications through the OS notification service, so

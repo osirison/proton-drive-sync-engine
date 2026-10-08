@@ -23,7 +23,13 @@
 
 import { MAIN, TRAY } from "../ui/copy.js";
 import { clock, since } from "../ui/format.js";
-import { renderCompactPanel, updateCompactPanel, trayMenu } from "../ui/compact.js";
+import {
+  renderCompactPanel,
+  updateCompactPanel,
+  bindMenu,
+  folderMenuRows,
+  TRAY_FOLDER_CAP,
+} from "../ui/compact.js";
 import { heroStateOf, transfersOf } from "./main.js";
 
 /**
@@ -99,18 +105,156 @@ const MENU_STATE = {
 };
 
 /**
+ * The folders of a payload, joined to the state Rust derived for each — or `[]` when there are fewer
+ * than two, or when the payload cannot say what state every one of them is in.
+ *
+ * `[]` is the one-folder panel, byte for byte what it always was (decision D2), and it is also the
+ * answer to an inconsistent payload: a folder with no derived state is not defaulted to `idle`, which
+ * would be the false all-clear this whole module exists to prevent — the panel simply does not claim
+ * to know about several folders. `rank` is Rust's (`gui_core::state::severity`), never recomputed here.
+ */
+export function foldersOf(pairs, pairStates) {
+  if (!Array.isArray(pairs) || pairs.length < 2 || !Array.isArray(pairStates)) return [];
+  const derived = new Map(pairStates.map((entry) => [entry.name, entry]));
+  const folders = [];
+  for (const summary of pairs) {
+    const entry = derived.get(summary.name);
+    if (!entry) return [];
+    folders.push({
+      name: summary.name,
+      paused: Boolean(summary.paused),
+      syncing: Boolean(summary.syncing),
+      rank: entry.rank ?? 0,
+      state: entry.state,
+      summary,
+    });
+  }
+  return folders;
+}
+
+/**
+ * What a folder known only by its summary can say to `trayView`: the reply fields it reads, from the
+ * numbers a `PairSummary` carries. A summary has no live activity and no plan, so a syncing folder that
+ * is not the one the reply describes has a count and no transfer rows — the reply's `activity` belongs
+ * to the folder that is syncing and is only on THAT folder's reply.
+ */
+const factsOfSummary = (summary) => ({
+  syncing: summary.syncing,
+  paused: summary.paused,
+  pending_changes: summary.pending_changes,
+  last_sync_epoch_secs: summary.last_sync_epoch_secs,
+  last_error: summary.last_error,
+  activity: null,
+  last_plan_summary: null,
+});
+
+/**
+ * Decisions waiting on a person in one folder, as far as the tray can see them.
+ *
+ * Every folder's withheld deletions are in its summary, so those are counted for all of them. Its
+ * conflicts are not: they come from a disk walk the tray runs for ONE folder (the one the reply
+ * describes), so only that folder has any to count. `scanned` is that folder's own lists, or `null`
+ * for a folder the tray only knows by its summary. The reply's own deletion list and the summary's
+ * count describe the same deletions, so the larger stands rather than their sum.
+ */
+function decisionsIn(folder, scanned) {
+  const own = folder.summary.pending_deletions ?? 0;
+  return scanned ? Math.max(own, scanned.deletions) + scanned.conflicts : own;
+}
+
+/**
+ * The folder whose panel is drawn: the worst by rank (Rust's, never recomputed here), ties to the
+ * first the daemon lists — **except that a folder that is up to date and has a decision waiting
+ * outranks one that is merely paused, or up to date with nothing to decide.**
+ *
+ * Paused is what a person did on purpose, and the decision is the one thing the tray cannot do for
+ * them; an all-clear or a "Paused" panel over a withheld deletion in another folder is how it goes
+ * unseen. The glyph and the title are not touched by this — they follow `severity` alone — and what
+ * does outrank a decision is still everything that is moving or wrong: syncing, a failed pass, a lapsed
+ * session, a stopped daemon. Those panels have no `Review them`, at one folder as at several.
+ */
+function panelFolderOf(folders, decisions) {
+  const worst = folders.reduce((best, folder) => (folder.rank > best.rank ? folder : best));
+  if (worst.state !== "idle" && worst.state !== "paused") return worst;
+  const holder = folders.find((folder, i) => folder.state === "idle" && decisions[i] > 0);
+  return holder ?? worst;
+}
+
+/**
  * The whole panel, derived once.
  *
  * Same shape of argument as `mainView` and for the same reason: the render and the ~2s patch must
  * not be able to disagree about what state this is.
+ *
+ * **With two folders or more** (`pairs` and `pairStates` from the payload, decision D3) the hero is
+ * the WORST folder's own — its headline and sub-line unchanged — preceded by its name, and the menu
+ * gains one pause row per folder. The folder the reply describes keeps everything it had (conflicts,
+ * live transfers, the first-run hero); any other is read from its summary, which is less, and says so
+ * by drawing less rather than by inventing. Below two, `pair` is `null` and the rows are the fixed
+ * set, so a one-folder panel is the one it always was.
+ *
+ * **What `Needs you` counts at several folders is what the tray can see**: the withheld deletions of
+ * EVERY folder, and the conflicts of the one it scans (`decisionsIn`). It used to count the panel
+ * folder's alone, and a deletion waiting in another folder was hidden behind "Up to date" or "Paused"
+ * with no way in. `Review them` names the folder it is drawn for (`review@photos`), so the window it
+ * opens shows that folder.
  */
 export function trayView(props = {}) {
-  const { daemonState = "unreachable", response = null, conflicts = [], deletions = [] } = props;
+  const {
+    daemonState = "unreachable",
+    response = null,
+    conflicts = [],
+    deletions = [],
+    pairs = [],
+    pairStates = [],
+  } = props;
 
+  const folders = foldersOf(pairs, pairStates);
+  if (folders.length === 0) {
+    return {
+      ...panelOf(daemonState, response, conflicts.length + deletions.length),
+      pair: null,
+      menuRows: null,
+    };
+  }
+
+  const scannedName = response?.pair ?? null;
+  const decisions = folders.map((folder) =>
+    decisionsIn(
+      folder,
+      folder.name === scannedName ? { deletions: deletions.length, conflicts: conflicts.length } : null,
+    ),
+  );
+  const waiting = decisions.reduce((sum, n) => sum + n, 0);
+
+  const shown = panelFolderOf(folders, decisions);
+  const described = scannedName === shown.name;
+  const panel = described
+    ? panelOf(daemonState, response, waiting, shown.name)
+    : panelOf(shown.state, factsOfSummary(shown.summary), waiting, shown.name);
+  const view = {
+    ...panel,
+    pair: shown.name,
+    menuRows: folderMenuRows(panel.menuState, folders, { cap: TRAY_FOLDER_CAP }),
+  };
+  // The decision button names its folder; the one-folder panel's is the bare `review` it always was.
+  if (panel.action?.id === "review") view.action = { ...panel.action, id: `review@${shown.name}` };
+  return view;
+}
+
+/**
+ * One folder's panel, from its state and the reply fields. This is the whole of what `trayView` was
+ * before folders; it is a function of ONE folder, so the several-folder view is that function applied
+ * to the worst one rather than a second derivation.
+ *
+ * `folder` is the folder's name at two folders or more and `null` at one. It changes one sentence: a
+ * paused hero names the folder that is paused (`TRAY.pausedSubPair`), because another folder may be
+ * syncing under it and "nothing will move" would be untrue of the app.
+ */
+function panelOf(daemonState, response, waiting, folder = null) {
   const activity = response?.activity ?? null;
   const summary = response?.last_plan_summary ?? null;
   const queued = response?.pending_changes ?? null;
-  const waiting = conflicts.length + deletions.length;
   const lastSync = response?.last_sync_epoch_secs ?? null;
 
   // Everything goes to the shared derivation — including the `pending > 0` rule, which is why a tray
@@ -136,11 +280,14 @@ export function trayView(props = {}) {
     state: PANEL_STATE[hero],
     menuState: MENU_STATE[hero],
     hero,
-    ...copyFor(hero, { changes, waiting, queued, lastSync, activity, summary }),
+    ...copyFor(hero, { changes, waiting, queued, lastSync, activity, summary, folder }),
     transfers:
       PANEL_STATE[hero] === "syncing" ? transfersOf(activity, { compact: true }).slice(0, PANEL_ROWS) : [],
   };
 }
+
+/** The rows a view draws: the folder menu when it has one, else the fixed set for its menu state. */
+const menuRowsOf = (view) => view.menuRows ?? folderMenuRows(view.menuState, []);
 
 /**
  * Headline, sub-line and count, per state.
@@ -165,7 +312,10 @@ function copyFor(hero, v) {
     case "paused":
       return {
         headline: MAIN.paused,
-        sub: MAIN.pausedSub(v.queued ?? 0, clock(v.lastSync)),
+        sub:
+          v.folder == null
+            ? MAIN.pausedSub(v.queued ?? 0, clock(v.lastSync))
+            : TRAY.pausedSubPair(v.queued ?? 0, clock(v.lastSync), v.folder),
       };
 
     case "unreachable":
@@ -241,7 +391,7 @@ function copyFor(hero, v) {
  * up has one handler rather than two that can disagree about what `open` means.
  */
 export function renderTrayPanel(view, onSelect = null) {
-  return renderCompactPanel({
+  const node = renderCompactPanel({
     state: view.state,
     family: "tray",
     headline: view.headline,
@@ -251,9 +401,20 @@ export function renderTrayPanel(view, onSelect = null) {
     count: view.count ?? null,
     transfers: view.transfers ?? [],
     action: view.action ? { ...view.action, onClick: () => onSelect?.(view.action.id) } : null,
-    menu: trayMenu(view.menuState, onSelect),
+    menu: bindMenu(menuRowsOf(view), onSelect),
+    pair: view.pair ?? null,
   });
+  actionIds.set(node, view.action?.id ?? null);
+  return node;
 }
+
+/**
+ * The id the decision button was BUILT to send, per panel. The button's handler is bound at build time
+ * and the panel is patched in place across polls, so an id that changes between two polls — `Review
+ * them` moving from one folder's decisions to another's, with the panel still a needs-you panel — has
+ * to be a shape change, or the patched panel would name one folder and send another.
+ */
+const actionIds = new WeakMap();
 
 /**
  * Patch across a poll. Returns false when the panel's shape changed, which is the caller's signal to
@@ -265,6 +426,7 @@ export function renderTrayPanel(view, onSelect = null) {
  */
 export function updateTrayPanel(node, view) {
   if (!node) return false;
+  if (actionIds.has(node) && actionIds.get(node) !== (view.action?.id ?? null)) return false;
   return updateCompactPanel(node, {
     state: view.state,
     // THE MENU IS PART OF WHAT IS ON SCREEN, and passing only `state` made a patch blind to it.
@@ -273,7 +435,8 @@ export function updateTrayPanel(node, view) {
     // `Proton Drive is asking you to sign in again` over a menu still offering `Try again now` —
     // the row that cannot do what the sentence above it asks. Built without handlers because only
     // the ids are compared; a mismatch returns false and the caller renders a fresh panel. #246.
-    menu: trayMenu(view.menuState),
+    menu: bindMenu(menuRowsOf(view)),
+    pair: view.pair ?? null,
     headline: view.headline,
     sub: Array.isArray(view.sub) ? undefined : (view.sub ?? undefined),
     meta: view.meta ?? undefined,

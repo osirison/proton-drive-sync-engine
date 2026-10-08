@@ -33,7 +33,7 @@ import {
   screenPlaceholder,
 } from "./ui/chrome.js";
 import { dialog, dialogHead, focusTrap } from "./ui/dialog.js";
-import { renderCompactPanel, trayMenu } from "./ui/compact.js";
+import { renderCompactPanel, trayMenu, TRAY_FOLDER_CAP } from "./ui/compact.js";
 import { bannerFor, payloadFor, renderBanner } from "./ui/notification.js";
 import { decide, emptyState } from "./notifier.js";
 import { trayView, renderTrayPanel, updateTrayPanel } from "./screens/tray.js";
@@ -629,7 +629,14 @@ function mountFramePanel(root) {
     // takes the cause"). `10a Offline` is the frame that needs it: it draws the struck panel, which
     // is the `unreachable` FORM, over `Try again now`, which is the `outage` row set. A fixture
     // naming neither would ask `trayMenu` for a set called after a form, and `trayMenu` throws.
-    menu: spec.menu === true ? trayMenu(spec.menuState ?? spec.state) : (spec.menu ?? null),
+    //
+    // `pairs` is the folder list a frame at TWO FOLDERS OR MORE is drawn for (`10a Two folders`): the
+    // same `{ name, paused, syncing, rank }` the payload carries, through the same `trayMenu` the live
+    // panel uses, capped as the live panel is.
+    menu:
+      spec.menu === true
+        ? trayMenu(spec.menuState ?? spec.state, null, spec.pairs ?? [], { cap: TRAY_FOLDER_CAP })
+        : (spec.menu ?? null),
   });
   panelSurface(root).replaceChildren(dom.panel);
   return true;
@@ -681,6 +688,9 @@ function mountTrayPanel(root) {
     response: store.select.response(),
     conflicts: store.select.conflicts(),
     deletions: store.select.pendingDeletions(),
+    // The folders, and the state Rust derived for each (two or more draw a worst-folder panel).
+    pairs: store.select.pairs(),
+    pairStates: store.select.pairStates(),
   });
   if (dom.trayPanel && updateTrayPanel(dom.trayPanel, view)) {
     reportTrayHeight();
@@ -4038,15 +4048,18 @@ function trayActionStatus(id) {
 }
 
 /**
- * What this webview's status poll asks about. The WINDOW asks for nothing in particular, which means
- * the selected pair (Rust holds the selection). The TRAY PANEL is pinned to the pair its rows act on
- * — the default pair until phase 5d teaches them to name one — and names it once the daemon has
- * listed its pairs; before that its request is unaddressed, which is the default pair on any daemon.
- * A panel that showed the selected pair beside a `Pause` row that pauses the default one would be the
- * wrong-target action this phase exists to prevent.
+ * This webview's status poll. The WINDOW asks for nothing in particular, which means the selected pair
+ * (Rust holds the selection). The TRAY PANEL asks for its own command, `tray_status`, which Rust
+ * answers about the DEFAULT pair whatever the window has selected — and, because the reply lists
+ * every folder, that is all the panel needs to draw a worst-folder hero and a pause row for each.
+ *
+ * This used to be `get_status` with `{ pair: <the first name in the roster> }`, and the roster is
+ * empty until a reply has listed it: the panel's very first poll named no pair, which Rust reads as
+ * the SELECTED one, so with a non-default folder selected the panel drew it for one tick (phase 5a-2's
+ * recorded gap). A command that has no pair to name has nothing to get wrong on a first call.
  */
-function pollTarget() {
-  return isTraySurface() ? { pair: store.select.pairs()[0]?.name } : undefined;
+function pollStatus() {
+  return isTraySurface() ? api.getTrayStatus() : api.getStatus();
 }
 
 /**
@@ -4090,7 +4103,7 @@ async function poll() {
   // happened while it was in flight (#335). See `store.beginStatus`.
   const issue = store.beginStatus();
   try {
-    const payload = await api.getStatus(pollTarget());
+    const payload = await pollStatus();
     // Set before setStatus (which synchronously re-renders) so the onboarding-routing gate sees that
     // a real poll has now completed — only then may an `unreachable` reply mean a genuinely fresh
     // machine rather than the pre-poll default.
@@ -4141,7 +4154,7 @@ function scheduleNextPoll() {
 function main() {
   initTheme();
   // The tray panel runs this same file and follows the pair its REPLIES describe, not the window's
-  // selection (see `pollTarget`).
+  // selection (see `pollStatus`).
   if (isTraySurface()) store.configure({ follows: "reply" });
   store.subscribe(render);
   render();

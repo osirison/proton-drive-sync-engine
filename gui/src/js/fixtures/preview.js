@@ -59,7 +59,7 @@ export function applyPreviewTheme() {
 
 /**
  * `?pairs=1` — render the frame as a daemon that lists ONE pair would have answered it (#102 phase
- * 5a-2). All 51 fixtures are one-pair, legacy-shaped replies: no `pair`, no `pairs`. A current daemon
+ * 5a-2). All 55 fixtures are one-pair, legacy-shaped replies: no `pair`, no `pairs`. A current daemon
  * answers the same screen with both, and **the screen must not look any different for it** (D2: a
  * one-folder user sees nothing new). That is a claim about two renderings of one frame, and this is
  * the second one; `tools/fidelity/check-n1-identity.mjs` compares them byte for byte.
@@ -79,6 +79,11 @@ export function previewPairs() {
  * frame with a field added).
  *
  * A payload with no reply (the socket failed) gains `selected` alone: that is all Rust knows then.
+ *
+ * `pair_states` entries are `{ name, state }` here and `{ name, state, rank }` from Rust (#102 phase
+ * 5d: the rank orders the tray panel's folders). Nothing reads `rank` below two folders, and this is
+ * the one-folder rendering — so it is left off rather than computed from a rank table this file would
+ * have to keep in step with `gui_core::state::severity`.
  */
 export function withOnePair(status) {
   if (!status) return status;

@@ -155,7 +155,7 @@ fn target_of(
             Refusal {
                 message,
                 unknown_pair: match ask {
-                    Ask::Named(name) => Some(name.to_owned()),
+                    Ask::Named(name) | Ask::Explicit(name) => Some(name.to_owned()),
                     Ask::Default | Ask::Selected => None,
                 },
             }
@@ -3372,12 +3372,22 @@ pub fn quit_stopping_the_daemon(app: tauri::AppHandle) {
 }
 
 /// What a tray row does, independent of which indicator drew it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrayRow {
     Open,
     SyncNow,
+    /// `Pause syncing` at ONE folder (or for a daemon that lists none): the default pair, as ever.
     Pause,
     Resume,
+    /// `Pause {folder}` / `Resume {folder}` (#102 phase 5d): the row carries the folder it was drawn
+    /// for, so the click acts on THAT folder however the list has changed since.
+    PausePair(String),
+    ResumePair(String),
+    /// `Review them` at two folders or more: the panel's decision button names the folder that holds
+    /// the decisions (`review@photos`), and the window opens with THAT folder selected. It is the
+    /// panel's alone — no native menu draws a `Review` row — but it shares the id space so one
+    /// dispatcher reads every id any surface can send.
+    ReviewPair(String),
     /// The one row that is not a control command: there is no daemon to send one to.
     Start,
     CloseWindow,
@@ -3401,10 +3411,25 @@ pub enum TrayRow {
 /// (The comment this replaces pointed at a `FALLBACK_IDS` table "below" that was never written: the
 /// fallback menu spelled its rows out by hand. #252 gave it the table the comment described.)
 pub fn tray_row(id: &str) -> Option<TrayRow> {
+    // A FOLDER'S ROW: `pause@photos`. The `@` cannot occur in a folder name (`[A-Za-z0-9._-]`), so
+    // splitting on the first one is unambiguous and a name can never forge a verb; a second `@`
+    // cannot belong to any folder and is no row.
+    if let Some((verb, name)) = id.split_once('@') {
+        if name.is_empty() || name.contains('@') {
+            return None;
+        }
+        return match verb {
+            "pause" => Some(TrayRow::PausePair(name.to_owned())),
+            "resume" => Some(TrayRow::ResumePair(name.to_owned())),
+            "review" => Some(TrayRow::ReviewPair(name.to_owned())),
+            _ => None,
+        };
+    }
     Some(match id {
         // `Review them` is the panel's own decision button rather than a menu row, and it goes where
-        // `Open Drive Sync` goes — see the note in `tray_action`.
-        "open" | "review" => TrayRow::Open,
+        // `Open Drive Sync` goes — see the note in `tray_action`. So does the panel's `N more
+        // folders` row (`more`), which has no native counterpart: the native menus draw every folder.
+        "open" | "review" | "more" => TrayRow::Open,
         // `Try again now` IS a sync, and the state it is offered in is `Failed`: the daemon is
         // answering and its last pass was not. It USED to be offered for `Unreachable` as well, on
         // the reasoning that "the thing to retry is reaching it" — but the retry is a `Syncnow` sent
@@ -3420,17 +3445,236 @@ pub fn tray_row(id: &str) -> Option<TrayRow> {
     })
 }
 
+/// Whether the daemon last said it runs two folders or more. The cached roster (`RuntimePaths::daemon`,
+/// refreshed by every status the app sees, ~every 2 seconds), not a round trip: a tray click must
+/// not cost a request at one folder that it never used to.
+///
+/// **The daemon's list and nothing else.** `known_pair_names` falls back to the config FILE when the
+/// daemon has said nothing, and a daemon that predates folder pairs lists none — for which the tray
+/// still draws today's rows, so a file with two tables must not make its `Pause syncing` row refuse.
+fn roster_has_many<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
+    app.state::<Mutex<RuntimePaths>>()
+        .lock()
+        .unwrap()
+        .daemon
+        .pairs
+        .len()
+        >= 2
+}
+
+/// What `pause_unsaved` (#102 decision D12) means for a tray row, as the line to write. The daemon
+/// APPLIED the pause or resume and could not save it, so the folder IS paused (or resumed) now and a
+/// restart before the index records it brings the folder back as it was.
+///
+/// For every row that pauses or resumes — a folder's (`folder` is its name) and the one-folder
+/// `Pause syncing`/`Resume syncing` (`None`) alike: the one-folder rows used to say nothing at all.
+/// Showing it ON the panel stays deferred to the app PR (DEVIATIONS §107d): every row dismisses the
+/// panel before its reply arrives, and the panel has no notice to put it in. stderr is the whole
+/// report on every path until then, and that is a limit of the surface and not a choice.
+fn unsaved_note(verb: &str, folder: Option<&str>, payload: &StatusPayload) -> Option<String> {
+    let reason = payload
+        .response
+        .as_ref()
+        .and_then(|response| response.pause_unsaved.as_deref())?;
+    let what = folder.map_or_else(|| verb.to_owned(), |name| format!("{verb} {name:?}"));
+    Some(format!(
+        "tray: {what} took effect but is not saved ({reason}); a restart before it is would \
+         bring the folder back as it was"
+    ))
+}
+
+/// What a folder row's reply said, as the lines to write. A native menu row has no surface to report
+/// into, and the panel hides itself on every row before the reply arrives, so the stderr line is the
+/// whole report on both paths (the window's own buttons are where a reason can be read).
+fn folder_reply_notes(verb: &str, name: &str, payload: &StatusPayload) -> Vec<String> {
+    let mut notes = Vec::new();
+    if let Some(error) = &payload.error {
+        notes.push(format!("tray: {verb} {name:?} did not go through: {error}"));
+    }
+    notes.extend(unsaved_note(verb, Some(name), payload));
+    notes
+}
+
+/// A fresh status for the pair the tray's rows default to, which is what a folder row answers with:
+/// **the addressed command's own reply is discarded** (B1/E16). It describes the folder that was
+/// paused, and the panel publishes a reply as its own status — so returning it would repaint the
+/// panel as a folder it is not showing.
+async fn unaddressed_status<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> StatusPayload {
+    status_round_trip(app, ControlCommand::Status, Ask::Default).await
+}
+
+/// `Sync now` and `Try again now` with two folders or more (decision D5): `syncnow` to every
+/// UNPAUSED folder, in order, each answered and reported on its own. A paused folder is left alone —
+/// waking it is not what the row promised, and the maintainer's ruling is that pause is per folder.
+///
+/// Read from a FRESH status, not the cached roster: whether a folder is paused is what the loop
+/// turns on, and the cache can be two seconds old.
+///
+/// **A roster that cannot be read is reported, once.** It used to send nothing and say nothing, which
+/// is a `Sync now` that does not sync and leaves no trace of why; a failure of one folder's request is
+/// reported against that folder, so this one is reported against the click. The lines come back
+/// rather than being written here so a test can read them (`tray_control_row` writes them).
+async fn sync_every_unpaused_folder<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Vec<String> {
+    let fresh = unaddressed_status(app.clone()).await;
+    if let Some(error) = &fresh.error {
+        return vec![format!(
+            "tray: sync now did not go through: could not read the folder list: {error}"
+        )];
+    }
+    if fresh.pairs.is_empty() {
+        return vec![
+            "tray: sync now did not go through: the daemon listed no folders to sync".to_owned(),
+        ];
+    }
+    let mut notes = Vec::new();
+    for folder in fresh.pairs.iter().filter(|folder| !folder.paused) {
+        let reply = status_round_trip(
+            app.clone(),
+            ControlCommand::Syncnow,
+            Ask::Named(&folder.name),
+        )
+        .await;
+        if let Some(error) = &reply.error {
+            notes.push(format!(
+                "tray: sync now for {:?} did not go through: {error}",
+                folder.name
+            ));
+        }
+    }
+    notes
+}
+
+/// The part of a tray row that talks to the daemon, **shared by the panel and both native menus** so
+/// the three cannot do different things for one id. Returns what the PANEL should publish as its
+/// status; the native menus ignore it. Writes what the row has to say to stderr (see
+/// [`tray_control_row_noting`], which returns it).
+pub(crate) async fn tray_control_row<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    row: &TrayRow,
+) -> StatusPayload {
+    let (payload, notes) = tray_control_row_noting(app, row).await;
+    for note in notes {
+        eprintln!("{note}");
+    }
+    payload
+}
+
+/// [`tray_control_row`], with the lines it has to write returned instead of written.
+///
+/// At one folder (or against a daemon that lists none) every row is exactly what it was: the command
+/// is sent unaddressed and its own reply comes back. With two or more, a row either names its folder
+/// (`pause@photos`) or is the one `Sync now` for all of them — and each answers a fresh unaddressed
+/// status.
+///
+/// **A folder's row names its folder on the wire, the default folder's too** (`Ask::Explicit`). The
+/// default pair is addressed by omission everywhere else, and for a row drawn for it that is the one
+/// way to reach the wrong folder: a click on a stale `Pause documents`, after a daemon restart
+/// changed which folder stands first, would pause the new default. Written out, the daemon's own
+/// byte-exact rule refuses a name it no longer runs. A folder row exists only at two folders or more,
+/// where the daemon has necessarily listed its folders, so no capability gate stands in front of it;
+/// the one-folder rows keep omission and their wire is unchanged.
+///
+/// **A stale unaddressed `pause`/`resume` acts on nothing once there are two folders.** That is the
+/// row of a menu drawn before the second folder arrived; its label said `Pause syncing`, which at
+/// one folder meant the only folder, and sending it now would pause the default folder alone under a
+/// label that promised more. A stale menu dispatches the action its label promised, or none.
+pub(crate) async fn tray_control_row_noting<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    row: &TrayRow,
+) -> (StatusPayload, Vec<String>) {
+    match row {
+        TrayRow::SyncNow if roster_has_many(&app) => {
+            let notes = sync_every_unpaused_folder(&app).await;
+            (unaddressed_status(app).await, notes)
+        }
+        TrayRow::SyncNow => (
+            status_round_trip(app, ControlCommand::Syncnow, Ask::Default).await,
+            Vec::new(),
+        ),
+        TrayRow::Pause | TrayRow::Resume if roster_has_many(&app) => {
+            let note = format!(
+                "tray: a {row:?} row from a menu drawn before the second folder arrived acts on \
+                 nothing; the menu names each folder now"
+            );
+            (unaddressed_status(app).await, vec![note])
+        }
+        TrayRow::Pause | TrayRow::Resume => {
+            let (verb, command) = if matches!(row, TrayRow::Pause) {
+                ("pause", ControlCommand::Pause)
+            } else {
+                ("resume", ControlCommand::Resume)
+            };
+            let reply = status_round_trip(app, command, Ask::Default).await;
+            let notes = unsaved_note(verb, None, &reply).into_iter().collect();
+            (reply, notes)
+        }
+        TrayRow::PausePair(name) | TrayRow::ResumePair(name) => {
+            let (verb, command) = if matches!(row, TrayRow::PausePair(_)) {
+                ("pause", ControlCommand::Pause)
+            } else {
+                ("resume", ControlCommand::Resume)
+            };
+            let reply = status_round_trip(app.clone(), command, Ask::Explicit(name)).await;
+            let notes = folder_reply_notes(verb, name, &reply);
+            (unaddressed_status(app).await, notes)
+        }
+        // Not control commands; the callers handle them.
+        TrayRow::Open
+        | TrayRow::ReviewPair(_)
+        | TrayRow::Start
+        | TrayRow::CloseWindow
+        | TrayRow::Quit => (unaddressed_status(app).await, Vec::new()),
+    }
+}
+
+/// `Review them` at two folders or more: select the folder that holds the decisions, so the window the
+/// row opens shows it. It is `select_pair` — the one writer of the selection — and not a second way
+/// to choose a folder; a name it refuses (the folder went away since the panel was drawn) leaves the
+/// selection as it was, and the caller opens the window anyway: a `Review` that opened nothing would
+/// be a button that does nothing.
+pub(crate) async fn select_for_review<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    name: &str,
+) -> Result<(), String> {
+    select_pair(app, name.to_owned()).await.map(drop)
+}
+
+/// The tray panel's poll (#102 phase 5d). **Always the default pair**, because that is the folder
+/// whose full reply the panel's rows were built around, and a read that names none would mean the
+/// folder the WINDOW has selected (`Ask::Selected`) — for the panel's very first poll, before it has
+/// heard a list of folders from which to name one, that was a different folder for one tick.
+///
+/// The reply carries every folder (`pairs`, `pair_states`), which is all the panel's rows and its
+/// worst-folder hero need; it does not follow the selection, and nothing else does either.
+#[tauri::command]
+pub async fn tray_status<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> StatusPayload {
+    status_round_trip(app, ControlCommand::Status, Ask::Default).await
+}
+
 /// The tray panel's rows, dispatched by the id `ui/compact.js`'s `TRAY_MENU` gives them.
 #[tauri::command]
 pub async fn tray_action(app: tauri::AppHandle, id: String) -> StatusPayload {
     // Every row dismisses the panel. It is a popover: leaving it up over the window it just opened
     // is the "lingering after blur" failure by another route.
     crate::panel::hide(&app);
+    // The rows that talk to the daemon are one body for the panel and both native menus.
+    let row = tray_row(&id);
+    if let Some(
+        row @ (TrayRow::SyncNow
+        | TrayRow::Pause
+        | TrayRow::Resume
+        | TrayRow::PausePair(_)
+        | TrayRow::ResumePair(_)),
+    ) = &row
+    {
+        return tray_control_row(app, row).await;
+    }
     // `Review them` and `Open Drive Sync` both land in the window. They differ in where they should
     // land — the deletions queue against the main screen — and S8 does not split them: the panel is
     // dismissed by then, and a `tray-navigate` to a screen the window may be mid-onboarding on is a
-    // second routing question this task does not own. Recorded as DEVIATIONS §82l.
-    let command = match tray_row(&id) {
+    // second routing question this task does not own. Recorded as DEVIATIONS §82l. (At two folders or
+    // more the panel's `Review them` is `review@<folder>` and also selects that folder, below.)
+    let command = match row {
         Some(TrayRow::Open) => {
             // `tray::show_window`, not a second copy of it. This WAS the second copy, and it is how
             // the raise fix landed on one of the two paths: the native menus' row raised the window
@@ -3438,9 +3682,25 @@ pub async fn tray_action(app: tauri::AppHandle, id: String) -> StatusPayload {
             crate::tray::show_window(&app);
             ControlCommand::Status
         }
-        Some(TrayRow::SyncNow) => ControlCommand::Syncnow,
-        Some(TrayRow::Pause) => ControlCommand::Pause,
-        Some(TrayRow::Resume) => ControlCommand::Resume,
+        // `Review them` at several folders names the folder that holds the decisions: select it first
+        // (the one writer of the selection, which also tells the window), then open the window.
+        Some(TrayRow::ReviewPair(name)) => {
+            if let Err(error) = select_for_review(app.clone(), &name).await {
+                eprintln!(
+                    "tray: could not select {name:?} for review ({error}); the window opens on the \
+                     folder it already shows"
+                );
+            }
+            crate::tray::show_window(&app);
+            ControlCommand::Status
+        }
+        Some(
+            TrayRow::SyncNow
+            | TrayRow::Pause
+            | TrayRow::Resume
+            | TrayRow::PausePair(_)
+            | TrayRow::ResumePair(_),
+        ) => unreachable!("answered above"),
         Some(TrayRow::Start) => {
             // `start_service_and_adopt`, NOT `start_service_impl` directly (#359 review) — this row
             // used to call the impl on its own and gate nothing, so a manual `systemctl --user
@@ -3941,6 +4201,9 @@ mod pair_tests;
 
 #[cfg(all(test, unix))]
 mod selection_tests;
+
+#[cfg(all(test, unix))]
+mod tray_tests;
 
 #[cfg(all(test, unix))]
 mod socket_tests {

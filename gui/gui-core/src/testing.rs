@@ -60,6 +60,9 @@ pub struct FakePair {
     pub last_sync: Option<u64>,
     /// Why the pair's last pass failed, or why it is unavailable (an unplugged drive).
     pub last_error: Option<String>,
+    /// Set, a `pause` or `resume` of this pair is answered `pause_unsaved` with this reason — the
+    /// daemon applied the change and could not save it (#102 decision D12).
+    pub pause_unsaved: Option<String>,
     plan_seq: u64,
     apply_seq: u64,
 }
@@ -87,6 +90,7 @@ impl FakePair {
             pending_deletions: 0,
             last_sync: Some(FAKE_LAST_SYNC),
             last_error: None,
+            pause_unsaved: None,
             plan_seq: 0,
             apply_seq: 0,
         }
@@ -102,6 +106,12 @@ impl FakePair {
     /// A pair whose last pass failed with `reason`, or whose folder is unavailable.
     pub fn failing(mut self, reason: &str) -> Self {
         self.last_error = Some(reason.to_owned());
+        self
+    }
+
+    /// A pair whose pause or resume the daemon applies and cannot save, for `reason`.
+    pub fn unable_to_save_a_pause(mut self, reason: &str) -> Self {
+        self.pause_unsaved = Some(reason.to_owned());
         self
     }
 
@@ -392,6 +402,12 @@ fn answer(shared: &Shared, request: &ControlRequest) -> ControlResponse {
     let mut reply = reply_for(shared.shape, &pairs, index);
     reply.plan = plan;
     reply.apply = apply;
+    if matches!(
+        request.command,
+        ControlCommand::Pause | ControlCommand::Resume
+    ) {
+        reply.pause_unsaved = pairs[index].pause_unsaved.clone();
+    }
     reply
 }
 

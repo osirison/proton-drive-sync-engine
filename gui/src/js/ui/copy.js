@@ -24,6 +24,15 @@
 
 import { count, cardinal, ordinal, plural, bytes, clock } from "./format.js";
 
+/**
+ * The first sentence of a paused hero's sub-line — `7 changes have piled up since 13:20.` — written ONCE
+ * because two templates open with it: `MAIN.pausedSub` (one folder, and the window) and
+ * `TRAY.pausedSubPair` (the panel at two folders or more). Not exported: the copy gate reads the deck's
+ * exported strings, and this one is only ever heard as the start of those two.
+ */
+const piledUp = (n, since) =>
+  `${count(n)} ${plural(n, "change has", "changes have")} piled up since ${since}.`;
+
 // ------------------------------------------------------------------ product and chrome ----
 
 export const CHROME = {
@@ -78,9 +87,7 @@ export const MAIN = {
       : `started ${ago} · ${count(leaving)} leaving, ${count(arriving)} arriving`,
   otherWaiting: (n) => `${count(n)} other ${plural(n, "change is", "changes are")} waiting on you`,
   paused: "Paused",
-  pausedSub: (n, since) =>
-    `${count(n)} ${plural(n, "change has", "changes have")} piled up since ${since}. ` +
-    "Nothing will move until you resume.",
+  pausedSub: (n, since) => `${piledUp(n, since)} Nothing will move until you resume.`,
 
   /**
    * The sign-in-expired hero, which no `2a` frame draws — split out of the ONE sentence the deck has
@@ -1351,6 +1358,38 @@ export const TRAY = {
   closeWindowSub: "keeps syncing",
   quit: "Quit",
   quitSub: "stops syncing",
+
+  /**
+   * The per-folder pause rows (#102 phase 5d, decision D11) — what `Pause syncing`/`Resume syncing`
+   * become once there are two folders or more. EVERY FOLDER HAS ITS OWN PAUSE (maintainer ruling,
+   * issue #102): there is no row that pauses them all, and these two never claim to. The label names
+   * the folder because the folder is the whole of what the row acts on, and `Resume {name}` appears
+   * exactly while that folder is paused, so a label never offers an action the folder is not in a
+   * state to take.
+   *
+   * The shortest wording that keeps the verb. `10-tray.md` and the native menus carry the same two
+   * templates (`tray_menu.rs`'s `the_labels_are_the_copy_deck_s` reads these lines), so each is
+   * written on ONE line in exactly this shape.
+   */
+  pausePair: (name) => `Pause ${name}`,
+  resumePair: (name) => `Resume ${name}`,
+  /**
+   * The panel's last row when there are more folders than it draws pause rows for (decision D13: five,
+   * worst first). It opens the window, which has each folder's own button. The native menus draw every
+   * folder and have no such row.
+   */
+  moreFolders: (n) => `${count(n)} more ${plural(n, "folder", "folders")}`,
+  /**
+   * A paused hero's sub-line at TWO FOLDERS OR MORE: `MAIN.pausedSub` with the folder named
+   * (review of #443). `Nothing will move until you resume` under one folder's name, while another
+   * folder keeps syncing, says more than is true — what stops is this folder, so it is the folder that
+   * is named. At one folder the sentence is `MAIN.pausedSub`, unchanged (the only folder is the whole
+   * app).
+   *
+   * The first sentence is `piledUp`'s, shared with `MAIN.pausedSub`; the second is the only place the
+   * two differ.
+   */
+  pausedSubPair: (n, since, name) => `${piledUp(n, since)} Nothing in ${name} will move until you resume.`,
 
   /**
    * The two sentences for a reachable daemon that has never synced — a state NO FRAME DRAWS and the
