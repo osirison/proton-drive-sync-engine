@@ -59,6 +59,28 @@ fn fallback_is_stale(built: Option<&[Entry]>, rows: &[Entry]) -> bool {
     built != Some(rows)
 }
 
+/// What `install_fallback` has to do about the text menu, decided apart from the window system.
+#[derive(Debug, PartialEq, Eq)]
+enum FallbackStep {
+    /// No tray exists yet: build the menu and the tray.
+    Build,
+    /// The tray exists and shows other rows: replace its menu.
+    Rebuild,
+    /// The tray exists and shows these rows already: touch nothing, because replacing the menu the
+    /// user has open is at best wasted work.
+    Keep,
+}
+
+fn fallback_step(tray_exists: bool, built: Option<&[Entry]>, rows: &[Entry]) -> FallbackStep {
+    if !tray_exists {
+        FallbackStep::Build
+    } else if fallback_is_stale(built, rows) {
+        FallbackStep::Rebuild
+    } else {
+        FallbackStep::Keep
+    }
+}
+
 /// The poll that keeps the glyph current. `10-tray.md` asks for "the daemon's status stream, not a
 /// timer", and there is no stream to subscribe to — the control socket answers questions and does
 /// not push (#101, E4, explicitly deferred). Two seconds matches the window's own cadence, so the
@@ -79,7 +101,7 @@ const POLL_INTERVAL: Duration = Duration::from_secs(2);
 /// can leave the state, the glyph and — if the title already named it — the title exactly as they
 /// were. The rows themselves are what is compared, so what is published and what is compared cannot
 /// differ.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Shown {
     icon: &'static str,
     title: String,
@@ -88,6 +110,27 @@ struct Shown {
 
 /// Most folders the title names before it says `+n more`. A status-notifier `Title` is one line.
 const TITLE_FOLDERS_NAMED: usize = 3;
+
+/// The most characters a folders title may have — **one definition**: [`folders_title`] shortens the
+/// folder NAMES to fit it and the test reads it. Bounding the count alone left the length to whoever
+/// named the folders, and a name may be 64 characters (`[A-Za-z0-9._-]{1,64}`): three of them beside
+/// their states ran to about 290 characters on a hover label that is one line.
+const TITLE_MAX_CHARS: usize = 140;
+
+/// What every folders title begins with.
+const TITLE_PREFIX: &str = "Proton Drive Sync — ";
+
+/// `name`, cut to at most `budget` characters with the last of them `…` when anything was cut.
+/// Counted in characters, not bytes: a name cut mid-character is not a name.
+fn shorten(name: &str, budget: usize) -> String {
+    let budget = budget.max(1);
+    if name.chars().count() <= budget {
+        return name.to_owned();
+    }
+    let mut cut: String = name.chars().take(budget - 1).collect();
+    cut.push('…');
+    cut
+}
 
 /// What a folder's state is called in the title.
 fn phrase(state: DaemonState) -> &'static str {
@@ -106,20 +149,33 @@ fn phrase(state: DaemonState) -> &'static str {
 /// [`TITLE_FOLDERS_NAMED`] and then `+n more` — `documents paused, photos up to date`. It says what the
 /// glyph cannot: the glyph is the worst state (`aggregate_state`), and this is which folders are in
 /// it and which are not.
+///
+/// **Bounded by length as well as count** ([`TITLE_MAX_CHARS`]): what is not a name — the prefix, the
+/// states, the separators, `+n more` — is measured, and the rest is shared out evenly as each name's
+/// budget. A name that fits is untouched; one that does not is cut with `…`. It is the names that
+/// give, because the state beside a name is what the title is for.
 fn folders_title(pairs: &[PairState]) -> String {
     let mut ordered: Vec<&PairState> = pairs.iter().collect();
     // Stable, so folders of equal rank keep the order the daemon lists them in.
     ordered.sort_by_key(|pair| std::cmp::Reverse(pair.rank));
-    let mut clauses: Vec<String> = ordered
-        .iter()
-        .take(TITLE_FOLDERS_NAMED)
-        .map(|pair| format!("{} {}", pair.name, phrase(pair.state)))
-        .collect();
+    let named: Vec<&PairState> = ordered.iter().take(TITLE_FOLDERS_NAMED).copied().collect();
     let more = ordered.len().saturating_sub(TITLE_FOLDERS_NAMED);
-    if more > 0 {
-        clauses.push(format!("+{more} more"));
-    }
-    format!("Proton Drive Sync — {}", clauses.join(", "))
+    let tail = (more > 0).then(|| format!("+{more} more"));
+
+    let fixed = TITLE_PREFIX.chars().count()
+        // ` {state}` after each name,
+        + named.iter().map(|pair| 1 + phrase(pair.state).chars().count()).sum::<usize>()
+        // `, ` between clauses (the tail is one),
+        + 2 * named.len().saturating_sub(1)
+        + tail.as_ref().map_or(0, |tail| 2 + tail.chars().count());
+    let budget = TITLE_MAX_CHARS.saturating_sub(fixed) / named.len().max(1);
+
+    let mut clauses: Vec<String> = named
+        .iter()
+        .map(|pair| format!("{} {}", shorten(&pair.name, budget), phrase(pair.state)))
+        .collect();
+    clauses.extend(tail);
+    format!("{TITLE_PREFIX}{}", clauses.join(", "))
 }
 
 /// Everything the tray is about to show, from what one reply said. Pure, so what the three surfaces
@@ -135,6 +191,61 @@ fn shown_for(
         title: title_for(state, response, states),
         rows: tray_menu::rows_for(state, folders),
     }
+}
+
+/// What one poll tick decides, from the reply alone: what the tray is to show, and whether the
+/// indicator has to be told.
+struct Tick {
+    next: Shown,
+    push: bool,
+}
+
+/// Everything `spawn_poll` does with a reply that is not I/O — pure but for the roster it refreshes,
+/// so the glue from a status reply to what is shown can be driven without a socket, a window or a bus.
+///
+/// **The roster.** Every tray click is judged against the folder list the app last heard
+/// (`roster_has_many`), and this poll runs whether or not a webview is polling, so it is what keeps
+/// that list fresh while only the tray is up. A reply that listed no folders (an error, or a daemon
+/// older than folder pairs) leaves it as it was.
+///
+/// **What it shows.** The glyph is the worst folder's state, the title names the folders the glyph
+/// cannot, and the rows are the folder group (`pairs_of`). A reply that lists none is ranked by what
+/// it says itself and its rows are today's.
+///
+/// **Whether to push.** A tick is shown once something has shown it: `shown` is what the last
+/// successful push carried, and a tick that differs from it in ANY of the icon, the title or the
+/// rows is pushed — the rows being in the comparison is what lets pausing one of two folders reach a
+/// menu whose glyph and title did not move. `retry_indicator` pushes an unchanged tick, for an
+/// indicator that never came up.
+fn observe(
+    paths: &Mutex<RuntimePaths>,
+    reply: &Result<ControlResponse, ipc::IpcError>,
+    shown: Option<&Shown>,
+    retry_indicator: bool,
+) -> Tick {
+    let described = derive_state(reply.as_ref());
+    let (state, states, folders) = match reply {
+        Ok(response) => {
+            paths.lock().unwrap().remember_daemon_reply(response);
+            let states = pair_states(response, described);
+            (
+                aggregate_state(described, &states),
+                states,
+                tray_menu::pairs_of(response, described),
+            )
+        }
+        Err(_) => (described, Vec::new(), Vec::new()),
+    };
+    let next = shown_for(state, &states, &folders, reply.as_ref().ok());
+    let push = retry_indicator || shown != Some(&next);
+    Tick { next, push }
+}
+
+/// What `shown` becomes after a push. Only a push that REACHED something counts: an unreached one is
+/// left unset on purpose, so the next tick re-attempts this exact state instead of waiting for the
+/// daemon to change into another one.
+fn after_push(next: Shown, reached: bool) -> Option<Shown> {
+    reached.then_some(next)
 }
 
 /// The label a host shows beside or under the icon. The v1 build computed one of these every five
@@ -209,18 +320,24 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
 /// it. The SNI item never had the bug — it has always been re-fed by `update` — which is why the
 /// text menu is the copy that quietly went stale.
 fn install_fallback(app: &AppHandle, rows: &[Entry]) -> tauri::Result<()> {
-    if let Some(tray) = app.tray_by_id(TRAY_ID) {
-        // Rebuilt only when the rows would differ, for the same reason `set_rows` and `set_icon` are
-        // no-ops on an unchanged value: this is now reached on every 30-second retry tick as well as
-        // on a state change, and a live GTK menu is not a description of a menu — replacing the one
-        // the user has open is at best wasted work.
-        if !fallback_is_stale(FALLBACK_ROWS.lock().unwrap().as_deref(), rows) {
+    let tray = app.tray_by_id(TRAY_ID);
+    let built = FALLBACK_ROWS.lock().unwrap().clone();
+    // Rebuilt only when the rows would differ, for the same reason `set_rows` and `set_icon` are
+    // no-ops on an unchanged value: this is now reached on every 30-second retry tick as well as
+    // on a state change, and a live GTK menu is not a description of a menu — replacing the one
+    // the user has open is at best wasted work. The decision is `fallback_step`'s, apart from the
+    // window system, so it can be tested.
+    match fallback_step(tray.is_some(), built.as_deref(), rows) {
+        FallbackStep::Keep => return Ok(()),
+        FallbackStep::Rebuild => {
+            let menu = fallback_menu(app, rows)?;
+            if let Some(tray) = tray {
+                tray.set_menu(Some(menu))?;
+            }
+            *FALLBACK_ROWS.lock().unwrap() = Some(rows.to_vec());
             return Ok(());
         }
-        let menu = fallback_menu(app, rows)?;
-        tray.set_menu(Some(menu))?;
-        *FALLBACK_ROWS.lock().unwrap() = Some(rows.to_vec());
-        return Ok(());
+        FallbackStep::Build => {}
     }
     let menu = fallback_menu(app, rows)?;
     *FALLBACK_ROWS.lock().unwrap() = Some(rows.to_vec());
@@ -303,30 +420,6 @@ fn spawn_poll(app: AppHandle) {
                 tokio::time::sleep(POLL_INTERVAL).await;
                 continue;
             };
-            let described = derive_state(reply.as_ref());
-            // WHAT THE GLYPH, THE TITLE AND THE MENU ARE ABOUT: the worst folder's state, and every
-            // folder's own. A reply that lists none (a daemon older than folders, or no reply at
-            // all) is ranked by what it says itself, and the rows are today's.
-            let (state, states, folders) = match reply.as_ref() {
-                Ok(response) => {
-                    // The roster every tray click is judged against (`roster_has_many`): refreshed
-                    // here because this poll runs whether or not a webview is polling.
-                    app.state::<Mutex<RuntimePaths>>()
-                        .lock()
-                        .unwrap()
-                        .remember_daemon_reply(response);
-                    let states = pair_states(response, described);
-                    (
-                        aggregate_state(described, &states),
-                        states,
-                        tray_menu::pairs_of(response, described),
-                    )
-                }
-                Err(_) => (described, Vec::new(), Vec::new()),
-            };
-            let response = reply.ok();
-
-            let next = shown_for(state, &states, &folders, response.as_ref());
             // **A tick is only "shown" once something has shown it.** Two reasons it might not have
             // been, and the second one is a bug this file shipped: the indicator may never have come
             // up. `Sni::start` runs only when `update` does, and `update` ran only on a state change
@@ -339,14 +432,20 @@ fn spawn_poll(app: AppHandle) {
             // that a session which will never have a host is not paying for one every two seconds.
             tick = tick.wrapping_add(1);
             let retry_indicator = tick.is_multiple_of(15) && !indicator_is_up(&app).await;
-            if shown.as_ref() != Some(&next) || retry_indicator {
-                if update(&app, &next).await {
-                    shown = Some(next);
-                } else {
-                    // Left unset on purpose: the next tick re-attempts this exact state rather than
-                    // waiting for the daemon to change into another one.
-                    shown = None;
-                }
+            // WHAT THE GLYPH, THE TITLE AND THE MENU ARE ABOUT, whether the roster every tray click
+            // is judged against is refreshed, and whether this tick is pushed at all, are
+            // `observe`'s — the part of this loop with something to test.
+            let Tick { next, push } = observe(
+                &app.state::<Mutex<RuntimePaths>>(),
+                &reply,
+                shown.as_ref(),
+                retry_indicator,
+            );
+            if push {
+                // Unset when the push reached nothing, so the next tick re-attempts this exact
+                // state rather than waiting for the daemon to change into another one.
+                let reached = update(&app, &next).await;
+                shown = after_push(next, reached);
             }
             tokio::time::sleep(POLL_INTERVAL).await;
         }
@@ -376,6 +475,43 @@ async fn indicator_is_up(app: &AppHandle) -> bool {
     app.tray_by_id(TRAY_ID).is_some()
 }
 
+/// The status-notifier item, as far as `update` needs it: told the glyph, the title and the rows.
+///
+/// A trait so the one place that hands a tick to the item (`push_shown`) can be driven by a recording
+/// stand-in — the real item needs a session bus and an `AppHandle`, which a test may not touch. The
+/// future is `Send` because `update` runs inside a spawned task.
+#[cfg(target_os = "linux")]
+trait Indicator {
+    fn push(
+        &self,
+        icon: &str,
+        title: &str,
+        rows: &[Entry],
+    ) -> impl std::future::Future<Output = Result<(), String>> + Send;
+}
+
+#[cfg(target_os = "linux")]
+impl Indicator for crate::sni::Sni {
+    async fn push(&self, icon: &str, title: &str, rows: &[Entry]) -> Result<(), String> {
+        self.update(icon, title, rows)
+            .await
+            .map_err(|error| error.to_string())
+    }
+}
+
+/// Tell a live indicator what `next` says — the glyph, the title **and the rows**. `true` when it
+/// took it.
+#[cfg(target_os = "linux")]
+async fn push_shown<I: Indicator>(item: &I, next: &Shown) -> bool {
+    match item.push(next.icon, &next.title, &next.rows).await {
+        Ok(()) => true,
+        Err(error) => {
+            eprintln!("tray: could not update the indicator: {error}");
+            false
+        }
+    }
+}
+
 /// Push a state to whichever indicator exists, bringing one up if none does. `true` when the state
 /// reached something.
 #[cfg(target_os = "linux")]
@@ -383,11 +519,7 @@ async fn update(app: &AppHandle, next: &Shown) -> bool {
     let sni = app.state::<crate::sni::SniState>();
     let mut guard = sni.lock().await;
     if let Some(item) = guard.as_ref() {
-        if let Err(error) = item.update(next.icon, &next.title, &next.rows).await {
-            eprintln!("tray: could not update the indicator: {error}");
-            return false;
-        }
-        return true;
+        return push_shown(item, next).await;
     }
     // First tick, a session with no host, or a host that had not started yet when this app did.
     // Retried every tick until one of them succeeds — see the call site.
@@ -507,10 +639,31 @@ pub fn handle_menu_event(app: &AppHandle, id: &str) {
                 let _ = window.hide();
             }
         }
+        // The panel's own button (`review@photos`): no native menu draws it, but it is part of the id
+        // space this table reads, so a click that arrived anyway does what the panel's does.
+        Some(TrayRow::ReviewPair(name)) => review_in_background(app, name),
         Some(TrayRow::Start) => start_service_in_background(app),
         Some(TrayRow::Quit) => crate::commands::quit_stopping_the_daemon(app.clone()),
         None => eprintln!("tray: no action for menu id {id:?}"),
     }
+}
+
+/// `Review them` at two folders or more, off the main thread — `select_for_review` is an async
+/// command body (a file write behind it), and the window opens once the folder is selected so it is
+/// drawn for the right one. A selection that fails opens the window all the same.
+fn review_in_background(app: &AppHandle, name: String) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        if let Err(error) =
+            tauri::async_runtime::block_on(crate::commands::select_for_review(app.clone(), &name))
+        {
+            eprintln!(
+                "tray: could not select {name:?} for review ({error}); the window opens on the \
+                 folder it already shows"
+            );
+        }
+        show_window(&app);
+    });
 }
 
 /// `Start the sync service`, off the main thread — `send_command`'s shape, for the same reason.
@@ -743,6 +896,8 @@ mod tests {
             "quit",
             "pause@photos",
             "resume@my-folder.2",
+            // The panel's `Review them` at two folders or more, naming the folder that holds them.
+            "review@photos",
         ] {
             assert!(
                 crate::commands::tray_row(id).is_some(),
@@ -762,11 +917,325 @@ mod tests {
             "@photos",
             "quit@photos",
             "pauseAll",
+            "review@",
+            "review@a@b",
         ] {
             assert!(
                 crate::commands::tray_row(id).is_none(),
                 "{id:?} resolved to an action it should not have"
             );
         }
+    }
+
+    // ---- from a reply to what is shown (#102 phase 5d review) ---------------------------------------
+    //
+    // The glue between a status reply and the indicator — `observe`, `after_push`, `fallback_step` and
+    // `push_shown` — had no test: eight reverts of it (a folder's flags forced, the poll listing no
+    // folders, the roster never refreshed, the fallback ignoring a row change, a tick shown once, the
+    // item given no rows) all passed the suite. None of these needs a bus, a window or a socket.
+
+    use crate::tray_menu::fixtures::{reply, Folder};
+
+    fn scratch_paths() -> (tempfile::TempDir, Mutex<RuntimePaths>) {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = RuntimePaths::resolve_at(&dir.path().join("proton-sync.toml"));
+        (dir, Mutex::new(paths))
+    }
+
+    fn ids_of(rows: &[Entry]) -> Vec<String> {
+        rows.iter()
+            .map(|entry| entry.action().unwrap_or("—").to_owned())
+            .collect()
+    }
+
+    fn roster_len(paths: &Mutex<RuntimePaths>) -> usize {
+        paths.lock().unwrap().daemon.pairs.len()
+    }
+
+    /// A reply listing two folders is drawn as two folders: the glyph is the worst one's, the rows are
+    /// the folder group, and the roster every tray click is judged against has heard of both.
+    ///
+    /// Reverts: the poll lists no folders (the whole two-folder menu is off); the poll never refreshes
+    /// the roster (`Pause photos` is then refused as a click from a menu that never existed).
+    #[test]
+    fn a_reply_listing_two_folders_is_drawn_as_two_folders_and_remembered() {
+        let (_dir, paths) = scratch_paths();
+        let response = reply(&[Folder::new("documents"), Folder::new("photos").paused()]);
+
+        let tick = observe(&paths, &Ok(response), None, false);
+
+        assert_eq!(
+            ids_of(&tick.next.rows),
+            [
+                "open",
+                "syncNow",
+                "—",
+                "resume@photos",
+                "pause@documents",
+                "—",
+                "closeWindow",
+                "quit"
+            ],
+            "the paused folder first, one pause row for each, and no `Pause syncing`"
+        );
+        assert_eq!(
+            tick.next.title,
+            "Proton Drive Sync — photos paused, documents up to date"
+        );
+        assert_eq!(tick.next.icon, glyph_for(DaemonState::Paused));
+        assert!(tick.push, "nothing was shown before");
+        assert_eq!(
+            roster_len(&paths),
+            2,
+            "a tray click is judged against the folders this poll last heard"
+        );
+    }
+
+    /// An unreachable daemon draws today's rows and leaves the roster as it was: there is no list to
+    /// replace the one the app last heard.
+    #[test]
+    fn an_unreachable_daemon_draws_todays_rows_and_forgets_no_folder() {
+        let (_dir, paths) = scratch_paths();
+        paths
+            .lock()
+            .unwrap()
+            .remember_daemon_reply(&reply(&[Folder::new("documents"), Folder::new("photos")]));
+
+        let tick = observe(
+            &paths,
+            &Err(ipc::IpcError::Unreachable("no socket".into())),
+            None,
+            false,
+        );
+
+        assert_eq!(
+            ids_of(&tick.next.rows),
+            ["start", "open", "—", "quit"],
+            "the rows for a daemon that is not running"
+        );
+        assert_eq!(roster_len(&paths), 2, "an error replaces no list");
+    }
+
+    /// `Shown` is the icon, the title AND the rows: pausing the fourth of four failed folders moves
+    /// neither the glyph nor the title (which names three and says `+1 more`), and the menu has to be
+    /// pushed all the same — or it goes on offering `Pause d` for a folder that is paused.
+    ///
+    /// Revert: show a tick once (push only when nothing was shown), or compare the icon and title alone.
+    #[test]
+    fn a_changed_row_is_pushed_though_the_glyph_and_the_title_did_not_move() {
+        let (_dir, paths) = scratch_paths();
+        let failing = |name: &'static str| Folder::new(name).failed();
+        let before = reply(&[failing("a"), failing("b"), failing("c"), Folder::new("d")]);
+        let after = reply(&[
+            failing("a"),
+            failing("b"),
+            failing("c"),
+            Folder::new("d").paused(),
+        ]);
+
+        let first = observe(&paths, &Ok(before.clone()), None, false);
+        let unchanged = observe(&paths, &Ok(before), Some(&first.next), false);
+        let changed = observe(&paths, &Ok(after), Some(&first.next), false);
+
+        assert!(first.push, "the first tick is shown");
+        assert!(!unchanged.push, "a poll that changed nothing does nothing");
+        assert_eq!(
+            changed.next.icon, first.next.icon,
+            "the premise: same glyph"
+        );
+        assert_eq!(changed.next.title, first.next.title, "and the same title");
+        assert_ne!(changed.next.rows, first.next.rows, "but a different row");
+        assert!(changed.push, "so it is shown again");
+    }
+
+    /// An indicator that never came up is retried on the cadence even when nothing changed.
+    #[test]
+    fn a_retry_pushes_an_unchanged_tick() {
+        let (_dir, paths) = scratch_paths();
+        let response = reply(&[Folder::new("a")]);
+        let first = observe(&paths, &Ok(response.clone()), None, false);
+        assert!(!observe(&paths, &Ok(response.clone()), Some(&first.next), false).push);
+        assert!(observe(&paths, &Ok(response), Some(&first.next), true).push);
+    }
+
+    /// A push that reached nothing leaves `shown` unset, so the next tick tries the same state again;
+    /// one that reached something records it.
+    #[test]
+    fn only_a_push_that_reached_something_counts_as_shown() {
+        let (_dir, paths) = scratch_paths();
+        let tick = observe(&paths, &Ok(reply(&[Folder::new("a")])), None, false);
+        assert_eq!(after_push(tick.next.clone(), true), Some(tick.next.clone()));
+        assert_eq!(after_push(tick.next, false), None);
+    }
+
+    /// The fallback text menu: built when there is no tray, rebuilt when the rows changed, and left
+    /// alone when they did not.
+    ///
+    /// Revert: ignore a row change once a menu exists.
+    #[test]
+    fn the_fallback_is_built_rebuilt_or_left_alone_by_its_rows() {
+        let both = [
+            TrayPair {
+                name: "a".into(),
+                paused: false,
+                syncing: false,
+                rank: 0,
+            },
+            TrayPair {
+                name: "b".into(),
+                paused: false,
+                syncing: false,
+                rank: 0,
+            },
+        ];
+        let mut a_paused = both.clone();
+        a_paused[0].paused = true;
+        let before = tray_menu::rows_for(DaemonState::Idle, &both);
+        let after = tray_menu::rows_for(DaemonState::Idle, &a_paused);
+        assert_ne!(before, after, "the premise");
+
+        assert_eq!(
+            fallback_step(false, None, &before),
+            FallbackStep::Build,
+            "no tray yet"
+        );
+        assert_eq!(
+            fallback_step(false, Some(&before), &before),
+            FallbackStep::Build,
+            "no tray, whatever was built before"
+        );
+        assert_eq!(
+            fallback_step(true, Some(&before), &after),
+            FallbackStep::Rebuild,
+            "a folder was paused: the menu offers Resume now"
+        );
+        assert_eq!(
+            fallback_step(true, Some(&before), &before),
+            FallbackStep::Keep,
+            "the same rows: the open menu is not replaced"
+        );
+        assert_eq!(
+            fallback_step(true, None, &before),
+            FallbackStep::Rebuild,
+            "a tray whose rows are not recorded cannot be assumed current"
+        );
+    }
+
+    /// The status-notifier item is told the glyph, the title AND the rows of the tick — the same ones
+    /// `observe` decided — and a refusal is reported as not reached.
+    ///
+    /// Revert: hand the item no rows (a right-click menu that never updates).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_indicator_is_given_the_ticks_glyph_title_and_rows() {
+        struct Recorder {
+            seen: Mutex<Vec<(String, String, Vec<Entry>)>>,
+            refuse: bool,
+        }
+        impl Indicator for Recorder {
+            async fn push(&self, icon: &str, title: &str, rows: &[Entry]) -> Result<(), String> {
+                self.seen
+                    .lock()
+                    .unwrap()
+                    .push((icon.to_owned(), title.to_owned(), rows.to_vec()));
+                if self.refuse {
+                    Err("the host went away".into())
+                } else {
+                    Ok(())
+                }
+            }
+        }
+
+        let (_dir, paths) = scratch_paths();
+        let next = observe(
+            &paths,
+            &Ok(reply(&[Folder::new("a"), Folder::new("b").paused()])),
+            None,
+            false,
+        )
+        .next;
+
+        let item = Recorder {
+            seen: Mutex::new(Vec::new()),
+            refuse: false,
+        };
+        assert!(tauri::async_runtime::block_on(push_shown(&item, &next)));
+        let seen = item.seen.lock().unwrap().clone();
+        assert_eq!(
+            seen,
+            [(next.icon.to_owned(), next.title.clone(), next.rows.clone())]
+        );
+        assert!(
+            ids_of(&seen[0].2).contains(&"resume@b".to_owned()),
+            "the rows are the folder group"
+        );
+
+        let refusing = Recorder {
+            seen: Mutex::new(Vec::new()),
+            refuse: true,
+        };
+        assert!(
+            !tauri::async_runtime::block_on(push_shown(&refusing, &next)),
+            "a push the item refused did not reach it"
+        );
+    }
+
+    // ---- the title is bounded by length as well as count ---------------------------------------------
+
+    fn long(name: char) -> String {
+        std::iter::repeat_n(name, 64).collect()
+    }
+
+    /// Three folders with 64-character names (the longest a folder may have) and the longest state
+    /// phrases ran to about 290 characters. The names give; the states stay.
+    ///
+    /// Revert: bound the count only (take the names whole).
+    #[test]
+    fn a_title_of_long_folder_names_stays_under_the_limit() {
+        let states = [
+            state_of(&long('a'), DaemonState::FirstRun),
+            state_of(&long('b'), DaemonState::Unreachable),
+            state_of(&long('c'), DaemonState::Failed),
+            state_of(&long('d'), DaemonState::Idle),
+            state_of(&long('e'), DaemonState::Idle),
+        ];
+        let title = title_for(DaemonState::Unreachable, None, &states);
+        assert!(
+            title.chars().count() <= TITLE_MAX_CHARS,
+            "{} characters: {title}",
+            title.chars().count()
+        );
+        // What the title is FOR survives: every named folder still carries its state, in order, and
+        // the count of the rest.
+        assert!(title.starts_with(TITLE_PREFIX), "{title}");
+        for phrase in [
+            "daemon unreachable",
+            "last sync failed",
+            "nothing synced yet",
+        ] {
+            assert!(title.contains(phrase), "{phrase} is gone from {title}");
+        }
+        assert!(title.ends_with("+2 more"), "{title}");
+        // The names were cut, each with the ellipsis, and none was cut to nothing.
+        assert!(title.contains('…'), "{title}");
+        assert!(!title.contains(&long('b')), "a name went in whole: {title}");
+    }
+
+    /// A name that fits is untouched: the limit costs a short-named person nothing.
+    #[test]
+    fn short_names_are_not_cut() {
+        let states = [
+            state_of("documents", DaemonState::Paused),
+            state_of("photos", DaemonState::Idle),
+        ];
+        assert_eq!(
+            title_for(DaemonState::Paused, None, &states),
+            "Proton Drive Sync — documents paused, photos up to date"
+        );
+        assert_eq!(shorten("photos", 6), "photos");
+        assert_eq!(shorten("photos", 5), "phot…");
+        assert_eq!(shorten("photos", 1), "…");
+        // Characters, not bytes.
+        assert_eq!(shorten("ééééé", 3), "éé…");
     }
 }

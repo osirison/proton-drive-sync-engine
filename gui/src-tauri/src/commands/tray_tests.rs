@@ -134,10 +134,13 @@ fn a_folder_row_pauses_its_own_folder_and_the_panel_is_handed_its_own_status() {
     );
 }
 
-/// The default folder is addressed by omission on the wire, as everywhere else — a row for it names
-/// it, and the request does not.
+/// A folder's row names its folder on the wire, **the default folder's included** (review of #443).
+/// The default is addressed by omission everywhere else, and a row drawn for it is the one place that
+/// goes wrong: see the next test.
+///
+/// Revert: address the row with `Ask::Named`, which omits the default pair's name.
 #[test]
-fn a_row_for_the_default_folder_is_addressed_by_omission() {
+fn a_row_for_the_default_folder_names_it_on_the_wire() {
     let h = harness(two_pair_daemon(), Some(TWO_PAIR_FILE));
     learn_the_folders(&h);
 
@@ -146,9 +149,49 @@ fn a_row_for_the_default_folder_is_addressed_by_omission() {
         &TrayRow::PausePair("docs".to_owned())
     ));
 
-    assert_eq!(sent(&h.daemon)[0], (Verb::Pause, None));
+    assert_eq!(sent(&h.daemon)[0], (Verb::Pause, some("docs")));
     assert!(h.daemon.is_paused("docs"));
     assert!(!h.daemon.is_paused("photos"));
+}
+
+/// The stale click the omission let through. A menu drawn when `docs` was the default folder still
+/// carries `pause@docs` after a daemon restart changed the config to `photos` and `music` — and the
+/// app, which has not polled since, still believes `docs` is the default. Sent by omission that pause
+/// reached the daemon's new default and paused `photos`, a folder the label never named. Named, the
+/// daemon's byte-exact selector rule answers "no such pair" and nothing is paused.
+///
+/// Revert: `Ask::Named` for the folder rows.
+#[test]
+fn a_stale_pause_for_the_old_default_folder_pauses_nothing_after_a_restart() {
+    let h = harness(two_pair_daemon(), Some(TWO_PAIR_FILE));
+    learn_the_folders(&h);
+    let row = crate::commands::tray_row("pause@docs").expect("the id was issued for docs");
+
+    // The daemon restarts onto a different config; the app has not polled since.
+    h.daemon
+        .set_pairs(vec![FakePair::new("photos"), FakePair::new("music")]);
+
+    run!(tray_control_row(h.app.handle().clone(), &row));
+
+    assert_eq!(
+        sent(&h.daemon)[0],
+        (Verb::Pause, some("docs")),
+        "the request says which folder it means"
+    );
+    assert!(!h.daemon.is_paused("photos"), "the new default was paused");
+    assert!(!h.daemon.is_paused("music"));
+}
+
+/// …and a row for a folder that is not the default is what it was.
+#[test]
+fn a_row_for_a_folder_that_is_not_the_default_still_names_it() {
+    let h = harness(two_pair_daemon(), Some(TWO_PAIR_FILE));
+    learn_the_folders(&h);
+    run!(tray_control_row(
+        h.app.handle().clone(),
+        &TrayRow::ResumePair("photos".to_owned())
+    ));
+    assert_eq!(sent(&h.daemon)[0], (Verb::Resume, some("photos")));
 }
 
 /// Acceptance 3, the stale-menu half. A menu drawn when the folders were `docs` and `photos` still
@@ -321,4 +364,151 @@ fn a_file_with_two_tables_does_not_refuse_a_legacy_daemons_pause() {
     learn_the_folders(&h);
     run!(tray_control_row(h.app.handle().clone(), &TrayRow::Pause));
     assert_eq!(sent(&h.daemon), [(Verb::Pause, None)]);
+}
+
+// ---- what a row says when it cannot do its job (review of #443) ---------------------------------------
+
+/// `Sync now` reads a fresh folder list before it sends anything, and a failed read used to send
+/// nothing and say nothing: a click that did not sync and left no trace of why. It is reported — once,
+/// against the click, as a folder's failed request is reported against that folder.
+///
+/// Revert: return no note when the read fails.
+#[test]
+fn a_sync_now_that_cannot_read_the_folder_list_says_so_once() {
+    let daemon = FakeDaemon::multi_pair(vec![FakePair::new("docs"), FakePair::new("photos")])
+        .drop_connection_for(&[Verb::Status])
+        .start();
+    let h = harness(daemon, Some(TWO_PAIR_FILE));
+
+    let notes = run!(sync_every_unpaused_folder(h.app.handle()));
+
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(
+        notes[0].contains("could not read the folder list"),
+        "{notes:?}"
+    );
+    assert!(
+        sent(&h.daemon)
+            .iter()
+            .all(|(verb, _)| *verb == Verb::Status),
+        "nothing but the read left: {:?}",
+        sent(&h.daemon)
+    );
+}
+
+/// A folder whose `syncnow` fails is reported against that folder, and the others are still asked.
+#[test]
+fn a_sync_now_that_fails_for_a_folder_says_which() {
+    let daemon = FakeDaemon::multi_pair(vec![FakePair::new("docs"), FakePair::new("photos")])
+        .drop_connection_for(&[Verb::Syncnow])
+        .start();
+    let h = harness(daemon, Some(TWO_PAIR_FILE));
+    learn_the_folders(&h);
+
+    let (_, notes) = run!(tray_control_row_noting(
+        h.app.handle().clone(),
+        &TrayRow::SyncNow
+    ));
+
+    assert_eq!(notes.len(), 2, "{notes:?}");
+    assert!(notes[0].contains("sync now for \"docs\""), "{notes:?}");
+    assert!(notes[1].contains("sync now for \"photos\""), "{notes:?}");
+}
+
+/// A pause or resume the daemon applied and could not save (`pause_unsaved`) is logged for the
+/// one-folder `Pause syncing`/`Resume syncing` rows as it is for a folder's own — it was logged for
+/// the folder rows only. Showing it on the panel stays deferred to the app PR (DEVIATIONS §107d).
+///
+/// Revert: return no note from the one-folder rows.
+#[test]
+fn a_pause_that_was_not_saved_is_said_for_the_one_folder_rows_too() {
+    for (row, verb) in [(TrayRow::Pause, "pause"), (TrayRow::Resume, "resume")] {
+        let daemon = FakeDaemon::multi_pair(vec![
+            FakePair::new("docs").unable_to_save_a_pause("disk full")
+        ])
+        .start();
+        let h = harness(daemon, None);
+        learn_the_folders(&h);
+
+        let (_, notes) = run!(tray_control_row_noting(h.app.handle().clone(), &row));
+
+        assert_eq!(notes.len(), 1, "{verb}: {notes:?}");
+        assert!(
+            notes[0].contains(verb)
+                && notes[0].contains("disk full")
+                && notes[0].contains("not saved"),
+            "{verb}: {notes:?}"
+        );
+    }
+}
+
+/// …and for a folder's row, naming the folder.
+#[test]
+fn a_pause_that_was_not_saved_is_said_for_a_folders_row() {
+    let daemon = FakeDaemon::multi_pair(vec![
+        FakePair::new("docs"),
+        FakePair::new("photos").unable_to_save_a_pause("disk full"),
+    ])
+    .start();
+    let h = harness(daemon, Some(TWO_PAIR_FILE));
+    learn_the_folders(&h);
+
+    let (_, notes) = run!(tray_control_row_noting(
+        h.app.handle().clone(),
+        &TrayRow::PausePair("photos".to_owned())
+    ));
+
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(
+        notes[0].contains("\"photos\"") && notes[0].contains("disk full"),
+        "{notes:?}"
+    );
+}
+
+/// A pause that was saved says nothing.
+#[test]
+fn a_saved_pause_says_nothing() {
+    let h = harness(
+        FakeDaemon::multi_pair(vec![FakePair::new("docs")]).start(),
+        None,
+    );
+    learn_the_folders(&h);
+    let (_, notes) = run!(tray_control_row_noting(
+        h.app.handle().clone(),
+        &TrayRow::Pause
+    ));
+    assert!(notes.is_empty(), "{notes:?}");
+}
+
+// ---- Review them, at two folders or more (review of #443) -----------------------------------------------
+
+/// The panel's decision button names the folder that holds the decisions, and the id is read as that.
+/// At one folder it is the id it always was, and opens the window and nothing else.
+#[test]
+fn review_names_a_folder_only_at_several_folders() {
+    assert_eq!(
+        tray_row("review@photos"),
+        Some(TrayRow::ReviewPair("photos".to_owned()))
+    );
+    assert_eq!(tray_row("review"), Some(TrayRow::Open));
+}
+
+/// `Review them` selects the folder, through the one writer of the selection, so the window it opens
+/// shows that folder; a folder that went away is refused and the selection is left as it was.
+///
+/// Revert: `select_for_review` selects nothing.
+#[test]
+fn review_selects_the_folder_that_holds_the_decisions() {
+    let h = harness(two_pair_daemon(), Some(TWO_PAIR_FILE));
+    // The selection counts only once the daemon is known to read selectors.
+    learn_the_folders(&h);
+    let selected = |h: &Harness| h.state().lock().unwrap().selected_pair().name;
+    assert_eq!(selected(&h), "docs", "the premise: the default folder");
+
+    run!(select_for_review(h.app.handle().clone(), "photos")).unwrap();
+    assert_eq!(selected(&h), "photos");
+
+    let refused = run!(select_for_review(h.app.handle().clone(), "gone"));
+    assert!(refused.is_err(), "a folder that is not there");
+    assert_eq!(selected(&h), "photos", "and nothing moved");
 }

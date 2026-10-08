@@ -481,8 +481,102 @@ pub const ALL_STATES: &[DaemonState] = &[
     DaemonState::Failed,
 ];
 
+/// Status replies for the tests that drive the tray from a reply (`pairs_of`, and `tray.rs`'s
+/// `observe`): built from the raw per-folder flags the daemon sends, so what is asserted is the whole
+/// path from "this folder is paused" on the wire to a row in a menu.
+#[cfg(test)]
+pub(crate) mod fixtures {
+    use gui_core::wire::{ControlResponse, PairSummary};
+
+    /// One folder of a reply, by the facts its state is derived from.
+    #[derive(Clone)]
+    pub struct Folder {
+        pub name: &'static str,
+        pub paused: bool,
+        pub syncing: bool,
+        pub failed: bool,
+        pub queued: usize,
+    }
+
+    impl Folder {
+        pub fn new(name: &'static str) -> Self {
+            Self {
+                name,
+                paused: false,
+                syncing: false,
+                failed: false,
+                queued: 0,
+            }
+        }
+        pub fn paused(mut self) -> Self {
+            self.paused = true;
+            self
+        }
+        pub fn syncing(mut self) -> Self {
+            self.syncing = true;
+            self
+        }
+        pub fn failed(mut self) -> Self {
+            self.failed = true;
+            self
+        }
+    }
+
+    fn summary(folder: &Folder) -> PairSummary {
+        PairSummary {
+            name: folder.name.to_owned(),
+            local_root: format!("/home/u/{}", folder.name).into(),
+            remote_root: format!("/Drive/{}", folder.name).into(),
+            db_path: format!("/home/u/{}/.sync/i.db", folder.name).into(),
+            paused: folder.paused,
+            syncing: folder.syncing,
+            reconcile_seq: 1,
+            last_sync_epoch_secs: Some(1),
+            last_error: folder.failed.then(|| "boom".to_owned()),
+            pending_changes: folder.queued,
+            pending_deletions: 0,
+        }
+    }
+
+    /// A status reply listing `folders`, the first of which it describes (the default pair): its
+    /// top-level fields are that folder's, as a real reply's are.
+    pub fn reply(folders: &[Folder]) -> ControlResponse {
+        let first = &folders[0];
+        ControlResponse {
+            status: "running".into(),
+            paused: first.paused,
+            syncing: first.syncing,
+            reconcile_seq: 1,
+            pending_changes: first.queued,
+            message: String::new(),
+            pause_unsaved: None,
+            last_sync_epoch_secs: Some(1),
+            last_error: first.failed.then(|| "boom".to_owned()),
+            last_plan_summary: None,
+            last_successful_sync_summary: None,
+            status_history: Vec::new(),
+            pending_deletions: Vec::new(),
+            failed_items: Vec::new(),
+            failed_item_count: 0,
+            config: None,
+            activity: None,
+            unsyncable: Vec::new(),
+            history: None,
+            file_history: None,
+            index_totals: None,
+            listing: None,
+            plan: None,
+            apply: None,
+            auth: Default::default(),
+            pair: Some(first.name.to_owned()),
+            pairs: folders.iter().map(summary).collect(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::fixtures::{reply, Folder};
     use super::*;
     use gui_core::state::severity;
     use std::collections::{HashMap, HashSet};
@@ -1242,5 +1336,130 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ---- from a reply to a row (#102 phase 5d review) ------------------------------------------------
+    //
+    // `pairs_of` is the glue between what the daemon says and what a menu is built from, and it had no
+    // test: the rows were verified from `TrayPair`s written by hand, which cannot notice a field the
+    // glue reads wrongly. These start one step earlier, at the raw per-folder facts on the wire.
+
+    /// What each folder in a reply is, as `pairs_of` hands it to the menu: its own flags and its own
+    /// rank — written as literals (1 paused, 2 syncing, 4 failed, 0 idle), not read back from
+    /// `severity`, so a rank that stops following the state is a failure here and not an agreement.
+    ///
+    /// Reverts: `paused` forced `false`; `syncing` forced `false`; `rank` forced `0`.
+    #[test]
+    fn a_reply_becomes_each_folders_own_flags_and_rank() {
+        let response = reply(&[
+            Folder::new("a").paused(),
+            Folder::new("b").syncing(),
+            Folder::new("c").failed(),
+            Folder::new("d"),
+        ]);
+        let described = gui_core::state::derive_state(Ok(&response));
+        let want = |name: &str, paused, syncing, rank| TrayPair {
+            name: name.to_owned(),
+            paused,
+            syncing,
+            rank,
+        };
+        assert_eq!(
+            pairs_of(&response, described),
+            vec![
+                want("a", true, false, 1),
+                want("b", false, true, 2),
+                want("c", false, false, 4),
+                want("d", false, false, 0),
+            ]
+        );
+    }
+
+    /// A reply that lists no folders (a daemon older than the selector) draws today's rows.
+    #[test]
+    fn a_reply_that_lists_no_folders_lists_none() {
+        let mut response = reply(&[Folder::new("a")]);
+        response.pairs.clear();
+        assert!(pairs_of(&response, DaemonState::Idle).is_empty());
+    }
+
+    /// The whole path, over every combination of two folders' facts: the raw flags on the wire →
+    /// `derive_state` → `pair_states` → `aggregate_state` → `pairs_of` → `rows_for`, against an
+    /// expectation written from the rules (D3's rank, D5's `Sync now`, D13-free native rows) and
+    /// sharing no code with them. 16 × 16 = 256 replies.
+    #[test]
+    fn two_folders_draw_the_rows_their_facts_call_for() {
+        // (paused, syncing, failed, queued): 0 idle .. 4 failed; the rank is the brief's, in order
+        // failed 4 > running 2 > paused 1 > idle 0, and `paused` beats `syncing` and `failed`.
+        fn oracle(paused: bool, syncing: bool, failed: bool, queued: bool) -> (&'static str, u8) {
+            if paused {
+                ("paused", 1)
+            } else if syncing || (!failed && queued) {
+                ("running", 2)
+            } else if failed {
+                ("failed", 4)
+            } else {
+                ("idle", 0)
+            }
+        }
+        let folder = |name: &'static str, bits: u32| {
+            let mut folder = Folder::new(name);
+            folder.paused = bits & 1 != 0;
+            folder.syncing = bits & 2 != 0;
+            folder.failed = bits & 4 != 0;
+            folder.queued = usize::from(bits & 8 != 0) * 3;
+            folder
+        };
+        let flags = |bits: u32| (bits & 1 != 0, bits & 2 != 0, bits & 4 != 0, bits & 8 != 0);
+
+        let mut checked = 0;
+        for a in 0..16u32 {
+            for b in 0..16u32 {
+                let response = reply(&[folder("a", a), folder("b", b)]);
+                let described = gui_core::state::derive_state(Ok(&response));
+                let states = pair_states(&response, described);
+                let aggregate = gui_core::state::aggregate_state(described, &states);
+                let got = ids(&rows_for(aggregate, &pairs_of(&response, described)));
+
+                let (pa, pb) = (flags(a), flags(b));
+                let ((state_a, rank_a), (state_b, rank_b)) = (
+                    oracle(pa.0, pa.1, pa.2, pa.3),
+                    oracle(pb.0, pb.1, pb.2, pb.3),
+                );
+                let worst = if rank_a >= rank_b { state_a } else { state_b };
+                let mut group = [("a", pa.0, rank_a), ("b", pb.0, rank_b)];
+                group.sort_by_key(|(_, _, rank)| std::cmp::Reverse(*rank));
+                let group_ids: Vec<String> = group
+                    .iter()
+                    .map(|(name, paused, _)| {
+                        format!("{}@{name}", if *paused { "resume" } else { "pause" })
+                    })
+                    .collect();
+                let some_idle_unpaused = (!pa.0 && !pa.1) || (!pb.0 && !pb.1);
+                let some_unpaused = !pa.0 || !pb.0;
+
+                let mut want: Vec<String> = Vec::new();
+                if worst == "failed" {
+                    want.extend(["tryAgain", "open", "—"].map(String::from));
+                    want.extend(group_ids);
+                    want.extend(["—", "quit"].map(String::from));
+                } else {
+                    want.push("open".into());
+                    if some_idle_unpaused {
+                        want.push("syncNow".into());
+                    }
+                    want.push("—".into());
+                    want.extend(group_ids);
+                    want.push("—".into());
+                    if some_unpaused {
+                        want.push("closeWindow".into());
+                    }
+                    want.push("quit".into());
+                }
+                assert_eq!(got, want, "a={a:04b} b={b:04b} aggregate={aggregate:?}");
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 256);
     }
 }
