@@ -1416,6 +1416,16 @@ let conflictPair = null; // the two versions' bytes, or null when they could not
 let conflictPairKey = null; // which conflict `conflictPair` HOLDS — moves with it, never ahead of it
 let conflictPairInFlight = null; // which conflict is being read right now, if any
 /**
+ * What names a conflict: the folder it was found in AND its path. A path alone is a slot two folders
+ * can both fill — `note.txt` in conflict in `docs` and in `photos` — and a read issued for one is
+ * indistinguishable by that key from a read issued for the other, so the older folder's reply, landing
+ * after the selection moved, was accepted as the newer folder's and its file content drawn on the card
+ * for a different file. `pair` is the tag `store` puts on every list it hands out (`DEFAULT_PAIR` for a
+ * daemon that lists none), so every conflict this is asked of carries one. JSON, not a joined string:
+ * no choice of separator can make two different `(pair, path)`s collide.
+ */
+const conflictKeyOf = (conflict) => JSON.stringify([conflict.pair ?? null, conflict.original]);
+/**
  * WHAT YOU DECIDED WHILE YOU WERE HERE, and only while you were here.
  *
  * `3a Conflicts cleared` reads `You settled 3 conflicts — 2 kept both versions, 1 took Proton's`,
@@ -1468,7 +1478,7 @@ function resetConflictScreen() {
  */
 async function ensureConflictPair(conflict) {
   if (!conflict) return;
-  const requested = conflict.original;
+  const requested = conflictKeyOf(conflict);
   if (conflictPairKey === requested || conflictPairInFlight === requested) return;
   conflictPairInFlight = requested;
   let pair = null;
@@ -1484,6 +1494,10 @@ async function ensureConflictPair(conflict) {
   }
   if (conflictPairInFlight !== requested) return;
   conflictPairInFlight = null;
+  // A reply for a folder that is no longer the one shown. `noticeSelection` has already dropped the
+  // read it issued, so this is unreachable while that holds — and it is the check that keeps the
+  // cards honest if it ever stops: the folder is part of the key above, and also of this.
+  if (conflict.pair !== undefined && conflict.pair !== store.select.pairName()) return;
   conflictPair = pair;
   conflictPairKey = requested;
   render();
@@ -1538,7 +1552,7 @@ function conflictsProps() {
     conflicts,
     index: at,
     diffOpen: ui?.diff ?? conflictDiffOpen,
-    pair: conflictPairKey === conflict?.original ? conflictPair : null,
+    pair: conflict && conflictPairKey === conflictKeyOf(conflict) ? conflictPair : null,
     settled: ui?.settled ?? conflictsSettled,
     onChoose: (choice) => chooseConflict(conflict, choice),
     onLater: () => {

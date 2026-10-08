@@ -32,6 +32,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import * as espree from "espree";
 import { itemKey, statusKey } from "../src/js/screens/deletions.js";
 
 const GLOBAL = "global";
@@ -83,6 +84,7 @@ const LEDGER = [
   ["conflictPairInFlight", RESET, "a read for the old pair must not land in the new one"],
   ["conflictsSettled", RESET, "the tally of THIS visit's decisions"],
   ["conflictShowing", RESET, "the conflict the body was last built for"],
+  ["conflictKeyOf", GLOBAL, "a pure function: the (pair, path) that names a conflict"],
   ["lastConflictScan", RESET, "so the first scan of the pair now shown is immediate"],
 
   // ---- the deletions screen ----
@@ -143,9 +145,49 @@ const LEDGER = [
 
 const app = readFileSync(fileURLToPath(new URL("../src/js/app.js", import.meta.url)), "utf8");
 
-/** Every top-level binding of `app.js`: `let`, `const` or `var` at column 0. */
+/**
+ * Every top-level binding of `app.js`: what a `let`, `const` or `var` at the top of the module declares.
+ *
+ * READ FROM THE SYNTAX TREE, and that is the point of the change from the line-start regex this was:
+ * `/^(?:let|const|var)\s+([A-Za-z_$][\w$]*)/gm` saw the FIRST identifier after the keyword and nothing
+ * else, so `const { x } = …` (a destructuring declares `x`, which the regex read as the brace) and the
+ * second name in `let a = 1, b = 2` were bindings the ledger never heard of — and an unclassified
+ * binding is the whole failure this file exists to refuse. Both were measured: added to `app.js`, the
+ * ledger passed 3/3. The tree answers it for every declaration form (object and array patterns, nested,
+ * defaults, rest) without a second regex to keep in step with the first, and counts nothing that only
+ * looks like a declaration (a comment, a template, an indented `let` in a block).
+ *
+ * `espree` is the parser `eslint` itself runs, so it is present wherever the lint gate is.
+ */
 function bindings(source) {
-  return [...source.matchAll(/^(?:let|const|var)\s+([A-Za-z_$][\w$]*)/gm)].map((m) => m[1]);
+  const program = espree.parse(source, { ecmaVersion: 2023, sourceType: "module" });
+  const names = [];
+  const collect = (pattern) => {
+    switch (pattern.type) {
+      case "Identifier":
+        names.push(pattern.name);
+        break;
+      case "ObjectPattern":
+        for (const property of pattern.properties) collect(property.value ?? property.argument);
+        break;
+      case "ArrayPattern":
+        for (const element of pattern.elements) if (element) collect(element);
+        break;
+      case "AssignmentPattern":
+        collect(pattern.left);
+        break;
+      case "RestElement":
+        collect(pattern.argument);
+        break;
+      default:
+        assert.fail(`a ${pattern.type} binding pattern: teach bindings() to read it`);
+    }
+  };
+  for (const node of program.body) {
+    if (node.type !== "VariableDeclaration") continue;
+    for (const declarator of node.declarations) collect(declarator.id);
+  }
+  return names;
 }
 
 /** The ledger row for a binding: an exact name beats a prefix, so a prefix can have one exception. */
@@ -239,4 +281,44 @@ test("the_deletion_keys_the_ledger_calls_keyed_really_carry_the_pair", () => {
   // The prune in `visibleDeletions` is by this prefix, so it must be how the key starts.
   assert.ok(itemKey({ ...row, pair: "docs" }).startsWith("docs\u0000"));
   assert.ok(statusKey({ ...row, pair: "docs" }).startsWith("docs\u0000"));
+});
+
+test("the_binding_scan_reads_every_declaration_form", () => {
+  // The scan is what the ledger's exhaustiveness rests on, so it is checked on its own input rather
+  // than only on whatever `app.js` happens to contain today. Each line is a form the line-start regex
+  // it replaced got wrong (destructuring, a second declarator) or could only get right by luck.
+  const found = bindings(`
+const plain = 1;
+const { a, b: renamed, c = 3, d: { deep }, ...rest } = source;
+const [first, , third = 3, [nested], ...tail] = list;
+let one = 1, two = 2, three;
+var legacy, { viaVar } = source;
+let
+  onNextLine = 1;
+function code() { const insideAFunction = 1; return insideAFunction; }
+{ let insideABlock = 1; }
+// const inAComment = 1;
+const text = \`
+const insideATemplate = 1;
+\`;
+`);
+  assert.deepEqual(found, [
+    "plain",
+    "a",
+    "renamed",
+    "c",
+    "deep",
+    "rest",
+    "first",
+    "third",
+    "nested",
+    "tail",
+    "one",
+    "two",
+    "three",
+    "legacy",
+    "viaVar",
+    "onNextLine",
+    "text",
+  ]);
 });

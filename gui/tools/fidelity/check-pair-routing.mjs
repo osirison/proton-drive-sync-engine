@@ -8,9 +8,10 @@
 // that answers each command and **holds a reply open when told to**, which is what makes the window
 // between "the person pressed it" and "the daemon answered" a thing a test can stand in.
 //
-// Five scenarios. The first four are each a way a write can land on a different pair than the one it was
+// Nine scenarios. The first four are each a way a write can land on a different pair than the one it was
 // drawn for — each was a bug before the capture existed or would be again if it were removed. The fifth
-// is the first-run rule at two pairs.
+// and sixth are the first-run rule at two pairs and at one. The last three are the rest of the capture:
+// a late READ, the decision on a conflict, and the tray panel's pin.
 //
 //   1. THE TAIL OF A DECISION. `Move to Proton's Trash` approves, waits for the daemon, then nudges a
 //      sync. The selection moves while the approval is in flight; the nudge must still go where the
@@ -27,8 +28,18 @@
 //      `Pause` must still pause the folder the hero is now about.
 //   5. A PAIR THAT HAS NEVER SYNCED. At two folders the first-run wizard (whose `Next` writes
 //      top-level roots a `[[pair]]` file refuses) must stay shut, and the window must say the pair has
-//      not synced rather than `Everything is up to date`; at one folder the same reply still opens
-//      the wizard, because it is the count and not the state that decides.
+//      not synced rather than `Everything is up to date`; ...
+//   6. ... and at one folder the same reply still opens the wizard, because it is the count and not
+//      the state that decides.
+//   7. A LATE READ. Two folders hold a conflict at the SAME relative path, so the reads for them differ
+//      only in the folder they were issued for. The older read answers after the selection has moved
+//      and the newer one has been issued; its content must not become the card now showing, on the
+//      screen where the person chooses which version to destroy.
+//   8. THE DECISION ON A CONFLICT. A card drawn for one folder is pressed after the selection has
+//      moved to another; the decision goes to the folder the card was drawn for.
+//   9. THE TRAY PANEL'S PIN. The panel's rows act on the default pair, so it must show the default
+//      pair whatever the window has selected — both halves of that, the pair it asks about and the
+//      reply it follows.
 //
 // WHAT IT CANNOT SEE: it scripts the bridge, so it proves the facade and the screens agree with each
 // other, not that the real Rust agrees with either (that is `selection_tests.rs`); and it drives the
@@ -36,7 +47,7 @@
 
 import puppeteer from "puppeteer";
 import { serve } from "./serve.mjs";
-import { DELETIONS, MAIN, PLAN, TRAY } from "../../src/js/ui/copy.js";
+import { CONFLICTS, DELETIONS, MAIN, PLAN, TRAY } from "../../src/js/ui/copy.js";
 import { EMPTY_CONFIG } from "../../src/js/api.js";
 
 const PAIRS = ["docs", "photos"];
@@ -80,15 +91,19 @@ async function until(what, check, ms = 6000) {
   }
 }
 
+/** One conflict, found at the same relative path in both folders: the reads for them differ in the folder alone. */
+const CONFLICT = { original: "note.txt", sidecar: "note.proton-cloud.txt", kind: "content" };
+
 /** A scripted daemon: answers every command the window sends, records them, and holds replies on request. */
 class Bridge {
-  constructor(queues, { names = PAIRS, neverSynced = [] } = {}) {
+  constructor(queues, { names = PAIRS, neverSynced = [], conflicts = {}, selected = "docs" } = {}) {
     this.names = names;
     this.neverSynced = neverSynced;
+    this.conflicts = conflicts; // pair -> the conflicts a scan finds there
     this.calls = [];
-    this.selected = "docs";
+    this.selected = selected;
     this.queues = queues; // pair -> pending deletions
-    this.holds = new Map(); // command -> { release }
+    this.holds = new Map(); // command (or `command:pair`) -> { release }
     this.planFor = (pair) => ({
       report: {
         summary: { total: 1, remote_deletes: 1, destructive_actions: 1 },
@@ -102,8 +117,11 @@ class Bridge {
     });
   }
 
-  status() {
-    const name = this.selected;
+  /**
+   * The reply to a status read. `name` is the pair it DESCRIBES — the one the request named, else the
+   * selected one, as Rust answers — and `selected` is the app's choice, which is not the same thing.
+   */
+  status(name = this.selected) {
     const never = (pair) => this.neverSynced.includes(pair);
     const pairs = this.names.map((pair) => ({
       ...summaryOf(pair, this.queues[pair].length),
@@ -112,7 +130,7 @@ class Bridge {
     return {
       // What `derive_state` says: a reachable daemon that has never synced THIS pair.
       state: never(name) ? "firstRun" : "idle",
-      selected: name,
+      selected: this.selected,
       pairs,
       pair_states: this.names.map((pair) => ({ name: pair, state: "idle" })),
       response: {
@@ -140,13 +158,16 @@ class Bridge {
     };
   }
 
-  /** Hold the next reply to `command` until `release()` is called. */
-  hold(command) {
+  /**
+   * Hold the next reply to `command` until `release()` is called — to `command` sent for `pair` when
+   * one is given, so two reads of the same command for two folders can be released in either order.
+   */
+  hold(command, pair) {
     let release;
     const released = new Promise((resolve) => {
       release = resolve;
     });
-    this.holds.set(command, { released, release });
+    this.holds.set(pair ? `${command}:${pair}` : command, { released, release });
     return release;
   }
 
@@ -156,14 +177,19 @@ class Bridge {
 
   async handle(cmd, args) {
     this.calls.push({ cmd, args, selectedThen: this.selected });
-    const held = this.holds.get(cmd);
-    if (held) {
-      this.holds.delete(cmd);
-      await held.released;
+    for (const key of [`${cmd}:${args?.pair}`, cmd]) {
+      const held = this.holds.get(key);
+      if (held) {
+        this.holds.delete(key);
+        await held.released;
+        break;
+      }
     }
     switch (cmd) {
+      case "fence":
+        return null;
       case "get_status":
-        return this.status();
+        return this.status(args?.pair ?? this.selected);
       case "read_config":
         return {
           ...EMPTY_CONFIG,
@@ -179,7 +205,20 @@ class Bridge {
       case "check_cli":
         return { installed: true, distro: null };
       case "scan_conflicts":
-        return [];
+        return this.conflicts[args?.pair ?? this.selected] ?? [];
+      case "read_conflict_pair": {
+        // Content that names its folder, so a card that shows the wrong folder's file says so in text.
+        const side = (kind) => ({
+          exists: true,
+          size: 40,
+          mtime_epoch_secs: 1_750_000_000,
+          text: `MARK-${args?.pair}-${kind}\nline two`,
+          binary_or_large: false,
+        });
+        return { original: side("mine"), sidecar: side("theirs"), happened: null };
+      }
+      case "resolve_conflict":
+        return null;
       case "path_sync_status":
         return { tracked: false };
       case "approve":
@@ -216,8 +255,8 @@ const { server, port } = await serve();
 const browser = await puppeteer.launch({ headless: true, args: ["--no-sandbox"] });
 const failures = [];
 
-/** A fresh page wired to a fresh bridge. */
-async function open(bridge) {
+/** A fresh page wired to a fresh bridge. `query` is the page's own (`?surface=tray` opens the tray panel). */
+async function open(bridge, query = "") {
   const page = await browser.newPage();
   await page.setViewport({ width: 1040, height: 764, deviceScaleFactor: 1 });
   await page.exposeFunction("__bridge", (cmd, args) => bridge.handle(cmd, args));
@@ -239,9 +278,19 @@ async function open(bridge) {
     });
   });
   page.on("pageerror", (error) => failures.push(`page error: ${error.message}`));
-  await page.goto(`http://127.0.0.1:${port}/index.html`, { waitUntil: "networkidle0" });
+  await page.goto(`http://127.0.0.1:${port}/index.html${query}`, { waitUntil: "networkidle0" });
   return page;
 }
+
+/**
+ * Wait until the page has PROCESSED every reply the bridge has already sent it. A call made now is
+ * answered after them, and replies reach the page in the order they were sent, so by the time this
+ * one's answer is back each earlier reply's continuation has run — the store has moved and the
+ * screen has been drawn. It is a condition, where a sleep was a guess at how long that takes.
+ */
+const settle = (page) => page.evaluate(() => window.__bridge("fence", null));
+
+const pageText = (page) => page.evaluate(() => document.getElementById("app-root")?.innerText ?? "");
 
 /** Click the first button whose text is exactly `text`; waits for it to exist. */
 async function press(page, text) {
@@ -262,7 +311,7 @@ async function select(page, bridge, pair) {
   const before = bridge.called("get_status").length;
   await page.evaluate((name) => window.__listeners["pair-selected"]({ payload: name }), pair);
   await until("a status poll after the switch", () => bridge.called("get_status").length > before);
-  await delay(150); // the reply lands, the store moves, the screen re-renders
+  await settle(page); // the reply lands, the store moves, the screen re-renders
 }
 
 async function scenario(name, run) {
@@ -372,15 +421,13 @@ await scenario("after a switch, the hero's Pause pauses the pair the hero is now
 });
 
 // ---- 5. a pair that has never synced --------------------------------------------------------------
-const text = (page) => page.evaluate(() => document.getElementById("app-root")?.innerText ?? "");
-
 await scenario(
   "at two pairs a never-synced pair is drawn as such, and the first-run takeover stays shut",
   async () => {
     const bridge = new Bridge({ docs: [], photos: [] }, { neverSynced: ["docs"] });
     const page = await open(bridge);
-    await until("the hero", async () => (await text(page)).includes(TRAY.nothingSyncedYet));
-    const shown = await text(page);
+    await until("the hero", async () => (await pageText(page)).includes(TRAY.nothingSyncedYet));
+    const shown = await pageText(page);
     if (shown.includes(MAIN.settled))
       throw new Error(`a pair that has never synced was drawn as "${MAIN.settled}"`);
     if (!shown.includes(TRAY.nothingSyncedYetSub))
@@ -395,7 +442,102 @@ await scenario("at one pair the same reply still opens the first-run takeover", 
   // The other half of the rule: it is the COUNT that keeps the wizard shut, not the state.
   const bridge = new Bridge({ docs: [] }, { names: ["docs"], neverSynced: ["docs"] });
   const page = await open(bridge);
-  await until("the takeover", async () => /step 1 of 2/.test(await text(page)));
+  await until("the takeover", async () => /step 1 of 2/.test(await pageText(page)));
+  await page.close();
+});
+
+// ---- 7. a late read ---------------------------------------------------------------------------------
+await scenario(
+  "a late conflict read for the pair that was left never fills the card now showing",
+  async () => {
+    const bridge = new Bridge(
+      { docs: [], photos: [] },
+      { conflicts: { docs: [CONFLICT], photos: [CONFLICT] } },
+    );
+    const releaseDocs = bridge.hold("read_conflict_pair", "docs");
+    const releasePhotos = bridge.hold("read_conflict_pair", "photos");
+    const page = await open(bridge);
+    await press(page, MAIN.band.conflictAction);
+    await until("docs' read", () => bridge.called("read_conflict_pair").some((c) => c.args?.pair === "docs"));
+
+    await select(page, bridge, "photos"); // while docs' read is still out
+    await until("photos' read", () =>
+      bridge.called("read_conflict_pair").some((c) => c.args?.pair === "photos"),
+    );
+
+    releaseDocs(); // the OLDER read answers first, after the selection has moved on
+    await settle(page);
+    releasePhotos();
+    await settle(page);
+    await press(page, CONFLICTS.showDiff);
+    const shown = await pageText(page);
+    if (/MARK-docs/.test(shown)) {
+      throw new Error("the card for photos shows docs' file content, read for a different folder");
+    }
+    // The positive control: the card is not merely blank, it has photos' own content.
+    if (!/MARK-photos-mine/.test(shown))
+      throw new Error("the card for photos does not show photos' own content");
+    await page.close();
+  },
+);
+
+// ---- 8. the decision on a conflict ----------------------------------------------------------------------
+await scenario("a decision on a conflict goes to the pair the card was drawn for", async () => {
+  const bridge = new Bridge(
+    { docs: [], photos: [] },
+    { conflicts: { docs: [CONFLICT], photos: [CONFLICT] } },
+  );
+  const page = await open(bridge);
+  await press(page, MAIN.band.conflictAction);
+  const keepBoth = await until("the card's choices", async () => {
+    const handle = await page.evaluateHandle(
+      (label) =>
+        [...document.querySelectorAll("button")].find(
+          (b) => b.querySelector(".btn-choice-name")?.textContent.trim() === label,
+        ) ?? null,
+      CONFLICTS.keepBoth,
+    );
+    return handle.asElement();
+  });
+  // The selection moves under a card that has not been redrawn yet, and the press lands on THAT card:
+  // the button is held across the switch, which is what a click arriving in the gap looks like.
+  await select(page, bridge, "photos");
+  await keepBoth.evaluate((button) => button.click());
+  await until("the decision", () => bridge.called("resolve_conflict").length === 1);
+  expectPair(bridge.called("resolve_conflict"), "docs", "resolve_conflict");
+  await page.close();
+});
+
+// ---- 9. the tray panel's pin ------------------------------------------------------------------------------
+await scenario("the tray panel shows the pair its rows act on, not the one the window selected", async () => {
+  // The window has selected `photos`. The panel's rows act on the default pair (`docs`), which has never
+  // synced here: a panel that followed the selection would say `Everything is up to date` beside a
+  // `Pause` that pauses a folder it is not describing.
+  const bridge = new Bridge({ docs: [], photos: [] }, { selected: "photos", neverSynced: ["docs"] });
+  const page = await open(bridge, "?surface=tray");
+  await until("the first poll", () => bridge.called("get_status").length >= 1);
+  await settle(page); // the roster is known from here, so the next poll can name the default pair
+  const before = bridge.called("get_status").length;
+  await page.evaluate(() => window.__listeners["pair-selected"]({ payload: "photos" }));
+  await until("a poll after the roster", () => bridge.called("get_status").length > before);
+  await settle(page);
+  const wrong = bridge
+    .called("get_status")
+    .slice(before)
+    .filter((call) => call.args?.pair !== "docs");
+  if (wrong.length) {
+    throw new Error(
+      `the panel asked about ${JSON.stringify(wrong.map((c) => c.args?.pair))}, not the default pair "docs"`,
+    );
+  }
+  const shown = await pageText(page);
+  if (!shown.includes(TRAY.nothingSyncedYet)) {
+    throw new Error(
+      `the panel does not describe the default pair (docs, never synced): ${JSON.stringify(shown)}`,
+    );
+  }
+  if (shown.includes(MAIN.compact.upToDate))
+    throw new Error("the panel drew the selected pair (photos) as up to date");
   await page.close();
 });
 
