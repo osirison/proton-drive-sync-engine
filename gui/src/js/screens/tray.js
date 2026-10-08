@@ -23,7 +23,13 @@
 
 import { MAIN, TRAY } from "../ui/copy.js";
 import { clock, since } from "../ui/format.js";
-import { renderCompactPanel, updateCompactPanel, trayMenu } from "../ui/compact.js";
+import {
+  renderCompactPanel,
+  updateCompactPanel,
+  bindMenu,
+  folderMenuRows,
+  TRAY_FOLDER_CAP,
+} from "../ui/compact.js";
 import { heroStateOf, transfersOf } from "./main.js";
 
 /**
@@ -99,18 +105,103 @@ const MENU_STATE = {
 };
 
 /**
+ * The folders of a payload, joined to the state Rust derived for each — or `[]` when there are fewer
+ * than two, or when the payload cannot say what state every one of them is in.
+ *
+ * `[]` is the one-folder panel, byte for byte what it always was (decision D2), and it is also the
+ * answer to an inconsistent payload: a folder with no derived state is not defaulted to `idle`, which
+ * would be the false all-clear this whole module exists to prevent — the panel simply does not claim
+ * to know about several folders. `rank` is Rust's (`gui_core::state::severity`), never recomputed here.
+ */
+export function foldersOf(pairs, pairStates) {
+  if (!Array.isArray(pairs) || pairs.length < 2 || !Array.isArray(pairStates)) return [];
+  const derived = new Map(pairStates.map((entry) => [entry.name, entry]));
+  const folders = [];
+  for (const summary of pairs) {
+    const entry = derived.get(summary.name);
+    if (!entry) return [];
+    folders.push({
+      name: summary.name,
+      paused: Boolean(summary.paused),
+      syncing: Boolean(summary.syncing),
+      rank: entry.rank ?? 0,
+      state: entry.state,
+      summary,
+    });
+  }
+  return folders;
+}
+
+/**
+ * What a folder known only by its summary can say to `trayView`: the reply fields it reads, from the
+ * numbers a `PairSummary` carries. A summary has no live activity and no plan, so a syncing folder that
+ * is not the one the reply describes has a count and no transfer rows — the reply's `activity` belongs
+ * to the folder that is syncing and is only on THAT folder's reply.
+ */
+const factsOfSummary = (summary) => ({
+  syncing: summary.syncing,
+  paused: summary.paused,
+  pending_changes: summary.pending_changes,
+  last_sync_epoch_secs: summary.last_sync_epoch_secs,
+  last_error: summary.last_error,
+  activity: null,
+  last_plan_summary: null,
+});
+
+/**
  * The whole panel, derived once.
  *
  * Same shape of argument as `mainView` and for the same reason: the render and the ~2s patch must
  * not be able to disagree about what state this is.
+ *
+ * **With two folders or more** (`pairs` and `pairStates` from the payload, decision D3) the hero is
+ * the WORST folder's own — its headline and sub-line unchanged — preceded by its name, and the menu
+ * gains one pause row per folder. The folder the reply describes keeps everything it had (conflicts,
+ * live transfers, the first-run hero); any other is read from its summary, which is less, and says so
+ * by drawing less rather than by inventing. Below two, `pair` is `null` and the rows are the fixed
+ * set, so a one-folder panel is the one it always was.
  */
 export function trayView(props = {}) {
-  const { daemonState = "unreachable", response = null, conflicts = [], deletions = [] } = props;
+  const {
+    daemonState = "unreachable",
+    response = null,
+    conflicts = [],
+    deletions = [],
+    pairs = [],
+    pairStates = [],
+  } = props;
 
+  const folders = foldersOf(pairs, pairStates);
+  if (folders.length === 0) {
+    return {
+      ...panelOf(daemonState, response, conflicts.length + deletions.length),
+      pair: null,
+      menuRows: null,
+    };
+  }
+
+  // The worst folder; ties go to the first the daemon lists, which is the default folder.
+  const worst = folders.reduce((best, folder) => (folder.rank > best.rank ? folder : best));
+  const described = response?.pair === worst.name;
+  const panel = described
+    ? panelOf(daemonState, response, conflicts.length + deletions.length)
+    : panelOf(worst.state, factsOfSummary(worst.summary), worst.summary.pending_deletions ?? 0);
+  return {
+    ...panel,
+    pair: worst.name,
+    menuRows: folderMenuRows(panel.menuState, folders, { cap: TRAY_FOLDER_CAP }),
+  };
+}
+
+/**
+ * One folder's panel, from its state and the reply fields. This is the whole of what `trayView` was
+ * before folders; it is a function of ONE folder, so the several-folder view is that function applied
+ * to the worst one rather than a second derivation.
+ */
+function panelOf(daemonState, response, waiting) {
   const activity = response?.activity ?? null;
   const summary = response?.last_plan_summary ?? null;
   const queued = response?.pending_changes ?? null;
-  const waiting = conflicts.length + deletions.length;
   const lastSync = response?.last_sync_epoch_secs ?? null;
 
   // Everything goes to the shared derivation — including the `pending > 0` rule, which is why a tray
@@ -141,6 +232,9 @@ export function trayView(props = {}) {
       PANEL_STATE[hero] === "syncing" ? transfersOf(activity, { compact: true }).slice(0, PANEL_ROWS) : [],
   };
 }
+
+/** The rows a view draws: the folder menu when it has one, else the fixed set for its menu state. */
+const menuRowsOf = (view) => view.menuRows ?? folderMenuRows(view.menuState, []);
 
 /**
  * Headline, sub-line and count, per state.
@@ -251,7 +345,8 @@ export function renderTrayPanel(view, onSelect = null) {
     count: view.count ?? null,
     transfers: view.transfers ?? [],
     action: view.action ? { ...view.action, onClick: () => onSelect?.(view.action.id) } : null,
-    menu: trayMenu(view.menuState, onSelect),
+    menu: bindMenu(menuRowsOf(view), onSelect),
+    pair: view.pair ?? null,
   });
 }
 
@@ -273,7 +368,8 @@ export function updateTrayPanel(node, view) {
     // `Proton Drive is asking you to sign in again` over a menu still offering `Try again now` —
     // the row that cannot do what the sentence above it asks. Built without handlers because only
     // the ids are compared; a mismatch returns false and the caller renders a fresh panel. #246.
-    menu: trayMenu(view.menuState),
+    menu: bindMenu(menuRowsOf(view)),
+    pair: view.pair ?? null,
     headline: view.headline,
     sub: Array.isArray(view.sub) ? undefined : (view.sub ?? undefined),
     meta: view.meta ?? undefined,

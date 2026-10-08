@@ -262,3 +262,150 @@ test("a download with no known size gets a row and no progress track", () => {
   assert.equal(view.transfers[0].direction, "down");
   assert.equal(view.transfers[0].progress, null);
 });
+
+// ---- two folders or more (#102 phase 5d) --------------------------------------------------------
+//
+// Below two the panel is exactly what it was (`pair` and `menuRows` are `null`); at two or more it is
+// the WORST folder's own hero, named, over a pause row for each folder. The worst folder is the one
+// with the highest `rank` — Rust's `severity`, carried on every `pair_states` entry — so none of this
+// ranks anything.
+
+const summary = (name, over = {}) => ({
+  name,
+  local_root: `/home/u/${name}`,
+  remote_root: `/Drive/${name}`,
+  db_path: `/home/u/${name}/.sync/sync_index.db`,
+  paused: false,
+  syncing: false,
+  reconcile_seq: 1,
+  last_sync_epoch_secs: 1_800_000_000,
+  last_error: null,
+  pending_changes: 0,
+  pending_deletions: 0,
+  ...over,
+});
+
+/** `[name, state, rank]` → the `pair_states` entries the payload carries. */
+const derived = (...rows) => rows.map(([name, state, rank]) => ({ name, state, rank }));
+
+test("below two folders the panel is the one it always was", () => {
+  for (const pairs of [[], [summary("docs")]]) {
+    const view = trayView({
+      daemonState: "idle",
+      response: reply({ pair: "docs" }),
+      pairs,
+      pairStates: derived(...pairs.map((p) => [p.name, "idle", 0])),
+    });
+    assert.equal(view.pair, null);
+    assert.equal(view.menuRows, null, "so the fixed rows are drawn");
+    assert.equal(view.headline, MAIN.compact.upToDate);
+  }
+});
+
+test("two folders show the worst one's own panel, named, with a pause row for each", () => {
+  // `documents` (the folder the reply describes) is fine and `photos` failed: the panel is photos'.
+  const view = trayView({
+    daemonState: "idle",
+    response: reply({ pair: "documents" }),
+    pairs: [summary("documents"), summary("photos", { last_error: "boom", pending_changes: 4 })],
+    pairStates: derived(["documents", "idle", 0], ["photos", "failed", 4]),
+  });
+  assert.equal(view.pair, "photos");
+  assert.equal(view.headline, MAIN.failed);
+  assert.equal(view.sub, MAIN.failedSub(4));
+  assert.equal(view.menuState, "outage");
+  const ids = view.menuRows.filter((row) => !row.separator).map((row) => row.id);
+  assert.deepEqual(ids, ["tryAgain", "open", "pause@photos", "pause@documents", "quit"]);
+  // The daemon's string is not in the panel (voice rule 4), at several folders as at one.
+  assert.ok(!JSON.stringify(view).includes("boom"));
+});
+
+test("the folder the reply describes keeps what only a full reply has", () => {
+  // The described folder is the worst here (it is syncing and the other is idle), so the panel is its
+  // own with its live transfer rows — a summary has none.
+  const transfer = { path: "docs/spec.md", direction: "upload", bytes_done: 32, bytes_total: 64 };
+  const view = trayView({
+    daemonState: "running",
+    response: reply({
+      pair: "documents",
+      syncing: true,
+      pending_changes: 1,
+      activity: { phase: "executing", transfer },
+    }),
+    pairs: [summary("documents", { syncing: true, pending_changes: 1 }), summary("photos")],
+    pairStates: derived(["documents", "running", 2], ["photos", "idle", 0]),
+  });
+  assert.equal(view.pair, "documents");
+  assert.equal(view.state, "syncing");
+  assert.equal(view.transfers.length, 1);
+});
+
+test("another folder syncing is drawn from its summary: its count, and no rows it cannot know", () => {
+  const view = trayView({
+    daemonState: "idle",
+    // The reply is about `documents`, which is idle and carries no activity; `photos` is the one moving.
+    response: reply({ pair: "documents" }),
+    pairs: [summary("documents"), summary("photos", { syncing: true, pending_changes: 7 })],
+    pairStates: derived(["documents", "idle", 0], ["photos", "running", 2]),
+  });
+  assert.equal(view.pair, "photos");
+  assert.equal(view.state, "syncing");
+  assert.equal(view.headline, MAIN.syncing(7));
+  assert.deepEqual(view.transfers, []);
+  // The aggregate is `Running`, so the syncing set: `Sync now` is still there because `documents` is idle.
+  assert.equal(view.menuState, "syncing");
+  assert.ok(view.menuRows.some((row) => row.id === "syncNow"));
+});
+
+test("folders that tie put the first the daemon lists first", () => {
+  const view = trayView({
+    daemonState: "idle",
+    response: reply({ pair: "documents" }),
+    pairs: [summary("documents"), summary("photos")],
+    pairStates: derived(["documents", "idle", 0], ["photos", "idle", 0]),
+  });
+  assert.equal(view.pair, "documents");
+  assert.equal(view.headline, MAIN.compact.upToDate);
+});
+
+test("a paused folder is the panel's folder while nothing outranks it, and offers Resume", () => {
+  const view = trayView({
+    daemonState: "idle",
+    response: reply({ pair: "documents" }),
+    pairs: [summary("documents"), summary("photos", { paused: true, pending_changes: 7 })],
+    pairStates: derived(["documents", "idle", 0], ["photos", "paused", 1]),
+  });
+  assert.equal(view.pair, "photos");
+  assert.equal(view.state, "paused");
+  assert.equal(view.headline, MAIN.paused);
+  const ids = view.menuRows.filter((row) => !row.separator).map((row) => row.id);
+  assert.ok(ids.includes("resume@photos") && ids.includes("pause@documents"), ids.join());
+  // Not paused as a whole: `documents` still syncs, so `Sync now` and `Close window` are there.
+  assert.ok(ids.includes("syncNow") && ids.includes("closeWindow"));
+});
+
+test("a payload that cannot say what state a folder is in is not drawn as several folders", () => {
+  // Defaulting the missing one to `idle` would be the false all-clear (#246) in the surface nobody
+  // inspects. The panel simply makes no claim about several folders.
+  const view = trayView({
+    daemonState: "idle",
+    response: reply({ pair: "documents" }),
+    pairs: [summary("documents"), summary("photos", { last_error: "boom" })],
+    pairStates: derived(["documents", "idle", 0]),
+  });
+  assert.equal(view.pair, null);
+  assert.equal(view.menuRows, null);
+});
+
+test("the folder rows go through the same cap the corpus asserts", () => {
+  const names = ["a", "b", "c", "d", "e", "f", "g"];
+  const view = trayView({
+    daemonState: "idle",
+    response: reply({ pair: "a" }),
+    pairs: names.map((name) => summary(name)),
+    pairStates: derived(...names.map((name) => [name, "idle", 0])),
+  });
+  const ids = view.menuRows.filter((row) => !row.separator).map((row) => row.id);
+  assert.equal(ids.filter((id) => id.startsWith("pause@")).length, 5);
+  assert.ok(ids.includes("more"));
+});

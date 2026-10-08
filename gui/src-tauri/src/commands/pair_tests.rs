@@ -1575,6 +1575,13 @@ enum Class {
     Selection,
     /// Pair-bound, but addressed by something else until the PR named here.
     Deferred(&'static str),
+    /// Addressed by the ROW that was pressed: its id carries the pair (`pause@photos`), so the pair
+    /// is whatever the row was drawn for and never the selection (#102 phase 5d).
+    Row,
+    /// Always the default pair, by design and not by omission: the tray panel's poll, whose rows
+    /// were built around that pair's full reply. Takes no `pair` argument because it has no choice
+    /// to make — and a read that named none would mean the SELECTED pair (`Ask::Selected`).
+    DefaultPair,
     /// About the process, the daemon as a whole, or the window — no folder pair is involved.
     Independent,
 }
@@ -1582,7 +1589,7 @@ enum Class {
 /// Every `#[tauri::command]` and what it is. Adding a command without adding it here fails
 /// `every_pair_slot_command_names_its_class`, which is the point: a command that reads a pair slot
 /// must say how it takes the pair.
-const COMMAND_CLASSES: [(&str, Class); 39] = [
+const COMMAND_CLASSES: [(&str, Class); 40] = [
     ("get_status", Class::R),
     ("list_pending_deletions", Class::R),
     ("scan_conflicts", Class::R),
@@ -1609,10 +1616,8 @@ const COMMAND_CLASSES: [(&str, Class); 39] = [
         "write_config",
         Class::Deferred("5b-1: write_config(pair, update)"),
     ),
-    (
-        "tray_action",
-        Class::Deferred("5d: pair-carrying tray rows"),
-    ),
+    ("tray_action", Class::Row),
+    ("tray_status", Class::DefaultPair),
     ("choose_folder", Class::Independent),
     ("start_service", Class::Independent),
     ("restart_service", Class::Independent),
@@ -1692,7 +1697,11 @@ fn every_pair_slot_command_names_its_class() {
                 required_pair && !optional_pair,
                 "`{name}` is class W and must take `pair: String`"
             ),
-            Class::Selection | Class::Deferred(_) | Class::Independent => assert!(
+            Class::Selection
+            | Class::Deferred(_)
+            | Class::Row
+            | Class::DefaultPair
+            | Class::Independent => assert!(
                 !optional_pair && !required_pair,
                 "`{name}` is {class:?} and must not take a `pair` argument"
             ),

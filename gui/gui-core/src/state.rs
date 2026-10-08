@@ -154,6 +154,48 @@ pub fn facts_of(summary: &PairSummary, auth: AuthState) -> PairFacts<'_> {
 pub struct PairState {
     pub name: String,
     pub state: DaemonState,
+    /// How bad `state` is when the tray has to show ONE thing for several folders: [`severity`],
+    /// carried so the webview can order folders worst-first and pick the worst without a rank table
+    /// of its own (two places computing the same thing is how they come to disagree).
+    pub rank: u8,
+}
+
+/// How bad a state is when folders disagree and the tray can show only one glyph — **higher is worse**
+/// (#102 phase 5d, ADR 0005, brief section 4.3). Highest first:
+///
+/// | rank | state | why it sits there |
+/// |---|---|---|
+/// | 6 | `Unreachable` | the control socket: process-wide, there are no per-pair answers to rank |
+/// | 5 | `AuthExpired` | the session is per user, so every unpaused pair says it at once |
+/// | 4 | `Failed` | one folder's last pass failed (or its folder is gone); never hidden behind a healthy one |
+/// | 3 | `FirstRun` | only from a full reply, so only for the pair the reply describes |
+/// | 2 | `Running` | something is moving; a folder the person paused does not outrank it |
+/// | 1 | `Paused` | above `Idle`, because an all-clear glyph over a folder that is not syncing is the lie to avoid; below `Running`, because the person did it on purpose and the title names which |
+/// | 0 | `Idle` | only when every folder is |
+///
+/// An exhaustive `match` with no `_` arm: a new `DaemonState` cannot be added without answering where
+/// it ranks, which is the same guarantee `ConfigKey::scope` gives the engine.
+pub fn severity(state: DaemonState) -> u8 {
+    match state {
+        DaemonState::Unreachable => 6,
+        DaemonState::AuthExpired => 5,
+        DaemonState::Failed => 4,
+        DaemonState::FirstRun => 3,
+        DaemonState::Running => 2,
+        DaemonState::Paused => 1,
+        DaemonState::Idle => 0,
+    }
+}
+
+/// The one state the tray's glyph shows for folders in `states` — the worst by [`severity`]. A reply
+/// that lists no folders (a daemon older than the selector, or no reply at all) has nothing to rank,
+/// and `described` — the state derived from the reply itself — stands.
+pub fn aggregate_state(described: DaemonState, states: &[PairState]) -> DaemonState {
+    states
+        .iter()
+        .map(|pair| pair.state)
+        .max_by_key(|state| severity(*state))
+        .unwrap_or(described)
 }
 
 /// The state of every pair a reply lists.
@@ -166,13 +208,17 @@ pub fn pair_states(response: &ControlResponse, described: DaemonState) -> Vec<Pa
     response
         .pairs
         .iter()
-        .map(|summary| PairState {
-            name: summary.name.clone(),
-            state: if response.pair.as_deref() == Some(summary.name.as_str()) {
+        .map(|summary| {
+            let state = if response.pair.as_deref() == Some(summary.name.as_str()) {
                 described
             } else {
                 derive(&facts_of(summary, response.auth))
-            },
+            };
+            PairState {
+                name: summary.name.clone(),
+                state,
+                rank: severity(state),
+            }
         })
         .collect()
 }
@@ -695,6 +741,120 @@ mod tests {
         // A legacy-shaped reply lists nothing.
         r.pairs.clear();
         assert!(pair_states(&r, described).is_empty());
+    }
+
+    /// The brief's table (section 4.3), worst first, written out here as its own object: the property
+    /// below compares `aggregate_state` against THIS, so a rank that was reordered in the function and
+    /// not here is a failure, not a pair of agreeing mistakes.
+    const WORST_FIRST: [DaemonState; 7] = [
+        DaemonState::Unreachable,
+        DaemonState::AuthExpired,
+        DaemonState::Failed,
+        DaemonState::FirstRun,
+        DaemonState::Running,
+        DaemonState::Paused,
+        DaemonState::Idle,
+    ];
+
+    fn listed(states: &[DaemonState]) -> Vec<PairState> {
+        states
+            .iter()
+            .enumerate()
+            .map(|(at, state)| PairState {
+                name: format!("p{at}"),
+                state: *state,
+                rank: severity(*state),
+            })
+            .collect()
+    }
+
+    /// `worst_state_wins`, as a property over EVERY combination of up to four folders rather than the
+    /// handful somebody thought of. The reference is the first state of `WORST_FIRST` that any folder
+    /// is in, so the mixed cases the brief names fall out of it: a paused and an idle folder show
+    /// paused, a paused and a syncing one show syncing, a failed one beats anything.
+    #[test]
+    fn worst_state_wins() {
+        let mut checked = 0;
+        for size in 1..=4usize {
+            for code in 0..WORST_FIRST.len().pow(size as u32) {
+                let combo: Vec<DaemonState> = (0..size)
+                    .map(|at| {
+                        WORST_FIRST[(code / WORST_FIRST.len().pow(at as u32)) % WORST_FIRST.len()]
+                    })
+                    .collect();
+                let expected = *WORST_FIRST
+                    .iter()
+                    .find(|candidate| combo.contains(candidate))
+                    .expect("a non-empty combination has a worst state");
+                assert_eq!(
+                    aggregate_state(DaemonState::Idle, &listed(&combo)),
+                    expected,
+                    "{combo:?}"
+                );
+                checked += 1;
+            }
+        }
+        // 7 + 49 + 343 + 2401: the loop really did walk them all.
+        assert_eq!(checked, 2800);
+    }
+
+    /// The three cases the brief calls out by name, so a reader sees the rule without decoding the
+    /// property: they are the ones a glyph reader will actually meet.
+    #[test]
+    fn the_mixed_cases_the_brief_names() {
+        use DaemonState::*;
+        let of = |states: &[DaemonState]| aggregate_state(Idle, &listed(states));
+        assert_eq!(
+            of(&[Paused, Idle]),
+            Paused,
+            "paused + idle -> the paused glyph"
+        );
+        assert_eq!(
+            of(&[Paused, Running]),
+            Running,
+            "paused + syncing -> the syncing glyph"
+        );
+        assert_eq!(
+            of(&[Failed, Idle]),
+            Failed,
+            "failed + anything -> the offline glyph"
+        );
+        assert_eq!(of(&[Failed, Running, Paused]), Failed);
+        assert_eq!(of(&[AuthExpired, Failed]), AuthExpired);
+    }
+
+    /// A reply that lists no folder has nothing to rank: the state derived from the reply stands.
+    #[test]
+    fn a_reply_that_lists_no_folders_is_ranked_by_what_it_says_itself() {
+        assert_eq!(
+            aggregate_state(DaemonState::Paused, &[]),
+            DaemonState::Paused
+        );
+        assert_eq!(
+            aggregate_state(DaemonState::Unreachable, &[]),
+            DaemonState::Unreachable
+        );
+    }
+
+    /// The rank rides on every `PairState` a reply produces, so the webview orders folders by what
+    /// Rust decided.
+    #[test]
+    fn every_pair_state_carries_the_rank_of_its_state() {
+        let mut r = response();
+        r.pair = Some("a".to_owned());
+        let mut a = summary_of(&r);
+        a.name = "a".to_owned();
+        let mut b = a.clone();
+        b.name = "b".to_owned();
+        b.paused = true;
+        r.pairs = vec![a, b];
+        let described = derive_state(Ok(&r));
+        let states = pair_states(&r, described);
+        assert_eq!(states.len(), 2);
+        for pair in &states {
+            assert_eq!(pair.rank, severity(pair.state), "{pair:?}");
+        }
+        assert!(states[1].rank > states[0].rank, "paused outranks idle");
     }
 
     #[test]

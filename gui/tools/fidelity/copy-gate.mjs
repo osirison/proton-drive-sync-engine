@@ -115,16 +115,13 @@ const NOT_DRAWN = new Map([
   // (voice rule 4).
   ["PLAN.failedTitle", "no frame draws a failed rehearsal — 14-behaviour-and-state.md specifies it in prose"],
   ["PLAN.failedSub", "no frame draws a failed rehearsal — 14-behaviour-and-state.md specifies it in prose"],
-  // S1's failed PASS — the sibling of the two above, and #246's own words for what would close it.
-  // The deck has one sentence for a daemon that cannot reach Proton (`TRAY.unreachableTitle`) and
-  // it is already spoken by a different state; a pass can fail with Proton perfectly reachable, so
-  // reusing it would put a claim in the headline that the quoted string underneath contradicts.
+  // S1's failed PASS — the sibling of the two above, and #246's own words for what would close it —
+  // WAS HERE, and is not: `10a Two folders failed` (#102 phase 5d) draws a folder whose pass did not
+  // finish, with `MAIN.failed` as its headline and `MAIN.failedSub(4)` under it, so both are checked
+  // against the frame (the template in the drawn table below). The deck has one sentence for a daemon
+  // that cannot reach Proton (`TRAY.unreachableTitle`) and it is spoken by a different state; a pass
+  // can fail with Proton perfectly reachable, so the failed folder's panel says the other one.
   // The daemon's own message is not copy and never passes through here — voice rule 4.
-  //
-  // Its sub-line is NOT here: `MAIN.failedSub` is a template, `walk` never collects one, and an
-  // exemption for something the gate does not look at would subtract one from a denominator it was
-  // never in. The check below is what turned that from a guess into a build failure.
-  ["MAIN.failed", "no `2a` frame draws a pass that failed — the deck's error table gives the shape in prose"],
   // S1's stopped SERVICE, and the reason no frame draws it is that the design never had this state:
   // `14-behaviour-and-state.md`'s `unreachable` is *Proton* unreachable ("entered after a failed
   // pass and retry"), while `derive_state`'s `Unreachable` is the CONTROL SOCKET not answering. The
@@ -405,7 +402,7 @@ const UNGATED_TEMPLATES = new Map([
       why:
         "The transfer-list overflow row, and no frame draws a list long enough to overflow: `2a " +
         "Syncing` draws three transfer rows and `5a Plan` nine, with no `+n more` node in any of the " +
-        "51 frames. All three call sites are guarded `hidden > 0`, so the app can produce it; nothing " +
+        "55 frames. All three call sites are guarded `hidden > 0`, so the app can produce it; nothing " +
         "drew it.",
       absent: null,
     },
@@ -421,19 +418,6 @@ const UNGATED_TEMPLATES = new Map([
         "would go green by pointing the deck's chip at another sentence's words \u2014 the " +
         "`CONFLICTS.kindFolder` near-miss this gate exists to prevent.",
       absent: null,
-    },
-  ],
-  [
-    "MAIN.failedSub",
-    {
-      why:
-        "No frame draws a failed pass; its headline `MAIN.failed` is already exempt for that reason " +
-        "at copy-gate.mjs:127, and this is the template sibling `NOT_DRAWN` cannot hold. The counted " +
-        "branch matches nothing. DO NOT gate the zero branch: `failedSub(0)` renders the bare " +
-        "`Nothing is lost.`, which is inside `10a Offline` and `3a Conflict`, so a DRAWN row at `[0]` " +
-        "would pass while asserting the failed-pass sub-line against the tray's outage body and the " +
-        "conflict card's keep-both sub.",
-      absent: "waiting and will go on the next try.",
     },
   ],
   [
@@ -832,6 +816,17 @@ const DRAWN = [
   ["ONBOARDING.workedOutPlain", ["40 seconds ago"], "9a Review"],
   ["TRAY.retrying", ["40s", "13:58"], "10a Offline"],
   ["TRAY.unreachableBody", [4], "10a Offline"],
+  // #102 phase 5d, the tray at two folders or more. The folder rows are templates of the folder's
+  // name (decision D11); the `N more folders` row is what the panel says past its fifth folder
+  // (D13). Each is checked in the frame that draws the row it makes, at the frame's own argument.
+  ["TRAY.pausePair", ["documents"], "10a Two folders"],
+  ["TRAY.resumePair", ["documents"], "10a Two folders paused"],
+  ["TRAY.moreFolders", [2], "10a Many folders"],
+  // The failed folder's sub-line — it had no frame (the exemption that stood here said so), and now
+  // has one: the counted branch IS the sentence `10a Two folders failed` draws. The zero branch stays
+  // ungated for the reason the old exemption gave: `failedSub(0)` is the bare `Nothing is lost.`,
+  // which `10a Offline` and `3a Conflict` also contain, so a row at `[0]` would pass on the wrong frame.
+  ["MAIN.failedSub", [4], "10a Two folders failed"],
 ];
 
 /** Every own-text string in every frame, and which frames said it. */

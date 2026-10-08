@@ -1353,6 +1353,27 @@ export const TRAY = {
   quitSub: "stops syncing",
 
   /**
+   * The per-folder pause rows (#102 phase 5d, decision D11) — what `Pause syncing`/`Resume syncing`
+   * become once there are two folders or more. EVERY FOLDER HAS ITS OWN PAUSE (maintainer ruling,
+   * issue #102): there is no row that pauses them all, and these two never claim to. The label names
+   * the folder because the folder is the whole of what the row acts on, and `Resume {name}` appears
+   * exactly while that folder is paused, so a label never offers an action the folder is not in a
+   * state to take.
+   *
+   * The shortest wording that keeps the verb. `10-tray.md` and the native menus carry the same two
+   * templates (`tray_menu.rs`'s `the_labels_are_the_copy_deck_s` reads these lines), so each is
+   * written on ONE line in exactly this shape.
+   */
+  pausePair: (name) => `Pause ${name}`,
+  resumePair: (name) => `Resume ${name}`,
+  /**
+   * The panel's last row when there are more folders than it draws pause rows for (decision D13: five,
+   * worst first). It opens the window, which has each folder's own button. The native menus draw every
+   * folder and have no such row.
+   */
+  moreFolders: (n) => `${count(n)} more ${plural(n, "folder", "folders")}`,
+
+  /**
    * The two sentences for a reachable daemon that has never synced — a state NO FRAME DRAWS and the
    * deck has no words for, because in the window it is unreachable at one folder: `app.js` intercepts
    * `firstRun` with the onboarding takeover before the main screen renders. The tray has no takeover,

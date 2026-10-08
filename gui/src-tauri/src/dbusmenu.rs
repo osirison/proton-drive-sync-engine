@@ -97,7 +97,7 @@ type Item = (i32, HashMap<String, OwnedValue>, Vec<OwnedValue>);
 /// The menu a host reads. `rows` is whatever the poll last decided; `revision` is what tells a host
 /// the layout it holds is out of date.
 pub struct TrayMenu {
-    rows: &'static [Entry],
+    rows: Vec<Entry>,
     revision: u32,
     app: AppHandle,
 }
@@ -113,7 +113,9 @@ impl TrayMenu {
             return true;
         }
         // Looked up across EVERY row set rather than the one currently published: see
-        // `tray_menu::action_for_dbus_id`. The menu on screen may predate the last poll.
+        // `tray_menu::action_for_dbus_id`. The menu on screen may predate the last poll — and for a
+        // folder's row, may predate a change to the folder list itself, which is why the number maps
+        // to the `(action, folder)` it was issued for and not to a position.
         let Some(action) = tray_menu::action_for_dbus_id(id) else {
             eprintln!("tray: the native menu sent an unknown row id {id}");
             return false;
@@ -126,9 +128,10 @@ impl TrayMenu {
         // `idErrors` answer too, and was being discarded. "Handled" has to mean the work was
         // scheduled, not that a row was recognised.
         let app = self.app.clone();
+        let to_run = action.clone();
         match app
             .clone()
-            .run_on_main_thread(move || crate::tray::handle_menu_event(&app, action))
+            .run_on_main_thread(move || crate::tray::handle_menu_event(&app, &to_run))
         {
             Ok(()) => true,
             Err(error) => {
@@ -138,7 +141,7 @@ impl TrayMenu {
         }
     }
 
-    pub fn new(app: AppHandle, rows: &'static [Entry]) -> Self {
+    pub fn new(app: AppHandle, rows: Vec<Entry>) -> Self {
         Self {
             rows,
             // Not 0. `LayoutUpdated(0, …)` from a program that has just started is indistinguishable
@@ -160,7 +163,7 @@ impl TrayMenu {
 fn properties(entry: &Entry) -> HashMap<String, Value<'static>> {
     let mut props = HashMap::new();
     match entry {
-        Entry::Separator => {
+        Entry::Separator { .. } => {
             props.insert("type".to_string(), Value::from("separator"));
         }
         Entry::Row { .. } => {
@@ -264,9 +267,9 @@ impl TrayMenu {
         _property_names: Vec<String>,
     ) -> zbus::fdo::Result<(u32, Item)> {
         let item = if parent_id == 0 {
-            layout(self.rows)
+            layout(&self.rows)
         } else {
-            leaf(self.rows, parent_id)
+            leaf(&self.rows, parent_id)
         };
         match item {
             Ok(item) => Ok((self.revision, item)),
@@ -287,7 +290,7 @@ impl TrayMenu {
         ids: Vec<i32>,
         _property_names: Vec<String>,
     ) -> zbus::fdo::Result<Vec<(i32, HashMap<String, OwnedValue>)>> {
-        group_properties(self.rows, &ids)
+        group_properties(&self.rows, &ids)
             .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))
     }
 
@@ -443,7 +446,7 @@ impl TrayMenu {
 ///
 /// `live` gates the SIGNAL alone — the rows are always published, because a host that comes back
 /// reads the layout rather than being told about it. See `Sni::update`.
-pub async fn set_rows(conn: &Connection, rows: &'static [Entry], live: bool) -> zbus::Result<()> {
+pub async fn set_rows(conn: &Connection, rows: &[Entry], live: bool) -> zbus::Result<()> {
     let iface = conn
         .object_server()
         .interface::<_, TrayMenu>(MENU_PATH)
@@ -453,7 +456,7 @@ pub async fn set_rows(conn: &Connection, rows: &'static [Entry], live: bool) -> 
         if menu.rows == rows {
             return Ok(());
         }
-        menu.rows = rows;
+        menu.rows = rows.to_vec();
         // Wrapping is not a real case at one increment per state change, but a revision that went
         // backwards would be read as older than the one a host holds. Skipping 0 keeps every
         // revision this ever publishes greater than the "nothing fetched yet" a host starts with.
@@ -473,7 +476,7 @@ mod tests {
     use gui_core::state::DaemonState;
 
     fn root_of(state: DaemonState) -> Item {
-        layout(tray_menu::rows_for(state)).expect("the layout builds")
+        layout(&tray_menu::rows_for(state, &[])).expect("the layout builds")
     }
 
     fn string_prop(props: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
@@ -518,7 +521,7 @@ mod tests {
     fn every_row_reaches_the_wire_with_its_own_id_and_its_label() {
         for state in tray_menu::ALL_STATES {
             let root = root_of(*state);
-            let rows = tray_menu::rows_for(*state);
+            let rows = tray_menu::rows_for(*state, &[]);
             let children = children_of(&root);
             assert_eq!(children.len(), rows.len(), "{state:?} lost a row");
             for (entry, (id, props)) in rows.iter().zip(children) {
@@ -528,7 +531,7 @@ mod tests {
                     "{state:?}: a row changed id in transit"
                 );
                 match entry {
-                    Entry::Separator => {
+                    Entry::Separator { .. } => {
                         assert_eq!(string_prop(&props, "type").as_deref(), Some("separator"));
                         assert!(!props.contains_key("label"), "a rule with a label");
                     }
@@ -562,12 +565,12 @@ mod tests {
 
     #[test]
     fn a_leaf_is_asked_for_by_id_and_answers_childless() {
-        let rows = tray_menu::rows_for(DaemonState::Idle);
+        let rows = tray_menu::rows_for(DaemonState::Idle, &[]);
         let quit = rows
             .iter()
-            .find(|entry| matches!(entry, Entry::Row { id, .. } if *id == "quit"))
+            .find(|entry| entry.action() == Some("quit"))
             .unwrap();
-        let item = leaf(rows, quit.dbus_id()).expect("the leaf builds");
+        let item = leaf(&rows, quit.dbus_id()).expect("the leaf builds");
         assert_eq!(item.0, quit.dbus_id());
         assert_eq!(string_prop(&item.1, "label"), Some(quit.folded_label()));
         assert!(item.2.is_empty(), "a row has no children");
@@ -577,12 +580,13 @@ mod tests {
     fn an_id_the_menu_no_longer_draws_is_answered_rather_than_refused() {
         // A host holding a layout from before the rows changed asks about an id that is gone. That
         // is ordinary, not an error: `Resume syncing` exists in the paused set alone.
-        let resume = tray_menu::rows_for(DaemonState::Paused)
+        let resume = tray_menu::rows_for(DaemonState::Paused, &[])
             .iter()
-            .find(|entry| matches!(entry, Entry::Row { id, .. } if *id == "resume"))
+            .find(|entry| entry.action() == Some("resume"))
             .unwrap()
             .dbus_id();
-        let item = leaf(tray_menu::rows_for(DaemonState::Idle), resume).expect("still answers");
+        let item =
+            leaf(&tray_menu::rows_for(DaemonState::Idle, &[]), resume).expect("still answers");
         assert_eq!(item.0, resume);
         assert!(
             item.1.is_empty(),
@@ -596,8 +600,8 @@ mod tests {
         // LayoutUpdated and gets rows but no id 0 has just lost `children-display`, which is the one
         // property the difference between a menu and an empty menu turns on. Id 0 is not in `rows` —
         // it is synthesised — so a filter over the rows alone drops it silently.
-        let rows = tray_menu::rows_for(DaemonState::Idle);
-        let all = group_properties(rows, &[]).expect("builds");
+        let rows = tray_menu::rows_for(DaemonState::Idle, &[]);
+        let all = group_properties(&rows, &[]).expect("builds");
         assert_eq!(all.len(), rows.len() + 1, "the root is missing");
         assert_eq!(all[0].0, 0);
         assert_eq!(
@@ -606,12 +610,12 @@ mod tests {
         );
 
         // And a specific list answers that list, root included when asked for by id.
-        let some = group_properties(rows, &[0, 7]).expect("builds");
+        let some = group_properties(&rows, &[0, 7]).expect("builds");
         assert_eq!(
             some.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
             vec![0, 7]
         );
-        let just_a_row = group_properties(rows, &[7]).expect("builds");
+        let just_a_row = group_properties(&rows, &[7]).expect("builds");
         assert_eq!(just_a_row.len(), 1, "id 0 arrived unasked for");
     }
 
@@ -633,9 +637,9 @@ mod tests {
         // Three call paths reach id 0 — GetLayout, GetGroupProperties, GetProperty — and a host that
         // got `submenu` from one and nothing from another would draw the menu or not depending on
         // which one it happened to use.
-        let rows = tray_menu::rows_for(DaemonState::Paused);
-        let from_layout = layout(rows).expect("builds").1;
-        let from_group = group_properties(rows, &[0]).expect("builds")[0].1.clone();
+        let rows = tray_menu::rows_for(DaemonState::Paused, &[]);
+        let from_layout = layout(&rows).expect("builds").1;
+        let from_group = group_properties(&rows, &[0]).expect("builds")[0].1.clone();
         assert_eq!(
             string_prop(&from_layout, "children-display"),
             string_prop(&from_group, "children-display")
@@ -649,11 +653,13 @@ mod tests {
         // an action, so a host that somehow clicked it must not resolve to one.
         assert_eq!(tray_menu::action_for_dbus_id(42), None);
         assert_eq!(tray_menu::action_for_dbus_id(0), None);
-        assert_eq!(
-            tray_menu::action_for_dbus_id(tray_menu::SEPARATOR_ID),
-            None,
-            "a separator resolved to an action"
-        );
+        for rule in [tray_menu::SEPARATOR_ID, tray_menu::SECOND_SEPARATOR_ID] {
+            assert_eq!(
+                tray_menu::action_for_dbus_id(rule),
+                None,
+                "a separator resolved to an action"
+            );
+        }
     }
 
     #[test]
@@ -663,20 +669,21 @@ mod tests {
         // the collision itself: `Close window — keeps syncing` stands where `Quit — stops syncing`
         // will stand once a pass starts. This is what saves the click — the id the host was handed
         // for the row under the pointer still resolves to that row after the layout has moved on.
-        let settled = tray_menu::rows_for(DaemonState::Idle);
+        let settled = tray_menu::rows_for(DaemonState::Idle, &[]);
         let position = settled
             .iter()
-            .position(|entry| matches!(entry, Entry::Row { id, .. } if *id == "closeWindow"))
+            .position(|entry| entry.action() == Some("closeWindow"))
             .expect("the settled menu can close the window");
-        let close = settled[position];
+        let close = settled[position].clone();
 
-        let syncing = tray_menu::rows_for(DaemonState::Running);
-        assert!(
-            matches!(syncing[position], Entry::Row { id, .. } if id == "quit"),
+        let syncing = tray_menu::rows_for(DaemonState::Running, &[]);
+        assert_eq!(
+            syncing[position].action(),
+            Some("quit"),
             "the collision this test is built on has moved; see the tray_menu test that computes it"
         );
         assert_eq!(
-            tray_menu::action_for_dbus_id(close.dbus_id()),
+            tray_menu::action_for_dbus_id(close.dbus_id()).as_deref(),
             Some("closeWindow")
         );
         assert_ne!(close.dbus_id(), syncing[position].dbus_id());

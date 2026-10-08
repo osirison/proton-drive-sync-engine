@@ -62,6 +62,10 @@ const SETTLED_FRAMES = new Set([
   "2a Compact settled",
   "12a Compact settled light",
   "10a Settled",
+  // The tray panel at two folders, all settled (#102 phase 5d). It carries the folder line and a pause
+  // row for each, and no marker of any kind: nothing here is allowed to be coloured, which is why it
+  // is the one new frame that joins. The others draw a state (paused, failed) and are not this rule.
+  "10a Two folders",
 ]);
 
 /**

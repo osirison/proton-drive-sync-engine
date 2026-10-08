@@ -20,6 +20,17 @@
 // must not drift from the sheet it came from. A screenshot is an illustration: it drifts by a
 // Chromium version bumping its antialiasing, which is not a defect and must not fail anyone's build.
 // Run `npm run screenshots` by hand after a visible UI change, look at the result, and commit it.
+//
+//   npm run screenshots                                  the published set, into website/src/assets
+//   npm run screenshots -- --out DIR                     the published set, into DIR instead
+//   npm run screenshots -- --out DIR --frame "10a Two folders" [--frame ...]
+//                                                        just those frames, into DIR
+//
+// `--out` exists so a frame can be rendered for REVIEW — a pull request's new frames, say — without
+// publishing mock pixels to the website. `--frame` names any frame in the registry, and it REQUIRES
+// `--out`: a frame nobody chose to publish must not land in `website/src/assets` by default. A panel
+// (a compact frame) is clipped to its own box plus the shadow around it, since the page is a 1040px
+// window and the panel 362px of it; every other frame is the whole window, as always.
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -39,7 +50,39 @@ const REPO = resolve(HERE, "..", "..");
  * out of the tree. A second copy at the repo root would be the shape of drift this codebase keeps
  * finding bugs in — two files that agree on the day someone checked.
  */
-const OUT = resolve(REPO, "website", "src", "assets", "screenshots");
+const PUBLISHED_OUT = resolve(REPO, "website", "src", "assets", "screenshots");
+
+/** `--out DIR` and `--frame LABEL` (repeatable), `--out=DIR` and `--frame=LABEL` too. */
+function parseArgs(argv) {
+  const options = { out: null, frames: [] };
+  for (let at = 0; at < argv.length; at += 1) {
+    const [flag, inline] = argv[at].split(/=(.*)/s);
+    if (flag !== "--out" && flag !== "--frame") {
+      console.error(
+        `screenshots: unknown argument ${JSON.stringify(argv[at])} (known: --out DIR, --frame LABEL)`,
+      );
+      process.exit(2);
+    }
+    const value = inline ?? argv[(at += 1)];
+    if (!value) {
+      console.error(`screenshots: ${flag} needs a value`);
+      process.exit(2);
+    }
+    if (flag === "--out") options.out = resolve(value);
+    else options.frames.push(value);
+  }
+  if (options.frames.length && !options.out) {
+    console.error(
+      "screenshots: --frame renders frames nobody published, so it needs --out DIR — it will not write them " +
+        "into website/src/assets/screenshots",
+    );
+    process.exit(2);
+  }
+  return options;
+}
+
+const { out: requestedOut, frames: requestedFrames } = parseArgs(process.argv.slice(2));
+const OUT = requestedOut ?? PUBLISHED_OUT;
 
 /**
  * The published set: `[frame label, file stem, caption]`.
@@ -48,7 +91,7 @@ const OUT = resolve(REPO, "website", "src", "assets", "screenshots");
  * chosen together — and it is what the alt text is built from, which is the only description a
  * reader using a screen reader gets.
  */
-const SHOTS = [
+const PUBLISHED_SHOTS = [
   ["2a Settled", "main-settled", "The main window with everything in sync"],
   ["2a Syncing", "main-syncing", "The main window during a sync pass, with the live transfer queue"],
   ["2a Needs you", "main-needs-you", "The main window when something needs a decision"],
@@ -60,6 +103,13 @@ const SHOTS = [
   ["9a Folders", "onboarding", "Onboarding: choosing the local folder and the Proton Drive folder"],
   ["12a Settled light", "main-settled-light", "The main window in the light theme"],
 ];
+
+/** A file stem for a frame label that has no published one: `10a Two folders` -> `10a-two-folders`. */
+const stemOf = (label) => label.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
+
+const SHOTS = requestedFrames.length
+  ? requestedFrames.map((label) => [label, stemOf(label), label])
+  : PUBLISHED_SHOTS;
 
 const unknown = SHOTS.map(([label]) => label).filter((label) => !(label in FIXTURES));
 if (unknown.length) {
@@ -120,10 +170,25 @@ for (const [label, stem] of SHOTS) {
     setTimeout(done, 600);
   });
   const file = join(OUT, `${stem}.png`);
-  writeFileSync(file, await page.screenshot({ type: "png" }));
-  console.log(`  ${label}  ->  ${file.replace(`${REPO}/`, "")}`);
+  // A panel is 362px in a 1040px window: clip to it and the shadow around it, or the picture is
+  // mostly empty page. Everything else is the whole window.
+  const panel = FIXTURES[label]?.panel ? await page.$("#app-root > .compact-panel") : null;
+  const box = await panel?.boundingBox();
+  const margin = 28;
+  const clip = box
+    ? {
+        x: Math.max(0, box.x - margin),
+        y: Math.max(0, box.y - margin),
+        width: Math.min(1040, box.width + 2 * margin),
+        height: Math.min(764, box.height + 2 * margin),
+      }
+    : undefined;
+  writeFileSync(file, await page.screenshot({ type: "png", ...(clip ? { clip } : {}) }));
+  console.log(`  ${label}  ->  ${file.startsWith(`${REPO}/`) ? file.replace(`${REPO}/`, "") : file}`);
 }
 
 await browser.close();
 server.close();
-console.log(`screenshots — wrote ${SHOTS.length} images to website/src/assets/screenshots`);
+console.log(
+  `screenshots — wrote ${SHOTS.length} images to ${OUT.startsWith(`${REPO}/`) ? OUT.replace(`${REPO}/`, "") : OUT}`,
+);

@@ -30,9 +30,10 @@
 //! there is no click to open it on. That is the whole reason for `sni.rs`, restated as a fallback.
 
 use crate::config_path::RuntimePaths;
+use crate::tray_menu::{self, Entry, TrayPair};
 use gui_core::ipc;
 use gui_core::pairs::Target;
-use gui_core::state::{derive_state, DaemonState};
+use gui_core::state::{aggregate_state, derive_state, pair_states, DaemonState, PairState};
 use gui_core::wire::{ControlCommand, ControlResponse};
 #[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -44,9 +45,19 @@ use tauri::{AppHandle, Manager};
 
 const TRAY_ID: &str = "proton-sync-tray";
 
-/// The state the fallback text menu was last built for. `None` until there is a fallback tray at all
+/// The rows the fallback text menu was last built from. `None` until there is a fallback tray at all
 /// — which on a session with a status-notifier host is for ever.
-static FALLBACK_STATE: Mutex<Option<DaemonState>> = Mutex::new(None);
+///
+/// **Rows, not the daemon state** (#102 phase 5d). This was a `DaemonState`, and with a row per
+/// folder the menu depends on more than the state: pausing one of two folders changes the rows and
+/// leaves the aggregate state alone (`Idle` → `Paused` only if no other folder outranks it), and a
+/// detector keyed by state would then keep offering `Pause photos` for a folder that is paused.
+static FALLBACK_ROWS: Mutex<Option<Vec<Entry>>> = Mutex::new(None);
+
+/// Whether the fallback menu built from `built` has to be rebuilt to show `rows`.
+fn fallback_is_stale(built: Option<&[Entry]>, rows: &[Entry]) -> bool {
+    built != Some(rows)
+}
 
 /// The poll that keeps the glyph current. `10-tray.md` asks for "the daemon's status stream, not a
 /// timer", and there is no stream to subscribe to — the control socket answers questions and does
@@ -58,20 +69,89 @@ const POLL_INTERVAL: Duration = Duration::from_secs(2);
 /// nothing: telling a host its icon changed makes it reload, and doing that twice a second is a
 /// tray icon that flickers for no reason.
 ///
-/// **`state` is in here because the MENU depends on it and the other two fields do not.** An expired
+/// **`rows` is in here because the MENU depends on it and the other fields do not.** An expired
 /// session and an unreachable daemon already share a glyph, so a change between them moves only the
 /// title — and if a future title ever stopped distinguishing them, the rows would silently stop
 /// updating with nothing to point at. What is compared has to be everything the update depends on.
+///
+/// It was the aggregate `DaemonState` until folders arrived (#102 phase 5d), and a state is not
+/// everything the menu depends on any more: pausing ONE of two folders changes a row's label and
+/// can leave the state, the glyph and — if the title already named it — the title exactly as they
+/// were. The rows themselves are what is compared, so what is published and what is compared cannot
+/// differ.
 #[derive(Clone, PartialEq, Eq)]
 struct Shown {
     icon: &'static str,
     title: String,
+    rows: Vec<Entry>,
+}
+
+/// Most folders the title names before it says `+n more`. A status-notifier `Title` is one line.
+const TITLE_FOLDERS_NAMED: usize = 3;
+
+/// What a folder's state is called in the title.
+fn phrase(state: DaemonState) -> &'static str {
+    match state {
+        DaemonState::Running => "syncing",
+        DaemonState::Idle => "up to date",
+        DaemonState::Paused => "paused",
+        DaemonState::AuthExpired => "sign-in expired",
+        DaemonState::FirstRun => "nothing synced yet",
+        DaemonState::Failed => "last sync failed",
+        DaemonState::Unreachable => "daemon unreachable",
+    }
+}
+
+/// The title when folders disagree: each folder and what it is doing, worst first, at most
+/// [`TITLE_FOLDERS_NAMED`] and then `+n more` — `documents paused, photos up to date`. It says what the
+/// glyph cannot: the glyph is the worst state (`aggregate_state`), and this is which folders are in
+/// it and which are not.
+fn folders_title(pairs: &[PairState]) -> String {
+    let mut ordered: Vec<&PairState> = pairs.iter().collect();
+    // Stable, so folders of equal rank keep the order the daemon lists them in.
+    ordered.sort_by_key(|pair| std::cmp::Reverse(pair.rank));
+    let mut clauses: Vec<String> = ordered
+        .iter()
+        .take(TITLE_FOLDERS_NAMED)
+        .map(|pair| format!("{} {}", pair.name, phrase(pair.state)))
+        .collect();
+    let more = ordered.len().saturating_sub(TITLE_FOLDERS_NAMED);
+    if more > 0 {
+        clauses.push(format!("+{more} more"));
+    }
+    format!("Proton Drive Sync — {}", clauses.join(", "))
+}
+
+/// Everything the tray is about to show, from what one reply said. Pure, so what the three surfaces
+/// (the glyph, the title and the rows) are built from can be tested without a socket or a desktop.
+fn shown_for(
     state: DaemonState,
+    states: &[PairState],
+    folders: &[TrayPair],
+    response: Option<&ControlResponse>,
+) -> Shown {
+    Shown {
+        icon: glyph_for(state),
+        title: title_for(state, response, states),
+        rows: tray_menu::rows_for(state, folders),
+    }
 }
 
 /// The label a host shows beside or under the icon. The v1 build computed one of these every five
 /// seconds into a function that discarded it; this one reaches `Title` on the item.
-fn title_for(state: DaemonState, response: Option<&ControlResponse>) -> String {
+fn title_for(
+    state: DaemonState,
+    response: Option<&ControlResponse>,
+    pairs: &[PairState],
+) -> String {
+    // Two folders or more that are NOT all in the glyph's state: say which is which. When they all
+    // are, the plain title is true of every one of them and the same as it was at one folder.
+    if pairs.len() >= 2 && pairs.iter().any(|pair| pair.state != state) {
+        return folders_title(pairs);
+    }
+    // The count in `syncing (3 changes)` is the DEFAULT folder's (the reply describes that one). Said
+    // of several folders it would be a number about one of them, so with several it is left out.
+    let response = if pairs.len() >= 2 { None } else { response };
     match state {
         DaemonState::Running => {
             // NOT `pending_changes` ALONE, and the live daemon proved it within a minute of this
@@ -128,22 +208,22 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
 /// offered `Try again now` and never `Pause syncing`, on the one desktop with no panel to correct
 /// it. The SNI item never had the bug — it has always been re-fed by `update` — which is why the
 /// text menu is the copy that quietly went stale.
-fn install_fallback(app: &AppHandle, state: DaemonState) -> tauri::Result<()> {
+fn install_fallback(app: &AppHandle, rows: &[Entry]) -> tauri::Result<()> {
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         // Rebuilt only when the rows would differ, for the same reason `set_rows` and `set_icon` are
         // no-ops on an unchanged value: this is now reached on every 30-second retry tick as well as
         // on a state change, and a live GTK menu is not a description of a menu — replacing the one
         // the user has open is at best wasted work.
-        if FALLBACK_STATE.lock().unwrap().as_ref() == Some(&state) {
+        if !fallback_is_stale(FALLBACK_ROWS.lock().unwrap().as_deref(), rows) {
             return Ok(());
         }
-        let menu = fallback_menu(app, state)?;
+        let menu = fallback_menu(app, rows)?;
         tray.set_menu(Some(menu))?;
-        *FALLBACK_STATE.lock().unwrap() = Some(state);
+        *FALLBACK_ROWS.lock().unwrap() = Some(rows.to_vec());
         return Ok(());
     }
-    let menu = fallback_menu(app, state)?;
-    *FALLBACK_STATE.lock().unwrap() = Some(state);
+    let menu = fallback_menu(app, rows)?;
+    *FALLBACK_ROWS.lock().unwrap() = Some(rows.to_vec());
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(app.default_window_icon().cloned().ok_or_else(|| {
             tauri::Error::AssetNotFound("no default window icon for the fallback tray".into())
@@ -164,18 +244,18 @@ fn install_fallback(app: &AppHandle, state: DaemonState) -> tauri::Result<()> {
 /// panel and cannot here. What they must not do is lose the words: 10-tray.md calls this "the single
 /// worst misunderstanding a tray app can cause", and the v1 build spelled it out for the same
 /// reason. DEVIATIONS §82k.
-fn fallback_menu(app: &AppHandle, state: DaemonState) -> tauri::Result<Menu<tauri::Wry>> {
+fn fallback_menu(app: &AppHandle, rows: &[Entry]) -> tauri::Result<Menu<tauri::Wry>> {
     // The items have to outlive the borrows handed to `with_items`, so they are built first and
     // referenced after — a GTK menu item is a live object, not a description of one.
     let mut items: Vec<Box<dyn tauri::menu::IsMenuItem<tauri::Wry>>> = Vec::new();
-    for entry in crate::tray_menu::rows_for(state) {
+    for entry in rows {
         match entry {
-            crate::tray_menu::Entry::Separator => {
-                items.push(Box::new(PredefinedMenuItem::separator(app)?))
-            }
-            crate::tray_menu::Entry::Row { id, .. } => items.push(Box::new(MenuItem::with_id(
+            Entry::Separator { .. } => items.push(Box::new(PredefinedMenuItem::separator(app)?)),
+            // The id is the action in the shared vocabulary — `pause@photos` for a folder's row —
+            // so a click on this menu is read by `handle_menu_event` exactly as the native one is.
+            Entry::Row { id, .. } => items.push(Box::new(MenuItem::with_id(
                 app,
-                *id,
+                id.as_ref(),
                 entry.folded_label(),
                 true,
                 None::<&str>,
@@ -223,14 +303,30 @@ fn spawn_poll(app: AppHandle) {
                 tokio::time::sleep(POLL_INTERVAL).await;
                 continue;
             };
-            let state = derive_state(reply.as_ref());
+            let described = derive_state(reply.as_ref());
+            // WHAT THE GLYPH, THE TITLE AND THE MENU ARE ABOUT: the worst folder's state, and every
+            // folder's own. A reply that lists none (a daemon older than folders, or no reply at
+            // all) is ranked by what it says itself, and the rows are today's.
+            let (state, states, folders) = match reply.as_ref() {
+                Ok(response) => {
+                    // The roster every tray click is judged against (`roster_has_many`): refreshed
+                    // here because this poll runs whether or not a webview is polling.
+                    app.state::<Mutex<RuntimePaths>>()
+                        .lock()
+                        .unwrap()
+                        .remember_daemon_reply(response);
+                    let states = pair_states(response, described);
+                    (
+                        aggregate_state(described, &states),
+                        states,
+                        tray_menu::pairs_of(response, described),
+                    )
+                }
+                Err(_) => (described, Vec::new(), Vec::new()),
+            };
             let response = reply.ok();
 
-            let next = Shown {
-                icon: glyph_for(state),
-                title: title_for(state, response.as_ref()),
-                state,
-            };
+            let next = shown_for(state, &states, &folders, response.as_ref());
             // **A tick is only "shown" once something has shown it.** Two reasons it might not have
             // been, and the second one is a bug this file shipped: the indicator may never have come
             // up. `Sni::start` runs only when `update` does, and `update` ran only on a state change
@@ -244,7 +340,7 @@ fn spawn_poll(app: AppHandle) {
             tick = tick.wrapping_add(1);
             let retry_indicator = tick.is_multiple_of(15) && !indicator_is_up(&app).await;
             if shown.as_ref() != Some(&next) || retry_indicator {
-                if update(&app, state, &next).await {
+                if update(&app, &next).await {
                     shown = Some(next);
                 } else {
                     // Left unset on purpose: the next tick re-attempts this exact state rather than
@@ -283,12 +379,11 @@ async fn indicator_is_up(app: &AppHandle) -> bool {
 /// Push a state to whichever indicator exists, bringing one up if none does. `true` when the state
 /// reached something.
 #[cfg(target_os = "linux")]
-async fn update(app: &AppHandle, state: DaemonState, next: &Shown) -> bool {
-    let rows = crate::tray_menu::rows_for(state);
+async fn update(app: &AppHandle, next: &Shown) -> bool {
     let sni = app.state::<crate::sni::SniState>();
     let mut guard = sni.lock().await;
     if let Some(item) = guard.as_ref() {
-        if let Err(error) = item.update(next.icon, &next.title, rows).await {
+        if let Err(error) = item.update(next.icon, &next.title, &next.rows).await {
             eprintln!("tray: could not update the indicator: {error}");
             return false;
         }
@@ -296,7 +391,13 @@ async fn update(app: &AppHandle, state: DaemonState, next: &Shown) -> bool {
     }
     // First tick, a session with no host, or a host that had not started yet when this app did.
     // Retried every tick until one of them succeeds — see the call site.
-    match crate::sni::Sni::start(app.clone(), next.icon.to_string(), next.title.clone(), rows).await
+    match crate::sni::Sni::start(
+        app.clone(),
+        next.icon.to_string(),
+        next.title.clone(),
+        next.rows.clone(),
+    )
+    .await
     {
         Ok(item) => {
             eprintln!("tray: registered a status-notifier item");
@@ -328,10 +429,11 @@ async fn update(app: &AppHandle, state: DaemonState, next: &Shown) -> bool {
             // `install_fallback`'s own failure happens on the other thread and logs there. That one
             // is covered too: `indicator_is_up` stays false while there is no SNI item, so the
             // 30-second retry comes back around.
+            let rows = next.rows.clone();
             let scheduled = app
                 .clone()
                 .run_on_main_thread(move || {
-                    if let Err(error) = install_fallback(&app, state) {
+                    if let Err(error) = install_fallback(&app, &rows) {
                         eprintln!("tray: the fallback tray failed too: {error}");
                     }
                 })
@@ -349,11 +451,12 @@ async fn update(app: &AppHandle, state: DaemonState, next: &Shown) -> bool {
 static NO_HOST_REPORTED: AtomicBool = AtomicBool::new(false);
 
 #[cfg(not(target_os = "linux"))]
-async fn update(app: &AppHandle, state: DaemonState, _next: &Shown) -> bool {
+async fn update(app: &AppHandle, next: &Shown) -> bool {
     let app = app.clone();
+    let rows = next.rows.clone();
     app.clone()
         .run_on_main_thread(move || {
-            if let Err(error) = install_fallback(&app, state) {
+            if let Err(error) = install_fallback(&app, &rows) {
                 eprintln!("tray: the fallback tray failed: {error}");
             }
         })
@@ -390,9 +493,15 @@ pub fn handle_menu_event(app: &AppHandle, id: &str) {
     use crate::commands::TrayRow;
     match crate::commands::tray_row(id) {
         Some(TrayRow::Open) => show_window(app),
-        Some(TrayRow::SyncNow) => send_command(app, ControlCommand::Syncnow),
-        Some(TrayRow::Pause) => send_command(app, ControlCommand::Pause),
-        Some(TrayRow::Resume) => send_command(app, ControlCommand::Resume),
+        // The rows that talk to the daemon, folder rows included, are `commands::tray_control_row` —
+        // the same body the panel's rows run, so the three menus cannot do different things for one id.
+        Some(
+            row @ (TrayRow::SyncNow
+            | TrayRow::Pause
+            | TrayRow::Resume
+            | TrayRow::PausePair(_)
+            | TrayRow::ResumePair(_)),
+        ) => control_row_in_background(app, row),
         Some(TrayRow::CloseWindow) => {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.hide();
@@ -433,22 +542,14 @@ fn start_service_in_background(app: &AppHandle) {
     });
 }
 
-fn send_command(app: &AppHandle, command: ControlCommand) {
+/// A row that talks to the daemon, off the main thread — `start_service_in_background`'s shape, and
+/// for the same reason: `handle_menu_event` runs ON the GTK main thread and a control-socket round
+/// trip blocks up to `DEFAULT_TIMEOUT`. The reply is the panel's to publish; a native menu row has
+/// no surface for it, so a failure reaches stderr from inside `tray_control_row`.
+fn control_row_in_background(app: &AppHandle, row: crate::commands::TrayRow) {
     let app = app.clone();
     std::thread::spawn(move || {
-        let socket = {
-            let state = app.state::<Mutex<RuntimePaths>>();
-            let guard = state.lock().unwrap();
-            guard.socket_path.clone()
-        };
-        match socket {
-            Ok(socket) => {
-                let _ = ipc::command(&socket, Target::DEFAULT, command, ipc::DEFAULT_TIMEOUT);
-            }
-            Err(reason) => {
-                eprintln!("tray: could not locate the daemon's control socket ({reason})")
-            }
-        }
+        let _ = tauri::async_runtime::block_on(crate::commands::tray_control_row(app, &row));
     });
 }
 
@@ -460,14 +561,162 @@ mod tests {
     fn a_first_run_daemon_is_never_described_with_a_count() {
         // `counters_unknown()` is true for FirstRun, and the tray is the surface most likely to
         // fossilise a zero: it is a string, not a rendered number, so no em-dash rule catches it.
-        let title = title_for(DaemonState::FirstRun, None);
+        let title = title_for(DaemonState::FirstRun, None, &[]);
         assert!(!title.contains('0'), "{title}");
         assert!(title.contains("nothing synced yet"), "{title}");
     }
 
+    fn state_of(name: &str, state: DaemonState) -> PairState {
+        PairState {
+            name: name.to_owned(),
+            state,
+            rank: gui_core::state::severity(state),
+        }
+    }
+
+    fn folder_of(name: &str, state: DaemonState, paused: bool) -> TrayPair {
+        TrayPair {
+            name: name.to_owned(),
+            paused,
+            syncing: matches!(state, DaemonState::Running),
+            rank: gui_core::state::severity(state),
+        }
+    }
+
+    /// D3's own example, character for character: the glyph is the worst state and the title says
+    /// what it cannot.
+    #[test]
+    fn the_title_names_the_folders_the_glyph_cannot() {
+        let states = [
+            state_of("documents", DaemonState::Paused),
+            state_of("photos", DaemonState::Idle),
+        ];
+        let state = aggregate_state(DaemonState::Idle, &states);
+        assert_eq!(state, DaemonState::Paused);
+        assert_eq!(
+            title_for(state, None, &states),
+            "Proton Drive Sync — documents paused, photos up to date"
+        );
+        // Worst first, whatever order the daemon lists them in.
+        let swapped = [
+            state_of("photos", DaemonState::Idle),
+            state_of("documents", DaemonState::Paused),
+        ];
+        assert_eq!(
+            title_for(state, None, &swapped),
+            "Proton Drive Sync — documents paused, photos up to date"
+        );
+    }
+
+    #[test]
+    fn the_title_names_three_folders_and_then_says_how_many_more() {
+        let states = [
+            state_of("a", DaemonState::Idle),
+            state_of("b", DaemonState::Failed),
+            state_of("c", DaemonState::Paused),
+            state_of("d", DaemonState::Idle),
+            state_of("e", DaemonState::Idle),
+        ];
+        assert_eq!(
+            title_for(DaemonState::Failed, None, &states),
+            "Proton Drive Sync — b last sync failed, c paused, a up to date, +2 more"
+        );
+        // Exactly three: nothing is left over to count.
+        assert_eq!(
+            title_for(DaemonState::Failed, None, &states[..3]),
+            "Proton Drive Sync — b last sync failed, c paused, a up to date"
+        );
+    }
+
+    /// When every folder is in the glyph's state the title is the one it always was: nothing differs
+    /// from the glyph, so there is nothing to name — and at several folders the count in `syncing
+    /// (3 changes)` is one folder's, so it is not said.
+    #[test]
+    fn folders_that_all_agree_get_the_plain_title() {
+        let idle = [
+            state_of("a", DaemonState::Idle),
+            state_of("b", DaemonState::Idle),
+        ];
+        assert_eq!(
+            title_for(DaemonState::Idle, None, &idle),
+            "Proton Drive Sync — up to date"
+        );
+        let busy = [
+            state_of("a", DaemonState::Running),
+            state_of("b", DaemonState::Running),
+        ];
+        assert_eq!(
+            title_for(DaemonState::Running, None, &busy),
+            "Proton Drive Sync — syncing"
+        );
+    }
+
+    /// `the_menu_signature_is_part_of_shown`. Pausing the fourth of four failed folders changes its
+    /// row's label and leaves the glyph and the title exactly as they were — the title names three
+    /// and says `+1 more`. If `Shown` compared the icon and the title alone, the menu would go on
+    /// offering `Pause d` for a folder that is paused until the daemon-level state changed.
+    #[test]
+    fn the_menu_signature_is_part_of_shown() {
+        let failed = |name: &str| {
+            (
+                state_of(name, DaemonState::Failed),
+                folder_of(name, DaemonState::Failed, false),
+            )
+        };
+        let (sa, fa) = failed("a");
+        let (sb, fb) = failed("b");
+        let (sc, fc) = failed("c");
+        let states_before = [sa, sb, sc, state_of("d", DaemonState::Idle)];
+        let folders_before = [fa, fb, fc, folder_of("d", DaemonState::Idle, false)];
+        let mut states_after = states_before.clone();
+        states_after[3] = state_of("d", DaemonState::Paused);
+        let mut folders_after = folders_before.clone();
+        folders_after[3] = folder_of("d", DaemonState::Paused, true);
+
+        let before = shown_for(DaemonState::Failed, &states_before, &folders_before, None);
+        let after = shown_for(DaemonState::Failed, &states_after, &folders_after, None);
+        assert_eq!(
+            before.icon, after.icon,
+            "the premise: the glyph is the same"
+        );
+        assert_eq!(before.title, after.title, "the premise: so is the title");
+        assert_ne!(before.rows, after.rows, "but the row for d changed");
+        assert!(
+            before != after,
+            "so what was shown changed, and must be shown again"
+        );
+    }
+
+    /// `the_fallback_follows_the_pair_list`: the text menu is rebuilt when the ROWS change, not only
+    /// when the daemon-level state does.
+    #[test]
+    fn the_fallback_follows_the_pair_list() {
+        let both_running = [
+            folder_of("a", DaemonState::Running, false),
+            folder_of("b", DaemonState::Running, false),
+        ];
+        let a_paused = [
+            folder_of("a", DaemonState::Paused, true),
+            folder_of("b", DaemonState::Running, false),
+        ];
+        // The same aggregate state (`Running` outranks `Paused`), different rows.
+        let before = tray_menu::rows_for(DaemonState::Running, &both_running);
+        let after = tray_menu::rows_for(DaemonState::Running, &a_paused);
+        assert_ne!(before, after, "the premise: pausing a folder changes a row");
+        assert!(
+            !fallback_is_stale(Some(&before), &before),
+            "nothing changed"
+        );
+        assert!(
+            fallback_is_stale(Some(&before), &after),
+            "the folder list changed and the state did not: the text menu is out of date"
+        );
+        assert!(fallback_is_stale(None, &before), "never built is stale");
+    }
+
     #[test]
     fn an_unreachable_daemon_reports_no_counters_at_all() {
-        let title = title_for(DaemonState::Unreachable, None);
+        let title = title_for(DaemonState::Unreachable, None, &[]);
         assert!(!title.contains("pending"), "{title}");
     }
 
@@ -484,12 +733,16 @@ mod tests {
         for id in [
             "open",
             "review",
+            // The panel's `N more folders` row: it opens the window, and has no native counterpart.
+            "more",
             "syncNow",
             "tryAgain",
             "pause",
             "resume",
             "closeWindow",
             "quit",
+            "pause@photos",
+            "resume@my-folder.2",
         ] {
             assert!(
                 crate::commands::tray_row(id).is_some(),
@@ -498,7 +751,18 @@ mod tests {
         }
         // And the shapes that are NOT rows: an unknown id must be refused rather than folded into
         // some default, or a typo in a menu table becomes a row that quietly does the wrong thing.
-        for id in ["sync_now", "close_window", "", "Quit"] {
+        for id in [
+            "sync_now",
+            "close_window",
+            "",
+            "Quit",
+            // A folder row must name exactly one folder, and `@` cannot occur in a folder's name.
+            "pause@",
+            "pause@a@b",
+            "@photos",
+            "quit@photos",
+            "pauseAll",
+        ] {
             assert!(
                 crate::commands::tray_row(id).is_none(),
                 "{id:?} resolved to an action it should not have"

@@ -309,8 +309,10 @@ export function mainFids({
  * @param tailAt   how many blocks sit above the tail
  * @param buttons  how many footer buttons (a lone one is `button`, two are `button[0]`/`button[1]`)
  * @param rows     the transfer rows' directions, in order
+ * @param lead     how many blocks sit ABOVE the hero: 1 for a panel at two folders or more, whose first
+ *                 block is the one mono line naming the folder (`pair`), 0 for every other panel
  */
-export function compactFids({ state, tail, tailAt, buttons = 0, rows = [], prefix = "" }) {
+export function compactFids({ state, tail, tailAt, buttons = 0, rows = [], prefix = "", lead = 0 }) {
   const at = `div[${tailAt}]`;
   const btn = buttons > 1 ? (i) => `${at}/button[${i}]` : () => `${at}/button`;
   const map = {
@@ -373,7 +375,32 @@ export function compactFids({ state, tail, tailAt, buttons = 0, rows = [], prefi
       footerButton: btn,
     });
   }
-  return prefix ? nestUnder(prefix, map) : map;
+  const shifted = lead ? { ...shiftTop(map, lead), pair: "div[0]" } : map;
+  return prefix ? nestUnder(prefix, shifted) : shifted;
+}
+
+/**
+ * Move every top-level block of a panel's map down by `by` places.
+ *
+ * A panel at two folders or more has the folder line as its FIRST child, so the hero is `div[1]` and
+ * the menu `div[tailAt + 1]` — every key that starts at a top-level `div[n]` is `div[n + by]`, and the
+ * root (`""`) stays the root. Done to the finished map rather than threaded through the four branches
+ * above, which is the only way a fifth branch cannot forget it.
+ */
+function shiftTop(map, by) {
+  const bump = (key) =>
+    typeof key === "string" ? key.replace(/^div\[(\d+)\]/, (_, n) => `div[${Number(n) + by}]`) : key;
+  return Object.fromEntries(
+    Object.entries(map).map(([slot, key]) => [
+      slot,
+      typeof key === "function"
+        ? (...args) => {
+            const resolved = key(...args);
+            return resolved == null ? resolved : bump(resolved);
+          }
+        : bump(key),
+    ]),
+  );
 }
 
 /**

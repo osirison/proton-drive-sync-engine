@@ -208,7 +208,7 @@ impl Sni {
         app: AppHandle,
         icon: String,
         title: String,
-        rows: &'static [crate::tray_menu::Entry],
+        rows: Vec<crate::tray_menu::Entry>,
     ) -> zbus::Result<Self> {
         // The spec's own name form: `org.kde.StatusNotifierItem-<pid>-<id>`. A well-known name
         // rather than the unique one, because that is what a real item registers and because the
@@ -258,7 +258,7 @@ impl Sni {
         &self,
         icon: &str,
         title: &str,
-        rows: &'static [crate::tray_menu::Entry],
+        rows: &[crate::tray_menu::Entry],
     ) -> zbus::Result<()> {
         let live = self.live.load(Ordering::Relaxed);
         // Both halves run even when one fails: a menu-path error must not cost the glyph, and the
