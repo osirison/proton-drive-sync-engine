@@ -208,7 +208,8 @@ export const TRAY_FIXTURES = {
       pair: "documents",
       pairs: [folder("documents", { paused: true, rank: 1 }), folder("photos")],
       headline: MAIN.paused,
-      sub: MAIN.pausedSub(7, "13:20"),
+      // The folder is named: `photos` keeps syncing beside it, so "nothing will move" would not be true.
+      sub: TRAY.pausedSubPair(7, "13:20", "documents"),
       menu: true,
     },
   },
@@ -255,7 +256,7 @@ export const TRAY_FIXTURES = {
         folder("backups"),
       ],
       headline: MAIN.paused,
-      sub: MAIN.pausedSub(7, "13:20"),
+      sub: TRAY.pausedSubPair(7, "13:20", "archive"),
       menu: true,
     },
   },

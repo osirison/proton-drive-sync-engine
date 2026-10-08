@@ -409,3 +409,203 @@ test("the folder rows go through the same cap the corpus asserts", () => {
   assert.equal(ids.filter((id) => id.startsWith("pause@")).length, 5);
   assert.ok(ids.includes("more"));
 });
+
+// ---- what `Needs you` counts at several folders (review of #443) -----------------------------------------
+//
+// `10-tray.md` says the panel counts "the deletions across folders, and conflicts only for the folder it
+// scans". It counted the panel folder's own, so a withheld deletion in another folder was hidden behind
+// `Up to date` or `Paused` with no way to reach it. These hold the sentence to the code.
+
+const three = [{ path: "a" }, { path: "b" }, { path: "c" }];
+
+test("deletions waiting in another folder are not hidden behind Up to date", () => {
+  // Two idle folders; the one the panel names first (`documents`) has nothing, `photos` has three.
+  const view = trayView({
+    daemonState: "idle",
+    response: reply({ pair: "documents" }),
+    pairs: [summary("documents"), summary("photos", { pending_deletions: 3 })],
+    pairStates: derived(["documents", "idle", 0], ["photos", "idle", 0]),
+  });
+  assert.equal(view.state, "needsYou");
+  assert.equal(view.count, 3);
+  assert.equal(view.headline, MAIN.compact.needYou(3));
+  assert.equal(view.pair, "photos", "the panel is the folder that holds them, not the one beside it");
+  assert.equal(view.action.label, MAIN.compact.review);
+  assert.equal(view.action.id, "review@photos", "and Review opens the window on that folder");
+});
+
+test("deletions waiting in a folder are not hidden behind another folder's pause", () => {
+  // `documents` holds three; `photos` is paused, which outranks idle — and used to be the whole panel.
+  const view = trayView({
+    daemonState: "idle",
+    response: reply({ pair: "documents" }),
+    conflicts: [],
+    deletions: three,
+    pairs: [summary("documents", { pending_deletions: 3 }), summary("photos", { paused: true })],
+    pairStates: derived(["documents", "idle", 0], ["photos", "paused", 1]),
+  });
+  assert.equal(view.state, "needsYou");
+  assert.equal(view.count, 3);
+  assert.equal(view.pair, "documents");
+  assert.equal(view.action.id, "review@documents");
+  // The paused folder is still one tap away: its row is in the group, offering Resume.
+  const ids = view.menuRows.filter((row) => !row.separator).map((row) => row.id);
+  assert.ok(ids.includes("resume@photos"), ids.join());
+});
+
+test("a decision never outranks a folder that is moving or wrong", () => {
+  // The paused/idle exception is deliberately that narrow: syncing, a failed pass and the rest keep
+  // their panel (at one folder, `Syncing…` has no `Review them` either).
+  for (const [state, rank, over, form] of [
+    ["running", 2, { syncing: true, pending_changes: 4 }, "syncing"],
+    ["failed", 4, { last_error: "boom", pending_changes: 4 }, "unreachable"],
+  ]) {
+    const view = trayView({
+      daemonState: "idle",
+      response: reply({ pair: "documents" }),
+      pairs: [summary("documents", { pending_deletions: 3 }), summary("photos", over)],
+      pairStates: derived(["documents", "idle", 0], ["photos", state, rank]),
+    });
+    assert.equal(view.pair, "photos", state);
+    assert.equal(view.state, form, state);
+    assert.equal(view.action, undefined, `${state}: no Review over a panel that is not about a decision`);
+  }
+});
+
+test("a paused folder keeps its pause, whatever it holds, and is not preferred for holding it", () => {
+  // Its own deletions wait behind the pause exactly as they do at one folder ("paused outranks a
+  // decision"), and no OTHER folder is up to date with a decision to put in front of it. Two paused
+  // folders: the panel is the first the daemon lists, not the one that happens to hold the deletions.
+  const view = trayView({
+    daemonState: "idle",
+    response: reply({ pair: "documents" }),
+    pairs: [
+      summary("documents"),
+      summary("photos", { paused: true }),
+      summary("music", { paused: true, pending_deletions: 3 }),
+    ],
+    pairStates: derived(["documents", "idle", 0], ["photos", "paused", 1], ["music", "paused", 1]),
+  });
+  assert.equal(view.pair, "photos");
+  assert.equal(view.state, "paused");
+  assert.equal(view.action, undefined);
+});
+
+test("the count is every folder's deletions and the scanned folder's conflicts, each once", () => {
+  const view = trayView({
+    daemonState: "idle",
+    // The reply describes `documents`: its two conflicts come from the disk walk the tray runs for it, and
+    // its three deletions are in BOTH the reply's list and its summary — one set of deletions, not two.
+    response: reply({ pair: "documents" }),
+    conflicts: [{ original: "x" }, { original: "y" }],
+    deletions: three,
+    pairs: [
+      summary("documents", { pending_deletions: 3 }),
+      summary("photos", { pending_deletions: 4 }),
+      summary("music"),
+    ],
+    pairStates: derived(["documents", "idle", 0], ["photos", "idle", 0], ["music", "idle", 0]),
+  });
+  assert.equal(view.count, 2 + 3 + 4);
+  assert.equal(view.pair, "documents", "the first the daemon lists that holds a decision");
+  assert.equal(view.action.id, "review@documents");
+});
+
+test("a conflict is the scanned folder's, never another folder's", () => {
+  // The walk is for `documents`. A reply describing `photos` that carries a conflict list does not put
+  // those conflicts on `documents`'s account.
+  const view = trayView({
+    daemonState: "idle",
+    response: reply({ pair: "photos" }),
+    conflicts: [{ original: "x" }],
+    pairs: [summary("documents"), summary("photos")],
+    pairStates: derived(["documents", "idle", 0], ["photos", "idle", 0]),
+  });
+  assert.equal(view.count, 1);
+  assert.equal(view.pair, "photos", "the scanned folder holds it");
+});
+
+test("Review names its folder at several folders and is the bare id at one", () => {
+  const one = trayView({
+    daemonState: "idle",
+    response: reply({ pair: "docs" }),
+    deletions: three,
+    pairs: [summary("docs", { pending_deletions: 3 })],
+    pairStates: derived(["docs", "idle", 0]),
+  });
+  assert.equal(one.pair, null);
+  assert.equal(one.state, "needsYou");
+  assert.equal(one.action.id, "review", "unchanged below two folders");
+  assert.equal(one.count, 3);
+});
+
+test("a summary that carries no deletion count counts none, and spoils nobody else's", () => {
+  const bare = summary("documents");
+  delete bare.pending_deletions;
+  const alone = trayView({
+    daemonState: "idle",
+    response: reply({ pair: "documents" }),
+    pairs: [bare, summary("photos")],
+    pairStates: derived(["documents", "idle", 0], ["photos", "idle", 0]),
+  });
+  assert.equal(alone.state, "settled");
+  assert.equal(alone.action, undefined);
+
+  // …and beside a folder that does hold some, the count is theirs and a number (an absent field read as
+  // `undefined` turns the whole sum into NaN, which compares false against everything).
+  const beside = trayView({
+    daemonState: "idle",
+    response: reply({ pair: "documents" }),
+    pairs: [bare, summary("photos", { pending_deletions: 3 })],
+    pairStates: derived(["documents", "idle", 0], ["photos", "idle", 0]),
+  });
+  assert.equal(beside.state, "needsYou");
+  assert.equal(beside.count, 3);
+  assert.equal(beside.pair, "photos");
+});
+
+// ---- a paused hero names its folder at several folders (review of #443) -----------------------------------
+
+test("a paused folder's sub-line names the folder at several folders and is the old sentence at one", () => {
+  const paused = (pairs, pairStates) =>
+    trayView({
+      daemonState: "paused",
+      response: reply({ pair: "documents", paused: true, pending_changes: 7 }),
+      pairs,
+      pairStates,
+    });
+
+  const many = paused(
+    [summary("documents", { paused: true, pending_changes: 7 }), summary("photos")],
+    derived(["documents", "paused", 1], ["photos", "idle", 0]),
+  );
+  assert.equal(many.state, "paused");
+  assert.equal(many.pair, "documents");
+  assert.match(
+    many.sub,
+    /^7 changes have piled up since .*\. Nothing in documents will move until you resume\.$/,
+  );
+  assert.equal(many.sub, TRAY.pausedSubPair(7, many.sub.match(/since (.*?)\./)[1], "documents"));
+
+  // One folder, or a daemon that lists none: the sentence this panel has always said.
+  for (const pairs of [[], [summary("documents", { paused: true, pending_changes: 7 })]]) {
+    const one = paused(pairs, derived(...pairs.map((p) => [p.name, "paused", 1])));
+    assert.equal(one.pair, null);
+    assert.match(one.sub, /Nothing will move until you resume\.$/);
+    assert.ok(!one.sub.includes("documents"));
+  }
+});
+
+test("the two paused sentences share their first half and differ only in the folder", () => {
+  assert.equal(
+    MAIN.pausedSub(7, "13:20"),
+    "7 changes have piled up since 13:20. Nothing will move until you resume.",
+  );
+  assert.equal(
+    TRAY.pausedSubPair(7, "13:20", "documents"),
+    "7 changes have piled up since 13:20. Nothing in documents will move until you resume.",
+  );
+  // The counted form agrees with the singular, in both.
+  assert.match(MAIN.pausedSub(1, "13:20"), /^1 change has piled up/);
+  assert.match(TRAY.pausedSubPair(1, "13:20", "photos"), /^1 change has piled up/);
+});

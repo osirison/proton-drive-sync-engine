@@ -427,7 +427,7 @@ const UNGATED_TEMPLATES = new Map([
         "The app renders it, but `9a CLI missing` draws the pre-#218 sentence \u2014 `This app drives the " +
         "official tool rather than talking to Proton directly. Install it once and setup will carry " +
         "on. Detected Debian \u2014 other distributions are in the help.` \u2014 and neither branch of the " +
-        "current text appears in any of the 51 frames. #218 settled the drawn install command as true " +
+        "current text appears in any of the 55 frames. #218 settled the drawn install command as true " +
         "for no distribution, so the deck deliberately no longer holds a string that matches the " +
         "frame.",
       absent: "and no Linux distribution packages it",
@@ -488,7 +488,7 @@ const UNGATED_TEMPLATES = new Map([
         "The Arriving side's sentence \u2014 plan.js:416 picks it when the new folder is created on this " +
         "computer. `5a Plan` draws only the mirror, `plusFolder`: `Plus one new folder created on " +
         "Proton Drive to hold them.` The words `created on this computer to hold them` are in none of " +
-        "the 51 frames.",
+        "the 55 frames.",
       absent: "created on this computer to hold them.",
     },
   ],
@@ -550,7 +550,7 @@ const UNGATED_TEMPLATES = new Map([
     "SETTINGS.savedNothingRunning",
     {
       why:
-        "No frame draws a settled save at all \u2014 `Saved` and `sync service` occur in none of the 51 " +
+        "No frame draws a settled save at all \u2014 `Saved` and `sync service` occur in none of the 55 " +
         "frames, and `8a Save refused` draws a REFUSED save (`Nothing was saved \u2014 your old settings " +
         "are still running.`). This is the `not_started` ending, where the stop succeeded and the " +
         "start did not. Same absence its constant siblings `savedRestarted`/`savedNotRunning` record " +
@@ -564,7 +564,7 @@ const UNGATED_TEMPLATES = new Map([
       why:
         "The `never_stopped` ending \u2014 the daemon kept answering past the stop timeout and is still up " +
         "on the settings it started with. No frame draws a settled save: `Saved` and `sync service` " +
-        "occur in none of the 51 frames, and `8a Save refused` draws a refused save instead.",
+        "occur in none of the 55 frames, and `8a Save refused` draws a refused save instead.",
       absent: "Saved, but the sync service did not restart —",
     },
   ],
@@ -573,7 +573,7 @@ const UNGATED_TEMPLATES = new Map([
     {
       why:
         "The `undetermined` ending \u2014 nobody could tell whether the service is running, so nothing was " +
-        "restarted. No frame draws a settled save: `Saved` and `sync service` occur in none of the 51 " +
+        "restarted. No frame draws a settled save: `Saved` and `sync service` occur in none of the 55 " +
         "frames.",
       absent: "Saved, but the app couldn't tell whether the sync service is running —",
     },
@@ -822,6 +822,11 @@ const DRAWN = [
   ["TRAY.pausePair", ["documents"], "10a Two folders"],
   ["TRAY.resumePair", ["documents"], "10a Two folders paused"],
   ["TRAY.moreFolders", [2], "10a Many folders"],
+  // A paused hero at two folders or more names the folder that is paused (review of #443): the other
+  // keeps syncing under it, so `Nothing will move` would be untrue of the app. Drawn twice, with the
+  // name each frame's folder line carries.
+  ["TRAY.pausedSubPair", [7, "13:20", "documents"], "10a Two folders paused"],
+  ["TRAY.pausedSubPair", [7, "13:20", "archive"], "10a Many folders"],
   // The failed folder's sub-line — it had no frame (the exemption that stood here said so), and now
   // has one: the counted branch IS the sentence `10a Two folders failed` draws. The zero branch stays
   // ungated for the reason the old exemption gave: `failedSub(0)` is the bare `Nothing is lost.`,

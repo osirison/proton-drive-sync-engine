@@ -7,7 +7,7 @@
     {
       "key": "",
       "tag": "div",
-      "fullText": "archivePaused7 changes have piled up since 13:20. Nothing will move until you resume.Open Drive SyncSync nowResume archivePause documentsPause photosPause musicPause projects2 more foldersClose windowkeeps syncingQuitstops syncing",
+      "fullText": "archivePaused7 changes have piled up since 13:20. Nothing in archive will move until you resume.Open Drive SyncSync nowResume archivePause documentsPause photosPause musicPause projects2 more foldersClose windowkeeps syncingQuitstops syncing",
       "fromPage": [
         "color"
       ],
@@ -72,7 +72,7 @@
     {
       "key": "div[1]",
       "tag": "div",
-      "fullText": "Paused7 changes have piled up since 13:20. Nothing will move until you resume.",
+      "fullText": "Paused7 changes have piled up since 13:20. Nothing in archive will move until you resume.",
       "fromPage": [
         "color",
         "border-top-color",
@@ -282,7 +282,7 @@
     {
       "key": "div[1]/div[1]",
       "tag": "div",
-      "text": "7 changes have piled up since 13:20. Nothing will move until you resume.",
+      "text": "7 changes have piled up since 13:20. Nothing in archive will move until you resume.",
       "box": {
         "w": 316,
         "h": 37.5

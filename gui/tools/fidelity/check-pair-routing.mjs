@@ -8,11 +8,11 @@
 // that answers each command and **holds a reply open when told to**, which is what makes the window
 // between "the person pressed it" and "the daemon answered" a thing a test can stand in.
 //
-// Ten scenarios. The first four are each a way a write can land on a different pair than the one it was
+// Eleven scenarios. The first four are each a way a write can land on a different pair than the one it was
 // drawn for — each was a bug before the capture existed or would be again if it were removed. The fifth
 // and sixth are the first-run rule at two pairs and at one. The next three are the rest of the capture:
-// a late READ, the decision on a conflict, and the tray panel's pin. The last is the tray panel's rows
-// at two folders (#102 phase 5d).
+// a late READ, the decision on a conflict, and the tray panel's pin. The last two are the tray panel's
+// rows at two folders (#102 phase 5d) and its `Review them`, which names the folder it is drawn for.
 //
 //   1. THE TAIL OF A DECISION. `Move to Proton's Trash` approves, waits for the daemon, then nudges a
 //      sync. The selection moves while the approval is in flight; the nudge must still go where the
@@ -49,6 +49,11 @@
 //  10. THE TRAY PANEL'S ROWS AT TWO FOLDERS. The panel is the worst folder's, named, with one pause row
 //      per folder; pressing a folder's row sends THAT folder's id, and the panel is repainted from the
 //      status that comes back, not from the folder the row was for.
+//  11. THE TRAY PANEL'S `Review them`. A deletion waiting in the folder the panel is NOT about still
+//      shows (the count is every folder's), and the button sends the id of the folder that holds it —
+//      and when the decisions move to the other folder while the panel stays a needs-you panel, it is
+//      patched in place, so the button it keeps must send the NEW folder's id, not the one it was built
+//      for.
 //
 // WHAT IT CANNOT SEE: it scripts the bridge, so it proves the facade and the screens agree with each
 // other, not that the real Rust agrees with either (that is `selection_tests.rs`); and it drives the
@@ -657,6 +662,56 @@ await scenario(
     const after = await pageText(page);
     if (!after.includes("photos") || !after.includes(MAIN.failed)) {
       throw new Error(`the panel changed after a folder's row: ${JSON.stringify(after)}`);
+    }
+    await page.close();
+  },
+);
+
+// ---- 11. the tray panel's Review ---------------------------------------------------------------------------
+await scenario(
+  "the tray panel's Review names the folder that holds the decisions, and follows them",
+  async () => {
+    // Both folders are fine; `photos` (the SECOND folder, not the one the reply describes) holds a deletion.
+    const bridge = new Bridge({ docs: [], photos: [deletion("a.txt")] }, { selected: "docs" });
+    const page = await open(bridge, "?surface=tray");
+    await until("the first poll", () => bridge.called("tray_status").length >= 1);
+    await settle(page);
+
+    // The folder line, not the page text: the menu names both folders whatever the panel is about.
+    const folderLine = () =>
+      page.evaluate(() => document.querySelector(".compact-pair")?.textContent ?? null);
+    const shown = await pageText(page);
+    if (shown.includes(MAIN.compact.upToDate)) {
+      throw new Error(
+        `a deletion waiting in the other folder was hidden behind "Up to date": ${JSON.stringify(shown)}`,
+      );
+    }
+    if (!shown.includes(MAIN.compact.needYou(1)) || (await folderLine()) !== "photos") {
+      throw new Error(`the panel is not photos' needs-you panel: ${JSON.stringify(shown)}`);
+    }
+
+    await press(page, MAIN.compact.review);
+    await until("Review to go out", () => bridge.called("tray_action").length === 1);
+    const first = bridge.called("tray_action")[0].args;
+    if (first?.id !== "review@photos") {
+      throw new Error(`Review sent ${JSON.stringify(first)}, not review@photos`);
+    }
+
+    // The decision moves to `docs` while the panel is still a needs-you panel: the next poll PATCHES it
+    // (same form, same rows), and the button it keeps was built for photos.
+    bridge.queues = { docs: [deletion("b.txt")], photos: [] };
+    await until("the panel to follow the decision", async () => {
+      await settle(page);
+      return (await folderLine()) === "docs";
+    });
+    await press(page, MAIN.compact.review);
+    await until("the second Review to go out", () => bridge.called("tray_action").length === 2);
+    const second = bridge.called("tray_action")[1].args;
+    if (second?.id !== "review@docs") {
+      throw new Error(
+        `after the decision moved to docs, Review sent ${JSON.stringify(second)}, not review@docs ` +
+          "(the patched panel kept the button it was built with)",
+      );
     }
     await page.close();
   },

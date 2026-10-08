@@ -27,7 +27,7 @@ npm run fidelity:pairs      # the pair-routing gate on its own
 | **contrast** `check-contrast.mjs`  | every text node is legible against what is actually behind it, in both themes   | yes, 1279 nodes across 55 frames        |
 | **fixtures** `check-fixtures.mjs`  | every in-scope frame has a dataset, of the shape its class implies              | yes, all 55                             |
 | **n1** `check-n1-identity.mjs`     | every frame renders the same bytes when the daemon lists one folder pair        | yes, all 55 — see its reach below       |
-| **pairs** `check-pair-routing.mjs` | a write acts on the pair it was drawn for, not the one selected when it runs    | yes, 11 scenarios (#102 phase 5a-2, 5d) |
+| **pairs** `check-pair-routing.mjs` | a write acts on the pair it was drawn for, not the one selected when it runs    | yes, 12 scenarios (#102 phase 5a-2, 5d) |
 
 Seven of the twelve are `assert.mjs` and need a browser. **contrast**, **n1** and **pairs** need one
 too. **copy** does
@@ -58,10 +58,18 @@ rendering of one drawing at one instant cannot make.
   exits non-zero, so it fails closed and never passes. Its 3-way and standalone runs all passed. It
   cannot see a state no frame draws (the never-synced hero is reachable only at two folders).
 
+  **The live tray panel is the second half** (review of #443). The `10a` frames mount from their
+  fixture's arguments and never run `trayView`, so changing it to draw the folder group at ONE folder left
+  all 55 frames identical. The gate therefore also opens `?surface=tray` — the panel a person gets, polled
+  from `tray_status` — in nine states (up to date, syncing a transfer, paused, a failed pass, a deletion
+  waiting, a conflict waiting, signed out, never synced, no daemon), once as a daemon that predates folder
+  pairs answers it and once as a current daemon with one pair does, and requires the same bytes. Drawing
+  the folder group (the name line, the pause rows) at one folder fails it on every state.
+
   **What "55/55" reaches** is printed on the line under the result, **measured** by running
   `withOnePair`/`withOnePairConfig` on every fixture and counting the replies that came back different
   (it was counted from the fixtures with a copy of the injection's test, which printed the same figures
-  for an injection that reached no config reply at all), because the number alone reads as fifty-one
+  for an injection that reached no config reply at all), because the number alone reads as fifty-five
   frames each rewritten end to end. The gate fails outright if the status reply or the config was
   rewritten on none; the per-shape decision is pinned by `gui/test/preview-pairs.test.js`. Today: the **status** reply is
   rewritten on the **27** frames whose fixture carries one, **3** more carry a payload with no reply and
@@ -76,15 +84,18 @@ rendering of one drawing at one instant cannot make.
 - **pairs.** `app.js` cannot be imported, so this runs the real page against a scripted stand-in for the
   Tauri bridge that answers each command and can hold a reply open — for a named pair, so two reads of one
   command for two folders can be released in either order — which is what makes the gap between a press and
-  the daemon's answer something a test can stand in. Eleven scenarios: the follow-up to an approval; the press
+  the daemon's answer something a test can stand in. Twelve scenarios: the follow-up to an approval; the press
   of `Run this sync` (pair and token are committed at the press); a switch between two folders that draw
   identical cards; the hero's buttons after a switch that patches the hero in place; a never-synced pair at
   two folders and at one; a **late conflict read** for the folder that was left (two folders in conflict at
   one path, the older read answering after the newer was issued); a **decision on a conflict** pressed after
   the selection moved, and the **continuation of a late decision** (it must not move the card the other
   folder is now showing); the **tray panel's pin** to the default pair, from its very first poll (it asks with a
-  command of its own that names no pair); and the **tray panel's rows at two folders** (it names the worst
-  folder, and pressing a folder's row sends that folder's id). Its waits are conditions: a reply
+  command of its own that names no pair); the **tray panel's rows at two folders** (it names the worst
+  folder, and pressing a folder's row sends that folder's id); and the **tray panel's `Review them`** (a
+  deletion in the other folder is not hidden behind `Up to date`, the button sends the id of the folder that
+  holds it, and when the decision moves to the other folder while the panel is only patched, the button it
+  keeps sends the new folder's id). Its waits are conditions: a reply
   is "landed" when a later call to the bridge has come back, because replies reach the page in the order
   they were sent. It proves the facade and the screens agree; Rust's half is `selection_tests.rs`.
 

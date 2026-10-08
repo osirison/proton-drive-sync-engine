@@ -9,7 +9,7 @@
 // runs in CI is one refactor from being gone.
 //
 // It drives the classifier directly rather than through `assert.mjs`, which needs puppeteer and the
-// whole 51-frame render. The observation shape is the only coupling, and it is one object literal.
+// whole 55-frame render. The observation shape is the only coupling, and it is one object literal.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";

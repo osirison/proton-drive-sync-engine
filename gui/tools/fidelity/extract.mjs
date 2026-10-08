@@ -275,7 +275,7 @@ const frames = await page.evaluate(
           if (v) attrs[a] = v;
         }
         // The properties this node's recorded colour came from the PAGE for, not from the frame.
-        // Recorded for all 51 frames and theme-neutral on purpose: on a dark frame the inherited
+        // Recorded for all 55 frames and theme-neutral on purpose: on a dark frame the inherited
         // `#F2F4F7` happens to be right and is still asserted, so nothing is lost. assert.mjs is
         // where it turns into a wildcard, and only for the `12a` set.
         const pageColour = colourFromPage(el, frame);
