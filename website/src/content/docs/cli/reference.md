@@ -33,7 +33,7 @@ would resolve against each process's own working directory.
 | `history` | Show the recorded sync passes, newest first — duration, kind, outcome. |
 | `activity [<path>]` | Show what has moved recently, or one path's own history. |
 | `list [<path>]` | List one folder on Proton Drive, as the daemon sees it now. |
-| `pause` | Pause automatic **and** manual sync for the selected folder pair until resumed. The pause is remembered in that pair's own index, so it survives a daemon restart. |
+| `pause` | Pause automatic **and** manual sync for the selected folder pair until resumed. The pause is remembered in that pair's own index, so it survives a daemon restart. A pause made while the pair is unavailable is saved once the pair is available again; `proton-sync` says "Not saved" until then. |
 | `resume` | Resume sync work for the selected folder pair, and forget its remembered pause. |
 | `syncnow` | Trigger a sync and watch it finish (`--no-wait` to just schedule it). |
 | `resync` | Force a full remote re-scan on the next pass instead of the fast warm start. |
@@ -159,7 +159,7 @@ sync and return at once, and `--json` to print the final status object (or, with
 `--no-wait`, the acknowledgement). While the daemon is paused, `syncnow` reports the skip
 and schedules nothing. A pause is remembered per folder pair across daemon restarts (and across the
 restart the desktop app does after you save settings): a restarted daemon keeps a paused pair
-paused, and skips its first pass, until you `resume` it.
+paused, and skips its first pass, until you `resume` it. The exception is a pause made while the pair is unavailable (its folder or index cannot be reached): it is kept in memory and saved when the pair becomes available, so a restart before that loses it, and `proton-sync pause` prints "Not saved".
 
 ## The status object (`--json`)
 

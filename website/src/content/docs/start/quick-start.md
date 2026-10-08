@@ -65,7 +65,7 @@ proton-sync status      # is it running? what did it just do?
 proton-sync history     # recorded passes: how long, what kind, how they ended
 proton-sync activity    # what moved recently (or one path's own history)
 proton-sync syncnow     # sync now and watch it finish
-proton-sync pause       # stop automatic + manual sync (kept across daemon restarts)
+proton-sync pause       # stop automatic + manual sync (kept across daemon restarts once saved; "Not saved" means a restart now would lose it)
 proton-sync resume      # resume
 ```
 
