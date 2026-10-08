@@ -5927,17 +5927,30 @@ compares the old ones with tolerance and none moved).
 4. **The tray's desktop-facing edge** (`rgba(255,255,255,.1)`, #261) on all four, so they add no
    `decision` rows to `known-deviations.mjs`; the four old `10a` panels keep theirs (§101).
 5. **`10a Two folders` joins the hue gate's settled list**: it is a settled surface with no colour.
+6. **A paused hero names its folder** (`TRAY.pausedSubPair`, review of #443): `10a Two folders paused` and
+   `10a Many folders` draw `7 changes have piled up since 13:20. Nothing in documents will move until
+   you resume.` (and `archive`), where `10a Paused` — one folder — keeps `Nothing will move until you
+   resume.`. Another folder keeps syncing under a paused one, so the unscoped sentence was untrue of the
+   app. Drawn in the prototype first (both blocks), extracted (text only: the two frame files differ in
+   those three strings and nowhere else), then the fixtures and the template with a `DRAWN` row for each
+   frame. The first sentence is shared with `MAIN.pausedSub`, so the two cannot drift.
 
 ### §107d · What is deliberately not drawn, and why
 
 - **A sub-line total.** `10a Two folders` says `2 minutes ago`, not `2 minutes ago · 12,480 files`: no
   command reports an index-wide count (G7, #207), and a new frame has no reason to draw what the app
   cannot say.
-- **A needs-you panel at several folders.** The panel counts the deletions across folders and the
-  conflicts of the one folder it scans (a disk walk the tray does not run for the others, brief E6).
-  The limit is stated in the frame's caption and in `10-tray.md`, not filled. Which folder is the
-  worst is by rank alone, so a folder that is up to date and has a decision waiting is not the panel's
-  folder unless it is the first the daemon lists.
+- **A needs-you panel at several folders.** The panel counts the withheld deletions of every folder
+  (each summary carries its own) and the conflicts of the one folder it scans (a disk walk the tray does
+  not run for the others, brief E6). The limit is stated in the frame's caption and in `10-tray.md`, not
+  filled. No frame draws the form; `tray-view.test.js` and the pair-routing gate's eleventh scenario hold
+  it. **This bullet said "the deletions across folders" for as long as the code counted the panel
+  folder's own** (review of #443, F1): a deletion in another folder was hidden behind `Up to date` or
+  `Paused`, with no way in. The rule is now that the panel's folder is the worst by rank, except that a
+  folder that is up to date and has a decision waiting outranks one that is merely paused or has nothing
+  to decide — never one that is syncing, failed, signed out or stopped, which outrank a decision at one
+  folder too. `Review them` names its folder (`review@photos`) and opens the window with it selected,
+  through the one writer of the selection (`select_pair`).
 - **A syncing panel at several folders.** The worst folder's transfer rows are drawn only when the
   worst folder is the one the reply describes (the reply's `activity` belongs to the folder that is
   syncing and rides on that folder's reply). Another folder syncing draws its count and no rows.
@@ -5947,9 +5960,11 @@ compares the old ones with tolerance and none moved).
   (#441). It is not shown on the panel, and cannot be on the native menus. Every row dismisses the
   panel before its reply arrives (`tray_action` hides it first), the reply is not repeated on `status`,
   and the panel has no notice or error element to put it in — drawing one would be a new node for a
-  one-shot event whose truth ends at the next daemon restart. Both paths write it to stderr
-  (`note_folder_reply`). The way to show it as state is a `pause_unsaved` field on the folder's
-  summary, which is engine work; recorded as deferred in the PR.
+  one-shot event whose truth ends at the next daemon restart. Every row that pauses or resumes writes
+  it to stderr — a folder's, and (since the review of #443) the one-folder `Pause syncing`/`Resume
+  syncing` too, which logged nothing. **Showing it stays deferred to the app PR.** The way to show it as
+  state is a `pause_unsaved` field on the folder's summary, which is engine work; recorded as deferred
+  in the PR.
 - **A pair-specific sixth glyph**, which `10-tray.md` forbids ("Only five forms exist"). The cost is
   the one the brief named: a folder whose directory is missing derives `Failed`, so the glyph becomes
   the struck form that elsewhere means Proton is out of reach, while Proton is reachable and the other

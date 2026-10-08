@@ -121,16 +121,32 @@ difference is said**.
 ### The title says what the glyph cannot
 
 When the folders are not all in the glyph's state, the title names them, worst first: `Proton Drive
-Sync — documents paused, photos up to date`. At most three are named, then `+n more`. When they all
-are, it is the one-folder title.
+Sync — documents paused, photos up to date`. At most three are named, then `+n more`, and the whole
+title stays under 140 characters: a name that does not fit is cut with `…`, the state beside it never
+is (a folder may be named with 64 characters). When they all are in the glyph's state, it is the
+one-folder title.
 
 ### The panel is the worst folder's own
 
-The panel's hero is that folder's own, headline and sub-line unchanged, preceded by **its name as one
-mono line** (11.5px `#6D7783`, centred, one line, ellipsis) — `documents` above `Paused`. Panel
-borders, hero padding and the sub-line are the one-folder panel's. What the panel counts for
-`Needs you` is what it can see: the deletions across folders, and conflicts only for the folder it
-scans — the limit is stated here, not filled.
+The panel's hero is that folder's own, headline unchanged, preceded by **its name as one mono line**
+(11.5px `#6D7783`, centred, one line, ellipsis) — `documents` above `Paused`. Panel borders and hero
+padding are the one-folder panel's, and so is the sub-line, with one exception: a paused hero names the
+folder in its second sentence — `7 changes have piled up since 13:20. Nothing in documents will move
+until you resume.` — because another folder may be syncing under it, and "nothing will move" would be
+untrue of the app.
+
+What the panel counts for `Needs you` is what it can see: **the withheld deletions of every folder**
+(each folder's summary carries its own count), and conflicts only for the folder it scans (a disk walk
+the tray does not run for the others) — the limit is stated here, not filled. A deletion waiting in a
+folder the panel is not about is therefore never hidden behind `Up to date` or `Paused`:
+
+- The panel's folder is the worst by rank, **except that a folder that is up to date and has a decision
+  waiting outranks one that is merely paused, or up to date with nothing to decide.** A pause is
+  something you did; a decision is the one thing the tray cannot do for you. What is moving or wrong —
+  syncing, a failed sync, a signed-out session, a stopped daemon — still outranks a decision, as it does
+  at one folder. The glyph and the title are not touched by this: they follow the rank table alone.
+- `Review them` names the folder it is drawn for, and opens the window with **that folder selected**.
+  At one folder it opens the window and nothing else.
 
 ### The menu
 
@@ -158,6 +174,9 @@ Quit           stops syncing
   sets: there is nothing to pause, or nobody to send it to.
 - A row's action names its folder, and a click on a menu drawn earlier acts on **the folder its label
   named**, or on nothing if that folder is gone — never on whichever folder stands in that place now.
+  The name is written on the request **for the default folder too**: the default is addressed by
+  omission everywhere else, and a click on a stale `Pause documents`, after a restart changed which
+  folder stands first, would otherwise pause the new default.
 
 The frames: `10a Two folders`, `10a Two folders paused`, `10a Two folders failed`, `10a Many folders`.
 

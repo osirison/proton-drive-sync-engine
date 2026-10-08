@@ -168,7 +168,10 @@ folder, `Pause {name}` / `Resume {name}` (`Pause documents`, `Resume photos`) �
 only word added, and the row is never `Pause all`. The panel's last row past five folders is `{n} more
 folders` (`2 more folders`; `1 more folder`), and it opens the window. A failed folder's panel says `The last
 sync didn't finish` / `Nothing is lost. 4 changes are waiting and will go on the next try.` — the same two
-sentences the window says (`MAIN.failed`), not the outage banner's.
+sentences the window says (`MAIN.failed`), not the outage banner's. A paused folder's panel names the folder in its
+second sentence — `Paused` / `7 changes have piled up since 13:20. Nothing in documents will move until you
+resume.` (`TRAY.pausedSubPair`) — because another folder may be syncing under it; at one folder the sentence is
+the main screen's above, unchanged.
 
 ## Notifications
 

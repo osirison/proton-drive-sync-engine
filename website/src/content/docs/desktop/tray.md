@@ -99,8 +99,13 @@ pause** — there is no *Pause all*:
   is there while any folder is unpaused. A menu you opened before a folder came or went acts on the
   folder its label named, or on nothing if that folder is gone.
 - **The panel is the worst folder's own**: its hexagon and sentence, with the folder's name in a
-  line above. It lists pause rows for five folders, worst first, then one row — *2 more folders* —
-  that opens the window; the right-click menu lists every folder.
+  line above. A paused folder's sentence names it — *Nothing in documents will move until you
+  resume* — because another folder may be syncing. It lists pause rows for five folders, worst
+  first, then one row — *2 more folders* — that opens the window; the right-click menu lists every
+  folder.
+- **A deletion waiting in any folder is counted on the panel**, not only in the folder it shows: an
+  up-to-date folder with a deletion waiting is shown ahead of a paused one, and *Review them* opens
+  the window with that folder selected. (Conflicts are counted for the one folder the tray scans.)
 
 An expired session, a folder that has never synced and a stopped daemon keep their short menus:
 there is nothing to pause, or nobody to send it to. When a pause cannot be saved to the folder's

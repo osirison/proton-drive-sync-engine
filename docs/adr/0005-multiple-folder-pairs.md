@@ -1601,8 +1601,21 @@ Closes: the feature for users.
 > idle, and it asks every unpaused folder. (17) **At one folder, and for a daemon that lists none, nothing
 > changes** — every row, id and label — held by `n1_rows_are_todays_rows` and the request tests. (18)
 > **`pause_unsaved` has no surface in the tray**: every row dismisses the panel before the reply arrives
-> and the reply is not repeated on `status`, so both paths log it and the way to show it as state is a
-> field on the folder's summary (engine work, deferred).
+> and the reply is not repeated on `status`, so every row that pauses or resumes logs it (the one-folder
+> rows too, since the review of #443) and the way to show it as state is a field on the folder's summary
+> (engine work, deferred; showing it stays with the app PR).
+>
+> **Review of #443, recorded because each changes a rule above.** (19) **A folder's row writes its name on
+> the wire, the default folder's included** (`Ask::Explicit`), amending the "default by omission" rule for
+> that one caller: a stale `Pause documents`, after a restart changed which folder stands first, would
+> otherwise have paused the new default. A folder row exists only at two folders or more, where the daemon
+> has necessarily listed its folders, so no capability gate stands in front of it; the one-folder rows keep
+> omission and their wire is unchanged. (20) **`Needs you` counts the withheld deletions of every folder**
+> (and the conflicts of the one folder the tray scans), the panel's folder is the worst by rank except that
+> an up-to-date folder with a decision waiting outranks a paused one, and `Review them` names its folder
+> (`review@photos`) and selects it through `select_pair` before the window opens. (21) **The glue from a
+> status reply to what is shown is a set of pure functions** (`observe`, `after_push`, `fallback_step`,
+> `push_shown`) with tests; before, eight reverts of it passed the suite.
 
 **Phase 6 — Shared-volume event scope (its own ADR).** §8a. Independent of everything above and
 worth doing on its own merits, since one pair already pays the cost. Not scheduled here.
