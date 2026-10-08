@@ -31560,6 +31560,15 @@ mod tests {
         assert!(!daemon.runtime(0).expect("ready").force_delete_approval);
         drop(stepper);
         drop(daemon);
+        // Read off the disk, before any boot pass can spend a force it loaded: an idle pass
+        // withholds nothing, so it would clear the in-memory flag and hide a row left standing.
+        let index = open_database(&directory.path().join("a").join("sync_index.db"))
+            .expect("the index outlives the daemon");
+        assert!(
+            !load_forced_delete_approval(&index).expect("read"),
+            "the pass that spent the force did not clear it on disk"
+        );
+        drop(index);
         let (daemon, _client, _stepper) = restartable_pair(directory.path(), vec![b]);
         assert!(
             !daemon.runtime(0).expect("ready").force_delete_approval,
@@ -31890,5 +31899,66 @@ mod tests {
             Recorded::Nothing,
             "content is content, carried count or not"
         );
+    }
+
+    #[test]
+    fn a_promoted_pair_replaced_again_by_an_empty_folder_before_its_first_pass_completes_is_held() {
+        // V5, the count carried onto the promoted runtime. A plain promotion over a replacement
+        // with content is accepted and its first pass bootstraps over a fresh index; when that
+        // pass fails to complete and the folder is then replaced by an empty one, the fresh index
+        // records nothing and the carried count is the only thing that says the empty folder is
+        // the deletion of everything — without it the replacement was accepted and the next pass
+        // downloaded the whole remote into it.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) = state_inside_root_pair(directory.path());
+        let root = daemon.pair_config(0).local_root.clone();
+        let remote_root = daemon.pair_config(0).remote_root.clone();
+        let lockfile = daemon.pair_config(0).lockfile_path.clone();
+        replace_directory(&root, &[("b.txt", b"b")]);
+        fs::create_dir_all(lockfile.parent().expect("a directory")).expect("the other's .sync");
+        let held = LockGuard::acquire(&lockfile).expect("another process takes the lock");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(daemon.unavailable(0).is_some(), "precondition: locked");
+
+        // The lock is free; the promotion is accepted (content) and its first pass fails on the
+        // listing, so no pass completes on the fresh index.
+        drop(held);
+        client
+            .fail_walk_once
+            .lock()
+            .expect("fail lock")
+            .insert(remote_root);
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(
+            daemon.runtime(0).is_some()
+                && published_error(&daemon, 0).is_some_and(|error| error.contains("list failed")),
+            "precondition: accepted, and the first pass failed: {:?}",
+            published_error(&daemon, 0)
+        );
+
+        replace_directory(&root, &[]);
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(
+            daemon
+                .unavailable(0)
+                .is_some_and(|pair| pair.standing.is_some()),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        assert!(
+            published_error(&daemon, 0).is_some_and(|reason| reason.contains("1 synced item")),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        assert!(
+            client.downloads().is_empty(),
+            "the whole remote was downloaded into it: {:?}",
+            client.downloads()
+        );
+        assert!(client.deletes().is_empty());
     }
 }
