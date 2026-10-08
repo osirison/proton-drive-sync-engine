@@ -87,9 +87,10 @@ Two cases are held on purpose, so nothing is deleted on a guess:
   deleted, created or downloaded in the meantime, whether the pair's state lives in the
   default `.sync` directory or elsewhere. To start the folder over from Proton instead, run
   `proton-sync reset-index --yes`: it downloads everything and deletes nothing. Restoring only
-  part of the folder ends the hold, and with delete approval turned off the files not yet
-  restored are then deleted remotely, so keep delete approval on for removable or network
-  drives.
+  part of the folder ends the hold, and the first pass after that withholds every deletion for
+  approval whatever your delete-approval setting says, so the files not yet restored wait as
+  pending deletions until you approve them, restore them, or start over. The hold lives in the
+  running daemon only: a restart does not keep it.
 - A folder deleted and made again **with the pair's state inside it** (the default `.sync`
   directory holds the index and the lock) and **with files in it** is prepared again from
   scratch on the next attempt: the index is new, so the pair adopts what is there, downloads

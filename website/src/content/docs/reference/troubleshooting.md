@@ -60,13 +60,18 @@ cadence. The reason says which of these it is:
   unavailable instead: nothing is deleted, created or downloaded. That holds for every state
   layout, the default `.sync` directory inside the folder included. There are two ways out:
   - **Mount the drive, or put the folder back.** The next attempt picks it up once the folder
-    holds something again. If you restore only part of it, the daemon takes it from there and,
-    with delete approval turned off, deletes the remote copies of the files you have not
-    restored yet. Keep delete approval on for folders on removable or network drives.
+    holds something again. If you restore only part of it (or the folder holds only a stray
+    entry such as a file manager's `.directory` or an empty `lost+found`), the daemon takes it
+    from there, and the first pass **withholds every deletion for approval** whatever your
+    delete-approval setting says: the files you have not restored yet show up as pending
+    deletions, and nothing is deleted until you approve them, restore the files, or start
+    over. (With the default `.sync` layout the index went with the folder, so that pass only
+    downloads and adopts and has nothing to delete.)
   - **Start this folder over from Proton** with `proton-sync reset-index --yes`. It downloads
     everything into the folder and deletes nothing. Don't restart the daemon to accept an
-    empty folder: with delete approval turned off, a restart over an empty mount point
-    deletes everything remote
+    empty folder: the hold lives in the running daemon only, and a restart over an empty mount
+    point either deletes everything remote (delete approval off, index kept outside the
+    folder) or downloads everything into the mount point (default layout)
     ([#426](https://github.com/osirison/proton-drive-sync-engine/issues/426)).
 - **Its state was removed along with the folder** — the folder was deleted and made again
   with files in it, and the index and lock inside it went with it. The daemon prepares the

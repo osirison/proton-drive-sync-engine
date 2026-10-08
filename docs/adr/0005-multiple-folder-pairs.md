@@ -1009,9 +1009,10 @@ Expect this phase to be as large as phase 2 and riskier. Closes: the feature, he
 > `reset_index` swaps: after, so a booked apply is answered; before, so a `reset-index` made while
 > the folder is gone is not spent by a pass that did nothing, and so the events-mode idle
 > fast-path cannot report `Clean` and move the cursor over it. It writes no `sync_passes` row,
-> spawns no child, and writes **no sidecar** — `write_atomically` creates its directory, which
-> with the default layout is inside the root, so a status write would make the missing folder
-> again. Demotion (`demote_pair`) exists and had one production caller, the first metrics write,
+> spawns no child, and writes **no sidecar** — `write_atomically` used to create its directory,
+> which with the default layout is inside the root, so a status write would have made the missing
+> folder again (since item 13 it creates none, and the typed arm still skips the write because
+> there is nothing to record). Demotion (`demote_pair`) exists and had one production caller, the first metrics write,
 > which is part of preparing a pair, at boot and on a retry; review added two more causes, (8) and
 > (9) below. A vanished folder with the default layout leaves an index and lock on an unlinked
 > inode until the folder returns, and (8) is what happens then.
@@ -1148,7 +1149,8 @@ Expect this phase to be as large as phase 2 and riskier. Closes: the feature, he
 >   before the final commit, so a directory swapped in during a pass, or an unmounted drive's mount
 >   point that stays a directory, ends the pass `RootUnavailable` with the cursor held. A typed
 >   `RootUnavailable` from an action ends the pass at once instead of counting as one failed item
->   among twenty (which ends it "abandoned").
+>   among twenty (which ends it "abandoned"). (Item 13 found the two gaps this left — the client's
+>   own staging directory, and the batched run — and closed them.)
 > - **Only "not found" says something is gone.** Any other `stat` error (`EIO`, `ESTALE`,
 >   `EACCES`) is `Look::Unreadable`: no demotion, no hold, no watch change, no acceptance, said once
 >   per cause. A replaced folder whose content or baseline could not be read is neither accepted nor
@@ -1164,13 +1166,72 @@ Expect this phase to be as large as phase 2 and riskier. Closes: the feature, he
 > - **A `resync` latch is not spent by a pass that ends `RootUnavailable`.** It is latched again,
 >   so the walk the user asked for still happens.
 >
-> **Known consequences, not fixed.** With the delete guard off, a *partly* restored folder
-> (content, but not all of it) ends the hold, and the files not yet restored are then deleted
-> remotely: keep delete approval on for removable or network roots. An apply cut short by
-> `RootUnavailable` is sealed `Failed` even though the deletions it had already checkpointed ran.
-> `write_atomically` still creates its own directory, so a status write that races a deletion can
-> make a missing folder again; the pass-level status writes are skipped for a missing folder, which
-> closes it except for a deletion landing in the instant between the last check and the write.
+> **Known consequences, not fixed.** A *partly* restored folder (content, but not all of it) ends
+> the hold; with an index that survived outside the folder the files not yet restored are then
+> planned as remote deletions, which item 13 **withholds for approval once** whatever the guard
+> says (with the default layout the index went with the folder, the pass is a bootstrap, and
+> nothing is planned for deletion at all). An apply cut short by `RootUnavailable` is sealed
+> `Failed` even though the deletions it had already checkpointed ran.
+>
+> (13) **The third review round: the timing windows are closed by construction, not one at a
+> time.** Two rounds of closing individual windows did not converge (a second chunk of one download
+> group, a swap between the top check and the scan), so this round states three rules that make
+> the next window impossible rather than unlikely, and each is pinned by a test that failed on the
+> second round's code.
+>
+> - **No code path a pass runs can make the root or an ancestor of it.** Every `create_dir_all`
+>   reachable from a pass is gone: the client's download staging directory is made with
+>   `create_dir`, one level below the directory the executor made
+>   (`proton::create_download_scratch_dir`, the one place the client makes a directory — the
+>   recursive form made a deleted root again from the second chunk of one group, holding only what
+>   that chunk fetched, and the next job accepted it as a replacement with content and, with the
+>   guard off, deleted the rest remotely), and `write_atomically` makes no directory (the sidecars
+>   live beside the index, whose directory `prepare_pair_state` makes). What remains is boot's and
+>   the retry's preparation: `prepare_pair_state` (the root only under `RootMode::Create`; the index
+>   and lock directories after the root is found there), `LockGuard::acquire`'s lock directory, the
+>   socket's directory at construction, and `paths::ensure_private_runtime_dir`'s fallback runtime
+>   directory, none of them under a root a pass could reach. The root is also checked before
+>   **every** download chunk, and a typed `RootUnavailable` out of the batched run's group-level
+>   directory creation ends the pass at once like the per-action loop's, instead of being recorded
+>   as one failed item per member (twenty warnings naming files, the folder never named).
+> - **A plan is only ever derived from a scan of the directory the pair runs on, and nothing
+>   executes on another.** The identity check runs right after the local scan in both
+>   `try_incremental_reconcile` and `bootstrap_reconcile`, and again in `execute_plan_and_commit`
+>   before its loop (after the apply comparison, before anything about the pass is mutated). The
+>   window between the top check and the scan holds the keyring read, the event fetch and the cursor
+>   capture — hundreds of milliseconds — and a swap landing there was scanned as the user's own
+>   folder: the empty replacement planned `RemoteDelete` for everything recorded and executed it
+>   before the final check could see it. A mismatch ends the pass `RootUnavailable` with no side
+>   effect, the cursor held and every latch where it was.
+> - **The first pass after any accepted replacement withholds every deletion for approval, whatever
+>   `deletion_policy` or `[delete_approval]` says.** "Has content" is a binary test: a file manager's
+>   `.directory` or an empty `lost+found/` in an otherwise empty replacement lifted the hold, and
+>   with the guard off the next pass deleted the remote copy of everything recorded; a partly
+>   restored folder did the same by design. `PairRuntime::force_delete_approval` is set when a
+>   replacement with content is accepted (`examine_ready_pair`) and when a hold lifts on content
+>   (`retry_unavailable`), and **not** by a `reset-index`, whose pass bootstraps an empty baseline
+>   and plans no deletion. `decide_delete_gate` reads it, withholds through the same gate (same
+>   pending list, same first-seen ages, same cursor hold), and counts what it withheld only for this
+>   reason (`DeleteGate::forced`); the force ends when a pass completes with that count at zero. It
+>   is carried through a demotion like `known_root`.
+> - **`known_root` is back-filled and carried.** The look at open can fail (a `stat` that errs in the
+>   instant after the preparation's own), and nothing back-filled the record: that pair had no
+>   replacement protection for life. The first examination that can see the folder records it
+>   (`Examination::Unrecorded`). And the identity is carried through a demotion
+>   (`UnavailablePair::known_root`), so a promotion from **any** cause — not only a standing one —
+>   is examined like a pass: `retry_unavailable` hands a plainly promoted runtime the carried
+>   identity and runs `examine_ready_pair` on it. An empty replacement over a baseline that records
+>   items is held, one with content is accepted with its deletions withheld once, one that cannot be
+>   judged does not start. A lifted hold is not examined again (`standing_cause_status` just did) and
+>   a reset is not examined at all (its pass empties the baseline the examination would read, and
+>   would otherwise hold the pair the user asked to start over); `Promotion` records which.
+> - **Two fail-closed arms gained tests.** `standing_cause_status`'s `Err(_) => Holds` and
+>   `recorded_under_an_empty_folder`'s `CannotTell` survived every revert of the second round; both
+>   are now pinned by a replaced folder that cannot itself be listed (`chmod 000` on the root, not
+>   its parent, so `stat` answers and `read_dir` does not).
+> - **Holds are in memory only.** A restart while held is #426 again, and a `reset_index` latched
+>   earlier (while paused, say) releases a later hold with no new request — still the user's
+>   explicit request, and kept.
 >
 > **Still not done**, deliberately: the empty mount point and the unmounted-at-boot root (#426); a
 > watcher that cannot be built at all is still fatal (it is process-wide, not per root);
