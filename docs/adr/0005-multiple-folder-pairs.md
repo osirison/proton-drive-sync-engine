@@ -1582,10 +1582,27 @@ Closes: the feature for users.
 > for one was accepted as the other's and drawn on the card where the person chooses which version to
 > destroy. (12) **The n1 gate pins the clock** (`clock-pin.mjs`) and counts what its injection reaches:
 > fixtures froze `Date.now()` per page load, so eight frames that print an absolute time rendered
-> differently from one URL when a minute fell between loads. Known gap, not closed here: the tray
-> panel's first poll, before the roster is known, names no pair, and Rust answers a read that names none
-> about the *selected* pair — so with a non-default pair selected the panel shows it for one poll
-> before the pin takes hold. Nothing can select a pair yet (PR 6).
+> differently from one URL when a minute fell between loads. Known gap at 5a-2, **closed in 5d**: the
+> tray panel's first poll, before the roster was known, named no pair, and Rust answers a read that names
+> none about the *selected* pair — so with a non-default pair selected the panel would have shown it for
+> one poll before the pin took hold. The panel now polls a command of its own (`tray_status`) that has no
+> pair to name and is answered about the default pair, so there is no first poll that can mean the selection.
+>
+> **Phase 5d (the tray), recorded because each changes a rule above.** (13) **Every folder has its own
+> pause**, so the tray has no `Pause all` row and no daemon-wide state behind one; a folder's row is
+> `Pause {name}` / `Resume {name}`. (14) **A row's id carries its folder** (`pause@photos`; `@` is outside
+> the folder-name charset), and a native row's number is issued once per `(action, folder)` by an
+> append-only registry and never reused: a click on a menu drawn before the list changed acts on the
+> folder its label named, or on nothing — the daemon's byte-exact selector rule does the "nothing". (15)
+> **The glyph is the worst folder's state** (`gui_core::state::severity`, the one rank table; the five glyph
+> forms are unchanged), the title names the folders the glyph cannot, and the panel is the worst folder's
+> own hero under its name. Rust sends each folder's rank and the webview sorts by it. (16) **`Sync now`
+> is chosen from the folder list**, not from the aggregate state: present while some unpaused folder is
+> idle, and it asks every unpaused folder. (17) **At one folder, and for a daemon that lists none, nothing
+> changes** — every row, id and label — held by `n1_rows_are_todays_rows` and the request tests. (18)
+> **`pause_unsaved` has no surface in the tray**: every row dismisses the panel before the reply arrives
+> and the reply is not repeated on `status`, so both paths log it and the way to show it as state is a
+> field on the folder's summary (engine work, deferred).
 
 **Phase 6 — Shared-volume event scope (its own ADR).** §8a. Independent of everything above and
 worth doing on its own merits, since one pair already pays the cost. Not scheduled here.
