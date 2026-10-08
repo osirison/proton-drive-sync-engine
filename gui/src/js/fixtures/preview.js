@@ -126,6 +126,7 @@ export function withOnePairConfig(config) {
   if (!config || (Array.isArray(config.pairs) && config.pairs.length > 0)) return config;
   return {
     ...config,
+    pair: config.pair ?? DEFAULT_PAIR,
     pairs: [
       { name: DEFAULT_PAIR, local_root: config.local_root ?? null, remote_root: config.remote_root ?? null },
     ],

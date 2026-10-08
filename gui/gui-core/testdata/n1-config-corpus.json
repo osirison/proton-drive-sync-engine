@@ -1,0 +1,2279 @@
+{
+ "recorded_from": "e1b1f3b: ConfigDoc as it was before the table-generic refactor (#102 phase 5b-1). Data, never regenerated from the code under test.",
+ "cases": [
+  {
+   "expected": {
+    "after": [
+     "/home/u/ProtonDrive",
+     "/Drive/RemoteFolder",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     120,
+     null,
+     null,
+     10,
+     true,
+     [],
+     [
+      "*.tmp",
+      "node_modules/"
+     ],
+     null,
+     null,
+     "ask_every_time",
+     null,
+     "trash",
+     null
+    ],
+    "before": [
+     "/home/u/ProtonDrive",
+     "/Drive/RemoteFolder",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     10,
+     true,
+     [],
+     [
+      "*.tmp"
+     ],
+     null,
+     null,
+     "ask_every_time",
+     null,
+     "trash",
+     null
+    ],
+    "rendered": "# my sync config\nlocal_root = \"/home/u/ProtonDrive\"\nremote_root = \"/Drive/RemoteFolder\"\n\n# keep the events poller lively\nevents_driven = true\nevents_full_scan_every = 10   # daemon-only key the UI does not expose\n\nexclude = [\"*.tmp\", \"node_modules/\"]\nscan_interval_secs = 120\n"
+   },
+   "input": "# my sync config\nlocal_root = \"/home/u/ProtonDrive\"\nremote_root = \"/Drive/RemoteFolder\"\n\n# keep the events poller lively\nevents_driven = true\nevents_full_scan_every = 10   # daemon-only key the UI does not expose\n\nexclude = [\"*.tmp\"]\n",
+   "name": "sample/exclude-and-interval",
+   "ops": [
+    [
+     "set_string_array",
+     "exclude",
+     [
+      "*.tmp",
+      "node_modules/"
+     ]
+    ],
+    [
+     "set_int",
+     "scan_interval_secs",
+     120
+    ]
+   ]
+  },
+  {
+   "expected": {
+    "after": [
+     "/home/u/ProtonDrive",
+     "/Drive/RemoteFolder",
+     null,
+     null,
+     null,
+     null,
+     "never",
+     null,
+     null,
+     null,
+     null,
+     null,
+     10,
+     true,
+     [],
+     [
+      "*.tmp"
+     ],
+     null,
+     null,
+     "never",
+     "never",
+     "trash",
+     null
+    ],
+    "before": [
+     "/home/u/ProtonDrive",
+     "/Drive/RemoteFolder",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     10,
+     true,
+     [],
+     [
+      "*.tmp"
+     ],
+     null,
+     null,
+     "ask_every_time",
+     null,
+     "trash",
+     null
+    ],
+    "rendered": "# my sync config\nlocal_root = \"/home/u/ProtonDrive\"\nremote_root = \"/Drive/RemoteFolder\"\n\n# keep the events poller lively\nevents_driven = true\nevents_full_scan_every = 10   # daemon-only key the UI does not expose\n\nexclude = [\"*.tmp\"]\ndeletion_policy = \"never\"\n"
+   },
+   "input": "# my sync config\nlocal_root = \"/home/u/ProtonDrive\"\nremote_root = \"/Drive/RemoteFolder\"\n\n# keep the events poller lively\nevents_driven = true\nevents_full_scan_every = 10   # daemon-only key the UI does not expose\n\nexclude = [\"*.tmp\"]\n",
+   "name": "sample/policy-never",
+   "ops": [
+    [
+     "set_deletion_policy",
+     "never"
+    ]
+   ]
+  },
+  {
+   "expected": {
+    "after": [
+     "/home/u/ProtonDrive",
+     "/Drive/RemoteFolder",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     10,
+     false,
+     [],
+     [
+      "*.tmp"
+     ],
+     null,
+     null,
+     "ask_every_time",
+     null,
+     "trash",
+     null
+    ],
+    "before": [
+     "/home/u/ProtonDrive",
+     "/Drive/RemoteFolder",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     10,
+     true,
+     [],
+     [
+      "*.tmp"
+     ],
+     null,
+     null,
+     "ask_every_time",
+     null,
+     "trash",
+     null
+    ],
+    "rendered": "# my sync config\nlocal_root = \"/home/u/ProtonDrive\"\nremote_root = \"/Drive/RemoteFolder\"\n\n# keep the events poller lively\nevents_driven = false\nevents_full_scan_every = 10   # daemon-only key the UI does not expose\n\nexclude = [\"*.tmp\"]\n"
+   },
+   "input": "# my sync config\nlocal_root = \"/home/u/ProtonDrive\"\nremote_root = \"/Drive/RemoteFolder\"\n\n# keep the events poller lively\nevents_driven = true\nevents_full_scan_every = 10   # daemon-only key the UI does not expose\n\nexclude = [\"*.tmp\"]\n",
+   "name": "sample/events-off",
+   "ops": [
+    [
+     "set_bool",
+     "events_driven",
+     false
+    ]
+   ]
+  },
+  {
+   "expected": {
+    "after": [
+     "/home/u/ProtonDrive",
+     "/Drive/RemoteFolder",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     10,
+     null,
+     [],
+     [],
+     null,
+     null,
+     "ask_every_time",
+     null,
+     "trash",
+     null
+    ],
+    "before": [
+     "/home/u/ProtonDrive",
+     "/Drive/RemoteFolder",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     10,
+     true,
+     [],
+     [
+      "*.tmp"
+     ],
+     null,
+     null,
+     "ask_every_time",
+     null,
+     "trash",
+     null
+    ],
+    "rendered": "# my sync config\nlocal_root = \"/home/u/ProtonDrive\"\nremote_root = \"/Drive/RemoteFolder\"\nevents_full_scan_every = 10   # daemon-only key the UI does not expose\n"
+   },
+   "input": "# my sync config\nlocal_root = \"/home/u/ProtonDrive\"\nremote_root = \"/Drive/RemoteFolder\"\n\n# keep the events poller lively\nevents_driven = true\nevents_full_scan_every = 10   # daemon-only key the UI does not expose\n\nexclude = [\"*.tmp\"]\n",
+   "name": "sample/remove",
+   "ops": [
+    [
+     "remove",
+     "exclude"
+    ],
+    [
+     "remove",
+     "events_driven"
+    ],
+    [
+     "remove",
+     "absent_key"
+    ]
+   ]
+  },
+  {
+   "expected": {
+    "after": [
+     "~/ProtonDrive",
+     "/Drive/RemoteFolder",
+     "debug",
+     "~/run/proton-sync.sock",
+     "from-cloud",
+     null,
+     null,
+     null,
+     "~/bin/proton-drive",
+     null,
+     null,
+     null,
+     0,
+     null,
+     [],
+     [
+      "*.tmp"
+     ],
+     false,
+     true,
+     "only_permanent",
+     null,
+     "trash",
+     null
+    ],
+    "before": [
+     "~/ProtonDrive",
+     "/Drive/RemoteFolder",
+     null,
+     "~/run/proton-sync.sock",
+     "from-cloud",
+     null,
+     null,
+     null,
+     "~/bin/proton-drive",
+     null,
+     null,
+     null,
+     0,
+     null,
+     [],
+     [
+      "*.tmp"
+     ],
+     false,
+     true,
+     "only_permanent",
+     null,
+     "trash",
+     null
+    ],
+    "rendered": "# hand-written\nlocal_root = \"~/ProtonDrive\"          # expanded by the daemon, NOT by this file\ndb_path = \"~/.local/state/proton/index.db\"\nproton_cli = \"~/bin/proton-drive\"\nsocket_path = \"~/run/proton-sync.sock\"\nremote_root = \"/Drive/RemoteFolder\"\n\n# 0 is a MEANING here, not an absence: no periodic resync, no periodic full walk, no age gate.\nevents_full_scan_every = 0\nwarm_start_full_walk_every = 0\nwarm_start_max_cursor_age_secs = 0\n\nconflict_suffix = \"from-cloud\"\nexclude = [\"*.tmp\"]\nlog_level = \"debug\"\n\n[delete_approval]\nremote = false\nlocal = true\n"
+   },
+   "input": "# hand-written\nlocal_root = \"~/ProtonDrive\"          # expanded by the daemon, NOT by this file\ndb_path = \"~/.local/state/proton/index.db\"\nproton_cli = \"~/bin/proton-drive\"\nsocket_path = \"~/run/proton-sync.sock\"\nremote_root = \"/Drive/RemoteFolder\"\n\n# 0 is a MEANING here, not an absence: no periodic resync, no periodic full walk, no age gate.\nevents_full_scan_every = 0\nwarm_start_full_walk_every = 0\nwarm_start_max_cursor_age_secs = 0\n\nconflict_suffix = \"from-cloud\"\nexclude = [\"*.tmp\"]\n\n[delete_approval]\nremote = false\nlocal = true\n",
+   "name": "adversarial/log-level",
+   "ops": [
+    [
+     "set_str",
+     "log_level",
+     "debug"
+    ]
+   ]
+  },
+  {
+   "expected": {
+    "after": [
+     "~/ProtonDrive",
+     "/Drive/RemoteFolder",
+     null,
+     "~/run/proton-sync.sock",
+     "from-cloud",
+     null,
+     null,
+     null,
+     "~/bin/proton-drive",
+     null,
+     null,
+     null,
+     0,
+     null,
+     [],
+     [
+      "*.tmp"
+     ],
+     true,
+     true,
+     "ask_every_time",
+     null,
+     "trash",
+     null
+    ],
+    "before": [
+     "~/ProtonDrive",
+     "/Drive/RemoteFolder",
+     null,
+     "~/run/proton-sync.sock",
+     "from-cloud",
+     null,
+     null,
+     null,
+     "~/bin/proton-drive",
+     null,
+     null,
+     null,
+     0,
+     null,
+     [],
+     [
+      "*.tmp"
+     ],
+     false,
+     true,
+     "only_permanent",
+     null,
+     "trash",
+     null
+    ],
+    "rendered": "# hand-written\nlocal_root = \"~/ProtonDrive\"          # expanded by the daemon, NOT by this file\ndb_path = \"~/.local/state/proton/index.db\"\nproton_cli = \"~/bin/proton-drive\"\nsocket_path = \"~/run/proton-sync.sock\"\nremote_root = \"/Drive/RemoteFolder\"\n\n# 0 is a MEANING here, not an absence: no periodic resync, no periodic full walk, no age gate.\nevents_full_scan_every = 0\nwarm_start_full_walk_every = 0\nwarm_start_max_cursor_age_secs = 0\n\nconflict_suffix = \"from-cloud\"\nexclude = [\"*.tmp\"]\n\n[delete_approval]\nremote = true\nlocal = true\n"
+   },
+   "input": "# hand-written\nlocal_root = \"~/ProtonDrive\"          # expanded by the daemon, NOT by this file\ndb_path = \"~/.local/state/proton/index.db\"\nproton_cli = \"~/bin/proton-drive\"\nsocket_path = \"~/run/proton-sync.sock\"\nremote_root = \"/Drive/RemoteFolder\"\n\n# 0 is a MEANING here, not an absence: no periodic resync, no periodic full walk, no age gate.\nevents_full_scan_every = 0\nwarm_start_full_walk_every = 0\nwarm_start_max_cursor_age_secs = 0\n\nconflict_suffix = \"from-cloud\"\nexclude = [\"*.tmp\"]\n\n[delete_approval]\nremote = false\nlocal = true\n",
+   "name": "adversarial/policy-ask_every_time",
+   "ops": [
+    [
+     "set_deletion_policy",
+     "ask_every_time"
+    ]
+   ]
+  },
+  {
+   "expected": {
+    "after": [
+     "~/ProtonDrive",
+     "/Drive/RemoteFolder",
+     null,
+     "~/run/proton-sync.sock",
+     "from-cloud",
+     null,
+     null,
+     null,
+     "~/bin/proton-drive",
+     null,
+     null,
+     null,
+     0,
+     null,
+     [],
+     [
+      "*.tmp"
+     ],
+     false,
+     true,
+     "only_permanent",
+     null,
+     "trash",
+     null
+    ],
+    "before": [
+     "~/ProtonDrive",
+     "/Drive/RemoteFolder",
+     null,
+     "~/run/proton-sync.sock",
+     "from-cloud",
+     null,
+     null,
+     null,
+     "~/bin/proton-drive",
+     null,
+     null,
+     null,
+     0,
+     null,
+     [],
+     [
+      "*.tmp"
+     ],
+     false,
+     true,
+     "only_permanent",
+     null,
+     "trash",
+     null
+    ],
+    "rendered": "# hand-written\nlocal_root = \"~/ProtonDrive\"          # expanded by the daemon, NOT by this file\ndb_path = \"~/.local/state/proton/index.db\"\nproton_cli = \"~/bin/proton-drive\"\nsocket_path = \"~/run/proton-sync.sock\"\nremote_root = \"/Drive/RemoteFolder\"\n\n# 0 is a MEANING here, not an absence: no periodic resync, no periodic full walk, no age gate.\nevents_full_scan_every = 0\nwarm_start_full_walk_every = 0\nwarm_start_max_cursor_age_secs = 0\n\nconflict_suffix = \"from-cloud\"\nexclude = [\"*.tmp\"]\n\n[delete_approval]\nremote = false\nlocal = true\n"
+   },
+   "input": "# hand-written\nlocal_root = \"~/ProtonDrive\"          # expanded by the daemon, NOT by this file\ndb_path = \"~/.local/state/proton/index.db\"\nproton_cli = \"~/bin/proton-drive\"\nsocket_path = \"~/run/proton-sync.sock\"\nremote_root = \"/Drive/RemoteFolder\"\n\n# 0 is a MEANING here, not an absence: no periodic resync, no periodic full walk, no age gate.\nevents_full_scan_every = 0\nwarm_start_full_walk_every = 0\nwarm_start_max_cursor_age_secs = 0\n\nconflict_suffix = \"from-cloud\"\nexclude = [\"*.tmp\"]\n\n[delete_approval]\nremote = false\nlocal = true\n",
+   "name": "adversarial/policy-only_permanent",
+   "ops": [
+    [
+     "set_deletion_policy",
+     "only_permanent"
+    ]
+   ]
+  },
+  {
+   "expected": {
+    "after": [
+     "~/ProtonDrive",
+     "/Drive/RemoteFolder",
+     null,
+     "~/run/proton-sync.sock",
+     "from-cloud",
+     null,
+     null,
+     null,
+     "~/bin/proton-drive",
+     null,
+     null,
+     null,
+     0,
+     null,
+     [],
+     [
+      "*.tmp"
+     ],
+     false,
+     false,
+     "never",
+     null,
+     "trash",
+     null
+    ],
+    "before": [
+     "~/ProtonDrive",
+     "/Drive/RemoteFolder",
+     null,
+     "~/run/proton-sync.sock",
+     "from-cloud",
+     null,
+     null,
+     null,
+     "~/bin/proton-drive",
+     null,
+     null,
+     null,
+     0,
+     null,
+     [],
+     [
+      "*.tmp"
+     ],
+     false,
+     true,
+     "only_permanent",
+     null,
+     "trash",
+     null
+    ],
+    "rendered": "# hand-written\nlocal_root = \"~/ProtonDrive\"          # expanded by the daemon, NOT by this file\ndb_path = \"~/.local/state/proton/index.db\"\nproton_cli = \"~/bin/proton-drive\"\nsocket_path = \"~/run/proton-sync.sock\"\nremote_root = \"/Drive/RemoteFolder\"\n\n# 0 is a MEANING here, not an absence: no periodic resync, no periodic full walk, no age gate.\nevents_full_scan_every = 0\nwarm_start_full_walk_every = 0\nwarm_start_max_cursor_age_secs = 0\n\nconflict_suffix = \"from-cloud\"\nexclude = [\"*.tmp\"]\n\n[delete_approval]\nremote = false\nlocal = false\n"
+   },
+   "input": "# hand-written\nlocal_root = \"~/ProtonDrive\"          # expanded by the daemon, NOT by this file\ndb_path = \"~/.local/state/proton/index.db\"\nproton_cli = \"~/bin/proton-drive\"\nsocket_path = \"~/run/proton-sync.sock\"\nremote_root = \"/Drive/RemoteFolder\"\n\n# 0 is a MEANING here, not an absence: no periodic resync, no periodic full walk, no age gate.\nevents_full_scan_every = 0\nwarm_start_full_walk_every = 0\nwarm_start_max_cursor_age_secs = 0\n\nconflict_suffix = \"from-cloud\"\nexclude = [\"*.tmp\"]\n\n[delete_approval]\nremote = false\nlocal = true\n",
+   "name": "adversarial/policy-never",
+   "ops": [
+    [
+     "set_deletion_policy",
+     "never"
+    ]
+   ]
+  },
+  {
+   "expected": {
+    "after": [
+     "~/ProtonDrive",
+     "/Drive/RemoteFolder",
+     null,
+     "~/run/proton-sync.sock",
+     "from-cloud",
+     null,
+     null,
+     null,
+     "~/bin/proton-drive",
+     null,
+     null,
+     null,
+     0,
+     null,
+     [],
+     [
+      "*.tmp"
+     ],
+     true,
+     false,
+     "only_recoverable",
+     null,
+     "trash",
+     null
+    ],
+    "before": [
+     "~/ProtonDrive",
+     "/Drive/RemoteFolder",
+     null,
+     "~/run/proton-sync.sock",
+     "from-cloud",
+     null,
+     null,
+     null,
+     "~/bin/proton-drive",
+     null,
+     null,
+     null,
+     0,
+     null,
+     [],
+     [
+      "*.tmp"
+     ],
+     false,
+     true,
+     "only_permanent",
+     null,
+     "trash",
+     null
+    ],
+    "rendered": "# hand-written\nlocal_root = \"~/ProtonDrive\"          # expanded by the daemon, NOT by this file\ndb_path = \"~/.local/state/proton/index.db\"\nproton_cli = \"~/bin/proton-drive\"\nsocket_path = \"~/run/proton-sync.sock\"\nremote_root = \"/Drive/RemoteFolder\"\n\n# 0 is a MEANING here, not an absence: no periodic resync, no periodic full walk, no age gate.\nevents_full_scan_every = 0\nwarm_start_full_walk_every = 0\nwarm_start_max_cursor_age_secs = 0\n\nconflict_suffix = \"from-cloud\"\nexclude = [\"*.tmp\"]\n\n[delete_approval]\nremote = true\nlocal = false\n"
+   },
+   "input": "# hand-written\nlocal_root = \"~/ProtonDrive\"          # expanded by the daemon, NOT by this file\ndb_path = \"~/.local/state/proton/index.db\"\nproton_cli = \"~/bin/proton-drive\"\nsocket_path = \"~/run/proton-sync.sock\"\nremote_root = \"/Drive/RemoteFolder\"\n\n# 0 is a MEANING here, not an absence: no periodic resync, no periodic full walk, no age gate.\nevents_full_scan_every = 0\nwarm_start_full_walk_every = 0\nwarm_start_max_cursor_age_secs = 0\n\nconflict_suffix = \"from-cloud\"\nexclude = [\"*.tmp\"]\n\n[delete_approval]\nremote = false\nlocal = true\n",
+   "name": "adversarial/policy-only_recoverable",
+   "ops": [
+    [
+     "set_deletion_policy",
+     "only_recoverable"
+    ]
+   ]
+  },
+  {
+   "expected": {
+    "after": [
+     "~/ProtonDrive",
+     "/Drive/RemoteFolder",
+     null,
+     "~/run/proton-sync.sock",
+     "from-cloud",
+     null,
+     null,
+     "permanent",
+     "~/bin/proton-drive",
+     null,
+     null,
+     null,
+     0,
+     null,
+     [],
+     [
+      "*.tmp"
+     ],
+     false,
+     true,
+     "only_permanent",
+     null,
+     "permanent",
+     "permanent"
+    ],
+    "before": [
+     "~/ProtonDrive",
+     "/Drive/RemoteFolder",
+     null,
+     "~/run/proton-sync.sock",
+     "from-cloud",
+     null,
+     null,
+     null,
+     "~/bin/proton-drive",
+     null,
+     null,
+     null,
+     0,
+     null,
+     [],
+     [
+      "*.tmp"
+     ],
+     false,
+     true,
+     "only_permanent",
+     null,
+     "trash",
+     null
+    ],
+    "rendered": "# hand-written\nlocal_root = \"~/ProtonDrive\"          # expanded by the daemon, NOT by this file\ndb_path = \"~/.local/state/proton/index.db\"\nproton_cli = \"~/bin/proton-drive\"\nsocket_path = \"~/run/proton-sync.sock\"\nremote_root = \"/Drive/RemoteFolder\"\n\n# 0 is a MEANING here, not an absence: no periodic resync, no periodic full walk, no age gate.\nevents_full_scan_every = 0\nwarm_start_full_walk_every = 0\nwarm_start_max_cursor_age_secs = 0\n\nconflict_suffix = \"from-cloud\"\nexclude = [\"*.tmp\"]\nlocal_delete_mode = \"permanent\"\n\n[delete_approval]\nremote = false\nlocal = true\n"
+   },
+   "input": "# hand-written\nlocal_root = \"~/ProtonDrive\"          # expanded by the daemon, NOT by this file\ndb_path = \"~/.local/state/proton/index.db\"\nproton_cli = \"~/bin/proton-drive\"\nsocket_path = \"~/run/proton-sync.sock\"\nremote_root = \"/Drive/RemoteFolder\"\n\n# 0 is a MEANING here, not an absence: no periodic resync, no periodic full walk, no age gate.\nevents_full_scan_every = 0\nwarm_start_full_walk_every = 0\nwarm_start_max_cursor_age_secs = 0\n\nconflict_suffix = \"from-cloud\"\nexclude = [\"*.tmp\"]\n\n[delete_approval]\nremote = false\nlocal = true\n",
+   "name": "adversarial/mode",
+   "ops": [
+    [
+     "set_local_delete_mode",
+     "permanent"
+    ]
+   ]
+  },
+  {
+   "expected": {
+    "after": [
+     "/home/u/Drive",
+     null,
+     "warn",
+     null,
+     "from-cloud",
+     null,
+     null,
+     null,
+     null,
+     300,
+     null,
+     null,
+     null,
+     null,
+     [],
+     [],
+     false,
+     false,
+     "never",
+     null,
+     "trash",
+     null
+    ],
+    "before": [
+     "/home/u/Drive",
+     null,
+     "debug",
+     null,
+     "from-cloud",
+     null,
+     null,
+     null,
+     null,
+     120,
+     null,
+     null,
+     null,
+     null,
+     [],
+     [],
+     false,
+     null,
+     "only_permanent",
+     null,
+     "trash",
+     null
+    ],
+    "rendered": "local-root = \"/home/u/Drive\"\nlog-level = \"warn\"\nscan-interval-secs = 300\nconflict-suffix = \"from-cloud\"\n[delete-approval]\nremote = false\nlocal = false\n"
+   },
+   "input": "local-root = \"/home/u/Drive\"\nlog-level = \"debug\"\nscan-interval-secs = 120\nconflict-suffix = \"from-cloud\"\n[delete-approval]\nremote = false\n",
+   "name": "kebab/edits",
+   "ops": [
+    [
+     "set_str",
+     "log_level",
+     "warn"
+    ],
+    [
+     "set_int",
+     "scan_interval_secs",
+     300
+    ],
+    [
+     "set_delete_approval",
+     "local",
+     false
+    ]
+   ]
+  },
+  {
+   "expected": {
+    "after": [
+     "/y",
+     null,
+     null,
+     null,
+     "x",
+     null,
+     null,
+     null,
+     null,
+     120,
+     null,
+     null,
+     null,
+     null,
+     [],
+     [],
+     false,
+     null,
+     "only_permanent",
+     null,
+     "trash",
+     null
+    ],
+    "before": [
+     "/home/u/Drive",
+     null,
+     "debug",
+     null,
+     "from-cloud",
+     null,
+     null,
+     null,
+     null,
+     120,
+     null,
+     null,
+     null,
+     null,
+     [],
+     [],
+     false,
+     null,
+     "only_permanent",
+     null,
+     "trash",
+     null
+    ],
+    "rendered": "local-root = \"/y\"\nscan-interval-secs = 120\nconflict-suffix = \"x\"\n[delete-approval]\nremote = false\n"
+   },
+   "input": "local-root = \"/home/u/Drive\"\nlog-level = \"debug\"\nscan-interval-secs = 120\nconflict-suffix = \"from-cloud\"\n[delete-approval]\nremote = false\n",
+   "name": "kebab/suffix-and-root",
+   "ops": [
+    [
+     "set_str",
+     "conflict_suffix",
+     "x"
+    ],
+    [
+     "set_str",
+     "local_root",
+     "/y"
+    ],
+    [
+     "remove",
+     "log_level"
+    ]
+   ]
+  },
+  {
+   "expected": {
+    "after": [
+     "/home/u/Drive",
+     "/Drive/x",
+     "debug",
+     "/run/u/p.sock",
+     "from-cloud",
+     "weekly sun 03:00",
+     "never",
+     "permanent",
+     "/bin/proton-drive",
+     60,
+     90,
+     3,
+     null,
+     true,
+     [
+      "a/**",
+      "b/**"
+     ],
+     [],
+     null,
+     null,
+     "never",
+     "never",
+     "permanent",
+     "permanent"
+    ],
+    "before": [
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     [],
+     [],
+     null,
+     null,
+     "ask_every_time",
+     null,
+     "trash",
+     null
+    ],
+    "rendered": "local_root = \"/home/u/Drive\"\nremote_root = \"/Drive/x\"\nscan_interval_secs = 60\nevents_driven = true\ninclude = [\"a/**\", \"b/**\"]\nexclude = []\nproton_cli = \"/bin/proton-drive\"\nproton_timeout_secs = 90\nproton_list_attempts = 3\nsocket_path = \"/run/u/p.sock\"\nlog_level = \"debug\"\nconflict_suffix = \"from-cloud\"\nfull_scan_schedule = \"weekly sun 03:00\"\ndeletion_policy = \"never\"\nlocal_delete_mode = \"permanent\"\n"
+   },
+   "input": "",
+   "name": "empty/everything",
+   "ops": [
+    [
+     "set_str",
+     "local_root",
+     "/home/u/Drive"
+    ],
+    [
+     "set_str",
+     "remote_root",
+     "/Drive/x"
+    ],
+    [
+     "set_int",
+     "scan_interval_secs",
+     60
+    ],
+    [
+     "set_bool",
+     "events_driven",
+     true
+    ],
+    [
+     "set_string_array",
+     "include",
+     [
+      "a/**",
+      "b/**"
+     ]
+    ],
+    [
+     "set_string_array",
+     "exclude",
+     []
+    ],
+    [
+     "set_str",
+     "proton_cli",
+     "/bin/proton-drive"
+    ],
+    [
+     "set_int",
+     "proton_timeout_secs",
+     90
+    ],
+    [
+     "set_int",
+     "proton_list_attempts",
+     3
+    ],
+    [
+     "set_str",
+     "socket_path",
+     "/run/u/p.sock"
+    ],
+    [
+     "set_str",
+     "log_level",
+     "debug"
+    ],
+    [
+     "set_str",
+     "conflict_suffix",
+     "from-cloud"
+    ],
+    [
+     "set_str",
+     "full_scan_schedule",
+     "weekly sun 03:00"
+    ],
+    [
+     "set_deletion_policy",
+     "never"
+    ],
+    [
+     "set_local_delete_mode",
+     "permanent"
+    ]
+   ]
+  },
+  {
+   "expected": {
+    "after": [
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     [],
+     [],
+     false,
+     true,
+     "only_permanent",
+     null,
+     "trash",
+     null
+    ],
+    "before": [
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     [],
+     [],
+     null,
+     null,
+     "ask_every_time",
+     null,
+     "trash",
+     null
+    ],
+    "rendered": "[delete_approval]\nremote = false\nlocal = true\n"
+   },
+   "input": "",
+   "name": "empty/delete-approval",
+   "ops": [
+    [
+     "set_delete_approval",
+     "remote",
+     false
+    ],
+    [
+     "set_delete_approval",
+     "local",
+     true
+    ]
+   ]
+  },
+  {
+   "expected": {
+    "after": [
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     "ask_every_time",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     [],
+     [],
+     null,
+     null,
+     "ask_every_time",
+     "ask_every_time",
+     "trash",
+     null
+    ],
+    "before": [
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     [],
+     [],
+     null,
+     null,
+     "ask_every_time",
+     null,
+     "trash",
+     null
+    ],
+    "rendered": "deletion_policy = \"ask_every_time\"\n"
+   },
+   "input": "",
+   "name": "empty/policy-ask_every_time",
+   "ops": [
+    [
+     "set_deletion_policy",
+     "ask_every_time"
+    ]
+   ]
+  },
+  {
+   "expected": {
+    "after": [
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     "only_permanent",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     [],
+     [],
+     null,
+     null,
+     "only_permanent",
+     "only_permanent",
+     "trash",
+     null
+    ],
+    "before": [
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     [],
+     [],
+     null,
+     null,
+     "ask_every_time",
+     null,
+     "trash",
+     null
+    ],
+    "rendered": "deletion_policy = \"only_permanent\"\n"
+   },
+   "input": "",
+   "name": "empty/policy-only_permanent",
+   "ops": [
+    [
+     "set_deletion_policy",
+     "only_permanent"
+    ]
+   ]
+  },
+  {
+   "expected": {
+    "after": [
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     "never",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     [],
+     [],
+     null,
+     null,
+     "never",
+     "never",
+     "trash",
+     null
+    ],
+    "before": [
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     [],
+     [],
+     null,
+     null,
+     "ask_every_time",
+     null,
+     "trash",
+     null
+    ],
+    "rendered": "deletion_policy = \"never\"\n"
+   },
+   "input": "",
+   "name": "empty/policy-never",
+   "ops": [
+    [
+     "set_deletion_policy",
+     "never"
+    ]
+   ]
+  },
+  {
+   "expected": {
+    "after": [
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     "only_recoverable",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     [],
+     [],
+     null,
+     null,
+     "only_recoverable",
+     "only_recoverable",
+     "trash",
+     null
+    ],
+    "before": [
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     [],
+     [],
+     null,
+     null,
+     "ask_every_time",
+     null,
+     "trash",
+     null
+    ],
+    "rendered": "deletion_policy = \"only_recoverable\"\n"
+   },
+   "input": "",
+   "name": "empty/policy-only_recoverable",
+   "ops": [
+    [
+     "set_deletion_policy",
+     "only_recoverable"
+    ]
+   ]
+  },
+  {
+   "expected": {
+    "after": [
+     "/b",
+     "/Drive/a",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     false,
+     [],
+     [
+      "x"
+     ],
+     true,
+     true,
+     "ask_every_time",
+     null,
+     "trash",
+     null
+    ],
+    "before": [
+     "/a",
+     "/Drive/a",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     true,
+     [],
+     [
+      "*.tmp"
+     ],
+     true,
+     true,
+     "ask_every_time",
+     null,
+     "trash",
+     null
+    ],
+    "rendered": "# top comment\n\n# the folder\nlocal_root = \"/b\"\nremote_root = \"/Drive/a\"\n# about the poll\nevents_driven = false\n\n# skip\nexclude = [\"x\"]\n\n[delete_approval]\n# remote first\nremote = true # r\nlocal = true\n"
+   },
+   "input": "# top comment\n\n# the folder\nlocal_root = \"/a\"   # trailing on local_root\nremote_root = \"/Drive/a\"\n# about the poll\nevents_driven = true # on\n\n# skip\nexclude = [\"*.tmp\"] # tmp\n\n[delete_approval]\n# remote first\nremote = true # r\nlocal = true\n",
+   "name": "comments/replace-values",
+   "ops": [
+    [
+     "set_str",
+     "local_root",
+     "/b"
+    ],
+    [
+     "set_bool",
+     "events_driven",
+     false
+    ],
+    [
+     "set_string_array",
+     "exclude",
+     [
+      "x"
+     ]
+    ]
+   ]
+  },
+  {
+   "expected": {
+    "after": [
+     "/a",
+     "/Drive/a",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     true,
+     [],
+     [
+      "*.tmp"
+     ],
+     true,
+     true,
+     "ask_every_time",
+     null,
+     "trash",
+     null
+    ],
+    "before": [
+     "/a",
+     "/Drive/a",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     true,
+     [],
+     [
+      "*.tmp"
+     ],
+     true,
+     true,
+     "ask_every_time",
+     null,
+     "trash",
+     null
+    ],
+    "rendered": "# top comment\n\n# the folder\nlocal_root = \"/a\"   # trailing on local_root\nremote_root = \"/Drive/a\"\n# about the poll\nevents_driven = true # on\n\n# skip\nexclude = [\"*.tmp\"] # tmp\n\n[delete_approval]\nremote = true\nlocal = true\n"
+   },
+   "input": "# top comment\n\n# the folder\nlocal_root = \"/a\"   # trailing on local_root\nremote_root = \"/Drive/a\"\n# about the poll\nevents_driven = true # on\n\n# skip\nexclude = [\"*.tmp\"] # tmp\n\n[delete_approval]\n# remote first\nremote = true # r\nlocal = true\n",
+   "name": "comments/policy-ask_every_time",
+   "ops": [
+    [
+     "set_deletion_policy",
+     "ask_every_time"
+    ]
+   ]
+  },
+  {
+   "expected": {
+    "after": [
+     "/a",
+     "/Drive/a",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     true,
+     [],
+     [
+      "*.tmp"
+     ],
+     false,
+     true,
+     "only_permanent",
+     null,
+     "trash",
+     null
+    ],
+    "before": [
+     "/a",
+     "/Drive/a",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     true,
+     [],
+     [
+      "*.tmp"
+     ],
+     true,
+     true,
+     "ask_every_time",
+     null,
+     "trash",
+     null
+    ],
+    "rendered": "# top comment\n\n# the folder\nlocal_root = \"/a\"   # trailing on local_root\nremote_root = \"/Drive/a\"\n# about the poll\nevents_driven = true # on\n\n# skip\nexclude = [\"*.tmp\"] # tmp\n\n[delete_approval]\nremote = false\nlocal = true\n"
+   },
+   "input": "# top comment\n\n# the folder\nlocal_root = \"/a\"   # trailing on local_root\nremote_root = \"/Drive/a\"\n# about the poll\nevents_driven = true # on\n\n# skip\nexclude = [\"*.tmp\"] # tmp\n\n[delete_approval]\n# remote first\nremote = true # r\nlocal = true\n",
+   "name": "comments/policy-only_permanent",
+   "ops": [
+    [
+     "set_deletion_policy",
+     "only_permanent"
+    ]
+   ]
+  },
+  {
+   "expected": {
+    "after": [
+     "/a",
+     "/Drive/a",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     true,
+     [],
+     [
+      "*.tmp"
+     ],
+     false,
+     false,
+     "never",
+     null,
+     "trash",
+     null
+    ],
+    "before": [
+     "/a",
+     "/Drive/a",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     true,
+     [],
+     [
+      "*.tmp"
+     ],
+     true,
+     true,
+     "ask_every_time",
+     null,
+     "trash",
+     null
+    ],
+    "rendered": "# top comment\n\n# the folder\nlocal_root = \"/a\"   # trailing on local_root\nremote_root = \"/Drive/a\"\n# about the poll\nevents_driven = true # on\n\n# skip\nexclude = [\"*.tmp\"] # tmp\n\n[delete_approval]\nremote = false\nlocal = false\n"
+   },
+   "input": "# top comment\n\n# the folder\nlocal_root = \"/a\"   # trailing on local_root\nremote_root = \"/Drive/a\"\n# about the poll\nevents_driven = true # on\n\n# skip\nexclude = [\"*.tmp\"] # tmp\n\n[delete_approval]\n# remote first\nremote = true # r\nlocal = true\n",
+   "name": "comments/policy-never",
+   "ops": [
+    [
+     "set_deletion_policy",
+     "never"
+    ]
+   ]
+  },
+  {
+   "expected": {
+    "after": [
+     "/a",
+     "/Drive/a",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     true,
+     [],
+     [
+      "*.tmp"
+     ],
+     true,
+     false,
+     "only_recoverable",
+     null,
+     "trash",
+     null
+    ],
+    "before": [
+     "/a",
+     "/Drive/a",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     true,
+     [],
+     [
+      "*.tmp"
+     ],
+     true,
+     true,
+     "ask_every_time",
+     null,
+     "trash",
+     null
+    ],
+    "rendered": "# top comment\n\n# the folder\nlocal_root = \"/a\"   # trailing on local_root\nremote_root = \"/Drive/a\"\n# about the poll\nevents_driven = true # on\n\n# skip\nexclude = [\"*.tmp\"] # tmp\n\n[delete_approval]\nremote = true\nlocal = false\n"
+   },
+   "input": "# top comment\n\n# the folder\nlocal_root = \"/a\"   # trailing on local_root\nremote_root = \"/Drive/a\"\n# about the poll\nevents_driven = true # on\n\n# skip\nexclude = [\"*.tmp\"] # tmp\n\n[delete_approval]\n# remote first\nremote = true # r\nlocal = true\n",
+   "name": "comments/policy-only_recoverable",
+   "ops": [
+    [
+     "set_deletion_policy",
+     "only_recoverable"
+    ]
+   ]
+  },
+  {
+   "expected": {
+    "after": [
+     "/a",
+     "/Drive/a",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     [],
+     [],
+     true,
+     true,
+     "ask_every_time",
+     null,
+     "trash",
+     null
+    ],
+    "before": [
+     "/a",
+     "/Drive/a",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     true,
+     [],
+     [
+      "*.tmp"
+     ],
+     true,
+     true,
+     "ask_every_time",
+     null,
+     "trash",
+     null
+    ],
+    "rendered": "# top comment\n\n# the folder\nlocal_root = \"/a\"   # trailing on local_root\nremote_root = \"/Drive/a\"\n\n[delete_approval]\n# remote first\nremote = true # r\nlocal = true\n"
+   },
+   "input": "# top comment\n\n# the folder\nlocal_root = \"/a\"   # trailing on local_root\nremote_root = \"/Drive/a\"\n# about the poll\nevents_driven = true # on\n\n# skip\nexclude = [\"*.tmp\"] # tmp\n\n[delete_approval]\n# remote first\nremote = true # r\nlocal = true\n",
+   "name": "comments/remove",
+   "ops": [
+    [
+     "remove",
+     "exclude"
+    ],
+    [
+     "remove",
+     "events_driven"
+    ]
+   ]
+  },
+  {
+   "expected": {
+    "after": [
+     "/a",
+     "/Drive/a",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     true,
+     [],
+     [
+      "*.tmp"
+     ],
+     false,
+     false,
+     "never",
+     null,
+     "trash",
+     null
+    ],
+    "before": [
+     "/a",
+     "/Drive/a",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     true,
+     [],
+     [
+      "*.tmp"
+     ],
+     true,
+     true,
+     "ask_every_time",
+     null,
+     "trash",
+     null
+    ],
+    "rendered": "# top comment\n\n# the folder\nlocal_root = \"/a\"   # trailing on local_root\nremote_root = \"/Drive/a\"\n# about the poll\nevents_driven = true # on\n\n# skip\nexclude = [\"*.tmp\"] # tmp\n\n[delete_approval]\nremote = false\nlocal = false\n"
+   },
+   "input": "# top comment\n\n# the folder\nlocal_root = \"/a\"   # trailing on local_root\nremote_root = \"/Drive/a\"\n# about the poll\nevents_driven = true # on\n\n# skip\nexclude = [\"*.tmp\"] # tmp\n\n[delete_approval]\n# remote first\nremote = true # r\nlocal = true\n",
+   "name": "comments/approval-direct",
+   "ops": [
+    [
+     "set_delete_approval",
+     "remote",
+     false
+    ],
+    [
+     "set_delete_approval",
+     "local",
+     false
+    ]
+   ]
+  },
+  {
+   "expected": {
+    "after": [
+     "/x",
+     null,
+     null,
+     null,
+     null,
+     null,
+     "ask_every_time",
+     "trash",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     [],
+     [],
+     null,
+     null,
+     "ask_every_time",
+     "ask_every_time",
+     "trash",
+     "trash"
+    ],
+    "before": [
+     "/x",
+     null,
+     null,
+     null,
+     null,
+     null,
+     "never",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     [],
+     [],
+     null,
+     null,
+     "never",
+     "never",
+     "trash",
+     null
+    ],
+    "rendered": "local_root = \"/x\"\ndeletion_policy = \"ask_every_time\"\nlocal_delete_mode = \"trash\"\n"
+   },
+   "input": "local_root = \"/x\"\ndeletion_policy = \"never\"\n",
+   "name": "policy-key/ask",
+   "ops": [
+    [
+     "set_deletion_policy",
+     "ask_every_time"
+    ],
+    [
+     "set_local_delete_mode",
+     "trash"
+    ]
+   ]
+  },
+  {
+   "expected": {
+    "after": [
+     "/x",
+     null,
+     null,
+     null,
+     null,
+     null,
+     "ask_every_time",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     [],
+     [],
+     null,
+     null,
+     "ask_every_time",
+     "ask_every_time",
+     "trash",
+     null
+    ],
+    "before": [
+     "/x",
+     null,
+     null,
+     null,
+     null,
+     null,
+     "never",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     [],
+     [],
+     true,
+     null,
+     "never",
+     "never",
+     "trash",
+     null
+    ],
+    "rendered": "local_root = \"/x\"\ndeletion_policy = \"ask_every_time\"\n"
+   },
+   "input": "local_root = \"/x\"\ndeletion_policy = \"never\"\n[delete_approval]\nremote = true\n",
+   "name": "both/repair",
+   "ops": [
+    [
+     "set_deletion_policy",
+     "ask_every_time"
+    ]
+   ]
+  },
+  {
+   "expected": {
+    "after": [
+     "/x",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     [],
+     [],
+     false,
+     false,
+     "never",
+     null,
+     "trash",
+     null
+    ],
+    "before": [
+     "/x",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     [],
+     [],
+     false,
+     null,
+     "only_permanent",
+     null,
+     "trash",
+     null
+    ],
+    "rendered": "local_root = \"/x\"\n[delete_approval]\nremote = false\nlocal = false\n"
+   },
+   "input": "local_root = \"/x\"\n[delete_approval]\nremote = false\n",
+   "name": "half-table/never",
+   "ops": [
+    [
+     "set_deletion_policy",
+     "never"
+    ]
+   ]
+  },
+  {
+   "expected": {
+    "after": [
+     "/x",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     [],
+     [],
+     true,
+     null,
+     "ask_every_time",
+     null,
+     "trash",
+     null
+    ],
+    "before": [
+     "/x",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     [],
+     [],
+     false,
+     null,
+     "only_permanent",
+     null,
+     "trash",
+     null
+    ],
+    "rendered": "local_root = \"/x\"\n[delete_approval]\nremote = true\n"
+   },
+   "input": "local_root = \"/x\"\n[delete_approval]\nremote = false\n",
+   "name": "half-table/remote",
+   "ops": [
+    [
+     "set_delete_approval",
+     "remote",
+     true
+    ]
+   ]
+  },
+  {
+   "expected": {
+    "after": [
+     null,
+     null,
+     "debug",
+     null,
+     null,
+     null,
+     null,
+     null,
+     "proton-drive",
+     null,
+     5,
+     null,
+     null,
+     null,
+     [],
+     [],
+     null,
+     null,
+     "ask_every_time",
+     null,
+     "trash",
+     null
+    ],
+    "before": [
+     null,
+     null,
+     "info",
+     "/run/a.sock",
+     null,
+     null,
+     null,
+     null,
+     "proton-drive",
+     null,
+     60,
+     null,
+     null,
+     null,
+     [],
+     [],
+     null,
+     null,
+     "ask_every_time",
+     null,
+     "trash",
+     null
+    ],
+    "rendered": "log_level = \"debug\"\nproton_cli = \"proton-drive\"\nproton_timeout_secs = 5\n"
+   },
+   "input": "socket_path = \"/run/a.sock\"\nlog_level = \"info\"\nproton_cli = \"proton-drive\"\nproton_timeout_secs = 60\n",
+   "name": "daemon-keys/edits",
+   "ops": [
+    [
+     "set_str",
+     "log_level",
+     "debug"
+    ],
+    [
+     "remove",
+     "socket_path"
+    ],
+    [
+     "set_int",
+     "proton_timeout_secs",
+     5
+    ]
+   ]
+  },
+  {
+   "expected": {
+    "after": [
+     "/x",
+     "/Drive/x",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     9,
+     null,
+     null,
+     null,
+     null,
+     [],
+     [],
+     null,
+     null,
+     "ask_every_time",
+     null,
+     "trash",
+     null
+    ],
+    "before": [
+     "/x",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     [],
+     [],
+     null,
+     null,
+     "ask_every_time",
+     null,
+     "trash",
+     null
+    ],
+    "rendered": "local_root = \"/x\"\nremote_root = \"/Drive/x\"\nscan_interval_secs = 9\n"
+   },
+   "input": "local_root = \"/x\"",
+   "name": "no-newline/add",
+   "ops": [
+    [
+     "set_str",
+     "remote_root",
+     "/Drive/x"
+    ],
+    [
+     "set_int",
+     "scan_interval_secs",
+     9
+    ]
+   ]
+  },
+  {
+   "expected": {
+    "after": [
+     "/z",
+     "/Drive/x",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     true,
+     [],
+     [],
+     null,
+     null,
+     "ask_every_time",
+     null,
+     "trash",
+     null
+    ],
+    "before": [
+     "/x",
+     "/Drive/x",
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     [],
+     [],
+     null,
+     null,
+     "ask_every_time",
+     null,
+     "trash",
+     null
+    ],
+    "rendered": "local_root = \"/z\"\nremote_root = \"/Drive/x\"\nevents_driven = true\n"
+   },
+   "input": "local_root = \"/x\"\r\nremote_root = \"/Drive/x\"\r\n",
+   "name": "crlf/add",
+   "ops": [
+    [
+     "set_bool",
+     "events_driven",
+     true
+    ],
+    [
+     "set_str",
+     "local_root",
+     "/z"
+    ]
+   ]
+  }
+ ],
+ "reads": [
+  [
+   "get_str",
+   "local_root"
+  ],
+  [
+   "get_str",
+   "remote_root"
+  ],
+  [
+   "get_str",
+   "log_level"
+  ],
+  [
+   "get_str",
+   "socket_path"
+  ],
+  [
+   "get_str",
+   "conflict_suffix"
+  ],
+  [
+   "get_str",
+   "full_scan_schedule"
+  ],
+  [
+   "get_str",
+   "deletion_policy"
+  ],
+  [
+   "get_str",
+   "local_delete_mode"
+  ],
+  [
+   "get_str",
+   "proton_cli"
+  ],
+  [
+   "get_int",
+   "scan_interval_secs"
+  ],
+  [
+   "get_int",
+   "proton_timeout_secs"
+  ],
+  [
+   "get_int",
+   "proton_list_attempts"
+  ],
+  [
+   "get_int",
+   "events_full_scan_every"
+  ],
+  [
+   "get_bool",
+   "events_driven"
+  ],
+  [
+   "get_string_array",
+   "include"
+  ],
+  [
+   "get_string_array",
+   "exclude"
+  ],
+  [
+   "get_delete_approval",
+   "remote"
+  ],
+  [
+   "get_delete_approval",
+   "local"
+  ],
+  [
+   "get_deletion_policy"
+  ],
+  [
+   "get_deletion_policy_key"
+  ],
+  [
+   "get_local_delete_mode"
+  ],
+  [
+   "get_local_delete_mode_key"
+  ]
+ ]
+}

@@ -1616,6 +1616,32 @@ Closes: the feature for users.
 > (`review@photos`) and selects it through `select_pair` before the window opens. (21) **The glue from a
 > status reply to what is shown is a set of pure functions** (`observe`, `after_push`, `fallback_step`,
 > `push_shown`) with tests; before, eight reverts of it passed the suite.
+>
+> **Phase 5b-1 (the config editor), recorded because each changes a rule above.** (22) **`ConfigDoc` is one
+> implementation over a table.** Every read and write is a function over a TOML table, and the top level
+> of the file, a `[[pair]]` table and an inline pair are instantiations of it, so the spelling rule and the
+> deletion-policy round trip exist once. The top level of an implicit file *is* the pair `default`, which
+> is what keeps N=1 and N>=2 one code path. (23) **Which table a key may be written to is
+> `ConfigKey::scope`, not a list kept in the GUI.** A per-pair key written at the top level of a file that
+> declares `[[pair]]` tables is `ConfigError::WrongScope` and a daemon-wide key written inside a pair is
+> the same, both before the engine's "two spellings of one setting" has to say it; the guard iterates
+> `ConfigKey::ALL` and requires each key to be writable through exactly one. A save writes through
+> `PairWriter`, which routes each key by that scope in the order the update names them, so a one-pair
+> file's save is the same bytes it was (held by a corpus recorded from the commit before the refactor).
+> (24) **An inline array (`pair = [{ … }]`) is read and never edited**: `setup.sh` cannot read it and
+> `toml_edit` holds it as a value, so a per-pair save is refused (`InlinePairs`, naming the file) and a
+> daemon-wide one is not in its way. (25) **`read_config(pair?)` is class R and `write_config(pair,
+> update)` is class W**: the pair of a write is the one the edits were staged for, and the Settings
+> screen's staged state is one slot per pair, so a switch loses nothing and applies nothing to the other
+> folder. A pair the file does not declare is refused even when the daemon knows it. (26) **A save that
+> names `local_root` is checked against the real paths** (`config::real_path_conflicts`, the daemon's own
+> boot sentence), on a blocking thread, after `validate`; it is advisory and the boot check stays fatal.
+> It is asked only when the update can move a folder, so a standing overlap does not block an unrelated
+> save. (27) **Departures from the brief:** the top-level setters return `Result` (a typed refusal needs
+> somewhere to go), `ConfigError::NoSuchPair` exists beside the two the brief named, and
+> `delete_approval` is read and written as a table *or an inline table*, which the daemon reads and the
+> editor used to see only as a table (an inline one drew "ask every time" over a policy of never asking,
+> and a write replaced it with an empty table, dropping the direction nobody touched).
 
 **Phase 6 — Shared-volume event scope (its own ADR).** §8a. Independent of everything above and
 worth doing on its own merits, since one pair already pays the cost. Not scheduled here.

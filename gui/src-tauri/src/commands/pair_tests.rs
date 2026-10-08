@@ -1573,8 +1573,6 @@ enum Class {
     /// The one writer of the selection. Names its pair as `name`, because it is not a request
     /// addressed to a pair: it changes what later class-R reads mean.
     Selection,
-    /// Pair-bound, but addressed by something else until the PR named here.
-    Deferred(&'static str),
     /// Addressed by the ROW that was pressed: its id carries the pair (`pause@photos`), so the pair
     /// is whatever the row was drawn for and never the selection (#102 phase 5d).
     Row,
@@ -1611,11 +1609,8 @@ const COMMAND_CLASSES: [(&str, Class); 40] = [
     ("run_dry_run", Class::W),
     ("resolve_conflict", Class::W),
     ("select_pair", Class::Selection),
-    ("read_config", Class::Deferred("5b-1: read_config(pair)")),
-    (
-        "write_config",
-        Class::Deferred("5b-1: write_config(pair, update)"),
-    ),
+    ("read_config", Class::R),
+    ("write_config", Class::W),
     ("tray_action", Class::Row),
     ("tray_status", Class::DefaultPair),
     ("choose_folder", Class::Independent),
@@ -1698,7 +1693,6 @@ fn every_pair_slot_command_names_its_class() {
                 "`{name}` is class W and must take `pair: String`"
             ),
             Class::Selection
-            | Class::Deferred(_)
             | Class::Row
             | Class::DefaultPair
             | Class::Independent => assert!(
@@ -1754,13 +1748,14 @@ fn write_config_restart_and_start_keep_the_config_path_they_were_given() {
 
     // 1. A save re-resolves at the file it wrote. `proton_cli` is the witness: only this file says
     //    `/fake/cli`, so a re-resolve anywhere else cannot produce it.
-    write_config(
+    tauri::async_runtime::block_on(write_config(
         app.state::<Mutex<RuntimePaths>>(),
+        "default".to_owned(),
         ConfigUpdate {
             proton_cli: Some("/fake/cli".to_owned()),
             ..Default::default()
         },
-    )
+    ))
     .expect("a valid update saves");
     {
         let after = state.lock().unwrap();

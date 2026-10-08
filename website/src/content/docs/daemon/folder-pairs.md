@@ -141,8 +141,8 @@ resume it, and `proton-sync reset-index` does not clear it. One case is not cove
   than one pair configured. Use `proton-sync --pair NAME` to address the others. The **tray** is
   the exception: it lists every pair, pauses and resumes each one separately, and shows the worst
   folder's state (see [the tray](/desktop/tray/#two-or-more-folders)). The app cannot create a
-  `[[pair]]` file, and its Settings screen saves daemon-wide edits to one but refuses an edit to a
-  per-pair setting, so only a file you wrote by hand reaches this.
+  `[[pair]]` file, and its Settings screen edits the default pair's own table for a per-pair
+  setting and the top level for a daemon-wide one, so only a file you wrote by hand reaches this.
 - **Two pairs on one Proton volume can make each other do full scans.** Proton reports changes per
   volume, not per folder. When an event names something under neither pair's indexed folders, a
   pair falls back to a full walk of its remote tree — safe, but it is the cost event-driven

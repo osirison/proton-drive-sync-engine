@@ -21,9 +21,9 @@
 //             `render()` calls first — BEFORE anything is drawn from it. This is the only class the
 //             test checks against code, because it is the only one that is a promise about behaviour:
 //             each such binding must really be cleared by that function or a reset it calls.
-//   DEFERRED  pair-bound and NOT handled yet, naming the change that does. Honest rather than hidden:
-//             the Settings screen still edits the config FILE's top level (`read_config` has no pair
-//             argument until 5b-1), so its staged edits cannot be keyed by a pair they are not about.
+//   DEFERRED  pair-bound and NOT handled yet, naming the change that does. Honest rather than hidden.
+//             (The Settings screen's rows were the last of these until `read_config(pair)` /
+//             `write_config(pair, update)` landed in 5b-1; what is left is the notifier's memory.)
 //
 // `node --test`, no DOM: the checks read `app.js` as text, like the release-set pin beside
 // `onboarding-latch.test.js`, because the module cannot be imported (it boots on load).
@@ -56,6 +56,11 @@ const LEDGER = [
   ["statusPolled", GLOBAL, "whether any poll has completed"],
   ["configLoaded", GLOBAL, "whether the config file has been read once"],
   ["configError", GLOBAL, "why the last read of it failed"],
+  [
+    "configRoster",
+    GLOBAL,
+    "the file's whole pair list: the same in every `read_config` reply, so a switch cannot change it",
+  ],
   ["onboardingLatch", GLOBAL, "the first-run takeover; never armed at two pairs (E14)"],
   ["viewedPair", GLOBAL, "the memory of the switch itself"],
   ["serviceStarting", GLOBAL, "a start of the one daemon"],
@@ -66,7 +71,9 @@ const LEDGER = [
   ["PAUSE_ATTEMPTS", GLOBAL, "a constant"],
   ["PROPOSED_LOCAL", GLOBAL, "a constant of the first-run flow"],
   ["PROPOSED_REMOTE", GLOBAL, "a constant of the first-run flow"],
-  ["stagedList", GLOBAL, "a function over the Settings edits (deferred below)"],
+  ["stagedList", GLOBAL, "a function over one pair's staged list (`stagedFor`) and saved config"],
+  ["stagedFor", GLOBAL, "a function: the slot of `settingsByPair` for a pair, blank when nothing was typed"],
+  ["BLANK_STAGING", GLOBAL, "a constant: the slot of a pair nothing was typed for"],
   ["activityInputRef", GLOBAL, "a DOM reference, not state about a pair"],
   ["notifyPolicy", GLOBAL, "a GUI-local setting in gui.toml, not a pair's"],
   ["notifyPolicyEdit", GLOBAL, "its staged edit"],
@@ -120,7 +127,7 @@ const LEDGER = [
   ["skipRuleReport", RESET, "counts over one pair's folder"],
   ["skipRuleAsked", RESET, "so the walk is asked again for the new pair"],
 
-  // ---- Settings: a save and its restart are daemon-wide (A11); the edits are the FILE's top level ----
+  // ---- Settings: a save and its restart are daemon-wide (A11); what is STAGED is one pair's ----
   ["settingsTab", GLOBAL, "which tab; a switch does not move it"],
   ["settingsSaving", GLOBAL, "a save restarts the one daemon"],
   ["settingsSweeping", GLOBAL, "one sweep at a time"],
@@ -128,17 +135,16 @@ const LEDGER = [
   ["settingsSaveOutcome", GLOBAL, "how the last restart ended"],
   ["settingsError", GLOBAL, "why the last save was refused"],
   [
-    "settingsEdits",
-    DEFERRED,
-    "5b-1: staged edits become one object per pair when Settings reads `read_config(pair)`",
+    "settingsByPair",
+    KEYED,
+    "every staged edit, half-typed rule, schedule-editor mode and notice is a slot of ONE pair: a switch " +
+      "re-keys what the screen reads, nothing is applied to another pair, and a save reads the slot " +
+      "of the pair it was started for",
   ],
-  ["settingsDrafts", DEFERRED, "5b-1: the half-typed skip rule belongs to the pair being edited"],
-  ["settingsScheduleMonthly", DEFERRED, "5b-1: the schedule editor is per pair"],
-  ["settingsNotice", DEFERRED, "5b-1: a notice about a pair's save"],
   [
-    "configInfo",
-    DEFERRED,
-    "5b-1: `read_config` returns the file's top level; `configByPair` arrives with `read_config(pair)`",
+    "configByPair",
+    KEYED,
+    "the last `read_config` reply FOR each pair (keyed by the pair the reply says it describes)",
   ],
   ["notifierState", DEFERRED, "5e: the notifier's memory becomes per pair (`kind@name`)"],
 ];

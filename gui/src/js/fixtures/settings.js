@@ -148,8 +148,10 @@ exclude = ["*.tmp", "video-raw/**", "old-backups/**"]
 remote = true
 local = true
 `,
-  // The pairs the file declares (`ConfigPayload.pairs`): this file's top-level roots are one implicit
-  // pair called `default`, which is what the engine reads them as.
+  // The pair every per-pair value below describes (`ConfigPayload.pair`), and the pairs the file
+  // declares (`ConfigPayload.pairs`): this file's top-level roots are one implicit pair called
+  // `default`, which is what the engine reads them as.
+  pair: "default",
   pairs: [{ name: "default", local_root: "~/ProtonDrive", remote_root: "/Drive/RemoteFolder" }],
   local_root: "~/ProtonDrive",
   remote_root: "/Drive/RemoteFolder",

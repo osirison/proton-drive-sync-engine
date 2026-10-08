@@ -104,8 +104,11 @@ notice:
   hand, know that:
   - the notifications, the status and the Plan screen describe the default pair, not the
     others.
-  - Settings saves a change to a daemon-wide setting (log level, the socket, the CLI path) but
-    refuses to edit a per-pair setting of a `[[pair]]` file, saying the file would state it twice.
+  - Settings edits the default pair's own `[[pair]]` table for a per-pair setting (the folders,
+    skip rules, deletion policy) and the top level of the file for a daemon-wide one (log level,
+    the socket, the CLI path). A file that writes its pairs as an inline array
+    (`pair = [{ … }]`) is read but not edited: a per-pair save is refused, saying the app edits
+    `[[pair]]` tables only.
   - the daemon logs a warning once at startup when it finds more than one pair configured.
 
 Continue to [Screens](/desktop/screens/) for a tour of each view, or

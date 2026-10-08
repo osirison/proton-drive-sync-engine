@@ -670,7 +670,11 @@ test("the save's restart is `onlyIfRunning` and the retry's is not", () => {
 
   // And #335's own omission: `barNoteOf` puts `notice` first, so a stale `Sweep now` failure masked
   // every one of the endings below it. The retry's sibling always cleared it; the save's did not.
-  assert.match(save, /settingsNotice = null/, "a stale notice would mask the ending this save had");
+  assert.match(
+    save,
+    /patchStaging\(pair, \{ notice: null \}\)/,
+    "a stale notice would mask the ending this save had",
+  );
 });
 
 test("the latch is only ever forgotten through the predicate that knows whether it is resolved", () => {
