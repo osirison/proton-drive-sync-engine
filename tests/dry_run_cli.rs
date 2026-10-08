@@ -43,6 +43,7 @@ mod unix_tests {
                 .arg(&db_path)
                 .arg("--proton-cli")
                 .arg(&fake_proton_drive)
+                .arg("--no-events-driven")
                 .arg("--dry-run"),
         );
 
@@ -96,6 +97,7 @@ mod unix_tests {
                 .arg(&db_path)
                 .arg("--proton-cli")
                 .arg(&fake_proton_drive)
+                .arg("--no-events-driven")
                 .arg("--dry-run"),
         );
 
@@ -152,6 +154,7 @@ remote_root = "/Drive/ConfiguredRoot"
 db_path = "{}"
 proton_cli = "{}"
 dry_run = true
+events_driven = false
 "#,
                 local_root.display(),
                 db_path.display(),
@@ -244,6 +247,7 @@ dry_run = true
                 .arg(&db_path)
                 .arg("--proton-cli")
                 .arg(&fake_proton_drive)
+                .arg("--no-events-driven")
                 .arg("--include")
                 .arg("Documents/**")
                 .arg("--exclude")
@@ -330,6 +334,7 @@ dry_run = true
                 .arg(&db_path)
                 .arg("--proton-cli")
                 .arg(&fake_proton_drive)
+                .arg("--no-events-driven")
                 .arg("--dry-run"),
         );
 
@@ -423,7 +428,7 @@ exit 64
             let db_path = directory.join(name).join("state").join("index.db");
             text.push_str(&format!(
                 "\n[[pair]]\nname = \"{name}\"\nlocal_root = \"{}\"\nremote_root = \"{remote}\"\n\
-                 db_path = \"{}\"\nlockfile_path = \"{}\"\n",
+                 db_path = \"{}\"\nlockfile_path = \"{}\"\nevents_driven = false\n",
                 local_root.display(),
                 db_path.display(),
                 directory
@@ -456,7 +461,7 @@ exit 64
     /// under a deliberately broken `--pair` check.) So the sandbox is not optional, and it lives
     /// in one place: every run in this file starts here.
     fn syncd_command(directory: &Path) -> Command {
-        let mut command = common::sandboxed(env!("CARGO_BIN_EXE_proton-syncd"), directory);
+        let mut command = common::syncd(directory);
         command
             .arg("--socket-path")
             .arg(directory.join("never-bound.sock"))
@@ -576,7 +581,7 @@ exit 64
             &config,
             format!(
                 "local_root = \"{}\"\nremote_root = \"/Drive/Only\"\ndb_path = \"{}\"\n\
-                 proton_cli = \"{}\"\ndry_run = true\n",
+                 proton_cli = \"{}\"\ndry_run = true\nevents_driven = false\n",
                 local_root.display(),
                 directory.path().join("index.db").display(),
                 fake.display()
@@ -596,7 +601,7 @@ exit 64
             &config,
             format!(
                 "local_root = \"{}\"\nremote_root = \"/Drive/Only\"\ndb_path = \"{}\"\n\
-                 proton_cli = \"{}\"\n",
+                 proton_cli = \"{}\"\nevents_driven = false\n",
                 local_root.display(),
                 directory.path().join("index.db").display(),
                 fake.display()

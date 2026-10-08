@@ -99,11 +99,15 @@ fn a_daemon_command_that_names_no_fake_cli_is_refused_before_it_runs() {
         "no --proton-cli and no config: the real CLI"
     );
     assert!(
-        !refused(Command::new(&program).args(["--proton-cli", "/fake"])),
+        !refused(Command::new(&program).args(["--proton-cli", "/fake", "--no-events-driven"])),
         "a flag names one"
     );
     let named = directory.path().join("named.toml");
-    fs::write(&named, "# a comment\nproton_cli = \"/fake\"\n").expect("config");
+    fs::write(
+        &named,
+        "# a comment\nproton_cli = \"/fake\"\nevents_driven = false\n",
+    )
+    .expect("config");
     assert!(
         !refused(Command::new(&program).arg("--config").arg(&named)),
         "a config that sets proton_cli names one"
@@ -117,6 +121,200 @@ fn a_daemon_command_that_names_no_fake_cli_is_refused_before_it_runs() {
     assert!(
         !refused(Command::new(directory.path().join("proton-sync")).arg("status")),
         "the control CLI never runs proton-drive"
+    );
+}
+
+/// The panic message of `run`, or `None` when it returned.
+fn panic_message(run: impl FnOnce()) -> Option<String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(run))
+        .err()
+        .map(|payload| {
+            payload
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| {
+                    payload
+                        .downcast_ref::<&str>()
+                        .map(|text| (*text).to_owned())
+                })
+                .unwrap_or_default()
+        })
+}
+
+#[test]
+fn a_daemon_that_leaves_events_driven_on_is_refused_before_it_runs() {
+    use std::process::Command;
+    // PR #434 second review, H2. A daemon with `events_driven` on (the default) runs `secret-tool`
+    // to read the signed-in Proton session out of the desktop keyring and then calls the events
+    // API with it. Naming a fake `proton-drive` does not stop that, so it is its own refusal.
+    let directory = tempdir().expect("tempdir");
+    let program = directory.path().join("proton-syncd");
+    let refused = |command: &mut Command| panic_message(|| common::refuse_the_real_cli(command));
+
+    let message = refused(Command::new(&program).args(["--proton-cli", "/fake"]))
+        .expect("a fake CLI with events left on is refused");
+    assert!(message.contains("leaves events_driven on"), "{message}");
+
+    let file = |name: &str, text: &str| {
+        let path = directory.path().join(name);
+        fs::write(&path, text).expect("config");
+        path
+    };
+    let silent = file("silent.toml", "proton_cli = \"/fake\"\n");
+    assert!(
+        refused(Command::new(&program).arg("--config").arg(&silent)).is_some(),
+        "a config that does not mention events_driven leaves the default"
+    );
+    let on = file("on.toml", "proton_cli = \"/fake\"\nevents_driven = true\n");
+    assert!(
+        refused(Command::new(&program).arg("--config").arg(&on)).is_some(),
+        "and one that says true"
+    );
+    let off = file(
+        "off.toml",
+        "proton_cli = \"/fake\"\nevents_driven = false\n",
+    );
+    assert!(
+        refused(Command::new(&program).arg("--config").arg(&off)).is_none(),
+        "events_driven = false in a one-pair file"
+    );
+    let tables_off = file(
+        "tables-off.toml",
+        "proton_cli = \"/fake\"\n[[pair]]\nname = \"a\"\nevents_driven = false\n\
+         [[pair]]\nname = \"b\"\nevents_driven = false\n",
+    );
+    assert!(
+        refused(Command::new(&program).arg("--config").arg(&tables_off)).is_none(),
+        "every [[pair]] table says false"
+    );
+    let one_table_on = file(
+        "one-table-on.toml",
+        "proton_cli = \"/fake\"\n[[pair]]\nname = \"a\"\nevents_driven = false\n\
+         [[pair]]\nname = \"b\"\n",
+    );
+    assert!(
+        refused(Command::new(&program).arg("--config").arg(&one_table_on)).is_some(),
+        "one silent table is a pair that streams: the whole run reads the keyring"
+    );
+    let unparsable = file(
+        "unparsable.toml",
+        "proton_cli = \"/fake\"\nevents_driven = false\nthis is not toml\n",
+    );
+    assert!(
+        refused(Command::new(&program).arg("--config").arg(&unparsable)).is_some(),
+        "a file that does not parse is not evidence of anything"
+    );
+    assert!(
+        refused(Command::new(&program).args(["--proton-cli", "/fake", "--no-events-driven"]))
+            .is_none(),
+        "the flag"
+    );
+    let mut opted_in = Command::new(&program);
+    opted_in.args(["--proton-cli", "/fake"]);
+    common::opt_in_to_events_driven(&mut opted_in);
+    assert!(
+        refused(&mut opted_in).is_none(),
+        "a test about the session says so by name"
+    );
+    assert!(
+        refused(&mut Command::new(directory.path().join("proton-sync"))).is_none(),
+        "the control CLI never reads the keyring"
+    );
+}
+
+#[test]
+fn a_sandboxed_child_cannot_see_the_desktop_session_bus() {
+    // The parent's environment is whatever it is (a developer's session has the bus, CI may not), so
+    // the address is put on the command first and the sandbox must take it off again.
+    let directory = tempdir().expect("tempdir");
+    let mut command = std::process::Command::new("sh");
+    command
+        .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/0/bus")
+        .env(
+            "DBUS_SYSTEM_BUS_ADDRESS",
+            "unix:path=/run/dbus/system_bus_socket",
+        );
+    common::sandbox(&mut command, directory.path());
+    command.arg("-c").arg(
+        "printf '%s\n%s\n' \"${DBUS_SESSION_BUS_ADDRESS-unset}\" \"${DBUS_SYSTEM_BUS_ADDRESS-unset}\"",
+    );
+    let output = common::run_bounded(&mut command, common::RUN_BOUND);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stdout).expect("utf-8"),
+        "unset\nunset\n",
+        "no bus address, so nothing to ask for the keyring over"
+    );
+}
+
+#[test]
+fn a_sandboxed_child_that_runs_the_keyring_or_network_tools_reaches_stubs_not_the_real_ones() {
+    let directory = tempdir().expect("tempdir");
+    let mut command = common::sandboxed("sh", directory.path());
+    command.arg("-c").arg(
+        "command -v secret-tool; command -v curl; \
+         secret-tool lookup service ch.proton.drive/drive-sdk-cli account auth-session; echo \"rc=$?\"; \
+         curl --silent https://example.invalid/events; echo \"rc=$?\"",
+    );
+    let (output, hits) = common::run_bounded_reporting_stub_hits(&mut command, common::RUN_BOUND);
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("utf-8");
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 4, "{stdout}");
+    for tool in &lines[..2] {
+        assert!(
+            tool.contains("sandbox-bin"),
+            "PATH finds the stub first, not the real tool: {tool}"
+        );
+        assert!(
+            !tool.starts_with("/usr/") && !tool.starts_with("/bin/"),
+            "{tool}"
+        );
+    }
+    assert_eq!(&lines[2..], ["rc=97", "rc=97"], "each stub fails");
+    assert_eq!(
+        hits.lines().collect::<Vec<_>>(),
+        [
+            "secret-tool lookup service ch.proton.drive/drive-sdk-cli account auth-session",
+            "curl --silent https://example.invalid/events"
+        ],
+        "and records what was asked, which is what makes a reach visible"
+    );
+}
+
+#[test]
+fn a_run_that_reaches_a_stub_tool_fails_the_test_instead_of_passing_degraded() {
+    let directory = tempdir().expect("tempdir");
+    let message = panic_message(|| {
+        let mut command = common::sandboxed("sh", directory.path());
+        command
+            .arg("-c")
+            .arg("secret-tool lookup service \"$(echo x)\"; exit 0");
+        common::run_bounded(&mut command, common::RUN_BOUND);
+    })
+    .expect("a clean exit after a stub was reached still fails");
+    // The command line is in the message too, so what is asserted is the stub's own record of it.
+    assert!(
+        message.contains("(a stub tool in the sandbox answered):\nsecret-tool lookup service x\n"),
+        "{message}"
+    );
+}
+
+#[test]
+fn a_run_that_overruns_its_bound_says_which_stub_tools_it_reached() {
+    let directory = tempdir().expect("tempdir");
+    let message = panic_message(|| {
+        let mut command = common::sandboxed("sh", directory.path());
+        command
+            .arg("-c")
+            .arg("secret-tool lookup service \"$(echo y)\"; sleep 30");
+        common::run_bounded(&mut command, Duration::from_millis(1500));
+    })
+    .expect("the overrun fails");
+    assert!(
+        message.contains("was still running after")
+            && message.contains("stub tools reached: secret-tool lookup service y\n"),
+        "{message}"
     );
 }
 
@@ -172,41 +370,115 @@ fn a_bounded_run_applies_the_fake_cli_refusal_before_it_spawns() {
     assert!(message.contains("names no fake CLI"), "{message}");
 }
 
-/// The rule, enforced: a test file starts this crate's binaries through `common::sandboxed`, and
-/// a long-running one through `common::spawn_logging`.
+/// The rule, enforced: **no test file other than `tests/common/mod.rs` contains the name of one of
+/// this crate's binaries** (`CARGO_BIN_` + `EXE_`, which is also what `env!`, `option_env!` and
+/// `std::env::var` would be handed). A test starts `proton-syncd` and `proton-sync` through
+/// `common::syncd` / `common::sync_cli` (sandboxed), runs one to completion with
+/// `common::run_bounded` or starts a daemon with `common::spawn_logging`; and `.spawn()` is
+/// `spawn_logging`'s alone.
 ///
-/// A hand-built `Command` for `proton-syncd` is the shape of the incident — it works, it is bounded
-/// by nothing, and it reaches whatever the machine's environment names. The needle is assembled so
-/// that this file does not match itself.
+/// What this does and does not catch, exactly. It is a text scan of `tests/**/*.rs`, comment lines
+/// skipped. It catches the literal name in any form (`Command::new(env!("..."))`, the name bound to
+/// a variable first, `option_env!`), and a `.spawn()` call. It does **not** catch a binary reached
+/// without that name: a path built from `CARGO_MANIFEST_DIR` and `target/`, the name split across
+/// `concat!` pieces, or a copy of the binary run from elsewhere. It does not follow data flow, and
+/// the needle is assembled so that this file does not match itself.
 #[test]
 fn no_test_file_starts_a_binary_of_this_crate_without_the_sandbox() {
-    let needle = format!("{}{}", "Command::new(env!(\"CARGO_BIN_", "EXE_");
     let tests_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    let offenders = unsandboxed_spawns(&tests_dir);
+    assert!(
+        offenders.is_empty(),
+        "start proton-syncd / proton-sync through common::syncd / common::sync_cli (HOME and the XDG \
+         dirs in the test's own directory, no desktop session bus, stub keyring tools), run to \
+         completion with common::run_bounded or start a daemon with common::spawn_logging; \
+         a bare binary name or `.spawn()` at: {offenders:?}"
+    );
+}
+
+/// `file:line` for every line under `tests_dir` (recursively) that names one of the crate's
+/// binaries or calls `.spawn()`, outside the two files that are allowed to: `common/mod.rs`, and
+/// this one (whose mentions are assembled at run time).
+fn unsandboxed_spawns(tests_dir: &Path) -> Vec<String> {
+    let name = format!("{}{}", "CARGO_BIN_", "EXE_");
+    let spawn = format!("{}{}", ".spa", "wn()");
     let mut offenders = Vec::new();
-    for entry in fs::read_dir(&tests_dir).expect("tests directory") {
-        let path = entry.expect("directory entry").path();
-        if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
-            continue;
-        }
-        let text = fs::read_to_string(&path).expect("test source");
-        for (index, line) in text.lines().enumerate() {
-            let code = line.trim_start();
-            if code.starts_with("//") {
+    let mut directories = vec![tests_dir.to_path_buf()];
+    while let Some(directory) = directories.pop() {
+        for entry in fs::read_dir(&directory).expect("tests directory") {
+            let path = entry.expect("directory entry").path();
+            if path.is_dir() {
+                directories.push(path);
                 continue;
             }
-            let name = path.file_name().expect("file name").to_string_lossy();
-            // `.spawn()` is `common::spawn_logging`'s alone: it is where the fake-CLI refusal and
-            // the stderr capture are applied. (This file's own mentions are in strings below.)
-            let spawn = format!("{}{}", ".spa", "wn()");
-            if code.contains(&needle) || (code.contains(&spawn) && name != "test_isolation.rs") {
-                offenders.push(format!("{name}:{}", index + 1));
+            if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+                continue;
+            }
+            let relative = path
+                .strip_prefix(tests_dir)
+                .expect("under tests")
+                .to_string_lossy()
+                .into_owned();
+            if relative == "common/mod.rs" || relative == "test_isolation.rs" {
+                continue;
+            }
+            let text = fs::read_to_string(&path).expect("test source");
+            for (index, line) in text.lines().enumerate() {
+                let code = line.trim_start();
+                if code.starts_with("//") {
+                    continue;
+                }
+                if code.contains(&name) || code.contains(&spawn) {
+                    offenders.push(format!("{relative}:{}", index + 1));
+                }
             }
         }
     }
-    assert!(
-        offenders.is_empty(),
-        "start proton-syncd / proton-sync through common::sandboxed (HOME and the XDG dirs in the \
-         test's own directory), run to completion with common::run_bounded or start a daemon with \
-         common::spawn_logging; hand-built at: {offenders:?}"
+    offenders.sort();
+    offenders
+}
+
+#[test]
+fn the_spawn_guard_catches_the_name_bound_to_a_variable_first() {
+    // PR #434 second review, H3. The first version of the guard matched the text
+    // `Command::new(env!("...` and was bypassed by binding the name to a variable. A probe tree
+    // with the bypass forms proves the scan sees each of them (and not a comment).
+    let tests = tempdir().expect("tempdir");
+    let name = format!("{}{}", "CARGO_BIN_", "EXE_proton-syncd");
+    fs::create_dir(tests.path().join("common")).expect("common");
+    fs::write(
+        tests.path().join("common").join("mod.rs"),
+        format!("pub fn path() -> &'static str {{ env!(\"{name}\") }}\n"),
+    )
+    .expect("common/mod.rs may name it");
+    fs::write(
+        tests.path().join("bypass.rs"),
+        format!(
+            "// {name} in a comment is not a use\n\
+             let exe = env!(\"{name}\");\n\
+             std::process::Command::new(exe).arg(\"--help\").output();\n\
+             let also = option_env!(\"{name}\");\n"
+        ),
+    )
+    .expect("probe");
+    fs::create_dir(tests.path().join("nested")).expect("nested");
+    fs::write(
+        tests.path().join("nested").join("deep.rs"),
+        format!("let exe = std::env::var(\"{name}\");\n"),
+    )
+    .expect("nested probe");
+    fs::write(
+        tests.path().join("spawns.rs"),
+        "let child = command.spawn().unwrap();\n",
+    )
+    .expect("spawn probe");
+    assert_eq!(
+        unsandboxed_spawns(tests.path()),
+        [
+            "bypass.rs:2",
+            "bypass.rs:4",
+            "nested/deep.rs:1",
+            "spawns.rs:1"
+        ]
     );
 }

@@ -1650,7 +1650,7 @@ exit 64
     /// A `proton-sync` command in the sandbox of `directory` (`common::sandboxed`): the control
     /// CLI resolves its default socket under `XDG_RUNTIME_DIR`, which is where the live daemon's is.
     fn proton_sync(directory: &Path) -> Command {
-        common::sandboxed(env!("CARGO_BIN_EXE_proton-sync"), directory)
+        common::sync_cli(directory)
     }
 
     /// `proton-sync --socket-path <socket_path>` in the sandbox of the socket's own directory.
@@ -1808,7 +1808,7 @@ exit 64
         /// live daemon's.
         fn start<S: AsRef<OsStr>>(sandbox: &Path, args: impl IntoIterator<Item = S>) -> Self {
             let stderr_path = sandbox.join("daemon.stderr");
-            let mut command = common::sandboxed(env!("CARGO_BIN_EXE_proton-syncd"), sandbox);
+            let mut command = common::syncd(sandbox);
             command.args(args).env("RUST_LOG", "warn");
             let child = common::spawn_logging(&mut command, &stderr_path);
             Self { child, stderr_path }

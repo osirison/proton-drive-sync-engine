@@ -150,7 +150,7 @@ fn drive(args: &[&str], replies: Vec<ControlResponse>) -> Run {
         }
     });
     let output = common::run_bounded(
-        common::sandboxed(env!("CARGO_BIN_EXE_proton-sync"), directory.path())
+        common::sync_cli(directory.path())
             .arg("--socket-path")
             .arg(&socket_path)
             .args(args),
