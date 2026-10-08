@@ -65,8 +65,9 @@ cadence. The reason says which of these it is:
     from there, and the first pass **withholds every deletion for approval** whatever your
     delete-approval setting says: the files you have not restored yet show up as pending
     deletions, and nothing is deleted until you approve them, restore the files, or start
-    over. (With the default `.sync` layout the index went with the folder, so that pass only
-    downloads and adopts and has nothing to delete.)
+    over — restarting the daemon does not change that, it remembers they are waiting. (With
+    the default `.sync` layout the index went with the folder, so that pass only downloads and
+    adopts and has nothing to delete.)
   - **Start this folder over from Proton** with `proton-sync reset-index --yes`. It downloads
     everything into the folder and deletes nothing. Don't restart the daemon to accept an
     empty folder: the hold lives in the running daemon only, and a restart over an empty mount
@@ -76,7 +77,15 @@ cadence. The reason says which of these it is:
 - **Its state was removed along with the folder** — the folder was deleted and made again
   with files in it, and the index and lock inside it went with it. The daemon prepares the
   pair again from the new folder on its next attempt; you don't need to do anything. (If the
-  new folder is empty, it is the case above.)
+  new folder is empty, it is the case above — also if it is emptied before that next attempt:
+  the daemon remembers how many items the old folder had recorded and holds it rather than
+  starting over in it.)
+- **The filesystem names the folder differently on each look** (logged once at start) — the
+  filesystem, typically a FUSE mount, reports a different identity for the folder each time it
+  is asked, so a folder replaced while the daemon runs cannot be told from the same one. For
+  that folder the daemon only checks that it is there: nothing is held or withheld for a
+  replacement, and your delete-approval setting applies as it is. Keep delete approval on for
+  such a folder, or move it to a filesystem with stable inode numbers.
 - **Locked by another process** — something else holds the folder's lock (a second
   `proton-syncd`, or another account's daemon syncing the same folder). A daemon that is
   *starting* refuses to start, naming the pair; one that is already running leaves that pair

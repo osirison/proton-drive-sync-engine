@@ -89,12 +89,25 @@ Two cases are held on purpose, so nothing is deleted on a guess:
   `proton-sync reset-index --yes`: it downloads everything and deletes nothing. Restoring only
   part of the folder ends the hold, and the first pass after that withholds every deletion for
   approval whatever your delete-approval setting says, so the files not yet restored wait as
-  pending deletions until you approve them, restore them, or start over. The hold lives in the
-  running daemon only: a restart does not keep it.
+  pending deletions until you approve them, restore them, or start over — a restart of the
+  daemon does not spend that; it remembers that they wait. The hold itself lives in the running
+  daemon only: a restart while the pair is held does not keep it.
 - A folder deleted and made again **with the pair's state inside it** (the default `.sync`
   directory holds the index and the lock) and **with files in it** is prepared again from
   scratch on the next attempt: the index is new, so the pair adopts what is there, downloads
-  what is missing and deletes nothing. (If the new folder is empty, the case above applies.)
+  what is missing and deletes nothing. (If the new folder is empty, the case above applies —
+  also when it is emptied *after* the daemon noticed and *before* it could prepare the pair
+  again: the daemon remembers how many items the old folder had recorded.)
+
+A folder replaced while the daemon runs is told from the old one by the directory's identity
+(device, inode and birth time). On a filesystem that reports a different identity each time it
+is asked — some FUSE mounts — the daemon cannot tell a replaced folder from the same one, says so
+once when it starts (`the filesystem names the folder differently on each look`), and checks
+only that the folder is there: for such a folder nothing is held or withheld for a replacement,
+and your delete-approval setting applies as it is. Keep delete approval on for a folder on such
+a filesystem. A plan (`proton-sync plan`, the desktop app's *Check again*) on a replaced folder
+is refused with the same message a sync gives, so it never offers the replacement's deletions
+for approval.
 
 ### `--include` / `--exclude`
 

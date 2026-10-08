@@ -1231,7 +1231,95 @@ Expect this phase to be as large as phase 2 and riskier. Closes: the feature, he
 >   its parent, so `stat` answers and `read_dir` does not).
 > - **Holds are in memory only.** A restart while held is #426 again, and a `reset_index` latched
 >   earlier (while paused, say) releases a later hold with no new request — still the user's
->   explicit request, and kept.
+>   explicit request, and kept. (The *forced approval* an accepted replacement puts on a pair is
+>   persisted since item 14; the hold is not.)
+>
+> (14) **The fourth review round: the per-action rule, the plan verb, the persisted force, and
+> three narrower holes.** Item 13's three rules held under twelve reverts, but two of its claims
+> did not hold as stated — "nothing executes on another directory" and "a plan is only ever
+> derived from a scan of the directory the pair runs on" — and both were reproduced by tests that
+> failed on the third round's code. The rule is the same one, held to the letter now: a sync
+> folder replaced or emptied while the daemon runs never makes the daemon delete files (remote or
+> local), upload a swapped-in folder's content, or populate the folder from Proton, without an
+> explicit user action.
+>
+> - **Nothing executes on another directory — per action, literally.** The executor checked the
+>   root before its loop and before every download chunk, and every other arm ran on whatever
+>   directory was at the path by then. A `LocalDelete` landing after a swap disposed of the
+>   replacement's own files at the planned paths (for good in `permanent` mode, a whole subtree
+>   for a directory), and an `Upload` pushed the replacement's bytes to Proton under the planned
+>   path while recording the scan's digest. `ensure_root_available` now runs at the top of
+>   **every** action of `execute_plan_and_commit`'s loop, for every arm — one `stat`, before
+>   anything in the arm — and a mismatch ends the pass `RootUnavailable` with the cursor held,
+>   the checkpoints that landed kept, and the current action without a side effect. The check
+>   before the loop stays, because it guards the pass's own state (the published summary, the
+>   withheld ages, the pending list); the per-chunk check stays, because a batched run is one
+>   action whose chunks are its side effects; and the arms' directory creation keeps its own
+>   check because `ensure_directory_below` is the one place a directory is made and must not make
+>   the root — the creation primitive's rule, not a second statement of this one. Nothing else in
+>   the executor checks.
+> - **The plan verb uses the pair's own verdict.** `examine_ready_pair` runs on `Sync` jobs only,
+>   and `plan_only_blocking` asked `root_availability(root, None)` — whether *a* directory was
+>   there — so a plan on a ready pair whose folder had been replaced scanned the replacement and
+>   published `RemoteDelete` for everything recorded: rows the plan screen's typed-DELETE gate
+>   pins approvals to (#227), which stand after the replacement is judged and would satisfy the
+>   forced gate. The plan now reads `PairPass::root_verdict` (the identity against `known_root`,
+>   and the unjudged latch — the sync's verdict without the sync's once-per-cause latch) before
+>   its scan, and `build_plan_report` checks again right after the scan, in the one body the
+>   daemon's verb and the one-shot child share (`expected`; the child passes `None` and keeps its
+>   presence check). A plan on a replaced folder is sealed `Failed` with the sync's message and
+>   stores nothing.
+> - **The forced approval survives a restart.** `force_delete_approval` started `false` at open
+>   and nothing persisted it, so a daemon restarted over an accepted replacement — the GUI has a
+>   restart-daemon flow — executed the deletion the previous one had withheld, with the guard off.
+>   It is one row in the pair's index now (`forced_delete_approval`, the `warm_start_state`
+>   shape): written when the force is set (`examine_ready_pair`, `retry_unavailable`), cleared
+>   **in the final commit of the pass that spends it** so a restart between the two cannot find it
+>   standing on disk and spent in memory, loaded at open (a read that fails withholds for one pass
+>   rather than deleting), and truncated by `reset_index_state`, because a start-over bootstraps
+>   an empty baseline and plans no deletion for it to withhold.
+> - **Preparation makes no root either.** `prepare_pair_state` looked at the folder and then made
+>   `<root>/.sync` with `create_dir_all`, which with the default layout made a root that vanished
+>   between the two calls again — the window `ensure_directory_below` was written to close,
+>   reached on every retry. The state directories are made with the same primitive now
+>   (`create_state_directory_below` → `create_directories_below`, one level at a time, stopped at
+>   the root; `prepare_pair_state_after` is the seam that proves it), and `LockGuard::acquire`
+>   makes no directory at all: a pair's lock directory is preparation's, the user-global lock's is
+>   made at boot by its caller, never under a root. The root is made in exactly one place, the
+>   `RootMode::Create` arm at boot.
+> - **A plain promotion is judged before anything is prepared, from what the demotion carried.**
+>   With the default layout the demotion dropped the only connection to the baseline, and a
+>   promotion over an empty replacement — a `StateRemoved` demotion whose same-job retry failed
+>   (the lock held by another process, `.sync` unwritable), the folder then emptied or replaced —
+>   prepared the pair in it: `.sync`, a fresh index, a lock, and an examination that read that
+>   index as "nothing recorded" and accepted the folder, after which the bootstrap downloaded the
+>   whole remote into it. `UnavailablePair::recorded_items` is the baseline's count as the planner
+>   sees it, read by `UnavailablePair::demoted` through the connection the runtime still holds
+>   (which works on an unlinked file); `judge_carried_replacement` compares the directory at the
+>   path with the carried identity and, for a different one over a non-zero count, holds the pair
+>   (`ReplacedByEmptyFolder`) when it holds nothing the pair's rules would keep — **before**
+>   `prepare_pair_state`, so nothing is created, opened, locked or downloaded. A look that fails
+>   prepares nothing either. The count rides on the promoted runtime
+>   (`PairRuntime::carried_recorded_items`) and is read beside the fresh index's own by
+>   `recorded_under_an_empty_folder`, until a pass completes on it or a reset discards it; a
+>   second demotion carries the larger of the two.
+> - **The root gets the index's two-look rule.** `known_root` came from one `stat` while the
+>   index's identity took two: on a filesystem that names the folder differently on each look,
+>   every job was `Replaced`, `force_delete_approval` was set on every pass, and with the guard
+>   off every deletion was withheld for ever — a policy override nothing reported. `RootRecord`
+>   has three states: `Recorded`, `Unrecorded` (the look failed; back-filled by the first
+>   examination, as item 13 said) and `PresenceOnly` (two looks disagreed at open). Presence-only
+>   means exactly that: no replacement is detected, nothing is held or forced for one, the
+>   configured deletion policy applies as it is, the examination never records the folder, and
+>   the pair says so once when it is opened. The index's and the lock's presence checks still
+>   work, so a replacement that took the state with it is still judged. The watch still
+>   re-registers on such a filesystem every pass, the cost it always had.
+>
+> **Known consequences, kept.** On a filesystem that cannot name the folder consistently, an empty
+> replacement over an index that survived outside the folder is reconciled as the user's own
+> deletion of everything — held by the guard by default, executed where it is off — because that
+> is what "the configured policy applies" means there, and the warning at open names it. A plan
+> refused for a replaced folder stays refused until the next `Sync` job judges the replacement.
 >
 > **Still not done**, deliberately: the empty mount point and the unmounted-at-boot root (#426); a
 > watcher that cannot be built at all is still fatal (it is process-wide, not per root);
