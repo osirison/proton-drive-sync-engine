@@ -15,9 +15,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { nextOnboardingLatch, releasesOnboarding, entersOnboardingTakeover } from "../src/js/routes.js";
+import {
+  nextOnboardingLatch,
+  releasesOnboarding,
+  entersOnboardingTakeover,
+  configHasPair,
+} from "../src/js/routes.js";
 
-// (prev, daemonState, hasConfigPair, configLoaded, statusPolled)
+// (prev, daemonState, hasConfigPair, configLoaded, statusPolled, pairCount)
 const latch = nextOnboardingLatch;
 
 test("any reachable daemon state releases the latch, whatever we were doing", () => {
@@ -269,4 +274,106 @@ test("driving the sequence: arm, advance to step 2, rehearse and tick, release, 
   // and keeping it would let a stale draft silently outrank a pair that changed since (Settings, a
   // direct edit), the opposite of "a configured pair beats the proposal" (see `onboardingRootsNow`).
   assert.match(reset, /onboardingRoots = null;/, "a stale draft must not outrank the saved pair");
+});
+
+// ---- two or more folder pairs (#102 phase 5a-2, E14) ---------------------------------------------
+
+const EVERY_STATE = ["idle", "running", "paused", "authExpired", "failed", "firstRun", "unreachable"];
+
+test("the_takeover_never_arms_at_two_pairs", () => {
+  // The wizard is the FIRST-folder flow: `Next` writes top-level roots, and the engine refuses a
+  // `[[pair]]` file that also sets them. At N>=2 it could only be opened on a state it cannot fix.
+  // Every state, every prior latch, every combination of the gates that otherwise ARM it — and the
+  // two entry triggers are exactly the ones that must not:
+  for (const state of EVERY_STATE) {
+    for (const prev of [false, true]) {
+      for (const [hasPair, loaded, polled] of [
+        [false, true, true], // the fresh-machine trigger's whole condition
+        [true, true, true],
+        [false, false, false],
+      ]) {
+        for (const pairCount of [2, 3, 12]) {
+          assert.equal(
+            latch(prev, state, hasPair, loaded, polled, pairCount),
+            false,
+            `${state}, prev=${prev}, pair=${hasPair}, ${pairCount} pairs`,
+          );
+        }
+      }
+    }
+  }
+  // The two entry triggers by name, because they are what an N>=2 app meets:
+  assert.equal(latch(false, "firstRun", false, true, true, 2), false, "a new pair that has not synced");
+  assert.equal(latch(false, "unreachable", false, true, true, 2), false, "a stopped daemon, roots in tables");
+});
+
+test("below two pairs nothing about the latch moved", () => {
+  // Holds the other half of E14: "at N=1 and legacy it is byte-identical to today". Every cell of the
+  // pre-existing table, with a pair count of 0 (every caller before pairs), 1 and the default.
+  for (const state of EVERY_STATE) {
+    for (const prev of [false, true]) {
+      for (const [hasPair, loaded, polled] of [
+        [false, true, true],
+        [true, true, true],
+        [false, false, true],
+        [true, false, false],
+      ]) {
+        const before = latch(prev, state, hasPair, loaded, polled);
+        assert.equal(latch(prev, state, hasPair, loaded, polled, 0), before);
+        assert.equal(latch(prev, state, hasPair, loaded, polled, 1), before, `${state} at one pair`);
+      }
+    }
+  }
+  assert.equal(latch(false, "firstRun", false, true, true, 1), true, "one pair still enters on firstRun");
+  assert.equal(latch(false, "unreachable", false, true, true, 1), true, "and on a fresh machine");
+});
+
+test("a_pair_file_with_the_daemon_down_is_not_a_fresh_machine", () => {
+  // F-J. A stopped daemon plus a `[[pair]]` file: every root is inside a table, so the flat
+  // top-level roots are null, there is no live reply to read the daemon's roots from, and the check
+  // that said "has anyone chosen a folder?" answered no.
+  const pairFile = {
+    local_root: null,
+    remote_root: null,
+    pairs: [
+      { name: "docs", local_root: "/home/u/Docs", remote_root: "/Drive/Docs" },
+      { name: "photos", local_root: "/home/u/Photos", remote_root: "/Drive/Photos" },
+    ],
+  };
+  assert.equal(configHasPair(pairFile), true);
+  // …and ONE pair in a table, where the pair COUNT cannot rescue it (E14 only covers two or more):
+  const oneTable = { ...pairFile, pairs: [pairFile.pairs[0]] };
+  assert.equal(configHasPair(oneTable), true);
+  assert.equal(latch(false, "unreachable", configHasPair(oneTable), true, true, 1), false);
+  // The same file read the old way is the defect:
+  assert.equal(Boolean(pairFile.local_root && pairFile.remote_root), false, "the premise");
+});
+
+test("configHasPair says what each shape of config says", () => {
+  // The implicit pair of a file with top-level roots, and of no file at all.
+  assert.equal(
+    configHasPair({
+      local_root: "/l",
+      remote_root: "/r",
+      pairs: [{ name: "default", local_root: "/l", remote_root: "/r" }],
+    }),
+    true,
+  );
+  assert.equal(
+    configHasPair({
+      local_root: null,
+      remote_root: null,
+      pairs: [{ name: "default", local_root: null, remote_root: null }],
+    }),
+    false,
+    "a missing file lists the implicit pair, which places nothing",
+  );
+  // One root is not a pair.
+  assert.equal(configHasPair({ pairs: [{ name: "a", local_root: "/l", remote_root: null }] }), false);
+  // No list (an older reply, or a file the engine cannot read): the flat roots are all there is.
+  assert.equal(configHasPair({ local_root: "/l", remote_root: "/r" }), true);
+  assert.equal(configHasPair({ local_root: "/l", remote_root: "/r", pairs: [] }), true);
+  assert.equal(configHasPair({ pairs: [] }), false);
+  assert.equal(configHasPair(null), false);
+  assert.equal(configHasPair(undefined), false);
 });

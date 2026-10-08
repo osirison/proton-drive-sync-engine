@@ -14,11 +14,12 @@
 // them badly. §82f.
 //
 // WHAT IS NEW HERE IS THE TWO STATES THE WINDOW NEVER SEES. `app.js` intercepts `firstRun` with the
-// onboarding takeover before the main screen renders, so S1's derivation has no branch for it and
-// falls through to `settled` — `Everything is up to date`, on a daemon that has never synced a
-// file. The tray has no takeover to hide behind. `authExpired` reaches S1 but shares the struck mark
-// with `unreachable` there, and in a MENU the two part company: `Try again now` cannot fix an
-// expired session. Both are handled below, both are tested, and no frame draws either. §82g.
+// onboarding takeover before the main screen renders (at one pair), so S1's derivation falls through
+// to `settled` for it unless asked otherwise — `Everything is up to date`, on a daemon that has never
+// synced a file. The tray has no takeover to hide behind, so it asks (`drawsFirstRun`). `authExpired`
+// reaches S1 but shares the struck mark with `unreachable` there, and in a MENU the two part company:
+// `Try again now` cannot fix an expired session. Both are handled below, both are tested, and no
+// frame draws either. §82g.
 
 import { MAIN, TRAY } from "../ui/copy.js";
 import { clock, since } from "../ui/format.js";
@@ -112,18 +113,18 @@ export function trayView(props = {}) {
   const waiting = conflicts.length + deletions.length;
   const lastSync = response?.last_sync_epoch_secs ?? null;
 
-  // `firstRun` is not a hero S1 knows, so it is answered before asking. Everything else goes to the
-  // shared derivation — including the `pending > 0` rule, which is why a tray opened seconds after
-  // an edit says "syncing" rather than "up to date" exactly as the window does.
-  const hero =
-    daemonState === "firstRun"
-      ? "firstRun"
-      : heroStateOf({
-          daemonState,
-          syncing: Boolean(response?.syncing),
-          waiting,
-          pending: queued ?? 0,
-        });
+  // Everything goes to the shared derivation — including the `pending > 0` rule, which is why a tray
+  // opened seconds after an edit says "syncing" rather than "up to date" exactly as the window does.
+  // `firstRun` used to be answered here, before asking, because S1 had no such hero; it has one now
+  // (#102 phase 5a-2), for a surface with no takeover, and this is that surface — so the rule is
+  // `heroStateOf`'s alone and not also a copy in this file.
+  const hero = heroStateOf({
+    daemonState,
+    syncing: Boolean(response?.syncing),
+    waiting,
+    pending: queued ?? 0,
+    drawsFirstRun: true,
+  });
 
   // The same two numbers S1 reconciles: the watch queue is the answer while work waits and no plan
   // exists, the plan is the answer once there is one. Deletions are excluded — "the count in the

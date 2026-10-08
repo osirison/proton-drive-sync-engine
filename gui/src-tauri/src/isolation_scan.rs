@@ -21,6 +21,15 @@
 //! environment default, which `RuntimePaths::resolve_at` refuses in a test build
 //! (`config_path::environment_default_socket`) and which a test could otherwise write in by hand.
 //!
+//! **The socket default got the same treatment, one round later.** It was one literal —
+//! `default_socket_path(`, the call — and the review of PR #436 found what that left open: a rename
+//! (`use ...::default_socket_path as socket_of;`) and the function taken as a value
+//! (`let f = ...::default_socket_path;`) both reach the environment's socket, which on a developer's
+//! machine is the live daemon's, and neither contains the call. It is now the *identifier*
+//! ([`names_the_socket_default`]), wherever it is written: call, alias, import or value. An import is
+//! flagged on purpose — a file that has to import it is a file that means to call it, and that is
+//! an argument for ALLOWED, in a diff a reviewer reads.
+//!
 //! The search patterns are built at run time (`concat`ed from halves) so this file does not contain
 //! them. The allow-list below spells the allowed lines out, so this file is the one the scan does not
 //! read (it makes no call). Comment lines are skipped; a `/* */` block is not understood, and
@@ -118,6 +127,13 @@ fn aliases_the_runtime_paths(text: &str) -> bool {
     renamed || declared
 }
 
+/// The control socket's environment default, named as an identifier: the call, an `as` rename, an
+/// import, or the function as a value. `default_socket_path_in` and `environment_default_socket`
+/// are other names and do not match (see [`names_word`]).
+fn names_the_socket_default(text: &str) -> bool {
+    names_word(text, &["default_socket", "_path"].concat())
+}
+
 /// The three routes to the environment's config, independent of what anything is called.
 fn reaches_the_environment(text: &str) -> bool {
     names_word(text, &["gui_config", "_path"].concat())
@@ -136,7 +152,9 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-fn scan(roots: &[PathBuf], forbidden: &[String]) -> Vec<String> {
+/// `guard_socket` is `src-tauri`'s alone: `gui-core` DEFINES the socket default and tests it, and has
+/// no command to misdirect.
+fn scan(roots: &[PathBuf], forbidden: &[String], guard_socket: bool) -> Vec<String> {
     let mut files = Vec::new();
     for root in roots {
         rust_files(root, &mut files);
@@ -165,6 +183,7 @@ fn scan(roots: &[PathBuf], forbidden: &[String]) -> Vec<String> {
                 .iter()
                 .any(|pattern| text.contains(pattern.as_str()))
                 && !reaches_the_environment(text)
+                && !(guard_socket && names_the_socket_default(text))
             {
                 continue;
             }
@@ -181,14 +200,11 @@ fn scan(roots: &[PathBuf], forbidden: &[String]) -> Vec<String> {
 fn no_gui_test_resolves_the_real_environment() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     // Built from halves so this file never contains them.
-    let mut violations = scan(&[manifest.join("src")], &{
-        let mut patterns = literal_patterns();
-        patterns.extend(tauri_only_patterns());
-        patterns
-    });
+    let mut violations = scan(&[manifest.join("src")], &literal_patterns(), true);
     violations.extend(scan(
         &[manifest.join("../gui-core/src")],
         &literal_patterns(),
+        false,
     ));
     assert!(
         violations.is_empty(),
@@ -215,7 +231,7 @@ fn the_scan_sees_a_call_it_has_not_been_told_about() {
     )
     .unwrap();
     let forbidden = [["RuntimePaths", "::resolve("].concat()];
-    let found = scan(&[dir.path().to_owned()], &forbidden);
+    let found = scan(&[dir.path().to_owned()], &forbidden, false);
     assert_eq!(found.len(), 1, "{found:?}");
     assert!(found[0].starts_with("bad.rs:3"), "{found:?}");
 }
@@ -223,12 +239,18 @@ fn the_scan_sees_a_call_it_has_not_been_told_about() {
 /// What the scan reports for a source of one file, under the same literal patterns the real scan
 /// uses. Padded to eleven files because the scan refuses to trust a directory with fewer.
 fn scan_source(source: &str) -> Vec<String> {
+    scan_source_as(source, false)
+}
+
+/// [`scan_source`], as `src-tauri` is scanned: the control socket's environment default is guarded
+/// too.
+fn scan_source_as(source: &str, guard_socket: bool) -> Vec<String> {
     let dir = tempfile::tempdir().unwrap();
     for i in 0..11 {
         std::fs::write(dir.path().join(format!("f{i}.rs")), "fn ok() {}\n").unwrap();
     }
     std::fs::write(dir.path().join("bad.rs"), source).unwrap();
-    scan(&[dir.path().to_owned()], &literal_patterns())
+    scan(&[dir.path().to_owned()], &literal_patterns(), guard_socket)
 }
 
 /// The literal patterns both the real scan and its probes use.
@@ -237,12 +259,6 @@ fn literal_patterns() -> Vec<String> {
         ["RuntimePaths", "::resolve("].concat(),
         ["gui_config", "_path("].concat(),
     ]
-}
-
-/// Patterns for `src-tauri` alone: `gui-core` defines the socket default and tests it, and has no
-/// command to misdirect.
-fn tauri_only_patterns() -> Vec<String> {
-    vec![["default_socket", "_path("].concat()]
 }
 
 /// The scan used to match those two literals and nothing else, so renaming the type — one `as` —
@@ -307,18 +323,55 @@ fn the_scan_leaves_every_use_that_names_its_file_alone() {
 /// getting the refusal `resolve_at` gives it, is a deliberate act and the scan says so. This one is
 /// for `src-tauri` only (see `no_gui_test_resolves_the_real_environment`): `gui-core` defines and
 /// tests the default.
+///
+/// **Every way of writing it, each as its own source** so a rule that caught the call only by
+/// catching one of the others is not credited with both. The first is the one the scan always had;
+/// the rest are what walked past it (PR #436's review): a rename, the function as a value, and the
+/// import that makes either possible.
 #[test]
-fn the_scan_sees_a_test_that_dials_the_environments_socket_on_purpose() {
-    let dir = tempfile::tempdir().unwrap();
-    for i in 0..11 {
-        std::fs::write(dir.path().join(format!("f{i}.rs")), "fn ok() {}\n").unwrap();
+fn the_scan_sees_the_environments_socket_reached_any_way_but_the_call() {
+    let must_be_flagged = [
+        // The call — the original pattern.
+        "    paths.socket_path = gui_core::ipc::default_socket_path();",
+        // A rename, plain and inside a braced import.
+        "use gui_core::ipc::default_socket_path as socket_of;",
+        "use gui_core::ipc::{self, default_socket_path as socket_of};",
+        // The function as a value, bare and annotated, and handed on.
+        "    let f = gui_core::ipc::default_socket_path;",
+        "    let f: fn() -> _ = ipc::default_socket_path ;",
+        "    let sockets = [ipc::default_socket_path].map(|f| f());",
+        // The import itself: whoever needs it means to call it.
+        "use gui_core::ipc::default_socket_path;",
+        // And the call through a bare name, once imported.
+        "    let socket = default_socket_path();",
+    ];
+    for line in must_be_flagged {
+        let found = scan_source_as(&format!("#[test]\nfn t() {{\n{line}\n}}\n"), true);
+        assert_eq!(found.len(), 1, "not flagged: {line}\n{found:?}");
+        assert!(found[0].starts_with("bad.rs:3"), "{line}: {found:?}");
     }
-    std::fs::write(
-        dir.path().join("bad.rs"),
-        "fn t() {\n    paths.socket_path = gui_core::ipc::default_socket_path();\n}\n",
-    )
-    .unwrap();
-    let found = scan(&[dir.path().to_owned()], &tauri_only_patterns());
-    assert_eq!(found.len(), 1, "{found:?}");
-    assert!(found[0].starts_with("bad.rs:2"), "{found:?}");
+}
+
+/// And no wider than the identifier: the names that merely CONTAIN it, the one the crate is meant
+/// to use, and a mention in a comment are all legal.
+#[test]
+fn the_scan_leaves_every_other_socket_name_alone() {
+    let fine = [
+        "    let socket = environment_default_socket();",
+        "    let path = default_socket_path_in(runtime_dir);",
+        "    let paths = RuntimePaths::resolve_with_default_socket(&path, default);",
+        "    paths.socket_path = Ok(fake.socket_path().to_owned());",
+        "    // gui_core::ipc::default_socket_path() is only named in a comment.",
+        "    let socket = paths.socket_path.clone();",
+    ];
+    for line in fine {
+        let found = scan_source_as(&format!("#[test]\nfn t() {{\n{line}\n}}\n"), true);
+        assert!(found.is_empty(), "flagged but legal: {line}\n{found:?}");
+    }
+    // And `gui-core` is not guarded at all: it defines the function and its test calls it.
+    let found = scan_source_as(
+        "fn t() {\n    let resolved = default_socket_path();\n}\n",
+        false,
+    );
+    assert!(found.is_empty(), "{found:?}");
 }

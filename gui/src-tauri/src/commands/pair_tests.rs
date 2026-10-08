@@ -26,14 +26,14 @@ fn goldens() -> BTreeMap<String, Vec<String>> {
 }
 
 /// A mock app whose config lives in a temp directory and whose socket is `daemon`'s.
-struct Harness {
-    app: tauri::App<tauri::test::MockRuntime>,
-    daemon: FakeDaemon,
+pub(super) struct Harness {
+    pub(super) app: tauri::App<tauri::test::MockRuntime>,
+    pub(super) daemon: FakeDaemon,
     // Held for its `Drop`: the config file lives in it.
-    _dir: tempfile::TempDir,
+    pub(super) _dir: tempfile::TempDir,
 }
 
-fn harness(daemon: FakeDaemon, config: Option<&str>) -> Harness {
+pub(super) fn harness(daemon: FakeDaemon, config: Option<&str>) -> Harness {
     let dir = tempfile::tempdir().unwrap();
     let config_path = dir.path().join("proton-sync.toml");
     if let Some(config) = config {
@@ -53,7 +53,7 @@ fn harness(daemon: FakeDaemon, config: Option<&str>) -> Harness {
 }
 
 impl Harness {
-    fn state(&self) -> State<'_, Mutex<RuntimePaths>> {
+    pub(super) fn state(&self) -> State<'_, Mutex<RuntimePaths>> {
         self.app.state::<Mutex<RuntimePaths>>()
     }
 }
@@ -64,7 +64,7 @@ const ONE_PAIR_FILE: &str =
     "local_root = \"/fake/default/local\"\nremote_root = \"/Drive/default\"\n";
 
 /// Two pairs, `docs` first (so it is the default pair) and `photos` second.
-const TWO_PAIR_FILE: &str = "\
+pub(super) const TWO_PAIR_FILE: &str = "\
 [[pair]]
 name = \"docs\"
 local_root = \"/fake/docs/local\"
@@ -76,23 +76,28 @@ local_root = \"/fake/photos/local\"
 remote_root = \"/Drive/photos\"
 ";
 
-fn two_pair_daemon() -> FakeDaemon {
+pub(super) fn two_pair_daemon() -> FakeDaemon {
     FakeDaemon::multi_pair(vec![FakePair::new("docs"), FakePair::new("photos")]).start()
 }
 
 /// The `run_dry_run` child must never start in these tests; reaching it is a failure of the test and
 /// not a side effect on the machine.
-fn refuse_to_launch(_: &[OsString]) -> std::io::Result<std::process::Output> {
+pub(super) fn refuse_to_launch(_: &[OsString]) -> std::io::Result<std::process::Output> {
     Err(std::io::Error::other(
         "the child proton-syncd must not be launched by a test that expects the daemon to answer",
     ))
 }
 
-/// Drive every command the goldens cover, with `pair` as the frontend of the future would pass it,
-/// and return what each sent. Order matters in exactly one place: `get_status` first, so the roots
-/// the daemon reports are cached before the dry run decides who plans.
-fn drive(h: &Harness, pair: Option<&str>) -> BTreeMap<String, Vec<String>> {
+/// Drive every command the goldens cover, with `pair` as the frontend would pass it, and return what
+/// each sent. Order matters in exactly one place: `get_status` first, so the roots the daemon
+/// reports are cached before the dry run decides who plans.
+///
+/// A class-R command is handed `pair` as it is (naming none means the selection). A class-W command
+/// REQUIRES a name, so it gets `pair` or, when the caller names none, `default` — the default pair's
+/// own name, which the wire still omits.
+fn drive(h: &Harness, pair: Option<&str>, default: &str) -> BTreeMap<String, Vec<String>> {
     let handle = || h.app.handle().clone();
+    let named = || pair.unwrap_or(default).to_owned();
     let pair = || pair.map(str::to_owned);
     let mut sent: BTreeMap<String, Vec<String>> = BTreeMap::new();
     macro_rules! case {
@@ -110,10 +115,10 @@ fn drive(h: &Harness, pair: Option<&str>) -> BTreeMap<String, Vec<String>> {
     }
 
     case!("get_status", run!(get_status(handle(), pair())));
-    case!("pause", run!(pause(handle(), pair())));
-    case!("resume", run!(resume(handle(), pair())));
-    case!("sync_now", run!(sync_now(handle(), pair())));
-    case!("resync", run!(resync(handle(), pair())));
+    case!("pause", run!(pause(handle(), named())));
+    case!("resume", run!(resume(handle(), named())));
+    case!("sync_now", run!(sync_now(handle(), named())));
+    case!("resync", run!(resync(handle(), named())));
     case!(
         "approve_path_literal",
         run!(approve(
@@ -121,7 +126,7 @@ fn drive(h: &Harness, pair: Option<&str>) -> BTreeMap<String, Vec<String>> {
             "docs/a.txt".to_owned(),
             true,
             None,
-            pair()
+            named()
         ))
     );
     case!(
@@ -131,16 +136,16 @@ fn drive(h: &Harness, pair: Option<&str>) -> BTreeMap<String, Vec<String>> {
             "all".to_owned(),
             false,
             Some(DeleteDirection::Remote),
-            pair()
+            named()
         ))
     );
     case!(
         "deny_path_literal",
-        run!(deny(handle(), "docs/a.txt".to_owned(), true, pair()))
+        run!(deny(handle(), "docs/a.txt".to_owned(), true, named()))
     );
     case!(
         "keep_path_literal",
-        run!(keep(handle(), "docs/a.txt".to_owned(), true, pair()))
+        run!(keep(handle(), "docs/a.txt".to_owned(), true, named()))
     );
     assert!(case!(
         "list_pending_deletions",
@@ -149,7 +154,7 @@ fn drive(h: &Harness, pair: Option<&str>) -> BTreeMap<String, Vec<String>> {
     .is_ok());
     let dry_run = case!(
         "run_dry_run_through_the_daemon",
-        run!(run_dry_run_with(&h.state(), pair(), refuse_to_launch))
+        run!(run_dry_run_with(&h.state(), named(), refuse_to_launch))
     );
     assert!(
         dry_run.is_ok(),
@@ -162,7 +167,7 @@ fn drive(h: &Harness, pair: Option<&str>) -> BTreeMap<String, Vec<String>> {
     ] {
         let outcome = case!(
             name,
-            run!(apply_plan(handle(), "tok".to_owned(), skip, pair()))
+            run!(apply_plan(handle(), "tok".to_owned(), skip, named()))
         );
         assert!(
             matches!(outcome, Ok(ApplyOutcome::Applied { .. })),
@@ -183,12 +188,13 @@ fn every_command_sends_the_request_it_sent_at_4e277ab() {
         "the goldens cover thirteen request shapes"
     );
 
-    // (what is running, what the config file says, which pair the caller names)
-    let setups: Vec<(&str, Harness, Option<&str>)> = vec![
+    // (what is running, what the config file says, which pair the caller names, the default pair's name)
+    let setups: Vec<(&str, Harness, Option<&str>, &str)> = vec![
         (
             "a legacy daemon and no config file at all",
             harness(FakeDaemon::legacy(FakePair::new("default")).start(), None),
             None,
+            "default",
         ),
         (
             "a legacy daemon and a one-pair file",
@@ -197,6 +203,7 @@ fn every_command_sends_the_request_it_sent_at_4e277ab() {
                 Some(ONE_PAIR_FILE),
             ),
             None,
+            "default",
         ),
         (
             "a legacy daemon, the default pair named explicitly",
@@ -205,6 +212,7 @@ fn every_command_sends_the_request_it_sent_at_4e277ab() {
                 Some(ONE_PAIR_FILE),
             ),
             Some("default"),
+            "default",
         ),
         (
             "a current daemon running one pair",
@@ -213,20 +221,23 @@ fn every_command_sends_the_request_it_sent_at_4e277ab() {
                 Some(ONE_PAIR_FILE),
             ),
             None,
+            "default",
         ),
         (
             "two pairs, none named: the default pair",
             harness(two_pair_daemon(), Some(TWO_PAIR_FILE)),
             None,
+            "docs",
         ),
         (
             "two pairs, the default pair named: omitted all the same",
             harness(two_pair_daemon(), Some(TWO_PAIR_FILE)),
             Some("docs"),
+            "docs",
         ),
     ];
-    for (what, h, pair) in &setups {
-        let sent = drive(h, *pair);
+    for (what, h, pair, default) in &setups {
+        let sent = drive(h, *pair, default);
         for (command, lines) in &golden {
             assert_eq!(
                 sent.get(command),
@@ -242,29 +253,47 @@ fn every_command_sends_the_request_it_sent_at_4e277ab() {
     }
 }
 
+/// The goldens that are a destructive verb's: the ones the capability gate stands in front of when
+/// they are addressed to a pair other than the default.
+const GATED: [&str; 7] = [
+    "approve_path_literal",
+    "approve_all_with_direction",
+    "deny_path_literal",
+    "keep_path_literal",
+    "resync",
+    "apply_plan",
+    "apply_plan_skipping_destructive",
+];
+
 /// Acceptance 2, the other half: a NON-default pair is named on the wire, and **nothing else about
 /// the request changes** — the same fields, the same order of requests, the same polling.
+///
+/// The one addition is the gate's: a destructive verb for a non-default pair is preceded by a fresh,
+/// UNADDRESSED `status` (the line `get_status` sends for the default pair), and by nothing else.
 #[test]
 fn a_non_default_pair_is_named_on_the_wire_and_nothing_else_changes() {
     let golden = goldens();
     let h = harness(two_pair_daemon(), Some(TWO_PAIR_FILE));
-    let sent = drive(&h, Some("photos"));
+    let sent = drive(&h, Some("photos"), "docs");
+    let fresh_status = golden["get_status"][0].clone();
     for (command, lines) in &golden {
-        let expected: Vec<Value> = lines
-            .iter()
-            .map(|line| {
-                let mut request: Value = serde_json::from_str(line).unwrap();
-                request["pair"] = Value::String("photos".to_owned());
-                request
-            })
-            .collect();
+        let mut expected: Vec<Value> = Vec::new();
+        if GATED.contains(&command.as_str()) {
+            expected.push(serde_json::from_str(&fresh_status).unwrap());
+        }
+        expected.extend(lines.iter().map(|line| {
+            let mut request: Value = serde_json::from_str(line).unwrap();
+            request["pair"] = Value::String("photos".to_owned());
+            request
+        }));
         let actual: Vec<Value> = sent[command]
             .iter()
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
         assert_eq!(
             actual, expected,
-            "`{command}` for `photos` must be its recorded request with `pair` set, and nothing else"
+            "`{command}` for `photos` must be its recorded request with `pair` set, and nothing else \
+             (but for the gate's fresh status before a destructive verb)"
         );
     }
 }
@@ -298,6 +327,8 @@ fn a_pair_this_app_cannot_place_sends_nothing() {
     let h = harness(two_pair_daemon(), Some(TWO_PAIR_FILE));
     let handle = || h.app.handle().clone();
     let unknown = || Some("not-a-pair".to_owned());
+    // A class-W command takes its pair as a required name, and a name nobody runs is refused all the same.
+    let unknown_name = || "not-a-pair".to_owned();
     macro_rules! run {
         ($future:expr) => {
             tauri::async_runtime::block_on($future)
@@ -311,19 +342,30 @@ fn a_pair_this_app_cannot_place_sends_nothing() {
     };
 
     refused_status(run!(get_status(handle(), unknown())), "get_status");
-    refused_status(run!(pause(handle(), unknown())), "pause");
-    refused_status(run!(resume(handle(), unknown())), "resume");
-    refused_status(run!(sync_now(handle(), unknown())), "sync_now");
-    refused_status(run!(resync(handle(), unknown())), "resync");
+    refused_status(run!(pause(handle(), unknown_name())), "pause");
+    refused_status(run!(resume(handle(), unknown_name())), "resume");
+    refused_status(run!(sync_now(handle(), unknown_name())), "sync_now");
+    refused_status(run!(resync(handle(), unknown_name())), "resync");
     refused_status(
-        run!(approve(handle(), "a".into(), true, None, unknown())),
+        run!(approve(handle(), "a".into(), true, None, unknown_name())),
         "approve",
     );
-    refused_status(run!(deny(handle(), "a".into(), true, unknown())), "deny");
-    refused_status(run!(keep(handle(), "a".into(), true, unknown())), "keep");
+    refused_status(
+        run!(deny(handle(), "a".into(), true, unknown_name())),
+        "deny",
+    );
+    refused_status(
+        run!(keep(handle(), "a".into(), true, unknown_name())),
+        "keep",
+    );
     assert!(run!(list_pending_deletions(handle(), unknown())).is_err());
-    assert!(run!(apply_plan(handle(), "t".into(), false, unknown())).is_err());
-    assert!(run!(run_dry_run_with(&h.state(), unknown(), refuse_to_launch)).is_err());
+    assert!(run!(apply_plan(handle(), "t".into(), false, unknown_name())).is_err());
+    assert!(run!(run_dry_run_with(
+        &h.state(),
+        unknown_name(),
+        refuse_to_launch
+    ))
+    .is_err());
     assert!(run!(scan_conflicts(h.state(), unknown())).is_err());
     assert!(run!(open_folder(h.state(), "a".into(), unknown())).is_err());
     assert!(run!(open_paths(h.state(), vec!["a".into()], unknown())).is_err());
@@ -336,9 +378,13 @@ fn a_pair_this_app_cannot_place_sends_nothing() {
         sidecar: "a.x".into(),
         kind: conflicts::ConflictKind::Content,
     };
-    assert!(
-        resolve_conflict(h.state(), conflict.clone(), Resolution::KeepMine, unknown()).is_err()
-    );
+    assert!(resolve_conflict(
+        h.state(),
+        conflict.clone(),
+        Resolution::KeepMine,
+        unknown_name()
+    )
+    .is_err());
     assert!(read_conflict_pair(h.state(), conflict, unknown()).is_err());
 
     assert!(
@@ -416,17 +462,38 @@ fn class_r_commands_read_the_addressed_pairs_folder_and_naming() {
 /// a conflict of its own. **The same relative names in both folders and different bytes behind
 /// them**, so a command that joins a path onto the wrong root does not fail — it succeeds, on the
 /// wrong pair's files, and says so only in what it touched.
-struct Routing {
-    h: Harness,
+///
+/// And every OTHER thing a command reads about its pair is made to differ too, because a routing
+/// test that observes only the folder lets a command read the right folder with the wrong index or
+/// the wrong sidecar spelling (the review of PR #436 found `read_conflict_pair`'s index and
+/// `skip_rule_usage`'s index and naming unobserved, and a poison forcing them to the default pair left
+/// the suite green):
+///
+/// - **the index** is relocated INSIDE each root as `state.db` (the default `.sync/` location is
+///   always ignored, which would hide a wrong path from `skip_rule_usage`), and holds an agreed
+///   version of `note.txt` of a different length per pair;
+/// - **the sidecar spelling** differs (`docs-cloud` / `photos-cloud`), and each folder holds a file
+///   spelled both ways.
+pub(super) struct Routing {
+    pub(super) h: Harness,
     docs: tempfile::TempDir,
     photos: tempfile::TempDir,
 }
+
+/// The agreed version each pair's index holds for `note.txt`: two lines for `docs`, four for
+/// `photos`. The local file is one line, so the number of lines the card says were `removed` is the
+/// length minus one — 1 or 3 — and names the index that was read.
+const AGREED_DOCS: &str = "a\nb\n";
+const AGREED_PHOTOS: &str = "a\nb\nc\nd\n";
 
 impl Routing {
     fn new() -> Self {
         let docs = tempfile::tempdir().unwrap();
         let photos = tempfile::tempdir().unwrap();
-        for (name, root, logs) in [("docs", docs.path(), 2), ("photos", photos.path(), 3)] {
+        for (name, root, logs, agreed) in [
+            ("docs", docs.path(), 2, AGREED_DOCS),
+            ("photos", photos.path(), 3, AGREED_PHOTOS),
+        ] {
             let write = |relative: &str, text: &str| {
                 let path = root.join(relative);
                 std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -440,17 +507,24 @@ impl Routing {
             for n in 0..logs {
                 write(&format!("{n}.log"), "log");
             }
-            // An index of its own, at the per-root default the config below leaves unset.
-            gui_core::testing::write_index(
-                &root.join(".sync").join("sync_index.db"),
-                &[&format!("{name}-only.txt")],
-            );
+            // One file spelled each pair's way. Under a pair's own suffix its spelling is a conflict
+            // sidecar (not a file a skip rule could hide) and the other one is an ordinary file.
+            write("probe.docs-cloud.dat", "x");
+            write("probe.photos-cloud.dat", "x");
+            // An index of its own, inside the root so the skip-rule walk would meet it.
+            let db = root.join("state.db");
+            gui_core::testing::write_index(&db, &[&format!("{name}-only.txt")]);
+            gui_core::testing::write_agreed_summary(&db, "note.txt", agreed);
         }
         let config = format!(
             "[[pair]]\nname = \"docs\"\nlocal_root = {docs:?}\nremote_root = \"/Drive/docs\"\n\
-             [[pair]]\nname = \"photos\"\nlocal_root = {photos:?}\nremote_root = \"/Drive/photos\"\n",
+             db_path = {docs_db:?}\nconflict_suffix = \"docs-cloud\"\n\
+             [[pair]]\nname = \"photos\"\nlocal_root = {photos:?}\nremote_root = \"/Drive/photos\"\n\
+             db_path = {photos_db:?}\nconflict_suffix = \"photos-cloud\"\n",
             docs = docs.path().display().to_string(),
             photos = photos.path().display().to_string(),
+            docs_db = docs.path().join("state.db").display().to_string(),
+            photos_db = photos.path().join("state.db").display().to_string(),
         );
         Self {
             h: harness(two_pair_daemon(), Some(&config)),
@@ -465,6 +539,11 @@ impl Routing {
             "photos" => self.photos.path(),
             other => panic!("no such pair in this fixture: {other}"),
         }
+    }
+
+    /// The pair a class-R command means when it is told none: the one the app has selected.
+    fn selected(&self) -> String {
+        self.h.state().lock().unwrap().selected_pair().name
     }
 
     /// The pair whose folder `path` is under, as the fixture's two roots (canonical, as a resolved
@@ -499,7 +578,7 @@ impl Routing {
 /// How one command reports which pair it acted on: `docs`, `photos`, or what went wrong. The
 /// observation comes from the EFFECT (the file it changed, the index it opened, the folder it
 /// handed on), never from a name the command was given back.
-type Observe = fn(&Routing, Option<&str>) -> String;
+pub(super) type Observe = fn(&Routing, Option<&str>) -> String;
 
 /// The pair a text names: every marker file says `pair=<name> …`.
 fn marked_pair(text: &str) -> String {
@@ -524,7 +603,9 @@ fn observe_resolve_conflict(r: &Routing, pair: Option<&str>) -> String {
         r.h.state(),
         conflict_of_note(),
         Resolution::UseProton,
-        pair.map(str::to_owned),
+        // A class-W command names its pair. Naming none, in this table, means the default pair's own
+        // name — which is what the third row below checks reaches the default folder.
+        pair.unwrap_or("docs").to_owned(),
     )
     .expect("the resolution applies");
     let changed: Vec<&str> = ["docs", "photos"]
@@ -540,18 +621,44 @@ fn observe_resolve_conflict(r: &Routing, pair: Option<&str>) -> String {
     }
 }
 
-fn observe_read_conflict_pair(r: &Routing, pair: Option<&str>) -> String {
-    let read = read_conflict_pair(r.h.state(), conflict_of_note(), pair.map(str::to_owned))
-        .expect("both sides read");
-    marked_pair(&read.original.text.expect("the original is text"))
+fn read_note(r: &Routing, pair: Option<&str>) -> gui_core::conflicts::ConflictPair {
+    read_conflict_pair(r.h.state(), conflict_of_note(), pair.map(str::to_owned))
+        .expect("both sides read")
+}
+
+fn observe_read_conflict_pair_folder(r: &Routing, pair: Option<&str>) -> String {
+    marked_pair(
+        &read_note(r, pair)
+            .original
+            .text
+            .expect("the original is text"),
+    )
+}
+
+/// The INDEX `read_conflict_pair` opened: each pair's holds an agreed version of `note.txt` of a
+/// different length, and the card says how many of its lines the local file `removed`. That is the
+/// length minus one — 1 for `docs`, 3 for `photos` — so a command reading the right folder with the
+/// other pair's index says the other number. (No ancestor at all is its own answer: an index that
+/// was not found says less rather than failing, and a test that took "nothing" for "docs" would
+/// pass on a command that opened no index.)
+fn observe_read_conflict_pair_index(r: &Routing, pair: Option<&str>) -> String {
+    match read_note(r, pair)
+        .happened
+        .map(|happened| happened.mine.removed)
+    {
+        Some(1) => "docs".to_owned(),
+        Some(3) => "photos".to_owned(),
+        Some(other) => format!("an ancestor of {other} removed lines"),
+        None => "no ancestor".to_owned(),
+    }
 }
 
 fn observe_search_files(r: &Routing, pair: Option<&str>) -> String {
     // A path pasted out of a file manager: under the addressed pair's folder, naming the file only
     // that pair's index holds. It is found only by a command that opened THAT pair's index AND
     // reduced the path against THAT pair's folder; either half wrong and nothing matches.
-    let addressed = pair.unwrap_or("docs");
-    let query = format!("{}/{addressed}-only.txt", r.root(addressed).display());
+    let addressed = pair.map_or_else(|| r.selected(), str::to_owned);
+    let query = format!("{}/{addressed}-only.txt", r.root(&addressed).display());
     let found = tauri::async_runtime::block_on(search_files(
         r.h.app.handle().clone(),
         query,
@@ -597,15 +704,24 @@ fn observe_free_space(r: &Routing, pair: Option<&str>) -> String {
         .to_owned()
 }
 
-fn observe_skip_rule_usage(r: &Routing, pair: Option<&str>) -> String {
-    let report = tauri::async_runtime::block_on(skip_rule_usage(
+/// One `skip_rule_usage` call with three rules, each of which answers a different question about
+/// WHICH PAIR the command read: `*.log` the folder, `*.db` the index, `*.dat` the sidecar spelling.
+fn skip_report(r: &Routing, pair: Option<&str>) -> gui_core::skip_rules::SkipRuleReport {
+    tauri::async_runtime::block_on(skip_rule_usage(
         r.h.app.handle().clone(),
-        vec!["*.log".into()],
+        vec!["*.log".into(), "*.db".into(), "*.dat".into()],
         None,
         pair.map(str::to_owned),
     ))
-    .expect("the folder is there, so it is walked");
-    // docs holds two `.log` files and photos three.
+    .expect("the folder is there, so it is walked")
+}
+
+/// The FOLDER walked: docs holds two `.log` files and photos three.
+fn observe_skip_rule_usage_folder(r: &Routing, pair: Option<&str>) -> String {
+    folder_walked(&skip_report(r, pair))
+}
+
+fn folder_walked(report: &gui_core::skip_rules::SkipRuleReport) -> String {
     match report.rules[0].files {
         2 => "docs".to_owned(),
         3 => "photos".to_owned(),
@@ -613,26 +729,87 @@ fn observe_skip_rule_usage(r: &Routing, pair: Option<&str>) -> String {
     }
 }
 
-/// The seven commands that read a pair's folder or index and had NO test that said which pair they
-/// meant. (Poisoning all seven to use the default pair whatever they were told left the suite green.)
-/// `scan_conflicts` and `path_sync_status` are driven above; the status-shaped commands on the wire.
-const ROUTED: [(&str, Observe); 7] = [
-    ("resolve_conflict", observe_resolve_conflict),
-    ("read_conflict_pair", observe_read_conflict_pair),
-    ("search_files", observe_search_files),
-    ("open_paths", observe_open_paths),
-    ("open_folder", observe_open_folder),
-    ("free_space", observe_free_space),
-    ("skip_rule_usage", observe_skip_rule_usage),
+/// The INDEX excluded from the walk. Each folder holds its own pair's relocated index, and the
+/// command leaves a pair's index out of the count by the path it is told is the daemon's state file
+/// (`daemon_ignored_paths`). Told the right pair's, the `*.db` rule matches nothing; told the other
+/// pair's — a path in another folder — the folder's own index is counted as a file some rule is
+/// hiding, which is exactly the false claim this command exists to avoid.
+fn observe_skip_rule_usage_index(r: &Routing, pair: Option<&str>) -> String {
+    let report = skip_report(r, pair);
+    let folder = folder_walked(&report);
+    match report.rules[1].files {
+        0 => folder,
+        counted => format!("{counted} index file(s) counted as user data in {folder}'s folder"),
+    }
+}
+
+/// The SIDECAR SPELLING. Each folder holds `probe.docs-cloud.dat` and `probe.photos-cloud.dat`. A
+/// pair's own spelling is a conflict sidecar under its own suffix — not a file at all as far as a
+/// skip rule goes — so the one `*.dat` file left to hide is the OTHER spelling. Which one that is
+/// names the suffix the command asked under.
+fn observe_skip_rule_usage_naming(r: &Routing, pair: Option<&str>) -> String {
+    let report = skip_report(r, pair);
+    match report.rules[2].samples.as_slice() {
+        [only] if only.path.contains("photos-cloud") => "docs".to_owned(),
+        [only] if only.path.contains("docs-cloud") => "photos".to_owned(),
+        other => format!("samples {other:?}"),
+    }
+}
+
+/// What each routed command observes about the pair it acted on. A command may appear more than
+/// once, once per thing it reads about its pair — and `skip_rule_usage` and `read_conflict_pair`
+/// each read three (folder, index, spelling) and a test of one let a command read the other two from
+/// the wrong pair without a test noticing.
+///
+/// `resolve_conflict` is the one class-W row and is not driven with no pair: see
+/// `a_class_w_command_never_reads_the_selection`.
+const ROUTED: [(&str, &str, Observe); 10] = [
+    ("resolve_conflict", "folder", observe_resolve_conflict),
+    (
+        "read_conflict_pair",
+        "folder",
+        observe_read_conflict_pair_folder,
+    ),
+    (
+        "read_conflict_pair",
+        "index",
+        observe_read_conflict_pair_index,
+    ),
+    ("search_files", "folder and index", observe_search_files),
+    ("open_paths", "folder", observe_open_paths),
+    ("open_folder", "folder", observe_open_folder),
+    ("free_space", "folder", observe_free_space),
+    ("skip_rule_usage", "folder", observe_skip_rule_usage_folder),
+    ("skip_rule_usage", "index", observe_skip_rule_usage_index),
+    (
+        "skip_rule_usage",
+        "sidecar spelling",
+        observe_skip_rule_usage_naming,
+    ),
 ];
 
-/// Each of the seven acts on the pair it was told to, and on the default pair when told nothing —
+/// The fixture, for the tests of the selection (`selection_tests`), which need the same two
+/// unlike pairs.
+pub(super) fn routing_for_selection_tests() -> Routing {
+    Routing::new()
+}
+
+/// The routed commands that are class R — those for which "told nothing" means the SELECTED pair.
+pub(super) fn class_r_observers() -> Vec<(&'static str, Observe)> {
+    ROUTED
+        .iter()
+        .filter(|(command, _, _)| *command != "resolve_conflict")
+        .map(|(command, _, observe)| (*command, *observe))
+        .collect()
+}
+
+/// Each routed command acts on the pair it was told to, and on the default pair when told nothing —
 /// asked of a fresh fixture each time, because three of them change the disk. Every command is
 /// checked before the test fails, so a break names every command it reaches and not the first.
 #[test]
-fn the_seven_commands_that_had_no_routing_test_act_on_the_addressed_pair() {
+fn the_routed_commands_act_on_the_addressed_pair_in_everything_they_read() {
     let mut wrong = Vec::new();
-    for (command, observe) in ROUTED {
+    for (command, what, observe) in ROUTED {
         for (asked, expected) in [
             (Some("photos"), "photos"),
             (Some("docs"), "docs"),
@@ -641,7 +818,7 @@ fn the_seven_commands_that_had_no_routing_test_act_on_the_addressed_pair() {
             let observed = observe(&Routing::new(), asked);
             if observed != expected {
                 wrong.push(format!(
-                    "{command}({asked:?}) acted on {observed}, expected {expected}"
+                    "{command}({asked:?}) read {what} from {observed}, expected {expected}"
                 ));
             }
         }
@@ -689,9 +866,13 @@ fn every_command_that_reads_a_pair_slot_has_its_routing_driven() {
         }
     }
     reading.sort_unstable();
-    let mut driven: Vec<String> = ROUTED.iter().map(|(name, _)| (*name).to_owned()).collect();
+    let mut driven: Vec<String> = ROUTED
+        .iter()
+        .map(|(name, _, _)| (*name).to_owned())
+        .collect();
     driven.extend(["scan_conflicts".to_owned(), "path_sync_status".to_owned()]);
     driven.sort_unstable();
+    driven.dedup();
     assert_eq!(
         reading, driven,
         "a function reads a pair's folder, index or sidecar spelling without a routing test (left), \
@@ -726,7 +907,13 @@ fn a_refused_config_file_is_the_reason_every_folder_command_gives() {
         ),
         (
             "resolve_conflict",
-            resolve_conflict(h.state(), conflict.clone(), Resolution::KeepMine, None).err(),
+            resolve_conflict(
+                h.state(),
+                conflict.clone(),
+                Resolution::KeepMine,
+                "default".to_owned(),
+            )
+            .err(),
         ),
         (
             "read_conflict_pair",
@@ -952,7 +1139,7 @@ fn a_daemon_calling_its_pair_default_does_not_rename_the_files_only_table() {
 
     let payload = tauri::async_runtime::block_on(run_dry_run_with(
         &app.state::<Mutex<RuntimePaths>>(),
-        None,
+        "default".to_owned(),
         record,
     ))
     .expect("the canned report parses");
@@ -1009,8 +1196,11 @@ fn a_renamed_pair_is_previewed_by_the_daemon_only_when_the_files_roots_agree() {
     );
     tauri::async_runtime::block_on(get_status(agree.app.handle().clone(), None));
     agree.daemon.clear_requests();
-    let planned =
-        tauri::async_runtime::block_on(run_dry_run_with(&agree.state(), None, refuse_to_launch));
+    let planned = tauri::async_runtime::block_on(run_dry_run_with(
+        &agree.state(),
+        "default".to_owned(),
+        refuse_to_launch,
+    ));
     assert!(planned.is_ok(), "the daemon answers: {:?}", planned.err());
     assert!(sent_plan(&agree), "{:?}", agree.daemon.requests());
 
@@ -1021,7 +1211,11 @@ fn a_renamed_pair_is_previewed_by_the_daemon_only_when_the_files_roots_agree() {
     );
     tauri::async_runtime::block_on(get_status(differ.app.handle().clone(), None));
     differ.daemon.clear_requests();
-    let previewed = tauri::async_runtime::block_on(run_dry_run_with(&differ.state(), None, record));
+    let previewed = tauri::async_runtime::block_on(run_dry_run_with(
+        &differ.state(),
+        "default".to_owned(),
+        record,
+    ));
     assert!(previewed.is_ok(), "{:?}", previewed.err());
     assert!(
         !sent_plan(&differ),
@@ -1219,7 +1413,7 @@ fn a_dry_run_with_no_daemon_hands_the_child_the_pair_name() {
 
     let payload = tauri::async_runtime::block_on(run_dry_run_with(
         &app.state::<Mutex<RuntimePaths>>(),
-        Some("photos".to_owned()),
+        "photos".to_owned(),
         record,
     ))
     .expect("the canned report parses");
@@ -1369,11 +1563,16 @@ fn the_remote_root_scan_sees_every_spelling_of_a_third_resolver() {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Class {
-    /// A single-shot read: a wrong pair costs a wrong screen. Takes `pair: Option<String>`.
+    /// A single-shot read: a wrong pair costs a wrong screen. Takes `pair: Option<String>`, and
+    /// naming none means the pair the app has selected.
     R,
     /// A write, a deletion, or the start of a multi-step flow: a wrong pair costs data. Takes
-    /// `pair: Option<String>` (required from 5a-2, when the frontend can name one).
+    /// `pair: String` — **required** (#102 phase 5a-2), the value the caller captured when the screen
+    /// or row began, and never the selection: a missing or unknown name is refused, not defaulted.
     W,
+    /// The one writer of the selection. Names its pair as `name`, because it is not a request
+    /// addressed to a pair: it changes what later class-R reads mean.
+    Selection,
     /// Pair-bound, but addressed by something else until the PR named here.
     Deferred(&'static str),
     /// About the process, the daemon as a whole, or the window — no folder pair is involved.
@@ -1383,7 +1582,7 @@ enum Class {
 /// Every `#[tauri::command]` and what it is. Adding a command without adding it here fails
 /// `every_pair_slot_command_names_its_class`, which is the point: a command that reads a pair slot
 /// must say how it takes the pair.
-const COMMAND_CLASSES: [(&str, Class); 38] = [
+const COMMAND_CLASSES: [(&str, Class); 39] = [
     ("get_status", Class::R),
     ("list_pending_deletions", Class::R),
     ("scan_conflicts", Class::R),
@@ -1404,6 +1603,7 @@ const COMMAND_CLASSES: [(&str, Class); 38] = [
     ("apply_plan", Class::W),
     ("run_dry_run", Class::W),
     ("resolve_conflict", Class::W),
+    ("select_pair", Class::Selection),
     ("read_config", Class::Deferred("5b-1: read_config(pair)")),
     (
         "write_config",
@@ -1479,17 +1679,22 @@ fn every_pair_slot_command_names_its_class() {
             .find(|(candidate, _)| candidate == name)
             .map(|(_, class)| *class)
             .unwrap();
-        let takes_pair = signature.contains("pair: Option<String>");
+        let optional_pair = signature.contains("pair: Option<String>");
+        let required_pair = signature.contains("pair: String");
         match class {
-            Class::R | Class::W => {
-                assert!(
-                    takes_pair,
-                    "`{name}` is class {class:?} and must take `pair: Option<String>`"
-                )
-            }
-            Class::Deferred(_) | Class::Independent => assert!(
-                !takes_pair,
-                "`{name}` is {class:?} and must not take a pair argument yet"
+            Class::R => assert!(
+                optional_pair && !required_pair,
+                "`{name}` is class R and must take `pair: Option<String>` (naming none = the selection)"
+            ),
+            // REQUIRED, and the type is the guard: a `String` cannot be absent, so no frontend slip
+            // turns a write into "whatever pair is selected" or "the default".
+            Class::W => assert!(
+                required_pair && !optional_pair,
+                "`{name}` is class W and must take `pair: String`"
+            ),
+            Class::Selection | Class::Deferred(_) | Class::Independent => assert!(
+                !optional_pair && !required_pair,
+                "`{name}` is {class:?} and must not take a `pair` argument"
             ),
         }
     }

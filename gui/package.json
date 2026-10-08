@@ -14,7 +14,9 @@
     "sources:check": "node tools/check-sources.mjs",
     "tokens:check": "node tools/check-tokens.mjs",
     "fidelity:fixtures": "node tools/fidelity/check-fixtures.mjs",
-    "fidelity": "node tools/fidelity/assert.mjs && node tools/fidelity/copy-gate.mjs && node tools/fidelity/check-contrast.mjs",
+    "fidelity": "node tools/fidelity/assert.mjs && node tools/fidelity/copy-gate.mjs && node tools/fidelity/check-contrast.mjs && node tools/fidelity/check-n1-identity.mjs && node tools/fidelity/check-pair-routing.mjs",
+    "fidelity:n1": "node tools/fidelity/check-n1-identity.mjs",
+    "fidelity:pairs": "node tools/fidelity/check-pair-routing.mjs",
     "fidelity:contrast": "node tools/fidelity/check-contrast.mjs",
     "fidelity:extract": "node tools/fidelity/extract.mjs",
     "fidelity:stale": "node tools/fidelity/check-stale.mjs",
@@ -30,6 +32,7 @@
     "@fontsource/instrument-sans": "5.3.0",
     "eslint": "10.11.0",
     "eslint-plugin-import-x": "4.17.1",
+    "espree": "11.2.0",
     "globals": "17.12.0",
     "prettier": "3.9.9",
     "puppeteer": "^25.11.0"

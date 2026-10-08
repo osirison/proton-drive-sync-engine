@@ -3,6 +3,7 @@
 // for design preview). The command names here are the fixed surface defined in gui/src-tauri.
 
 import { activeFixture } from "./fixtures/frames.js";
+import { previewPairs, withOnePair, withOnePairConfig } from "./fixtures/preview.js";
 
 const inTauri = () => typeof window !== "undefined" && !!window.__TAURI__;
 
@@ -13,52 +14,99 @@ export async function invoke(cmd, args) {
   return mockInvoke(cmd, args);
 }
 
+// WHICH FOLDER PAIR A CALL MEANS (#102 phase 5a-2, brief section 2.3). Two classes, decided by what a
+// wrong pair costs, and the wrappers below are written so the class cannot be forgotten:
+//
+//   · A READ (`getStatus`, `scanConflicts`, `pathSyncStatus`, …) takes an optional trailing `{ pair }`.
+//     Naming none means the pair the app has SELECTED, which Rust holds — a wrong pair costs a wrong
+//     screen, not data. With no pair the call is byte for byte the one this app always made.
+//
+//   · A WRITE (`pause`, `approve`, `keep`, `applyPlan`, `resolveConflict`, …) takes a REQUIRED `{ pair }`,
+//     and the value is the one the caller CAPTURED when the screen, row or flow began — never what is
+//     selected when the call finally runs. Two webviews run this file, every call is asynchronous, and
+//     the selection can move between a click and its execution; a `keep` that read the selection at
+//     that moment would land on whichever folder was selected by then. A missing pair REJECTS here, in
+//     the facade, rather than becoming "the default pair" or "the selected one" somewhere downstream:
+//     a silent default is the wrong-folder bug with the error message removed.
+//
+// The default pair is still addressed by OMISSION on the wire (Rust's `wire_selector`); that is a wire
+// rule, and the argument is always present.
+
+/** A read's arguments: the optional `{ pair }` merged in, or `args` untouched when it names none. */
+const readArgs = (args, { pair } = {}) => (pair ? { ...args, pair } : args);
+
+/** A write: `pair` is required, and its absence is a rejected call and nothing is sent. */
+function write(command, args, pair) {
+  if (typeof pair !== "string" || pair === "") {
+    return Promise.reject(
+      new Error(`${command}: a folder pair is required — pass the pair this action was drawn for`),
+    );
+  }
+  return invoke(command, { ...args, pair });
+}
+
+/** What the command takes of a conflict. The store tags its conflicts with their `pair`; the wire does not carry it. */
+const wireConflict = ({ original, sidecar, kind }) => ({ original, sidecar, kind });
+
 // Thin named wrappers over the fixed command surface.
 export const api = {
-  getStatus: () => invoke("get_status"),
-  pause: () => invoke("pause"),
-  resume: () => invoke("resume"),
-  syncNow: () => invoke("sync_now"),
+  getStatus: (opts) => invoke("get_status", readArgs(undefined, opts)),
+  pause: ({ pair } = {}) => write("pause", {}, pair),
+  resume: ({ pair } = {}) => write("resume", {}, pair),
+  syncNow: ({ pair } = {}) => write("sync_now", {}, pair),
   // Settings › `Sweep now`. NOT `syncNow`: this latches the next pass to a full-tree walk, which is
   // the whole difference between the two under an event-driven default.
-  resync: () => invoke("resync"),
+  resync: ({ pair } = {}) => write("resync", {}, pair),
   // `literalPath: true` (the default) marks `target` as a row's actual relative path, so a file
   // literally named "all" can never be mistaken for the every-item selector; the Approve-all /
   // Deny-all buttons pass `false` with the explicit "all" argument.
   // `direction` is only read when NOTHING PENDING matches `target` — the Plan screen approving its
   // own plan's deletion before any pass has withheld it (#227). A pending item's own direction wins,
   // and an approval with neither authorises nothing.
-  approve: (target, literalPath = true, direction = null) =>
-    invoke("approve", { target, literalPath, direction }),
-  deny: (target, literalPath = true) => invoke("deny", { target, literalPath }),
+  //
+  // `target` is a path relative to the root of the pair named in the trailing `{ pair }`, so the two
+  // travel together or the path means a different file.
+  approve: (target, literalPath = true, direction = null, { pair } = {}) =>
+    write("approve", { target, literalPath, direction }, pair),
+  deny: (target, literalPath = true, { pair } = {}) => write("deny", { target, literalPath }, pair),
   // `Keep it` / `Keep both files` (#224). NOT `deny`, which only revokes an approval: this refuses
   // the deletion — the daemon purges the baseline record and puts the surviving copy back on the
   // other side — so the row does not return on the next poll.
-  keep: (target, literalPath = true) => invoke("keep", { target, literalPath }),
-  listPendingDeletions: () => invoke("list_pending_deletions"),
+  keep: (target, literalPath = true, { pair } = {}) => write("keep", { target, literalPath }, pair),
+  listPendingDeletions: (opts) => invoke("list_pending_deletions", readArgs(undefined, opts)),
   readConfig: () => invoke("read_config"),
   writeConfig: (update) => invoke("write_config", { update }),
   // Settings › `Choose…`. Resolves `null` when the picker is DISMISSED and rejects when it could
   // not open — the two were one answer until Copilot's second pass, which made a broken picker
   // indistinguishable from a closed one.
   chooseFolder: (start) => invoke("choose_folder", { start: start ?? null }),
-  runDryRun: () => invoke("run_dry_run"),
+  runDryRun: ({ pair } = {}) => write("run_dry_run", {}, pair),
   // `apply <token>` (#100). Resolves with the daemon's typed `ApplyOutcome` — `applied`,
   // `diverged`, `stale`, `paused`, `failed` — because what the screen does next depends on
   // which one, and a client must never tell them apart by matching a sentence (#103).
-  applyPlan: (token, skipDestructive) =>
-    invoke("apply_plan", { token, skipDestructive: skipDestructive === true }),
+  //
+  // The pair is the one the PLAN was made for: a token is a plan's identity within one pair, and
+  // applied to another it is `stale` at best.
+  applyPlan: (token, skipDestructive, { pair } = {}) =>
+    write("apply_plan", { token, skipDestructive: skipDestructive === true }, pair),
   // `listRemote` WAS HERE and is gone with the command behind it (#311): it shelled the
   // `proton-drive` CLI from the GUI process, beside the daemon's own client, for no caller at all.
   // A remote listing is `ControlCommand::List` over the socket when something needs one.
-  scanConflicts: () => invoke("scan_conflicts"),
-  resolveConflict: (conflict, choice) => invoke("resolve_conflict", { conflict, choice }),
-  readConflictPair: (conflict) => invoke("read_conflict_pair", { conflict }),
-  pathSyncStatus: (relativePath) => invoke("path_sync_status", { relativePath }),
+  scanConflicts: (opts) => invoke("scan_conflicts", readArgs(undefined, opts)),
+  // A write: it overwrites or removes a file in the root of the pair the conflict was found in.
+  resolveConflict: (conflict, choice, { pair } = {}) =>
+    write("resolve_conflict", { conflict: wireConflict(conflict), choice }, pair),
+  readConflictPair: (conflict, opts) =>
+    invoke("read_conflict_pair", readArgs({ conflict: wireConflict(conflict) }, opts)),
+  pathSyncStatus: (relativePath, opts) => invoke("path_sync_status", readArgs({ relativePath }, opts)),
   // The lookup field's search (S5). Takes a name, a path fragment or a pasted absolute path and
   // answers `{ matches: [{ path, status }], total, query }` — the resolved query included, because
   // the backend is what expands `~` and strips the sync root, so the screen must not re-derive it.
-  searchFiles: (query, limit) => invoke("search_files", { query, limit: limit ?? null }),
+  searchFiles: (query, limit, opts) =>
+    invoke("search_files", readArgs({ query, limit: limit ?? null }, opts)),
+  // The window's choice of folder pair (#102 phase 5a-2). Resolves with the name Rust stored, and
+  // rejects for a pair it cannot place. Nothing draws a selector yet; this is the seam it will use.
+  selectPair: (name) => invoke("select_pair", { name }),
   startService: () => invoke("start_service"),
   // Resolves with the typed `RestartOutcome` — `{ ending, detail|reason }` — because the five
   // endings are five different things to say about someone's files and two of them are opposites:
@@ -75,8 +123,8 @@ export const api = {
   // joins them onto the sync root and refuses anything that is not under it. `openRemote` takes no
   // argument at all: the URL is a constant in Rust, because no per-file Proton Drive link is
   // derivable from anything the daemon reports.
-  openPaths: (relative) => invoke("open_paths", { relative }),
-  openFolder: (relative) => invoke("open_folder", { relative }),
+  openPaths: (relative, opts) => invoke("open_paths", readArgs({ relative }, opts)),
+  openFolder: (relative, opts) => invoke("open_folder", readArgs({ relative }, opts)),
   openRemote: () => invoke("open_remote"),
   openSystemLog: () => invoke("open_system_log"),
   // The notification banners (S9). `payload` is `payloadFor(spec)` from `ui/notification.js`, so the
@@ -89,9 +137,10 @@ export const api = {
   writeNotifyPolicy: (policy) => invoke("write_notify_policy", { policy }),
   // The Phase-1 capability commands (C2/C4/C5). `path` prices a folder before the config is
   // written; omitted, `free_space` uses the configured local root.
-  freeSpace: (path) => invoke("free_space", { path: path ?? null }),
+  freeSpace: (path, opts) => invoke("free_space", readArgs({ path: path ?? null }, opts)),
   checkCli: () => invoke("check_cli"),
-  skipRuleUsage: (patterns, include) => invoke("skip_rule_usage", { patterns, include: include ?? null }),
+  skipRuleUsage: (patterns, include, opts) =>
+    invoke("skip_rule_usage", readArgs({ patterns, include: include ?? null }, opts)),
   // F4's Ctrl W / Ctrl Q. Both go through the same backend paths the tray menu uses, so the
   // shortcut and the menu item cannot drift apart.
   //
@@ -115,6 +164,14 @@ export const api = {
     window.__TAURI__.event
       .listen("tray-navigate", (e) => cb(e.payload))
       .catch((err) => console.error("tray-navigate listen failed:", err));
+  },
+  // Subscribe to the backend's `pair-selected` event: `select_pair` ran, from either webview, and the
+  // payload is the name. Every webview polls again at once instead of waiting out its cadence.
+  onPairSelected: (cb) => {
+    if (!inTauri()) return;
+    window.__TAURI__.event
+      .listen("pair-selected", (e) => cb(e.payload))
+      .catch((err) => console.error("pair-selected listen failed:", err));
   },
   /**
    * A click on one of a banner's buttons (S9). The payload is `{ id, kind, action }` — the action id
@@ -144,6 +201,11 @@ export const EMPTY_CONFIG = {
   path: "~/.config/proton-sync/proton-sync.toml",
   exists: false,
   toml: "",
+  // The pairs the file declares, in file order (`ConfigPayload.pairs`). Empty here: the preview's
+  // "no config file" has declared nothing — a real missing file lists the one implicit pair, which
+  // places no roots and so answers the same question the same way (`configHasPair`). The point is the
+  // SHAPE: a screen reading `config.pairs.some(…)` must not throw in browser preview and nowhere else.
+  pairs: [],
   local_root: null,
   remote_root: null,
   scan_interval_secs: null,
@@ -181,7 +243,8 @@ function mockInvoke(cmd, args) {
     // keeps a partly-described frame useful rather than blank.
     switch (cmd) {
       case "get_status":
-        return Promise.resolve(fixture.status);
+        // `?pairs=1`: the same frame, answered as a daemon that lists one pair would (N=1 identity).
+        return Promise.resolve(previewPairs() ? withOnePair(fixture.status) : fixture.status);
       case "scan_conflicts":
         return Promise.resolve(fixture.conflicts ?? []);
       case "list_pending_deletions":
@@ -216,7 +279,11 @@ function mockInvoke(cmd, args) {
         // reads the STATUS first (`app.js`'s `live?.local_root ?? configInfo?.local_root`), which is
         // the correct precedence anyway — a running daemon's roots are ground truth and the file is
         // the fallback.
-        return Promise.resolve(fixture.config ?? EMPTY_CONFIG);
+        return Promise.resolve(
+          previewPairs()
+            ? withOnePairConfig(fixture.config ?? EMPTY_CONFIG)
+            : (fixture.config ?? EMPTY_CONFIG),
+        );
       case "read_conflict_pair":
         if (fixture.conflictPair) return Promise.resolve(fixture.conflictPair);
         break;
@@ -385,6 +452,10 @@ function mockInvoke(cmd, args) {
       });
     case "start_service":
       return Promise.resolve("asked systemd to start proton-syncd (preview mock)");
+    case "select_pair":
+      // Resolves with the name, as the command does. There is exactly one pair in a preview, so
+      // nothing here can be refused.
+      return Promise.resolve(args?.name ?? null);
     case "open_paths":
     case "open_folder":
     case "open_remote":
@@ -500,6 +571,7 @@ function mockInvoke(cmd, args) {
         path: "~/.config/proton-sync/proton-sync.toml",
         exists: true,
         toml: "# preview\n",
+        pairs: [{ name: "default", local_root: "~/ProtonDrive", remote_root: "/Drive/RemoteFolder" }],
         local_root: "~/ProtonDrive",
         remote_root: "/Drive/RemoteFolder",
         scan_interval_secs: 300,

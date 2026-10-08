@@ -55,6 +55,11 @@ pub struct FakePair {
     pub db_path: PathBuf,
     pub paused: bool,
     pub pending_deletions: usize,
+    /// When the pair last synced. `None` is a pair that never has — and, since a fake reply's
+    /// status history is always empty, the state a full reply derives `FirstRun` from.
+    pub last_sync: Option<u64>,
+    /// Why the pair's last pass failed, or why it is unavailable (an unplugged drive).
+    pub last_error: Option<String>,
     plan_seq: u64,
     apply_seq: u64,
 }
@@ -80,9 +85,24 @@ impl FakePair {
             db_path: db_path.to_owned(),
             paused: false,
             pending_deletions: 0,
+            last_sync: Some(FAKE_LAST_SYNC),
+            last_error: None,
             plan_seq: 0,
             apply_seq: 0,
         }
+    }
+
+    /// A pair that has never synced: no last sync, and (as every fake reply's history is empty) the
+    /// state a full reply derives `FirstRun` from.
+    pub fn never_synced(mut self) -> Self {
+        self.last_sync = None;
+        self
+    }
+
+    /// A pair whose last pass failed with `reason`, or whose folder is unavailable.
+    pub fn failing(mut self, reason: &str) -> Self {
+        self.last_error = Some(reason.to_owned());
+        self
     }
 
     fn summary(&self) -> PairSummary {
@@ -94,8 +114,8 @@ impl FakePair {
             paused: self.paused,
             syncing: false,
             reconcile_seq: 0,
-            last_sync_epoch_secs: Some(FAKE_LAST_SYNC),
-            last_error: None,
+            last_sync_epoch_secs: self.last_sync,
+            last_error: self.last_error.clone(),
             pending_changes: 0,
             pending_deletions: self.pending_deletions,
         }
@@ -246,6 +266,13 @@ impl FakeDaemon {
         lock(&self.shared.requests).clear();
     }
 
+    /// Replace the pairs this daemon runs — a restart onto a different config, with the same socket.
+    /// A client that remembered the old list now addresses names the daemon no longer knows.
+    pub fn set_pairs(&self, pairs: Vec<FakePair>) {
+        assert!(!pairs.is_empty(), "a fake daemon runs at least one pair");
+        *lock(&self.shared.pairs) = pairs;
+    }
+
     /// Whether the named pair is paused right now — the side effect `pause`/`resume` have.
     pub fn is_paused(&self, name: &str) -> bool {
         lock(&self.shared.pairs)
@@ -378,8 +405,8 @@ fn reply_for(shape: Shape, pairs: &[FakePair], index: usize) -> ControlResponse 
         reconcile_seq: 0,
         pending_changes: 0,
         message: "fake daemon".to_owned(),
-        last_sync_epoch_secs: Some(FAKE_LAST_SYNC),
-        last_error: None,
+        last_sync_epoch_secs: pair.last_sync,
+        last_error: pair.last_error.clone(),
         last_plan_summary: None,
         last_successful_sync_summary: None,
         status_history: Vec::new(),
@@ -439,6 +466,31 @@ pub fn write_index(db_path: &Path, relative_paths: &[&str]) {
         )
         .expect("the record is written");
     }
+}
+
+/// File `text` as the version both sides last agreed on for `relative_path`, in the index at
+/// `db_path` — the row a conflict card reads its first line from (#217/#347).
+///
+/// The index is opened (and its schema created) if it is not there. A test gives each pair an
+/// ancestor of a different SHAPE, so which index a command opened shows in what it reports.
+pub fn write_agreed_summary(db_path: &Path, relative_path: &str, text: &str) {
+    use proton_drive_sync_engine::ancestor::LineSummary;
+    use proton_drive_sync_engine::index::{initialize_schema, open_database, store_agreed_summary};
+
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent).expect("the index directory is created");
+    }
+    let connection = open_database(db_path).expect("the index opens");
+    initialize_schema(&connection).expect("the schema is created");
+    let summary = LineSummary::of(text).expect("a summarisable text");
+    store_agreed_summary(
+        &connection,
+        Path::new(relative_path),
+        "agreed-digest",
+        &summary,
+        1,
+    )
+    .expect("the summary is written");
 }
 
 #[cfg(test)]
@@ -561,6 +613,34 @@ mod tests {
         // The request was still received, and the other verbs still work.
         assert_eq!(daemon.requests().len(), 1);
         status(&daemon, Target::DEFAULT);
+    }
+
+    /// The fake can be made to say the states a GUI test needs, and to change its mind: a restart
+    /// onto fewer pairs leaves a client holding a name the daemon has dropped.
+    #[test]
+    fn a_pair_can_be_never_synced_or_failing_and_the_pairs_can_be_replaced_at_the_same_socket() {
+        use crate::state::{DaemonState, derive_state};
+        let daemon = FakeDaemon::multi_pair(vec![
+            FakePair::new("a"),
+            FakePair::new("b").never_synced(),
+            FakePair::new("c").failing("the sync folder is not available"),
+        ])
+        .start();
+        let state_of = |name| derive_state(Ok(&status(&daemon, Target::named(name))));
+        assert_eq!(state_of("a"), DaemonState::Idle);
+        assert_eq!(state_of("b"), DaemonState::FirstRun);
+        assert_eq!(state_of("c"), DaemonState::Failed);
+        let listed = status(&daemon, Target::DEFAULT).pairs;
+        assert_eq!(listed[1].last_sync_epoch_secs, None);
+        assert_eq!(
+            listed[2].last_error.as_deref(),
+            Some("the sync folder is not available")
+        );
+
+        daemon.set_pairs(vec![FakePair::new("a")]);
+        let after = status(&daemon, Target::named("b"));
+        assert_eq!(after.pair, None, "`b` is gone");
+        assert_eq!(after.pairs.len(), 1);
     }
 
     #[test]

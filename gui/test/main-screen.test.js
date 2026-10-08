@@ -26,6 +26,7 @@ import {
   hiddenTransfers,
   heroActionsOf,
   heroStateOf,
+  MARK_STATE,
   mainView,
   quotedError,
   subOf,
@@ -63,6 +64,74 @@ test("an expired sign-in never falls through to `Everything is up to date`", () 
   assert.notEqual(heroStateOf(state({ daemonState: "authExpired" })), "settled");
   // Still below unreachable, and it does not become the syncing hero if a pass is somehow in flight.
   assert.equal(heroStateOf(state({ daemonState: "authExpired", syncing: true })), "authExpired");
+});
+
+test("a_never_synced_pair_is_not_drawn_as_settled", () => {
+  // #102 phase 5a-2 (E14). At two folders or more the first-run takeover never arms, so a pair that
+  // has not synced yet reaches the main screen — which had no hero for it and fell through to
+  // `settled`: `Everything is up to date` over a folder nothing has copied, the same false all-clear
+  // #246 removed for a failed pass, in a state the window could not reach until now.
+  const never = (over = {}) => state({ daemonState: "firstRun", drawsFirstRun: true, ...over });
+  assert.equal(heroStateOf(never()), "firstRun");
+  assert.notEqual(heroStateOf(never()), "settled");
+  // Ahead of the watch queue, as `derive_state` decides it: an event for the new folder is no reason
+  // to call it syncing, and a decision elsewhere does not displace it.
+  assert.equal(heroStateOf(never({ pending: 5 })), "firstRun");
+  assert.equal(heroStateOf(never({ waiting: 2 })), "firstRun");
+  // Below the states that outrank it.
+  assert.equal(heroStateOf(never({ daemonState: "unreachable" })), "unreachable");
+  assert.equal(heroStateOf(never({ daemonState: "authExpired" })), "authExpired");
+});
+
+test("a_surface_that_does_not_ask_for_the_never_synced_hero_gets_what_it_always_got", () => {
+  // D2: a one-folder user sees nothing new. At one folder the takeover owns `firstRun`, and the main
+  // screen behind the first-sync dialogs has always drawn `settled` for it. That is not endorsed —
+  // it is what must not change in this PR — so it is pinned, as the other side of the test above.
+  assert.equal(heroStateOf(state({ daemonState: "firstRun" })), "settled");
+  const one = mainView({ daemonState: "firstRun", response: { pending_changes: 0 }, pairCount: 1 });
+  assert.equal(one.hero, "settled");
+  assert.equal(headlineOf(one), MAIN.settled);
+  const legacy = mainView({ daemonState: "firstRun", response: { pending_changes: 0 } });
+  assert.equal(legacy.hero, "settled", "a view written before pairs existed is the one-pair case");
+});
+
+test("the never-synced hero says the tray's two sentences, with no numeral and the generic buttons", () => {
+  const v = mainView({ daemonState: "firstRun", response: { pending_changes: 0 }, pairCount: 2 });
+  assert.equal(v.hero, "firstRun");
+  assert.equal(headlineOf(v), TRAY.nothingSyncedYet);
+  assert.equal(subOf(v), TRAY.nothingSyncedYetSub);
+  assert.equal(v.numeral, null, "a count inside the mark would be a queue of zero things");
+  assert.deepEqual(
+    heroActionsOf(v).map((action) => action.on),
+    ["onSyncNow", "onPause"],
+    "a pair that has not synced can be synced now, or paused — it is not a state with nothing to do",
+  );
+});
+
+test("every hero the screen can be in has a mark measured for it", () => {
+  // `heroMark` THROWS for a hero it has no mark for, at render time, in a state no frame draws.
+  const reachable = new Set();
+  for (const daemonState of [
+    "idle",
+    "running",
+    "paused",
+    "authExpired",
+    "failed",
+    "unreachable",
+    "firstRun",
+  ]) {
+    for (const syncing of [false, true]) {
+      for (const waiting of [0, 2]) {
+        for (const pending of [0, 3]) {
+          for (const drawsFirstRun of [false, true]) {
+            reachable.add(heroStateOf({ daemonState, syncing, waiting, pending, drawsFirstRun }));
+          }
+        }
+      }
+    }
+  }
+  assert.ok(reachable.has("firstRun"), "the premise: the sweep reaches the new hero");
+  for (const hero of reachable) assert.ok(MARK_STATE[hero], `no mark for the "${hero}" hero`);
 });
 
 test("the sign-in hero quotes the deck's one sentence, split in two", () => {

@@ -98,6 +98,8 @@ pub fn run() {
             commands::deny,
             commands::keep,
             commands::list_pending_deletions,
+            // The window's choice of folder pair (#102 phase 5a-2). The one writer of the selection.
+            commands::select_pair,
             commands::read_config,
             commands::write_config,
             commands::choose_folder,

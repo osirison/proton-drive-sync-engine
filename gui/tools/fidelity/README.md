@@ -1,36 +1,91 @@
 # The fidelity harness (F8, F9)
 
-What makes "100% fidelity" checkable rather than a claim. Ten gates over the 51 in-scope frames of
+What makes "100% fidelity" checkable rather than a claim. Twelve gates over the 51 in-scope frames of
 `docs/design-v2/Drive Sync.dc.html`.
 
 ```
 npm run fidelity:extract    # regenerate frames/*.json from the prototype
-npm run fidelity            # style, unstamped, unclaimed, collision, fit, hue, squeeze, copy, contrast
+npm run fidelity            # style, unstamped, unclaimed, collision, fit, hue, squeeze, copy, contrast, n1, pairs
 npm run fidelity:fixtures   # the fixture registry gate                           (Node only)
 npm run fidelity:contrast   # the contrast gate on its own; `--report` writes the distribution
+npm run fidelity:n1         # the N=1 identity gate on its own
+npm run fidelity:pairs      # the pair-routing gate on its own
 ```
 
-## The ten gates
+## The twelve gates
 
-| Gate                              | Compares                                                                        | Runs today?                        |
-| --------------------------------- | ------------------------------------------------------------------------------- | ---------------------------------- |
-| **style** `assert.mjs`            | every mapped app node's computed styles against the drawn node                  | on whatever carries a `data-fid`   |
-| **unstamped** `assert.mjs`        | a frame's declared fid slots against the ones the app stamped                   | yes, every declared slot           |
-| **unclaimed** `assert.mjs`        | every drawn node against the slots that name it — the mirror of the row above   | yes, 268 declared in 29 entries    |
-| **collision** `assert.mjs`        | two elements carrying one `data-fid` — a duplication no per-node gate counts    | yes, every stamped node            |
-| **fit** `assert.mjs`              | every full window renders at exactly 1040×764, nothing painting over the footer | yes                                |
-| **hue** `assert.mjs`              | a settled surface contains no saturated colour anywhere                         | yes, all 5 settled frames          |
-| **squeeze** `assert.mjs`          | a compact panel keeps its drawn height in a window too short for it             | yes, all 11 compact frames         |
-| **copy** `copy-gate.mjs`          | every fixed string in `ui/copy.js` appears verbatim in the frames               | yes, every string and 74 templates |
-| **contrast** `check-contrast.mjs` | every text node is legible against what is actually behind it, in both themes   | yes, 1233 nodes across 51 frames   |
-| **fixtures** `check-fixtures.mjs` | every in-scope frame has a dataset, of the shape its class implies              | yes, all 51                        |
+| Gate                               | Compares                                                                        | Runs today?                         |
+| ---------------------------------- | ------------------------------------------------------------------------------- | ----------------------------------- |
+| **style** `assert.mjs`             | every mapped app node's computed styles against the drawn node                  | on whatever carries a `data-fid`    |
+| **unstamped** `assert.mjs`         | a frame's declared fid slots against the ones the app stamped                   | yes, every declared slot            |
+| **unclaimed** `assert.mjs`         | every drawn node against the slots that name it — the mirror of the row above   | yes, 268 declared in 29 entries     |
+| **collision** `assert.mjs`         | two elements carrying one `data-fid` — a duplication no per-node gate counts    | yes, every stamped node             |
+| **fit** `assert.mjs`               | every full window renders at exactly 1040×764, nothing painting over the footer | yes                                 |
+| **hue** `assert.mjs`               | a settled surface contains no saturated colour anywhere                         | yes, all 5 settled frames           |
+| **squeeze** `assert.mjs`           | a compact panel keeps its drawn height in a window too short for it             | yes, all 11 compact frames          |
+| **copy** `copy-gate.mjs`           | every fixed string in `ui/copy.js` appears verbatim in the frames               | yes, every string and 74 templates  |
+| **contrast** `check-contrast.mjs`  | every text node is legible against what is actually behind it, in both themes   | yes, 1233 nodes across 51 frames    |
+| **fixtures** `check-fixtures.mjs`  | every in-scope frame has a dataset, of the shape its class implies              | yes, all 51                         |
+| **n1** `check-n1-identity.mjs`     | every frame renders the same bytes when the daemon lists one folder pair        | yes, all 51 — see its reach below   |
+| **pairs** `check-pair-routing.mjs` | a write acts on the pair it was drawn for, not the one selected when it runs    | yes, 10 scenarios (#102 phase 5a-2) |
 
-Seven of the ten are `assert.mjs` and need a browser. **contrast** needs one too. **copy** does
+Seven of the twelve are `assert.mjs` and need a browser. **contrast**, **n1** and **pairs** need one
+too. **copy** does
 not — it reads `ui/copy.js` and the frame JSON — but rides the `fidelity` CI job anyway because
 `npm run fidelity` chains it. **fixtures** needs no browser either and runs in `frontend` alongside
 the linters, which is where a gate that can finish in the fifteen-second job belongs.
 
-## The squeeze gate, and the condition the other nine cannot be in (S8)
+## The two folder-pair gates (#102 phase 5a-2)
+
+Neither compares a frame to a drawing. Both exist because a decision the maintainer took — **a user
+with one folder sees nothing new** (D2) — and a rule the app must keep — **a write acts on the folder it
+was drawn for** — are claims about _two renderings_ and about _time_, which a gate that looks at one
+rendering of one drawing at one instant cannot make.
+
+- **n1.** All 51 fixtures are replies from a daemon that predates folder pairs (no `pair`, no
+  `pairs`). `?pairs=1` (`fixtures/preview.js`) answers the same frame the way a current daemon with one
+  pair does, and the gate requires the two `outerHTML`s of the app root to be equal — no tolerance, no
+  stored digest. A frame that does not render the same bytes twice from one URL fails as such, so the
+  comparison does not fail at random — which holds because **the clock is pinned** (below) and because a
+  frame is sampled only when it has **settled**: three samples 100 ms apart, each taken with no finite
+  animation running (`document.getAnimations()`), and a page that has not settled within 8 s fails
+  rather than passes. The first rule alone was not enough: three equal samples span 200 ms, the band's
+  entrance animation lasts 220 ms and removes `is-entering` only on `animationend`, so a run under load
+  could sample a frame inside it (`9a Consent`, about 1 run in 10 with five runs in parallel). Measured
+  after the fix by the agent that made it: **16 of 16 runs passed**, 5 alone, 6 with 3 runs in
+  parallel and 5 with 5 in parallel. The review that followed could not repeat the 5-way batch:
+  under that load, page loads hit puppeteer's 30 s navigation timeout and the run crashed. A crash
+  exits non-zero, so it fails closed and never passes. Its 3-way and standalone runs all passed. It
+  cannot see a state no frame draws (the never-synced hero is reachable only at two folders).
+
+  **What "51/51" reaches** is printed on the line under the result, **measured** by running
+  `withOnePair`/`withOnePairConfig` on every fixture and counting the replies that came back different
+  (it was counted from the fixtures with a copy of the injection's test, which printed the same figures
+  for an injection that reached no config reply at all), because the number alone reads as fifty-one
+  frames each rewritten end to end. The gate fails outright if the status reply or the config was
+  rewritten on none; the per-shape decision is pinned by `gui/test/preview-pairs.test.js`. Today: the **status** reply is
+  rewritten on the **27** frames whose fixture carries one, **3** more carry a payload with no reply and
+  gain `selected` alone, and **21** describe no status and are answered by the generic mock, which the
+  listing does not touch. The **`read_config`** reply is asked for by every frame and rewritten on **46**
+  (13 describe a config of their own, 38 take the empty one — a missing file, which a current build
+  answers with the one implicit pair too); the other **5** already list a pair and keep it. So a
+  status-bearing screen was compared on 30 frames and a config-bearing one on 46, and the comparison is
+  exact on all of them rather than moved on all of them.
+
+- **pairs.** `app.js` cannot be imported, so this runs the real page against a scripted stand-in for the
+  Tauri bridge that answers each command and can hold a reply open — for a named pair, so two reads of one
+  command for two folders can be released in either order — which is what makes the gap between a press and
+  the daemon's answer something a test can stand in. Ten scenarios: the follow-up to an approval; the press
+  of `Run this sync` (pair and token are committed at the press); a switch between two folders that draw
+  identical cards; the hero's buttons after a switch that patches the hero in place; a never-synced pair at
+  two folders and at one; a **late conflict read** for the folder that was left (two folders in conflict at
+  one path, the older read answering after the newer was issued); a **decision on a conflict** pressed after
+  the selection moved, and the **continuation of a late decision** (it must not move the card the other
+  folder is now showing); and the **tray panel's pin** to the default pair. Its waits are conditions: a reply
+  is "landed" when a later call to the bridge has come back, because replies reach the page in the order
+  they were sent. It proves the facade and the screens agree; Rust's half is `selection_tests.rs`.
+
+## The squeeze gate, and the condition the other eleven cannot be in (S8)
 
 Every gate above opens its frame at **1040×764**, which is the window — and a 362×365 compact panel
 has 399px of slack there, so nothing can compress it. The tray window has no slack at all: it is
@@ -314,13 +369,26 @@ Three of this harness's first four CI failures were the environment leaking into
 never the code. A fidelity gate that does not pin its environment measures its environment, so both
 scripts fix the same things at the same call sites:
 
-| Pinned                                      | Why                                                                                                                                                                                                                      |
-| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| viewport `1040×764`, `deviceScaleFactor: 1` | a length must be one CSS pixel, rounded once                                                                                                                                                                             |
-| `prefers-color-scheme` **per frame**        | the `12a` set is the light theme; everything else is dark. A headless browser's default is a property of the platform, and unpinned this compared dark frames to a light app — 187 failures no developer could reproduce |
-| `prefers-reduced-motion: no-preference`     | four app stylesheets answer it and every one sets `animation: none`, and animation properties are asserted. The prototype has no reduced-motion rules at all                                                             |
-| `@font-face` injected into the prototype    | it declares the families and has no `@font-face`, so unpinned it renders in whatever the machine falls back to                                                                                                           |
-| every animation seeked to 0 and paused      | otherwise the harness records animation _phase_: `opacity` 0.82 one run and 0.79 the next, and a `blip` dot measured 8.8px because the reading caught the 1.5× transform mid-cycle                                       |
+| Pinned                                      | Why                                                                                                                                                                                                                                                                                                                                                                                              |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| viewport `1040×764`, `deviceScaleFactor: 1` | a length must be one CSS pixel, rounded once                                                                                                                                                                                                                                                                                                                                                     |
+| `prefers-color-scheme` **per frame**        | the `12a` set is the light theme; everything else is dark. A headless browser's default is a property of the platform, and unpinned this compared dark frames to a light app — 187 failures no developer could reproduce                                                                                                                                                                         |
+| `prefers-reduced-motion: no-preference`     | four app stylesheets answer it and every one sets `animation: none`, and animation properties are asserted. The prototype has no reduced-motion rules at all                                                                                                                                                                                                                                     |
+| `@font-face` injected into the prototype    | it declares the families and has no `@font-face`, so unpinned it renders in whatever the machine falls back to                                                                                                                                                                                                                                                                                   |
+| every animation seeked to 0 and paused      | otherwise the harness records animation _phase_: `opacity` 0.82 one run and 0.79 the next, and a `blip` dot measured 8.8px because the reading caught the 1.5× transform mid-cycle                                                                                                                                                                                                               |
+| the clock, to `2026-01-15 10:30:30 UTC`     | `fixtures/clock.js` freezes `Date.now()` per page load at whatever the machine reads, so two loads of one URL froze at two instants and a frame that prints an absolute time (`since 15:17`, eight of them) differed whenever a minute fell between them — `fidelity:n1` failed CI at random. `clock-pin.mjs` installs one instant before the page's scripts run, so `clock.js` freezes **that** |
+| the time zone, to UTC                       | `clock()` and `monthYear()` format in the machine's zone, so a fixed instant alone printed `10:29` on one runner and `11:29` on another                                                                                                                                                                                                                                                          |
+
+**The pin is kept honest by a skew.** `fidelity:n1` arms every load with a real clock that reads 61 seconds
+more than the previous load's (`armClock(page, { realClockSkewMs })`). The page cannot see it while the pin
+holds. If the pin ever stops holding, every pair of loads then straddles a minute boundary instead of
+one pair in three, and the same eight frames fail on every run rather than on whichever run was unlucky.
+`FIDELITY_CLOCK_POISON=1 npm run fidelity:n1` is that regression on demand (as `S10_CONTRAST_POISON` is for
+the contrast gate): it leaves the skew and drops the pin, and the run must exit 1 naming the eight. The
+style and contrast gates arm the same pin without the skew. Neither has the exposure: the style gate's
+boxes for the eight frames that print a time measured identical at seven instants across the day, and a colour does not depend on the text it paints. So for them this is the
+environment held still, not a flake removed. `gui/test/clock-pin.test.js` runs the installer against `clock.js`
+without a browser, with a positive control, and fails any gate that opens a `?frame=` page without it.
 
 `forced-colors` is **not** pinned — puppeteer rejects it as unsupported. Nothing in the app answers
 it today, so nothing is unpinned in practice, but the first stylesheet that does will need a way.

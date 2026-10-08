@@ -24,6 +24,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer";
+import { armClock } from "./clock-pin.mjs";
 import { serve } from "./serve.mjs";
 import {
   STYLE_PROPS,
@@ -89,6 +90,11 @@ const browser = await puppeteer.launch({ headless: true, args: ["--no-sandbox"] 
 const page = await browser.newPage();
 // Exactly the window. `deviceScaleFactor:1` so a length is a CSS pixel and nothing is rounded twice.
 await page.setViewport({ width: 1040, height: 764, deviceScaleFactor: 1 });
+// The instant and the zone every load reads (`clock-pin.mjs`). Nothing here compares a printed time —
+// the geometry of the eight frames that print one measured identical at seven instants of the day —
+// but a gate that leaves the clock to the machine is measuring the machine, and the day a time is
+// drawn in a proportional face this one flakes exactly as `fidelity:n1` did.
+await armClock(page);
 
 const index = JSON.parse(readFileSync(join(FRAMES, "index.json"), "utf8"));
 

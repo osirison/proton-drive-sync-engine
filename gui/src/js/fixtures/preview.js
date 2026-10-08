@@ -9,11 +9,14 @@
 //   ?frames                 the index — every in-scope frame, linked
 //   ?frame=<label>          that frame's dataset (api.js serves it to every command)
 //   ?theme=light|dark       an explicit override, for looking at a light frame on a dark machine
+//   ?pairs=1                the same frame, answered as a daemon that lists ONE folder pair would
+//                           answer it — what `check-n1-identity.mjs` renders beside the plain one
 //
 // None of this ships to a user: the packaged app has no address bar, and every entry point below
 // returns early when its parameter is absent. Same discipline as `fid()`.
 
 import { FIXTURES, activeFixture, fid } from "./frames.js";
+import { DEFAULT_PAIR } from "../store.js";
 import { el } from "../ui/el.js";
 import { trayGlyph } from "../ui/hexagon.js";
 import { bannerFor, renderBanner } from "../ui/notification.js";
@@ -52,6 +55,76 @@ export function applyPreviewTheme() {
   const theme = previewTheme();
   if (theme) document.documentElement.setAttribute("data-theme", theme);
   return Boolean(theme);
+}
+
+/**
+ * `?pairs=1` — render the frame as a daemon that lists ONE pair would have answered it (#102 phase
+ * 5a-2). All 51 fixtures are one-pair, legacy-shaped replies: no `pair`, no `pairs`. A current daemon
+ * answers the same screen with both, and **the screen must not look any different for it** (D2: a
+ * one-folder user sees nothing new). That is a claim about two renderings of one frame, and this is
+ * the second one; `tools/fidelity/check-n1-identity.mjs` compares them byte for byte.
+ *
+ * Never inferred and never persisted, for the reason `?theme=` is not: it is a human's (or a gate's)
+ * decision about what to look at, and the packaged app has no address bar to type it into.
+ */
+export function previewPairs() {
+  return params().get("pairs") === "1";
+}
+
+/**
+ * The status payload as the app receives it from a daemon that lists one pair: the reply gains
+ * `pair` and a one-entry `pairs`, and the payload gains `selected`, `pairs` and `pair_states` — what
+ * `commands.rs`'s `StatusPayload` adds. Built from the fixture's own numbers, so the entry says what
+ * the reply says (a summary that disagreed with its reply would be a different frame, not the same
+ * frame with a field added).
+ *
+ * A payload with no reply (the socket failed) gains `selected` alone: that is all Rust knows then.
+ */
+export function withOnePair(status) {
+  if (!status) return status;
+  const response = status.response;
+  if (!response) return { ...status, selected: DEFAULT_PAIR };
+  const summary = {
+    name: DEFAULT_PAIR,
+    local_root: response.config?.local_root ?? "/home/u/Sync",
+    remote_root: response.config?.remote_root ?? "/Drive/Sync",
+    db_path: response.config?.db_path ?? "/home/u/Sync/.sync/sync_index.db",
+    paused: Boolean(response.paused),
+    syncing: Boolean(response.syncing),
+    reconcile_seq: response.reconcile_seq ?? 0,
+    last_sync_epoch_secs: response.last_sync_epoch_secs ?? null,
+    last_error: response.last_error ?? null,
+    pending_changes: response.pending_changes ?? 0,
+    pending_deletions: (response.pending_deletions ?? []).length,
+  };
+  return {
+    ...status,
+    selected: DEFAULT_PAIR,
+    pairs: [summary],
+    pair_states: [{ name: DEFAULT_PAIR, state: status.state }],
+    response: { ...response, pair: DEFAULT_PAIR, pairs: [summary] },
+  };
+}
+
+/**
+ * `read_config`'s reply with the `pairs` list a current build sends: the one implicit pair.
+ *
+ * A config that already LISTS pairs keeps them. One that lists NONE is rewritten, and that is every
+ * fixture there is — the 8 that describe a config file carry `pairs: []` (their `ConfigPayload` is a
+ * legacy build's), and so does `EMPTY_CONFIG`, which stands for the 43 that describe none. This used
+ * to return any config whose `pairs` was an ARRAY untouched, and an empty array is one: the injection
+ * reached no `read_config` reply at all, so the half of the N=1 comparison that is about the config
+ * (`configHasPair`, the first-run check) compared a reply with itself. A real current build answers a
+ * missing file with the implicit pair too, placing no roots (`read_config_lists_the_one_implicit_pair…`).
+ */
+export function withOnePairConfig(config) {
+  if (!config || (Array.isArray(config.pairs) && config.pairs.length > 0)) return config;
+  return {
+    ...config,
+    pairs: [
+      { name: DEFAULT_PAIR, local_root: config.local_root ?? null, remote_root: config.remote_root ?? null },
+    ],
+  };
 }
 
 /**

@@ -152,7 +152,9 @@ jobs:
       # The style and fit gates against every frame the app maps, then the copy gate over all 339
       # drawn strings in ui/copy.js (it said 224 — that was S4's count, and five screens have landed
       # since), then the contrast gate, which reads every text node in BOTH themes because the seven
-      # screens with no drawn light frame have no other check (S10).
+      # screens with no drawn light frame have no other check (S10), then the N=1 identity gate
+      # (every frame renders the same bytes when the daemon lists one folder pair — a one-folder user
+      # sees nothing new) and the pair-routing gate (a write acts on the pair it was drawn for).
       # See gui/tools/fidelity/README.md for what all of them cannot cover.
       - name: Fidelity
         run: npm run fidelity

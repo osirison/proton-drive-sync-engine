@@ -135,9 +135,21 @@ export function gateSatisfied(value) {
   return value === GATE_WORD;
 }
 
-/** `(path, direction)` — the key the daemon's own approvals table uses, so the GUI cannot key differently. */
+/**
+ * `(pair, path, direction)` — the daemon's own approvals key, `(path, direction)`, within one pair.
+ *
+ * The pair is first because the same path can be withheld in the same direction in two folders (a
+ * `notes.txt` in each), and a key that ignored it would let a decision, a busy mark or an armed
+ * gate for one folder's row land on the other's. Items come from the store tagged with the pair they
+ * were fetched for; an untagged one (a unit test's literal) keys as it always did.
+ */
 export function itemKey(item) {
-  return `${item.path}\u0000${item.direction}`;
+  return `${item.pair ?? ""}\u0000${item.path}\u0000${item.direction}`;
+}
+
+/** The key of an item's `path_sync_status` lookup: the pair as well as the path, for the same reason. */
+export function statusKey(item) {
+  return `${item.pair ?? ""}\u0000${item.path}`;
 }
 
 /**
@@ -295,7 +307,7 @@ function queueBody({ columns, statuses, busy, handlers, actions, gates, ages }) 
         cards: items.map((item, i) =>
           itemCard({
             item,
-            status: statuses.get(item.path),
+            status: statuses.get(statusKey(item)),
             c,
             i,
             busy,
@@ -688,13 +700,19 @@ function signatureOf({ items, armed, statuses, body }) {
     // the signature changes anyway — but the next thing the takeover draws off the item would
     // inherit a key that had quietly stopped meaning identity.
     const item = armedItem(items, armed);
-    return JSON.stringify(["armed", item.path, item.fingerprint]);
+    return JSON.stringify(["armed", item.pair ?? null, item.path, item.fingerprint]);
   }
   return JSON.stringify([
     "queue",
     items.map((item) => {
-      const status = statuses.get(item.path);
+      const status = statuses.get(statusKey(item));
       return [
+        // The pair FIRST (#102 phase 5a-2). Two folders can withhold the very same path in the very
+        // same direction at the very same fingerprint, and a signature that could not tell the two
+        // queues apart would patch A's cards in place when the selection moved to B: B's screen
+        // wearing A's handlers, each of which acts on the pair its card was BUILT for. A switch is a
+        // change of shape, not an update.
+        item.pair ?? null,
         item.path,
         item.direction,
         item.entity_kind,

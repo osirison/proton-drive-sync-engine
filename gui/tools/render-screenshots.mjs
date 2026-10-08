@@ -25,6 +25,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer";
+import { armClock } from "./fidelity/clock-pin.mjs";
 import { serve } from "./fidelity/serve.mjs";
 import { FIXTURES } from "../src/js/fixtures/frames.js";
 
@@ -94,6 +95,11 @@ for (const [label, stem] of SHOTS) {
     // with its mark stopped — a real state, but not the ordinary one.
     { name: "prefers-reduced-motion", value: "no-preference" },
   ]);
+  // THE CLOCK, PINNED as every fidelity gate pins it: a frame that prints an absolute time (`since
+  // 15:17`) would otherwise publish whatever the machine read when it was run, and two runs would
+  // commit two different images of one screen. Armed before the first navigation; it survives the
+  // reload below.
+  await armClock(page);
   const url = `http://127.0.0.1:${port}/index.html?frame=${encodeURIComponent(label)}`;
   await page.goto(url, { waitUntil: "networkidle0" });
   // The ⋯ menu persists an explicit choice in `localStorage`, and `:root[data-theme]` beats the

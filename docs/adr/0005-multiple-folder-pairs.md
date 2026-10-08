@@ -1545,6 +1545,48 @@ new surface, no analogue in the file today; (5c) **the selector itself, which st
 Plus the tray/notification aggregation semantics (§6), which are two decisions and little code.
 Closes: the feature for users.
 
+> **Phase 5a-2 shipped (selection, status shape, capability gate; no pixel moves for one folder), with
+> departures.** (1) **The selection is a field of the GUI's `RuntimePaths` (`selected`), not a separate
+> managed `GuiSelection`.** `resolve_at` loads it from the `gui.toml` beside the config path, so every
+> re-resolve (a save, a restart) re-reads the one file that holds it instead of each having to carry it
+> across; `select_pair` is the only writer (file first, memory second, then a `pair-selected` event).
+> (2) **A write names its pair, as a required `String`** (`pause`, `resume`, `sync_now`, `resync`,
+> `approve`, `deny`, `keep`, `run_dry_run`, `apply_plan`, `resolve_conflict`); a read takes
+> `Option<String>` and means the *selected* pair when it names none. The two are `Ask::Named` and
+> `Ask::Selected` — a write has no way to reach the selection. `tray_action` is `Ask::Default` until
+> phase 5d. (3) **The selection counts only once the daemon is known to read a selector**; before that,
+> and against an older daemon, every request is unaddressed, and the first read re-asks addressed once
+> its own reply has shown the daemon can. (4) **`deny` is behind the gate with `approve`, `keep`,
+> `resync` and `apply`**: a fresh unaddressed `status` before any of them for a non-default pair, and a
+> refusal unless the daemon still reads the field and still runs that pair. (5) **A reply that names no
+> pair is dropped, never drawn as an outage.** A selection read falls back to the default pair and says
+> so in `pair_unknown`; anything else is refused. `pair_unknown` rides on a payload whose `state` is a
+> placeholder (`DaemonState` has no variant for "that pair does not exist"): phase 5c should give the
+> screen a typed state. (6) **`heroStateOf` takes `drawsFirstRun`**: the window passes `pairCount >= 2`,
+> the tray `true`, so at one folder the main screen behind the first-sync dialogs is what it always was
+> (D2) and the tray's own copy of the rule is gone. (7) **The tray panel is pinned to the default pair**
+> (the store's `reply` mode) so it never shows the selected pair beside rows that act on the default
+> one. (8) A pair's withheld deletions are filed in the same publish as its status, so a switch never
+> shows an empty queue. Held by two browser gates in the `fidelity` job: `check-n1-identity.mjs` (every
+> frame renders the same bytes when the daemon lists one pair) and `check-pair-routing.mjs` (a write
+> acts on the pair it was drawn for, with a reply held open while the selection moves).
+>
+> **Review round on 5a-2, recorded because each changes a rule above.** (9) **The window's selection moves
+> only on a reply that describes the pair it selects.** Rust stamps `selected` when it builds the payload,
+> so a read that left for pair A before `select_pair(B)` and landed after it describes A and says B;
+> taking that `selected` moved the window to a pair with no status and drew "unreachable". (10) **A
+> selection read that is not understood is retried unaddressed**, like one that names no pair: a daemon
+> replaced by an older one mid-session answers the addressed read without a `pair`, and filing that reply
+> is what shows the capability is gone. Writes still never retry. (11) **A conflict is named by its pair
+> and its path**: two folders can both hold a conflict at `note.txt`, and keyed by path alone a late read
+> for one was accepted as the other's and drawn on the card where the person chooses which version to
+> destroy. (12) **The n1 gate pins the clock** (`clock-pin.mjs`) and counts what its injection reaches:
+> fixtures froze `Date.now()` per page load, so eight frames that print an absolute time rendered
+> differently from one URL when a minute fell between loads. Known gap, not closed here: the tray
+> panel's first poll, before the roster is known, names no pair, and Rust answers a read that names none
+> about the *selected* pair — so with a non-default pair selected the panel shows it for one poll
+> before the pin takes hold. Nothing can select a pair yet (PR 6).
+
 **Phase 6 — Shared-volume event scope (its own ADR).** §8a. Independent of everything above and
 worth doing on its own merits, since one pair already pays the cost. Not scheduled here.
 

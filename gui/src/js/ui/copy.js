@@ -1354,10 +1354,13 @@ export const TRAY = {
 
   /**
    * The two sentences for a reachable daemon that has never synced — a state NO FRAME DRAWS and the
-   * deck has no words for, because in the window it is unreachable: `app.js` intercepts `firstRun`
-   * with the onboarding takeover before the main screen renders. The tray has no takeover, so it is
-   * the one surface that must say something, and the alternative was `Everything is up to date` over
-   * a daemon that has never copied a file.
+   * deck has no words for, because in the window it is unreachable at one folder: `app.js` intercepts
+   * `firstRun` with the onboarding takeover before the main screen renders. The tray has no takeover,
+   * so it is the surface that must say something, and the alternative was `Everything is up to date`
+   * over a daemon that has never copied a file. At TWO folders or more the takeover never arms (its
+   * `Next` writes top-level roots a `[[pair]]` file refuses), so the window says the same two
+   * sentences for a pair that has not synced yet (#102 phase 5a-2) — the same words, undrawn there
+   * too, until the frame that draws a second folder.
    *
    * Written rather than measured, therefore, and kept as close to what already exists as possible:
    * the v1 tray shipped `Nothing synced yet` as a disabled menu item, and the second line points at

@@ -32,23 +32,27 @@
 //! none of the commands added since is synchronous. S9's two `notify_policy` commands were, for one
 //! commit, and the review that caught them is the reason this sentence is checkable at all.
 
-use crate::config_path::{PairRef, RuntimePaths};
+use crate::config_path::{Ask, PairRef, RuntimePaths};
 use gui_core::conflicts::{self, Conflict, Resolution};
-use gui_core::pairs::Target;
-use gui_core::state::derive_state;
+use gui_core::pairs::{PairCapability, Target};
+use gui_core::state::{derive_state, pair_states, PairState};
 use gui_core::wire::{
     ApplyOutcome, ControlCommand, ControlRequest, ControlResponse, DeleteDirection, DryRunReport,
-    LocalDisposal, PendingDeletion, PlanOutcome, PLAN_ACTIONS_MAX_LIMIT,
+    LocalDisposal, PairSummary, PendingDeletion, PlanOutcome, PLAN_ACTIONS_MAX_LIMIT,
 };
-use gui_core::{config_io, index_read, ipc, plan};
+use gui_core::{config_io, gui_prefs, index_read, ipc, plan};
 use std::process::Command;
 use std::sync::Mutex;
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 type Paths<'a> = State<'a, Mutex<RuntimePaths>>;
 
 /// A status round trip, with the derived UI state folded in so the frontend never re-derives it.
 /// On a socket failure the `state` is `unreachable`/etc. and `error` is set — never zeroed counters.
+///
+/// **Pair-aware (#102 phase 5a-2), and absent when it has nothing to say**: all three pair fields
+/// are left out of the JSON for a daemon that predates the selector, so a one-pair, legacy setup
+/// receives the object it always did.
 #[derive(serde::Serialize)]
 pub struct StatusPayload {
     state: gui_core::DaemonState,
@@ -56,19 +60,52 @@ pub struct StatusPayload {
     response: Option<ControlResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+    /// The pair the APP has selected, validated against the pairs that exist — **not necessarily
+    /// the pair `response` describes** (`response.pair`): a read addressed to another pair by name
+    /// answers about that one. Always set, including on an error, because the selection is the
+    /// app's own and needs no daemon to be known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selected: Option<String>,
+    /// Every pair the daemon runs, as its reply listed them. The reply's own `pairs`, repeated at
+    /// the top so a consumer that has no reply (an unreachable poll) is not asked to look inside one.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pairs: Vec<PairSummary>,
+    /// The derived state of each pair in `pairs`, by name, computed here so no surface derives its
+    /// own (`gui_core::state::pair_states`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pair_states: Vec<PairState>,
+    /// The name this request was addressed to that **no pair has** — the daemon read the selector
+    /// and found nothing, or this app already knew better. **It is not an outage**: the daemon is
+    /// there and answered. A selection read that hits this falls back to the default pair and says
+    /// so here; any other command is refused, with `state` a placeholder that a caller must not read
+    /// when this is set (`DaemonState` has no variant for "that pair does not exist", and
+    /// inventing one is a PR 6 decision because it is the screen that draws it).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pair_unknown: Option<String>,
 }
 
 fn status_payload(result: Result<ControlResponse, ipc::IpcError>) -> StatusPayload {
     match result {
-        Ok(response) => StatusPayload {
-            state: derive_state(Ok(&response)),
-            response: Some(response),
-            error: None,
-        },
+        Ok(response) => {
+            let state = derive_state(Ok(&response));
+            StatusPayload {
+                state,
+                selected: None,
+                pairs: response.pairs.clone(),
+                pair_states: pair_states(&response, state),
+                response: Some(response),
+                error: None,
+                pair_unknown: None,
+            }
+        }
         Err(error) => StatusPayload {
             state: derive_state(Err(&error)),
             response: None,
             error: Some(error.to_string()),
+            selected: None,
+            pairs: Vec::new(),
+            pair_states: Vec::new(),
+            pair_unknown: None,
         },
     }
 }
@@ -87,30 +124,44 @@ fn socket_path_for_ipc(state: &Paths) -> Result<std::path::PathBuf, ipc::IpcErro
 
 /// Which pair a command means (#102 phase 5a), resolved once under the lock.
 ///
-/// `pair` is the command's own argument. **`None` is the default pair**, which is what the frontend
-/// sends today (it knows of one pair), so a command with no argument behaves exactly as it always
-/// did. A name is checked against the pairs the app knows and an unknown one is refused — never read
-/// as the default, because a command that meant one folder and acted on another is the failure this
-/// argument exists to prevent. Once the selection moves into Rust (5a-2) a class-R command with no
-/// argument will mean the *selected* pair; that is the one line that changes, here.
+/// The three questions a command can ask are [`Ask`]'s. A **class-R** command (a single-shot read:
+/// a wrong pair costs a wrong screen) takes `pair: Option<String>` and `None` means the pair the app
+/// has *selected*; a **class-W** command (a write, a deletion, the start of a multi-step flow: a
+/// wrong pair costs data) takes `pair: String`, which is required and is whatever the frontend
+/// captured when the screen or row began — `Ask::Named`, never `Ask::Selected`, so no W command can
+/// read the selection (`a_class_w_command_never_reads_the_selection`). A name is checked against the
+/// pairs the app knows and an unknown one is refused — never read as the default, because a command
+/// that meant one folder and acted on another is the failure this argument exists to prevent.
 ///
-/// The classes are `COMMAND_CLASSES`' (R: a wrong pair costs a wrong screen; W: a wrong pair costs
-/// data). Until the frontend can name a pair, a class-W command with no argument also means the
-/// default pair, because refusing it would break every caller that exists.
-fn pair_ref(state: &Paths, pair: Option<&str>) -> Result<PairRef, String> {
-    state.lock().unwrap().resolve_pair(pair)
+/// The classes are `COMMAND_CLASSES`' (R, W, or neither).
+fn pair_ref(state: &Paths, ask: Ask<'_>) -> Result<PairRef, String> {
+    state.lock().unwrap().resolve_ask(ask)
 }
 
-/// The socket and the pair a status-shaped command addresses, as the transport error the payload
-/// folds. A pair this app cannot place is reported in the same place an unresolvable socket is: the
-/// request never leaves, and the reason travels with the state.
-fn addressed(
+/// The socket and the pair a status-shaped command addresses — or the payload that says why it
+/// cannot. Two different reasons, and they must not read alike: no socket is an outage (#277) and
+/// rides in the unreachable state with its own reason, while a pair this app cannot place is NOT one
+/// — the daemon may be perfectly reachable — and says so (`pair_unknown`, for a name; the reason in
+/// `error` either way). The request never leaves for either.
+fn target_of(
     state: &Paths,
-    pair: Option<&str>,
-) -> Result<(std::path::PathBuf, PairRef), ipc::IpcError> {
-    let socket = socket_path_for_ipc(state)?;
-    let pair = pair_ref(state, pair).map_err(ipc::IpcError::Unreachable)?;
-    Ok((socket, pair))
+    ask: Ask<'_>,
+) -> Result<(std::path::PathBuf, PairRef), Box<StatusPayload>> {
+    let socket = socket_path_for_ipc(state)
+        .map_err(|error| Box::new(status_payload_remembering(state, Err(error))))?;
+    match pair_ref(state, ask) {
+        Ok(pair) => Ok((socket, pair)),
+        Err(message) => Err(Box::new(
+            Refusal {
+                message,
+                unknown_pair: match ask {
+                    Ask::Named(name) => Some(name.to_owned()),
+                    Ask::Default | Ask::Selected => None,
+                },
+            }
+            .payload(state),
+        )),
+    }
 }
 
 /// Drop ANSI escape sequences (`ESC [ … <letter>`) from subprocess stderr. The daemon's tracing
@@ -142,15 +193,200 @@ fn strip_ansi(s: &str) -> String {
 ///
 /// **Keyed by the reply's pair, not by "the last reply"** (`RuntimePaths::remember_daemon_reply`): a
 /// reply addressed to one pair describes that pair at its top level, and filing it as the daemon's
-/// config would paint it over every other pair's slot.
+/// config would paint it over every other pair's slot. The payload's `selected` is read AFTER the
+/// reply is filed, so a daemon that has just shown itself able to read a selector is believed in the
+/// same breath.
 fn status_payload_remembering(
     state: &Paths,
     result: Result<ControlResponse, ipc::IpcError>,
 ) -> StatusPayload {
-    if let Ok(response) = &result {
-        state.lock().unwrap().remember_daemon_reply(response);
+    let selected = {
+        let mut paths = state.lock().unwrap();
+        if let Ok(response) = &result {
+            paths.remember_daemon_reply(response);
+        }
+        paths.selected_pair().name
+    };
+    let mut payload = status_payload(result);
+    payload.selected = Some(selected);
+    payload
+}
+
+/// What a request was refused for before — or instead of — acting on a pair. **Not a transport
+/// failure**: the daemon may be perfectly reachable.
+struct Refusal {
+    message: String,
+    /// Set when the refusal is "no pair has that name" (see `StatusPayload::pair_unknown`).
+    unknown_pair: Option<String>,
+}
+
+impl Refusal {
+    fn plain(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            unknown_pair: None,
+        }
     }
-    status_payload(result)
+
+    fn no_pair(name: &str, message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            unknown_pair: Some(name.to_owned()),
+        }
+    }
+
+    /// As a status payload. `state` is `Unreachable` only because the payload must carry one — the
+    /// reason is in `error`, and `pair_unknown` says when it is "that pair does not exist".
+    fn payload(self, state: &Paths) -> StatusPayload {
+        let selected = state.lock().unwrap().selected_pair().name;
+        StatusPayload {
+            state: gui_core::DaemonState::Unreachable,
+            response: None,
+            error: Some(self.message),
+            selected: Some(selected),
+            pairs: Vec::new(),
+            pair_states: Vec::new(),
+            pair_unknown: self.unknown_pair,
+        }
+    }
+}
+
+/// The ADR's own sentence for a selector that would reach a daemon that cannot read one (ADR 0005
+/// §4; `proton-sync`'s capability gate says the same).
+const NOT_MULTI_PAIR: &str =
+    "this daemon does not support multiple folder pairs; upgrade proton-syncd";
+
+/// How a status-shaped reply relates to the request that earned it (ADR 0005 §4: "the pair-marker
+/// test every client applies by shape").
+enum Answer {
+    /// It describes the pair that was asked about — or, for a request that named none, the default.
+    About(ControlResponse),
+    /// The daemon read the selector and **no pair has that name**: it did nothing, `pair` is absent,
+    /// `pairs` says what exists. Its top-level fields describe the default pair and are NOT the
+    /// answer to anything that was asked, so nothing may be derived from them.
+    Unresolved(ControlResponse),
+    /// A selector reached a daemon that does not read one. It acted on its only pair, whichever
+    /// that is, and its reply says nothing about the pair that was meant.
+    NotUnderstood(ControlResponse),
+}
+
+/// Read a reply against the selector it answers — **by shape, never by prose** (#103).
+///
+/// An unaddressed request is answered about the default pair by any daemon of any age, so it is
+/// always `About`, except for a multi-pair daemon that names no pair for it, which is a broken
+/// reply and an error here rather than a guess. An addressed one is `About` only when the daemon
+/// names the pair it was asked about.
+fn classify(selector: Option<&str>, reply: ControlResponse) -> Result<Answer, ipc::IpcError> {
+    match selector {
+        None if reply.pairs.is_empty() || reply.pair.is_some() => Ok(Answer::About(reply)),
+        None => Err(ipc::IpcError::Protocol(
+            "the daemon listed its folder pairs but named none for a request that addressed none"
+                .to_owned(),
+        )),
+        Some(_) if reply.pairs.is_empty() => Ok(Answer::NotUnderstood(reply)),
+        Some(name) if reply.pair.as_deref() == Some(name) => Ok(Answer::About(reply)),
+        Some(_) if reply.pair.is_none() => Ok(Answer::Unresolved(reply)),
+        Some(name) => Err(ipc::IpcError::Protocol(format!(
+            "asked about folder pair {name:?} and the daemon answered about {:?}",
+            reply.pair.as_deref().unwrap_or_default()
+        ))),
+    }
+}
+
+/// An [`Answer`] folded into a payload when it is not to be retried: the reply itself when it is
+/// about the pair asked, and a refusal for the two ways it is not. The daemon is told what was filed
+/// either way, so its list of pairs is as fresh as the last thing it said.
+fn conclude(state: &Paths, pair: &PairRef, answer: Result<Answer, ipc::IpcError>) -> StatusPayload {
+    match answer {
+        Ok(Answer::About(reply)) => status_payload_remembering(state, Ok(reply)),
+        Ok(Answer::Unresolved(reply)) => {
+            state.lock().unwrap().remember_daemon_reply(&reply);
+            Refusal::no_pair(&pair.name, reply.message).payload(state)
+        }
+        Ok(Answer::NotUnderstood(reply)) => {
+            state.lock().unwrap().remember_daemon_reply(&reply);
+            Refusal::plain(NOT_MULTI_PAIR).payload(state)
+        }
+        Err(error) => status_payload_remembering(state, Err(error)),
+    }
+}
+
+/// The verbs whose effect on the wrong pair is data loss — and so the ones the capability gate
+/// stands in front of. `deny` is here with `approve` and `keep`: it is the third verb of the same
+/// approval table, and a gate that covered two of three would be the one a third caller walked past.
+fn is_destructive(command: &ControlCommand) -> bool {
+    matches!(
+        command,
+        ControlCommand::Resync
+            | ControlCommand::Approve
+            | ControlCommand::Deny
+            | ControlCommand::Keep
+            | ControlCommand::Apply
+    )
+}
+
+/// Whether a fresh `status` says a destructive verb may be addressed to `pair`.
+///
+/// Pure, so the rule is testable without a socket: the daemon must read a selector at all
+/// ([`PairCapability::MultiPair`]), and must still run a pair of that name.
+fn gate_decision(fresh: &ControlResponse, pair: &str) -> Result<(), Refusal> {
+    if PairCapability::from_reply(fresh) != PairCapability::MultiPair {
+        return Err(Refusal::plain(NOT_MULTI_PAIR));
+    }
+    if fresh.pairs.iter().any(|running| running.name == pair) {
+        return Ok(());
+    }
+    let running: Vec<String> = fresh
+        .pairs
+        .iter()
+        .map(|running| format!("{:?}", running.name))
+        .collect();
+    Err(Refusal::no_pair(
+        pair,
+        format!(
+            "no folder pair named {pair:?} is running: the running pairs are {}",
+            running.join(", ")
+        ),
+    ))
+}
+
+/// **The capability gate for a destructive verb** (ADR 0005 §4, brief section 2.4): before one is
+/// addressed to a pair that is not the default, read `status` *now* and refuse unless the daemon
+/// that answers reads a selector and runs that pair.
+///
+/// The cached capability is how a screen decides what to draw; it is not good enough to decide a
+/// deletion, because a daemon that was current a minute ago may be an older one now (an upgrade in
+/// progress is precisely when version skew exists) and an older daemon drops `pair` on the floor and
+/// executes the verb against its one pair, with no signal. The default pair is addressed by omission
+/// and an older daemon's only pair *is* the default, so there is nothing to ask for it.
+///
+/// The residual — a downgrade between this read and the verb — is the ADR's, accepted there.
+async fn require_multi_pair<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    socket: &std::path::Path,
+    pair: &PairRef,
+) -> Result<(), Refusal> {
+    if pair.selector.is_none() {
+        return Ok(());
+    }
+    let socket = socket.to_owned();
+    let fresh = spawn_blocking_ipc(move || {
+        ipc::command(
+            &socket,
+            Target::DEFAULT,
+            ControlCommand::Status,
+            ipc::DEFAULT_TIMEOUT,
+        )
+    })
+    .await
+    .map_err(|error| {
+        Refusal::plain(format!(
+            "could not confirm that the daemon supports multiple folder pairs: {error}"
+        ))
+    })?;
+    let paths: Paths = app.state();
+    paths.lock().unwrap().remember_daemon_reply(&fresh);
+    gate_decision(&fresh, &pair.name)
 }
 
 /// Run a blocking control-socket round trip off the GTK main loop. Every socket command is async +
@@ -180,67 +416,119 @@ where
 /// control-socket round trip run off the main loop, folded into a `StatusPayload`. Generic over the
 /// runtime so a `tauri::test` mock app can drive it headlessly (see tests).
 ///
-/// `pair` is the command's own argument (see [`pair_ref`]); `None` is the default pair, which sends
-/// the request every client has always sent.
+/// `ask` is the command's own question (see [`pair_ref`]). **A selection read may be redirected;
+/// nothing else may.** When a read addressed to the selected pair is answered "no pair has that
+/// name" (the daemon restarted onto fewer pairs, and the list in this app is older than the
+/// daemon), the reply describes no pair that was asked about and is dropped — never drawn, and
+/// never as an outage. The selection is re-validated against the list that same reply carried, which
+/// falls back to the default pair without rewriting what is remembered, and the read is repeated
+/// once. A write that is told the same thing is refused: retrying it at the default pair would be
+/// the very wrong-target action the pair argument exists to prevent.
 async fn status_round_trip<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     command: ControlCommand,
-    pair: Option<String>,
+    ask: Ask<'_>,
 ) -> StatusPayload {
-    let (socket, pair) = match addressed(&app.state(), pair.as_deref()) {
-        Ok(addressed) => addressed,
-        Err(error) => return status_payload(Err(error)),
+    let (socket, mut pair) = match target_of(&app.state(), ask) {
+        Ok(target) => target,
+        Err(payload) => return *payload,
     };
-    let reply = spawn_blocking_ipc(move || {
-        ipc::command(
-            &socket,
-            Target::from_selector(pair.selector.as_deref()),
-            command,
-            ipc::DEFAULT_TIMEOUT,
-        )
-    })
-    .await;
-    status_payload_remembering(&app.state(), reply)
+    if is_destructive(&command) {
+        if let Err(refusal) = require_multi_pair(&app, &socket, &pair).await {
+            return refusal.payload(&app.state());
+        }
+    }
+    // A selection READ is re-validated against what the daemon just said, once. Three things it can
+    // have said change the answer: that the pair asked for does not exist (below); — on the very
+    // first read, when the daemon had not yet shown it reads a selector — that it does; and, the
+    // mirror of that, that it no longer does (a daemon replaced by an older one mid-session answers an
+    // addressed read without a `pair`). Each is fixed by asking again, so the reply that is drawn
+    // always describes the pair that is selected and a start-up never flashes the default pair for
+    // one poll before the real one.
+    let revalidates = ask == Ask::Selected && command == ControlCommand::Status;
+    let mut asked_again = false;
+    let mut fell_back_from: Option<String> = None;
+    loop {
+        let (to, selector, what) = (socket.clone(), pair.selector.clone(), command.clone());
+        let reply = spawn_blocking_ipc(move || {
+            ipc::command(
+                &to,
+                Target::from_selector(selector.as_deref()),
+                what,
+                ipc::DEFAULT_TIMEOUT,
+            )
+        })
+        .await;
+        let answer = reply.and_then(|reply| classify(pair.selector.as_deref(), reply));
+        // File what the daemon said before deciding what it means: the list of pairs it carries is
+        // what the selection is validated against. **All three kinds are filed**, `NotUnderstood`
+        // included: a selector that reached a daemon downgraded since it was last heard from is
+        // answered by a reply with no `pair` and no `pairs`, and filing it is what shows the
+        // capability is gone — so the selection read below stops addressing the request and the read
+        // is repeated unaddressed, instead of the poll being reported as an outage with the one
+        // sentence (`NOT_MULTI_PAIR`) that is true of the daemon and false of the poll.
+        let unresolved = matches!(answer, Ok(Answer::Unresolved(_)));
+        if let Ok(Answer::Unresolved(reply) | Answer::About(reply) | Answer::NotUnderstood(reply)) =
+            &answer
+        {
+            app.state::<Mutex<RuntimePaths>>()
+                .lock()
+                .unwrap()
+                .remember_daemon_reply(reply);
+        }
+        if revalidates && !asked_again {
+            if let Ok(next) = pair_ref(&app.state(), Ask::Selected) {
+                // The REQUEST changes, not the name: a daemon that calls its default pair
+                // something else than the file does would otherwise be asked the same question twice.
+                if next.selector != pair.selector {
+                    asked_again = true;
+                    if unresolved {
+                        fell_back_from = Some(pair.name.clone());
+                    }
+                    pair = next;
+                    continue;
+                }
+            }
+        }
+        let mut payload = conclude(&app.state(), &pair, answer);
+        // Only a reply about the pair that is now shown can carry the note: a refusal has its own.
+        if payload.pair_unknown.is_none() {
+            payload.pair_unknown = fell_back_from;
+        }
+        return payload;
+    }
 }
 
 // The status commands are generic over the runtime so a test can call the COMMAND — its argument
 // plumbing and all — against a mock app, rather than only the helper under it. Tauri accepts a
 // generic command, and the production runtime is inferred where `generate_handler!` names it.
 
-/// Class R: a wrong pair costs a wrong screen.
+/// Class R: a wrong pair costs a wrong screen. No `pair` means the SELECTED pair.
 #[tauri::command]
 pub async fn get_status<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     pair: Option<String>,
 ) -> StatusPayload {
-    status_round_trip(app, ControlCommand::Status, pair).await
+    status_round_trip(app, ControlCommand::Status, Ask::read(pair.as_deref())).await
 }
 
-/// Class W: pausing the wrong folder stops the wrong folder.
+/// Class W: pausing the wrong folder stops the wrong folder. `pair` is required, and is the pair the
+/// caller captured — never the selection (see [`pair_ref`]).
 #[tauri::command]
-pub async fn pause<R: tauri::Runtime>(
-    app: tauri::AppHandle<R>,
-    pair: Option<String>,
-) -> StatusPayload {
-    status_round_trip(app, ControlCommand::Pause, pair).await
-}
-
-/// Class W.
-#[tauri::command]
-pub async fn resume<R: tauri::Runtime>(
-    app: tauri::AppHandle<R>,
-    pair: Option<String>,
-) -> StatusPayload {
-    status_round_trip(app, ControlCommand::Resume, pair).await
+pub async fn pause<R: tauri::Runtime>(app: tauri::AppHandle<R>, pair: String) -> StatusPayload {
+    status_round_trip(app, ControlCommand::Pause, Ask::Named(&pair)).await
 }
 
 /// Class W.
 #[tauri::command]
-pub async fn sync_now<R: tauri::Runtime>(
-    app: tauri::AppHandle<R>,
-    pair: Option<String>,
-) -> StatusPayload {
-    status_round_trip(app, ControlCommand::Syncnow, pair).await
+pub async fn resume<R: tauri::Runtime>(app: tauri::AppHandle<R>, pair: String) -> StatusPayload {
+    status_round_trip(app, ControlCommand::Resume, Ask::Named(&pair)).await
+}
+
+/// Class W.
+#[tauri::command]
+pub async fn sync_now<R: tauri::Runtime>(app: tauri::AppHandle<R>, pair: String) -> StatusPayload {
+    status_round_trip(app, ControlCommand::Syncnow, Ask::Named(&pair)).await
 }
 
 /// Settings › *Sweep now* — the full-tree comparison, not an ordinary pass.
@@ -255,36 +543,40 @@ pub async fn sync_now<R: tauri::Runtime>(
 /// the error and the button reports it, rather than silently doing an ordinary sync.
 ///
 /// Class W: a full-tree walk of the wrong folder is the wrong folder's cost, and it overrides a
-/// warm start.
+/// warm start. **Behind the capability gate** (`require_multi_pair`) when it names a pair other than
+/// the default.
 #[tauri::command]
-pub async fn resync<R: tauri::Runtime>(
-    app: tauri::AppHandle<R>,
-    pair: Option<String>,
-) -> StatusPayload {
-    status_round_trip(app, ControlCommand::Resync, pair).await
+pub async fn resync<R: tauri::Runtime>(app: tauri::AppHandle<R>, pair: String) -> StatusPayload {
+    status_round_trip(app, ControlCommand::Resync, Ask::Named(&pair)).await
 }
 
-/// The shared body of `approve`/`deny`: a path-argument round trip folded into a `StatusPayload`.
-/// Generic over the runtime so a `tauri::test` mock app can drive it headlessly (see tests).
+/// The shared body of `approve`/`deny`/`keep`: a path-argument round trip folded into a
+/// `StatusPayload`. Generic over the runtime so a `tauri::test` mock app can drive it headlessly (see
+/// tests).
 ///
 /// **The path is relative to the root of the pair `pair` names**, so it travels with the pair or it
-/// means a different file.
+/// means a different file. All three verbs stand behind the capability gate, and none is ever
+/// retried at another pair.
 async fn approval_round_trip<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     command: ControlCommand,
     target: String,
     literal_path: bool,
     direction: Option<DeleteDirection>,
-    pair: Option<String>,
+    pair: &str,
 ) -> StatusPayload {
-    let (socket, pair) = match addressed(&app.state(), pair.as_deref()) {
-        Ok(addressed) => addressed,
-        Err(error) => return status_payload(Err(error)),
+    let (socket, pair) = match target_of(&app.state(), Ask::Named(pair)) {
+        Ok(target) => target,
+        Err(payload) => return *payload,
     };
+    if let Err(refusal) = require_multi_pair(&app, &socket, &pair).await {
+        return refusal.payload(&app.state());
+    }
+    let selector = pair.selector.clone();
     let reply = spawn_blocking_ipc(move || {
         ipc::command_with_argument(
             &socket,
-            Target::from_selector(pair.selector.as_deref()),
+            Target::from_selector(selector.as_deref()),
             command,
             target,
             literal_path,
@@ -293,7 +585,8 @@ async fn approval_round_trip<R: tauri::Runtime>(
         )
     })
     .await;
-    status_payload_remembering(&app.state(), reply)
+    let answer = reply.and_then(|reply| classify(pair.selector.as_deref(), reply));
+    conclude(&app.state(), &pair, answer)
 }
 
 /// `direction` is read by the daemon ONLY when nothing pending matches `target` — the Plan screen
@@ -307,7 +600,7 @@ pub async fn approve<R: tauri::Runtime>(
     target: String,
     literal_path: bool,
     direction: Option<DeleteDirection>,
-    pair: Option<String>,
+    pair: String,
 ) -> StatusPayload {
     approval_round_trip(
         app,
@@ -315,7 +608,7 @@ pub async fn approve<R: tauri::Runtime>(
         target,
         literal_path,
         direction,
-        pair,
+        &pair,
     )
     .await
 }
@@ -326,9 +619,9 @@ pub async fn deny<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     target: String,
     literal_path: bool,
-    pair: Option<String>,
+    pair: String,
 ) -> StatusPayload {
-    approval_round_trip(app, ControlCommand::Deny, target, literal_path, None, pair).await
+    approval_round_trip(app, ControlCommand::Deny, target, literal_path, None, &pair).await
 }
 
 /// `Keep it` — refuse a withheld deletion (#224). The daemon purges the baseline record for the
@@ -345,30 +638,48 @@ pub async fn keep<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     target: String,
     literal_path: bool,
-    pair: Option<String>,
+    pair: String,
 ) -> StatusPayload {
-    approval_round_trip(app, ControlCommand::Keep, target, literal_path, None, pair).await
+    approval_round_trip(app, ControlCommand::Keep, target, literal_path, None, &pair).await
 }
 
 /// Class R. The withheld deletions of ONE pair: they ride on its status reply.
+///
+/// Only a reply that is about the pair asked for supplies the list: an unresolved selector is
+/// answered with the DEFAULT pair's queue at the top level, and returning that as another pair's
+/// would show one folder's deletions under another's name.
 #[tauri::command]
 pub async fn list_pending_deletions<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     pair: Option<String>,
 ) -> Result<Vec<PendingDeletion>, String> {
     let socket = socket_path(&app.state())?;
-    let pair = pair_ref(&app.state(), pair.as_deref())?;
-    spawn_blocking_ipc(move || {
+    let pair = pair_ref(&app.state(), Ask::read(pair.as_deref()))?;
+    let selector = pair.selector.clone();
+    let reply = spawn_blocking_ipc(move || {
         ipc::command(
             &socket,
-            Target::from_selector(pair.selector.as_deref()),
+            Target::from_selector(selector.as_deref()),
             ControlCommand::Status,
             ipc::DEFAULT_TIMEOUT,
         )
     })
-    .await
-    .map(|response| response.pending_deletions)
-    .map_err(|e| e.to_string())
+    .await;
+    match reply.and_then(|reply| classify(pair.selector.as_deref(), reply)) {
+        Ok(Answer::About(reply)) => Ok(reply.pending_deletions),
+        Ok(Answer::Unresolved(reply)) => Err(reply.message),
+        Ok(Answer::NotUnderstood(_)) => Err(NOT_MULTI_PAIR.to_owned()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// One folder pair the config file declares, as the ENGINE reads it (`config::pair_views`): the
+/// name, and the two roots with `~` expanded. `None` is a root the file does not set.
+#[derive(serde::Serialize)]
+pub struct ConfigPair {
+    name: String,
+    local_root: Option<String>,
+    remote_root: Option<String>,
 }
 
 /// A read of the GUI-owned config file, exposing both the raw TOML and the known settings.
@@ -377,6 +688,16 @@ pub struct ConfigPayload {
     path: String,
     exists: bool,
     toml: String,
+    /// Every pair the file declares, in file order (the first is the default pair), including the
+    /// one implicit pair — called `default` — of a file with no `[[pair]]` tables.
+    ///
+    /// **Why the flat roots below are not enough** (F-J): they are the file's TOP-LEVEL keys, and in a
+    /// `[[pair]]` file every root sits inside a table, so both read `None`. The first-run check that
+    /// decides "has anyone chosen a folder yet?" read that as a fresh machine whenever the daemon was
+    /// stopped, and opened a wizard whose `Next` writes top-level roots into a file that refuses
+    /// them. Empty when the engine cannot read the file as a config at all — the flat values are
+    /// then all there is, exactly as before.
+    pairs: Vec<ConfigPair>,
     local_root: Option<String>,
     remote_root: Option<String>,
     scan_interval_secs: Option<i64>,
@@ -421,10 +742,21 @@ pub fn read_config(state: Paths) -> Result<ConfigPayload, String> {
     let path = state.lock().unwrap().config_path.clone();
     let exists = path.exists();
     let doc = config_io::ConfigDoc::load(&path).map_err(|e| e.to_string())?;
+    let toml = doc.to_toml_string();
+    let pairs = config_io::pair_views(&toml)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|view| ConfigPair {
+            name: view.name,
+            local_root: view.local_root.map(|root| root.display().to_string()),
+            remote_root: view.remote_root.map(|root| root.display().to_string()),
+        })
+        .collect();
     Ok(ConfigPayload {
         path: path.display().to_string(),
         exists,
-        toml: doc.to_toml_string(),
+        toml,
+        pairs,
         local_root: doc.get_str("local_root"),
         remote_root: doc.get_str("remote_root"),
         scan_interval_secs: doc.get_int("scan_interval_secs"),
@@ -573,6 +905,51 @@ pub fn write_config(state: Paths, update: ConfigUpdate) -> Result<(), String> {
     Ok(())
 }
 
+/// Choose the folder pair the window shows (#102 phase 5a-2) — **the one writer of the selection**.
+///
+/// The selection is held here and not in each webview because there are two (the window and the tray
+/// panel run the same `app.js`), and only Rust can be the one place both read. It is validated
+/// against the pairs the app knows, written to `gui.toml` first and remembered in memory second (so
+/// a write that fails leaves the choice as it was), and announced with a `pair-selected` event so
+/// the other webview polls again instead of waiting out its cadence.
+///
+/// Returns the name. `Err` for a pair the app cannot place, in the words `resolve_pair` uses.
+///
+/// This validates against *what exists*, not against whether the daemon can be addressed: choosing a
+/// pair before the daemon has shown it reads a selector is allowed and is simply not acted on until
+/// it does (`RuntimePaths::selected_pair`), so a preference made while the daemon is restarting is
+/// not lost.
+///
+/// Neither a class-R read nor a class-W write: it names its pair as an argument called `name`, and
+/// it changes what later reads mean, never what any earlier command already addressed.
+#[tauri::command]
+pub async fn select_pair<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    name: String,
+) -> Result<String, String> {
+    let prefs = {
+        let paths: Paths = app.state();
+        let paths = paths.lock().unwrap();
+        paths.resolve_pair(Some(&name))?;
+        gui_prefs::gui_prefs_path(&paths.config_path)
+    };
+    let stored = name.clone();
+    tauri::async_runtime::spawn_blocking(move || gui_prefs::store_selected_pair(&prefs, &stored))
+        .await
+        .map_err(|error| format!("selection task failed: {error}"))?
+        .map_err(|error| error.to_string())?;
+    {
+        let paths: Paths = app.state();
+        // Re-validated under the lock that sets it: the list can have moved while the file was
+        // being written, and a choice remembered for a pair that has since gone is the one thing
+        // the validation exists to prevent.
+        paths.lock().unwrap().select(&name)?;
+    }
+    // Best effort: a webview that is not listening yet reads the selection on its next poll anyway.
+    let _ = app.emit("pair-selected", &name);
+    Ok(name)
+}
+
 /// Settings › Folders' `Choose…` — the native folder picker, behind the same facade as everything
 /// else, so `api.js` stays the frontend's only backend surface and no capability JSON grants the
 /// webview a file dialog of its own.
@@ -710,7 +1087,7 @@ impl DryRunInputs {
 /// Class W: a plan is the identity an `apply_plan` is pinned to, and a token is a plan's identity
 /// within ONE pair.
 #[tauri::command]
-pub async fn run_dry_run(state: Paths<'_>, pair: Option<String>) -> Result<DryRunPayload, String> {
+pub async fn run_dry_run(state: Paths<'_>, pair: String) -> Result<DryRunPayload, String> {
     run_dry_run_with(&state, pair, launch_proton_syncd).await
 }
 
@@ -727,12 +1104,12 @@ fn launch_proton_syncd(args: &[std::ffi::OsString]) -> std::io::Result<std::proc
 /// `run_dry_run`, with the child launcher injected.
 async fn run_dry_run_with(
     state: &Paths<'_>,
-    pair: Option<String>,
+    pair: String,
     launch: LaunchChild,
 ) -> Result<DryRunPayload, String> {
     let inputs = {
         let paths = state.lock().unwrap();
-        let pair = paths.resolve_pair(pair.as_deref())?;
+        let pair = paths.resolve_ask(Ask::Named(&pair))?;
         DryRunInputs::read(&paths, pair)
     };
     tauri::async_runtime::spawn_blocking(move || run_dry_run_impl(inputs, &launch))
@@ -952,6 +1329,17 @@ fn plan_through_daemon(
         // has ever existed answers, and let the answer decide.
         Err(error) => return Err(classify_unreachable_plan(socket, error)),
     };
+    // A daemon that answered, but not about the pair that was asked for: it scheduled nothing, and
+    // its `plan` field (if any) belongs to some other pair's counter. Reported, never fallen back
+    // from (the child is a second `proton-drive` client beside a live daemon — #23/#317).
+    let ack = match classify(target.selector(), ack) {
+        Ok(Answer::About(ack)) => ack,
+        Ok(Answer::Unresolved(reply)) => return Err(DaemonPlanFailure::Reported(reply.message)),
+        Ok(Answer::NotUnderstood(_)) => {
+            return Err(DaemonPlanFailure::Reported(NOT_MULTI_PAIR.to_owned()));
+        }
+        Err(error) => return Err(DaemonPlanFailure::Reported(error.to_string())),
+    };
     let plan_target = match ack.plan {
         Some(PlanOutcome::Scheduled { plan_seq }) => plan_seq,
         Some(PlanOutcome::Paused) => {
@@ -1001,6 +1389,18 @@ fn plan_through_daemon(
                 }
                 continue;
             }
+        };
+        // The pair can be gone between polls (a restart onto fewer): an unresolved reply carries
+        // no plan at all, and waiting on it would be waiting for ever.
+        let response = match classify(target.selector(), response) {
+            Ok(Answer::About(response)) => response,
+            Ok(Answer::Unresolved(reply)) => {
+                return Err(DaemonPlanFailure::Reported(reply.message))
+            }
+            Ok(Answer::NotUnderstood(_)) => {
+                return Err(DaemonPlanFailure::Reported(NOT_MULTI_PAIR.to_owned()));
+            }
+            Err(error) => return Err(DaemonPlanFailure::Reported(error.to_string())),
         };
         match response.plan {
             Some(PlanOutcome::Computed(plan)) if plan.plan_seq >= plan_target => {
@@ -1161,11 +1561,16 @@ pub async fn apply_plan<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     token: String,
     skip_destructive: bool,
-    pair: Option<String>,
+    pair: String,
 ) -> Result<ApplyOutcome, String> {
     let socket = socket_path(&app.state())?;
-    let pair = pair_ref(&app.state(), pair.as_deref())?;
-    let ack = tauri::async_runtime::spawn_blocking(move || {
+    let pair = pair_ref(&app.state(), Ask::Named(&pair))?;
+    // Behind the gate: an apply performs deletions, and a daemon that cannot read `pair` would run
+    // the token against its one pair (where it is `stale` at best, and not at worst).
+    require_multi_pair(&app, &socket, &pair)
+        .await
+        .map_err(|refusal| refusal.message)?;
+    tauri::async_runtime::spawn_blocking(move || {
         let target = Target::from_selector(pair.selector.as_deref());
         let ack = ipc::apply_plan(
             &socket,
@@ -1173,7 +1578,15 @@ pub async fn apply_plan<R: tauri::Runtime>(
             token,
             skip_destructive,
             ipc::DEFAULT_TIMEOUT,
-        )?;
+        )
+        .map_err(|error| error.to_string())?;
+        // The daemon read the selector and found no such pair, or never read one. Either way it
+        // scheduled nothing and the ack describes some other pair's apply counter.
+        let ack = match classify(target.selector(), ack).map_err(|error| error.to_string())? {
+            Answer::About(ack) => ack,
+            Answer::Unresolved(reply) => return Err(reply.message),
+            Answer::NotUnderstood(_) => return Err(NOT_MULTI_PAIR.to_owned()),
+        };
         let apply_target = match ack.apply {
             Some(ApplyOutcome::Scheduled { apply_seq }) => apply_seq,
             // Refused, or a daemon too old to know the verb — either way there is nothing to wait
@@ -1202,11 +1615,19 @@ pub async fn apply_plan<R: tauri::Runtime>(
                 Err(error) => {
                     consecutive_errors += 1;
                     if consecutive_errors >= PLAN_POLL_ERROR_LIMIT {
-                        return Err(error);
+                        return Err(error.to_string());
                     }
                     continue;
                 }
             };
+            // The pair can be gone between polls (a restart onto fewer): an unresolved reply carries
+            // no `apply` at all, and waiting on it would be waiting for ever.
+            let response =
+                match classify(target.selector(), response).map_err(|error| error.to_string())? {
+                    Answer::About(response) => response,
+                    Answer::Unresolved(reply) => return Err(reply.message),
+                    Answer::NotUnderstood(_) => return Err(NOT_MULTI_PAIR.to_owned()),
+                };
             match response.apply {
                 Some(
                     outcome @ (ApplyOutcome::Applied { apply_seq, .. }
@@ -1218,8 +1639,7 @@ pub async fn apply_plan<R: tauri::Runtime>(
         }
     })
     .await
-    .map_err(|join_error| format!("apply task failed: {join_error}"))?;
-    ack.map_err(|error| error.to_string())
+    .map_err(|join_error| format!("apply task failed: {join_error}"))?
 }
 
 // `list_remote` WAS HERE, AND IT IS GONE RATHER THAN REWRITTEN (#311).
@@ -1252,7 +1672,7 @@ pub async fn scan_conflicts(
     // another pair's (`conflict_suffix`, G23/#237; per pair in the engine).
     let (local_root, naming) = {
         let paths = state.lock().unwrap();
-        let pair = paths.resolve_pair(pair.as_deref())?;
+        let pair = paths.resolve_ask(Ask::read(pair.as_deref()))?;
         let local_root = paths
             .effective_local_root(&pair.name)
             .ok_or_else(|| paths.unplaced("local_root is not configured"))?;
@@ -1273,11 +1693,11 @@ pub fn resolve_conflict(
     state: Paths,
     conflict: Conflict,
     choice: Resolution,
-    pair: Option<String>,
+    pair: String,
 ) -> Result<(), String> {
     let local_root = {
         let paths = state.lock().unwrap();
-        let pair = paths.resolve_pair(pair.as_deref())?;
+        let pair = paths.resolve_ask(Ask::Named(&pair))?;
         paths
             .effective_local_root(&pair.name)
             .ok_or_else(|| paths.unplaced("local_root is not configured"))?
@@ -1297,7 +1717,7 @@ pub fn read_conflict_pair(
 ) -> Result<conflicts::ConflictPair, String> {
     let (local_root, db_path) = {
         let paths = state.lock().unwrap();
-        let pair = paths.resolve_pair(pair.as_deref())?;
+        let pair = paths.resolve_ask(Ask::read(pair.as_deref()))?;
         (
             paths
                 .effective_local_root(&pair.name)
@@ -1421,7 +1841,7 @@ pub async fn path_sync_status(
 ) -> Result<EmblemStatus, String> {
     let db_path = {
         let paths = state.lock().unwrap();
-        let pair = paths.resolve_pair(pair.as_deref())?;
+        let pair = paths.resolve_ask(Ask::read(pair.as_deref()))?;
         paths.effective_db_path(&pair.name).ok_or_else(|| {
             paths.unplaced("no index database configured or reported by the daemon")
         })?
@@ -1484,7 +1904,7 @@ pub async fn search_files<R: tauri::Runtime>(
     let (db_path, local_root) = {
         let paths = app.state::<Mutex<RuntimePaths>>();
         let paths = paths.lock().unwrap();
-        let pair = paths.resolve_pair(pair.as_deref())?;
+        let pair = paths.resolve_ask(Ask::read(pair.as_deref()))?;
         (
             paths.effective_db_path(&pair.name).ok_or_else(|| {
                 paths.unplaced("no index database configured or reported by the daemon")
@@ -2289,7 +2709,7 @@ pub async fn open_paths(
 ) -> Result<(), String> {
     let (local_root, no_root) = {
         let paths = state.lock().unwrap();
-        let pair = paths.resolve_pair(pair.as_deref())?;
+        let pair = paths.resolve_ask(Ask::read(pair.as_deref()))?;
         (
             paths.effective_local_root(&pair.name),
             paths.unplaced(&gui_core::opener::OpenRefusal::NoLocalRoot.to_string()),
@@ -2344,7 +2764,7 @@ pub async fn open_folder(
 ) -> Result<(), String> {
     let (local_root, no_root) = {
         let paths = state.lock().unwrap();
-        let pair = paths.resolve_pair(pair.as_deref())?;
+        let pair = paths.resolve_ask(Ask::read(pair.as_deref()))?;
         (
             paths.effective_local_root(&pair.name),
             paths.unplaced(&gui_core::opener::OpenRefusal::NoLocalRoot.to_string()),
@@ -2588,7 +3008,7 @@ pub async fn free_space<R: tauri::Runtime>(
         None => {
             let state = app.state::<Mutex<RuntimePaths>>();
             let paths = state.lock().unwrap();
-            let pair = paths.resolve_pair(pair.as_deref())?;
+            let pair = paths.resolve_ask(Ask::read(pair.as_deref()))?;
             paths
                 .effective_local_root(&pair.name)
                 .ok_or_else(|| paths.unplaced("local_root is not configured"))?
@@ -2721,7 +3141,7 @@ pub async fn skip_rule_usage<R: tauri::Runtime>(
     let (local_root, db_path, naming) = {
         let paths = app.state::<Mutex<RuntimePaths>>();
         let paths = paths.lock().unwrap();
-        let pair = paths.resolve_pair(pair.as_deref())?;
+        let pair = paths.resolve_ask(Ask::read(pair.as_deref()))?;
         (
             paths
                 .effective_local_root(&pair.name)
@@ -3063,7 +3483,9 @@ pub async fn tray_action(app: tauri::AppHandle, id: String) -> StatusPayload {
         }
     };
     // The default pair: the tray acts on it alone until its rows learn to name a pair (#102 phase 5d).
-    status_round_trip(app, command, None).await
+    // Not `Selected`: the selection belongs to the window, and a menu row that paused whichever pair
+    // the window happened to be showing would be a different bug from the one phase 5d exists to fix.
+    status_round_trip(app, command, Ask::Default).await
 }
 
 /// The panel measures itself once it knows its state and asks the window to match. The states differ
@@ -3518,6 +3940,9 @@ mod tests {
 mod pair_tests;
 
 #[cfg(all(test, unix))]
+mod selection_tests;
+
+#[cfg(all(test, unix))]
 mod socket_tests {
     use super::*;
     use std::io::{BufRead, BufReader, Write};
@@ -3727,7 +4152,7 @@ mod socket_tests {
         let payload = tauri::async_runtime::block_on(status_round_trip(
             app.handle().clone(),
             ControlCommand::Status,
-            None,
+            Ask::Default,
         ));
         assert!(
             payload.error.is_none(),
@@ -3753,7 +4178,7 @@ mod socket_tests {
         let payload = tauri::async_runtime::block_on(status_round_trip(
             app.handle().clone(),
             ControlCommand::Status,
-            None,
+            Ask::Default,
         ));
 
         assert_eq!(payload.state, gui_core::DaemonState::Unreachable);
@@ -4388,7 +4813,7 @@ mod socket_tests {
             "some/file.txt".to_string(),
             true,
             None,
-            None,
+            "default",
         ));
         assert!(
             payload.error.is_none(),
