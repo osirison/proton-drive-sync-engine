@@ -52,7 +52,11 @@ rendering of one drawing at one instant cannot make.
   rather than passes. The first rule alone was not enough: three equal samples span 200 ms, the band's
   entrance animation lasts 220 ms and removes `is-entering` only on `animationend`, so a run under load
   could sample a frame inside it (`9a Consent`, about 1 run in 10 with five runs in parallel). Measured
-  after the fix: **16 of 16 runs passed**, 5 alone, 6 with 3 runs in parallel and 5 with 5 in parallel. It cannot see a state no frame draws (the never-synced hero is reachable only at two folders).
+  after the fix by the agent that made it: **16 of 16 runs passed**, 5 alone, 6 with 3 runs in
+  parallel and 5 with 5 in parallel. The review that followed could not repeat the 5-way batch:
+  under that load, page loads hit puppeteer's 30 s navigation timeout and the run crashed. A crash
+  exits non-zero, so it fails closed and never passes. Its 3-way and standalone runs all passed. It
+  cannot see a state no frame draws (the never-synced hero is reachable only at two folders).
 
   **What "51/51" reaches** is printed on the line under the result, **measured** by running
   `withOnePair`/`withOnePairConfig` on every fixture and counting the replies that came back different
