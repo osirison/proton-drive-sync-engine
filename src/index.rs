@@ -2960,6 +2960,42 @@ mod tests {
     }
 
     #[test]
+    fn canonicalize_best_effort_keeps_several_missing_components_in_the_order_written() {
+        // PR #434 review, F3. The deepest existing ancestor is found by peeling names off the END of
+        // the path, so the peeled names come out deepest-first and are put back reversed. Every
+        // earlier test had at most ONE missing component, where the order cannot show: dropping the
+        // `.rev()` returned `real/three/two/one` for `link/one/two/three` and nothing failed. The
+        // daemon's overlap check compares these answers by prefix, so a reversed tail would put a
+        // pair's folder somewhere it will never be created.
+        let directory = tempdir().expect("tempdir");
+        let base = fs::canonicalize(directory.path()).expect("canonical tempdir");
+        let real = base.join("real");
+        fs::create_dir(&real).expect("real");
+        std::os::unix::fs::symlink(&real, base.join("link")).expect("link");
+
+        assert_eq!(
+            canonicalize_best_effort(&base.join("link").join("one").join("two").join("three")),
+            real.join("one").join("two").join("three"),
+            "the link is resolved and the three missing names keep their order"
+        );
+        assert_eq!(
+            canonicalize_best_effort(&base.join("link").join("one").join("two")),
+            real.join("one").join("two"),
+            "two missing names"
+        );
+        assert_eq!(
+            canonicalize_best_effort(&base.join("link").join("one")),
+            real.join("one"),
+            "one missing name, where the order was never in question"
+        );
+        assert_eq!(
+            canonicalize_best_effort(&base.join("link")),
+            real,
+            "and a path that exists is simply canonical"
+        );
+    }
+
+    #[test]
     fn scan_options_canonicalize_root_and_db_path_before_ignore_matching() {
         let directory = tempdir().expect("tempdir");
         let root = directory.path().join("x");

@@ -2555,9 +2555,10 @@ impl Daemon<ProtonDriveClient> {
     /// The daemon over **every** resolved folder pair, in config order (the first is the default
     /// pair) — the public door to the N-pair constructor (#102 phase 4c, ADR 0005 §2).
     ///
-    /// The one `ProtonDriveClient` is built from the daemon-wide half the pairs share, and the event
-    /// session is wanted if **any** pair streams (a first pair that opts out must not stop the
-    /// others). A set whose daemon-wide halves differ is refused by [`Self::from_pairs`], the one
+    /// The one `ProtonDriveClient` is built from the daemon-wide half the pairs share. Whether the
+    /// event session is wanted — if **any** pair streams, so a first pair that opts out does not
+    /// stop the others — is decided once, inside [`Self::from_pairs_with_opener`], and handed to
+    /// [`build_event_source`]. A set whose daemon-wide halves differ is refused there too, the one
     /// place that says what "agree" means; the client built here is simply dropped in that case.
     pub fn new(configs: Vec<DaemonConfig>) -> AppResult<Self> {
         let Some(first) = configs.first() else {
@@ -2567,8 +2568,12 @@ impl Daemon<ProtonDriveClient> {
             first.proton_cli.clone(),
             command_policy_from_config(first),
         );
-        let event_source = build_event_source(configs.iter().any(|config| config.events_driven));
-        Self::from_pairs(configs, proton, event_source)
+        Self::from_pairs_with_opener(
+            configs,
+            proton,
+            build_event_source,
+            open_cli_keyring_event_source,
+        )
     }
 }
 
@@ -2613,16 +2618,27 @@ impl<C: ProtonClient> Daemon<C> {
         proton: C,
         event_source: Option<Box<dyn EventSource>>,
     ) -> AppResult<Self> {
-        Self::from_pairs_with_opener(configs, proton, event_source, open_cli_keyring_event_source)
+        Self::from_pairs_with_opener(
+            configs,
+            proton,
+            move |_| event_source,
+            open_cli_keyring_event_source,
+        )
     }
 
-    /// [`Self::from_pairs`] with the session opener the default [`Self::event_source_factory`]
-    /// calls — the seam that lets a test prove the factory serves every events-driven pair without
-    /// reading this machine's keyring.
+    /// [`Self::from_pairs`] with the two ways the event session is opened made explicit — the seam
+    /// that lets a test prove both serve every events-driven pair without reading this machine's
+    /// keyring.
+    ///
+    /// - `initial_event_source` builds the session the daemon **starts** with. It is handed the
+    ///   answer to "does any pair stream?" ([`any_pair_streams`]) rather than asked to work it out,
+    ///   so that answer is computed once, here, and the same value reaches
+    /// - `open_session`, which the default [`Self::event_source_factory`] calls every time it is
+    ///   asked for a session later (a degraded session being retried).
     fn from_pairs_with_opener(
         configs: Vec<DaemonConfig>,
         proton: C,
-        event_source: Option<Box<dyn EventSource>>,
+        initial_event_source: impl FnOnce(bool) -> Option<Box<dyn EventSource>>,
         open_session: fn() -> Option<Box<dyn EventSource>>,
     ) -> AppResult<Self> {
         let Some(first) = configs.first() else {
@@ -2651,9 +2667,10 @@ impl<C: ProtonClient> Daemon<C> {
                 )));
             }
         }
-        // A factory that captured only the first pair's flag would never stream for the others when
-        // the first opts out.
-        let events_wanted = configs.iter().any(|config| config.events_driven);
+        // A session that asked only the first pair would never stream for the others when the first
+        // opts out — at start (the session below) or later (the factory). One answer, two readers.
+        let events_wanted = any_pair_streams(&configs);
+        let event_source = initial_event_source(events_wanted);
         let mut process = None;
         let mut pair_configs = Vec::with_capacity(configs.len());
         for config in configs {
@@ -3392,6 +3409,58 @@ impl<C: ProtonClient> Daemon<C> {
         self.publish_pair(pair);
     }
 
+    /// **The overlap check, for a pair that is already running** (PR #434 review, F2): the same
+    /// [`real_path_overlap`] boot and a promotion ask, put to this ready pair against every other
+    /// ready one before each of its `Sync` jobs. Boot and a promotion look once; a link made
+    /// afterwards (a folder moved into another pair's, with a link left where it was) kept both
+    /// `Ready` with nothing said, and the outer pair then uploaded the inner one's `.sync` — its
+    /// lockfile and status files — as ordinary files, because `is_sync_state_path` ignores only a
+    /// **top-level** `.sync`. The same layout is refused at the next start, so the daemon would then
+    /// not start at all.
+    ///
+    /// **Both pairs of an overlap are stopped, whichever one noticed.** The natural candidate is the
+    /// inner pair (its folder now resolves inside the other's tree), and stopping only it is not
+    /// enough: its `.sync` is already in the outer pair's tree, and the outer pair — configured
+    /// correctly, and still `Ready` — uploads it on its next pass. The check is symmetric in what it
+    /// finds (a shared folder and a shared state file have no inner side at all), so one rule serves
+    /// every relation it knows and there is no "who is at fault" to get wrong. Each pair's reason is
+    /// worded from its own side, which is also how a retry words it, so the retry that keeps a pair
+    /// unavailable restates nothing. An unavailable pair runs nothing, so it is not asked: its own
+    /// retry asks the question of every slot.
+    ///
+    /// Returns whether `pair` itself was stopped.
+    fn stop_overlapping_pairs(&mut self, pair: usize) -> bool {
+        let Some(runtime) = self.runtime(pair) else {
+            return false;
+        };
+        let mut stops: Vec<(usize, String)> = Vec::new();
+        for other in (0..self.pairs.len()).filter(|other| *other != pair) {
+            let Some(other_runtime) = self.runtime(other) else {
+                continue;
+            };
+            let Some(reason) = real_path_overlap(&runtime.config, &other_runtime.config) else {
+                continue;
+            };
+            let from_the_other_side = real_path_overlap(&other_runtime.config, &runtime.config)
+                .unwrap_or_else(|| reason.clone());
+            if !stops.iter().any(|(stopped, _)| *stopped == pair) {
+                stops.push((pair, reason));
+            }
+            stops.push((other, from_the_other_side));
+        }
+        let stopped_itself = stops.iter().any(|(stopped, _)| *stopped == pair);
+        for (stopped, reason) in stops {
+            let _span = pair_span(&self.pair_config(stopped).name).entered();
+            warn!(
+                %reason,
+                "folder pair overlaps another running pair; it is unavailable until that changes \
+                 and the daemon keeps running"
+            );
+            self.demote_pair(stopped, reason);
+        }
+        stopped_itself
+    }
+
     /// Looks at a ready pair's folder and state before its pass and acts on what it finds
     /// ([`Examination`], ADR 0005 and the 4b note, items 8 and 9). **The one place a folder that is
     /// no longer the one the pair ran on is judged**, whichever way it stopped being: replaced by
@@ -3414,6 +3483,11 @@ impl<C: ProtonClient> Daemon<C> {
     ///   said once per cause. **A folder that could not be judged** blocks the pass instead
     ///   ([`PairRuntime::unjudged`]).
     fn examine_ready_pair(&mut self, pair: usize) {
+        // First, before the folder is looked at: a pair that overlaps another one is not a pair to
+        // judge, it is two pairs to stop.
+        if self.stop_overlapping_pairs(pair) {
+            return;
+        }
         let Some(runtime) = self.runtime_mut(pair) else {
             return;
         };
@@ -10242,6 +10316,14 @@ fn command_policy_from_config(config: &DaemonConfig) -> CommandPolicy {
 /// `x-pm-appversion` sent on events requests. Matches the value the live detection harness uses
 /// (`tests/events_live.rs`); Proton validates it.
 const EVENTS_APP_VERSION: &str = "cli-drive@0.5.0";
+
+/// Whether the process-wide event session is wanted: **any** pair is `events_driven`. The session is
+/// one per process, so one pair opting out must not stop it for the others; this is the one
+/// definition of that, read by the session the daemon starts with and by the factory that rebuilds
+/// it.
+fn any_pair_streams(configs: &[DaemonConfig]) -> bool {
+    configs.iter().any(|config| config.events_driven)
+}
 
 /// Builds the real [`EventSource`] (an [`EventsClient`] over `curl` + the reused CLI keyring
 /// session) when any pair is events-driven. Returns `None` — falling back to full-tree snapshots —
@@ -25893,6 +25975,53 @@ mod tests {
     }
 
     #[test]
+    fn the_session_the_daemon_starts_with_is_wanted_when_any_pair_is_events_driven() {
+        // PR #434 review, F3. `Daemon::new` used to work out "does any pair stream?" itself, and
+        // the constructor worked it out again for the factory: changing the first to
+        // `first.events_driven` failed nothing. There is one answer now, passed to the builder of
+        // the session the daemon STARTS with — `build_event_source` in the binary, a fake here, so
+        // no keyring is read. The first pair opts out; the second does not.
+        let directory = tempdir().expect("tempdir");
+        let mut configs = pair_configs(directory.path(), &["a", "b"]);
+        configs[1].events_driven = true;
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let recorder = Arc::clone(&asked);
+        let daemon = Daemon::from_pairs_with_opener(
+            configs,
+            MultiRootClient::default(),
+            move |wanted| {
+                recorder.lock().expect("asked lock").push(wanted);
+                wanted.then(|| Box::new(FakeEventSource::new("cursor-0")) as Box<dyn EventSource>)
+            },
+            || None,
+        )
+        .expect("daemon");
+        assert_eq!(
+            *asked.lock().expect("asked lock"),
+            [true],
+            "asked once, and told that a pair streams although the first does not"
+        );
+        assert!(
+            daemon.event_source.is_some(),
+            "so the event source exists from the start, not a cadence later"
+        );
+
+        // And the other way: no pair streams, nothing is built.
+        let other = tempdir().expect("tempdir");
+        let daemon = Daemon::from_pairs_with_opener(
+            pair_configs(other.path(), &["a", "b"]),
+            MultiRootClient::default(),
+            |wanted| {
+                assert!(!wanted, "no pair streams");
+                None
+            },
+            || panic!("nothing opens a session when no pair wants one"),
+        )
+        .expect("daemon");
+        assert!(daemon.event_source.is_none());
+    }
+
+    #[test]
     fn the_event_source_is_built_when_any_pair_is_events_driven() {
         // The default factory used to capture the one pair's `events_driven`. With N pairs it
         // must capture whether ANY pair wants events, or a daemon whose first pair opts out never
@@ -25901,11 +26030,13 @@ mod tests {
         let directory = tempdir().expect("tempdir");
         let mut configs = pair_configs(directory.path(), &["a", "b"]);
         configs[1].events_driven = true;
-        let mut daemon =
-            Daemon::from_pairs_with_opener(configs, MultiRootClient::default(), None, || {
-                Some(Box::new(FakeEventSource::new("cursor-0")) as Box<dyn EventSource>)
-            })
-            .expect("daemon");
+        let mut daemon = Daemon::from_pairs_with_opener(
+            configs,
+            MultiRootClient::default(),
+            |_| None,
+            || Some(Box::new(FakeEventSource::new("cursor-0")) as Box<dyn EventSource>),
+        )
+        .expect("daemon");
         let mut stepper = Stepper::new(&mut daemon);
         assert_eq!(stepper.step(&mut daemon), Step::Idle);
         assert!(
@@ -26675,6 +26806,15 @@ mod tests {
             "nothing was prepared in the other pair's tree: that is the point of asking first"
         );
         assert!(daemon.runtime(0).is_some(), "and pair a is untouched");
+        // Nor is it stopped when its own turn comes: the pair that overlaps is the one that is not
+        // running, and `b` runs nothing in `a`'s tree, so there is nothing for `a` to be stopped
+        // for. (`stop_overlapping_pairs` asks only ready pairs.)
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(
+            daemon.runtime(0).is_some() && daemon.unavailable(1).is_some(),
+            "a keeps running beside an unavailable pair that overlaps it"
+        );
 
         // The overlap goes (the link points elsewhere): the next attempt takes it.
         fs::remove_file(&blocker).expect("the link goes");
@@ -26685,6 +26825,148 @@ mod tests {
         assert!(
             daemon.runtime(1).is_some(),
             "ready once it overlaps nothing"
+        );
+    }
+
+    /// Default-layout pairs, one per name: the index, its sidecars and the lockfile live in
+    /// `<root>/.sync`, which is what a nested pair's state is and what makes the harm real. Each
+    /// root holds a file, and all have passed once, so each has a live runtime and a state
+    /// directory in its folder. Returns each pair's root, in order.
+    fn booted_default_layout_pairs(
+        directory: &Path,
+        names: &[&str],
+    ) -> (
+        Daemon<MultiRootClient>,
+        MultiRootClient,
+        Stepper,
+        Vec<PathBuf>,
+    ) {
+        let mut configs = pair_configs(directory, names);
+        for config in &mut configs {
+            config.db_path = config.local_root.join(".sync").join("sync_index.db");
+            config.lockfile_path = config.local_root.join(".sync").join("proton-sync.lock");
+            fs::write(config.local_root.join("f.txt"), b"content").expect("a file");
+        }
+        let roots: Vec<PathBuf> = configs.iter().map(|c| c.local_root.clone()).collect();
+        let client = MultiRootClient::default();
+        let mut daemon = multi_pair_daemon(configs, client.clone(), None);
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        for (pair, root) in roots.iter().enumerate() {
+            assert!(
+                daemon.runtime(pair).is_some(),
+                "pair {pair} is ready after boot"
+            );
+            assert!(
+                root.join(".sync").join("proton-sync.lock").exists(),
+                "and has its state in its own folder: {}",
+                root.display()
+            );
+        }
+        (daemon, client, stepper, roots)
+    }
+
+    /// `b`'s folder moved into `a`'s, with a link left where it was: the layout the daemon refuses
+    /// at boot, reached while it runs.
+    fn nest_b_in_a(a_root: &Path, b_root: &Path) {
+        fs::rename(b_root, a_root.join("b-moved")).expect("b's folder moves into a's");
+        std::os::unix::fs::symlink(a_root.join("b-moved"), b_root).expect("a link where it was");
+    }
+
+    #[test]
+    fn a_running_pair_that_comes_to_overlap_another_is_stopped_before_it_uploads_the_others_state()
+    {
+        // PR #434 review, F2. The real-path overlap check ran at boot and at promotion only, so
+        // two pairs that overlapped LATER were never looked at again. Moving `b`'s folder into `a`'s
+        // and leaving a link where it was kept both Ready, and `a` then uploaded `b`'s `.sync`
+        // (its lockfile and status files) as ordinary files: `is_sync_state_path` ignores only a
+        // TOP-LEVEL `.sync`.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper, roots) =
+            booted_default_layout_pairs(directory.path(), &["a", "b", "c"]);
+        let uploads_before = client.uploads().len();
+        let c_passes = daemon.shared.pairs[2].reconcile_seq.load(Ordering::SeqCst);
+
+        nest_b_in_a(&roots[0], &roots[1]);
+        // `a` first: it is the pair that would do the uploading, and the one that must not be
+        // spared for being the outer.
+        for pair in 0..3 {
+            stepper.send(LoopCommand::SyncNow(pair));
+        }
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        let uploads = client.uploads();
+        assert!(
+            !uploads[uploads_before..]
+                .iter()
+                .any(|(local, _)| local.starts_with("b-moved")),
+            "pair a must not upload anything of b's tree while they overlap (b's `.sync` would go \
+             up as a's own files): {:?}",
+            &uploads[uploads_before..]
+        );
+        for (pair, other) in [(0, "'b'"), (1, "'a'")] {
+            assert!(
+                daemon.unavailable(pair).is_some() && daemon.runtime(pair).is_none(),
+                "pair {pair} is unavailable while they overlap"
+            );
+            let reason = published_error(&daemon, pair).expect("and says why");
+            assert!(
+                reason.contains("Two pairs may not share a folder or nest")
+                    && reason.contains(other),
+                "pair {pair}: {reason}"
+            );
+        }
+        assert!(
+            daemon.runtime(2).is_some()
+                && daemon.shared.pairs[2].reconcile_seq.load(Ordering::SeqCst) > c_passes,
+            "a pair that overlaps nothing keeps syncing: the daemon is never stopped over two"
+        );
+        assert!(
+            roots[0].join("b-moved/.sync/proton-sync.lock").exists(),
+            "nothing of b's state was removed: the daemon stops, it does not tidy"
+        );
+    }
+
+    #[test]
+    fn pairs_stopped_for_an_overlap_stay_stopped_until_it_is_gone_and_then_run_again() {
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper, roots) =
+            booted_default_layout_pairs(directory.path(), &["a", "b"]);
+        nest_b_in_a(&roots[0], &roots[1]);
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(daemon.runtime(0).is_none() && daemon.runtime(1).is_none());
+        let uploads_stopped = client.uploads().len();
+        let reason = published_error(&daemon, 1).expect("b says why");
+
+        // Attempts while it persists change nothing: no pass, no upload, the same reason.
+        for pair in [0, 1, 0, 1] {
+            stepper.send(LoopCommand::SyncNow(pair));
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        }
+        assert!(daemon.runtime(0).is_none() && daemon.runtime(1).is_none());
+        assert_eq!(client.uploads().len(), uploads_stopped, "nothing uploads");
+        assert_eq!(
+            published_error(&daemon, 1).as_deref(),
+            Some(reason.as_str()),
+            "a retry words the cause as the stop did, so it restates nothing"
+        );
+
+        // The layout is put right: both come back on their next attempt.
+        fs::remove_file(&roots[1]).expect("the link goes");
+        fs::rename(roots[0].join("b-moved"), &roots[1]).expect("the folder goes back");
+        for pair in [0, 1] {
+            stepper.send(LoopCommand::SyncNow(pair));
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        }
+        assert!(
+            daemon.runtime(0).is_some() && daemon.runtime(1).is_some(),
+            "ready once they overlap nothing"
+        );
+        assert_eq!(
+            client.uploads().len(),
+            uploads_stopped,
+            "and nothing was left to upload: neither pair uploaded the other's tree"
         );
     }
 
