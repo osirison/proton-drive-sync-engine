@@ -1478,6 +1478,61 @@ exit 64
         );
     }
 
+    /// #102, decision D12: a pair's pause is remembered in its own index, so stopping the daemon and
+    /// starting it again over the same config does not resume it. Driven through the real binaries
+    /// (sandboxed by `common`), the way the desktop app's restart-after-save does it.
+    #[test]
+    fn a_paused_pair_stays_paused_when_the_daemon_is_restarted() {
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, socket_path, fake, _paths) = two_pair_daemon(directory.path(), [60, 60]);
+        let config = directory.path().join("pairs.toml");
+
+        let paused = run_control_args(&socket_path, &["--pair", "b", "--json", "pause"]);
+        assert_eq!(paused["paused"], true);
+        assert!(
+            paused["pause_unsaved"].is_null(),
+            "the pause was saved: {paused}"
+        );
+
+        run_control_args(&socket_path, &["--json", "stop"]);
+        let status = wait_for_exit(&mut daemon.child, Duration::from_secs(10))
+            .expect("the daemon exits when asked to");
+        assert!(status.success(), "a clean stop: {status:?}");
+        drop(daemon);
+
+        let mut daemon = DaemonProcess::spawn_with_config(&config, &socket_path, &fake);
+        wait_for_socket(&socket_path, &mut daemon);
+        wait_for_pair_reconcile_seq(&socket_path, &mut daemon, Some("a"), 1);
+        // `b`'s job is popped right after `a`'s: give it the chance to run that it must not take.
+        thread::sleep(Duration::from_millis(500));
+
+        let b = run_control_pair(&socket_path, Some("b"), "status");
+        assert_eq!(b["paused"], true, "`b` was paused before the restart: {b}");
+        assert_eq!(b["status"], "paused", "{b}");
+        assert_eq!(
+            b["reconcile_seq"].as_u64(),
+            Some(0),
+            "its boot pass was skipped"
+        );
+        let a = run_control_pair(&socket_path, Some("a"), "status");
+        assert_eq!(a["paused"], false, "`a` was not: {a}");
+        assert!(a["reconcile_seq"].as_u64().unwrap_or(0) >= 1);
+
+        // And resuming is remembered the same way.
+        run_control_args(&socket_path, &["--pair", "b", "--json", "resume"]);
+        run_control_args(&socket_path, &["--json", "stop"]);
+        wait_for_exit(&mut daemon.child, Duration::from_secs(10)).expect("the daemon exits");
+        drop(daemon);
+        let mut daemon = DaemonProcess::spawn_with_config(&config, &socket_path, &fake);
+        wait_for_socket(&socket_path, &mut daemon);
+        wait_for_pair_reconcile_seq(&socket_path, &mut daemon, Some("b"), 1);
+        assert_eq!(
+            run_control_pair(&socket_path, Some("b"), "status")["paused"],
+            false,
+            "`b` was resumed before the second restart"
+        );
+    }
+
     #[test]
     fn all_pairs_status_over_two_pairs_is_a_two_element_array() {
         let directory = tempdir().expect("tempdir");

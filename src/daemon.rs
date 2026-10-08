@@ -8,13 +8,14 @@ use crate::index::{
     SyncStatus, UnsyncableEntry, WithheldDeletion, begin_pass, byte_totals_since,
     delete_delete_approval, file_events, finish_pass, get_record, index_totals, insert_file_events,
     last_full_sweep, load_event_cursor, load_existing_index, load_forced_delete_approval,
-    load_index, load_sole_event_cursor, load_unsyncable_items, load_warm_start_count,
-    load_withheld_deletions, local_directory_state, local_file_state,
+    load_index, load_pair_paused, load_sole_event_cursor, load_unsyncable_items,
+    load_warm_start_count, load_withheld_deletions, local_directory_state, local_file_state,
     local_tree_holds_syncable_entry, mark_modified, matching_delete_approval, open_database,
     path_for_proton_id, prune_agreed_summaries, prune_history, purge_record, purge_subtree_records,
     recent_passes, replace_unsyncable_items, replace_withheld_deletions, reset_index_state,
     scan_local_tree, sha1_hex, store_agreed_summary, store_event_cursor,
-    store_forced_delete_approval, store_warm_start_count, upsert_delete_approval, upsert_record,
+    store_forced_delete_approval, store_pair_paused, store_warm_start_count,
+    upsert_delete_approval, upsert_record,
 };
 use crate::ipc::{
     ACTIVITY_EVENTS_DEFAULT_LIMIT, ACTIVITY_EVENTS_MAX_LIMIT, ApplyOutcome, AuthState,
@@ -1373,6 +1374,19 @@ struct ControlShared {
     pairs: Vec<PairShared>,
 }
 
+/// Whether a pair's index agrees with its in-memory pause flag (see [`PairShared::pause_record`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PauseRecord {
+    /// The index has not been read in this process: the pair has had no runtime since the daemon
+    /// started, or the read failed. The flag is then a default (not paused), not an answer.
+    Unread,
+    /// The index holds what the flag says.
+    Saved,
+    /// The flag was changed and the index could not take it — the write failed, or the pair had no
+    /// index open. Written out as soon as the pair has a runtime ([`PairShared::adopt_pause`]).
+    Unsaved,
+}
+
 /// The per-pair half of [`ControlShared`]: one folder pair's latches, counters and published
 /// snapshot. One block per pair.
 struct PairShared {
@@ -1383,6 +1397,15 @@ struct PairShared {
     /// Whether syncing is paused. Written by the IPC task (`pause`/`resume`) and read by the
     /// daemon core before each reconcile, so a pause takes effect from the next pass.
     paused: AtomicBool,
+    /// What the pair's index holds for [`Self::paused`] — the daemon remembers each pair's pause
+    /// there so a restart does not resume it (#102, decision D12). **The flag above stays the
+    /// authority while the daemon runs**; this only says whether the index agrees. It is also the
+    /// lock under which the flag and the index are written together, so the IPC task's
+    /// `pause`/`resume` and the core's boot/promotion read-or-flush cannot interleave.
+    pause_record: StdMutex<PauseRecord>,
+    /// The last cause [`Self::flush_unsaved_pause`] logged for a failed write, so a pair whose
+    /// write keeps failing says so once per cause and not once per job. Cleared by a success.
+    pause_flush_logged: StdMutex<Option<String>>,
     /// `true` while a reconcile pass is in flight (drives the `syncing` status).
     syncing: AtomicBool,
     /// `true` while the in-flight pass is a **plan-only** one (#100/#209).
@@ -1643,6 +1666,8 @@ impl PairShared {
         Self {
             name,
             paused: AtomicBool::new(false),
+            pause_record: StdMutex::new(PauseRecord::Unread),
+            pause_flush_logged: StdMutex::new(None),
             syncing: AtomicBool::new(false),
             plan_pass: AtomicBool::new(false),
             has_runtime: AtomicBool::new(true),
@@ -1679,6 +1704,117 @@ impl PairShared {
 impl PairShared {
     fn is_paused(&self) -> bool {
         self.paused.load(Ordering::SeqCst)
+    }
+
+    /// Sets this pair's pause and records it in its index through `index` (#102, decision D12: a
+    /// restart does not resume a paused pair). **The pause takes effect whatever the write does**:
+    /// the flag is the authority while the daemon runs, so a failed write — or no index to write to
+    /// (`None`: the pair is not ready) — leaves the pair paused and returns why it was not saved.
+    /// The record is then [`PauseRecord::Unsaved`] and [`Self::adopt_pause`] writes it out when the
+    /// pair has a runtime. The failure is logged on the way into `Unsaved` only, so a pair that
+    /// stays unsavable does not log once per `pause`/`resume`.
+    fn set_paused(&self, paused: bool, index: Option<&Connection>) -> Result<(), String> {
+        let mut record = self.pause_record.lock().expect("pause record lock");
+        self.paused.store(paused, Ordering::SeqCst);
+        let failure = match index {
+            None => "the folder pair is not ready, so its index is not open; a restart loses \
+                     the pause; resume the pair once its folder is back and pause it again"
+                .to_owned(),
+            Some(connection) => match store_pair_paused(connection, paused) {
+                Ok(()) => {
+                    *record = PauseRecord::Saved;
+                    return Ok(());
+                }
+                Err(error) => error.to_string(),
+            },
+        };
+        if *record != PauseRecord::Unsaved {
+            warn!(
+                pair = %self.name,
+                %failure,
+                "could not record whether this folder pair is paused; the request holds until \
+                 the daemon restarts"
+            );
+        }
+        *record = PauseRecord::Unsaved;
+        Err(failure)
+    }
+
+    /// Reconciles the pause flag with the index of a runtime this pair is about to be given — at
+    /// boot and on every promotion from unavailable, **before its first pass is scheduled**, so a
+    /// pair paused before a restart skips its boot pass exactly as a live pause skips one.
+    ///
+    /// One rule, by [`PauseRecord`]: a pair whose index has **not been read** takes its pause from
+    /// the index; any other pair has an answer in memory, which is the authority, and writes it to
+    /// this index (a pause that could not be saved, or an index that went with a folder and was
+    /// made again). **A read that fails starts the pair not paused** — today's behaviour. Pausing
+    /// a pair nobody asked to pause is invisible staleness; running is the status quo.
+    fn adopt_pause(&self, index: &Connection) {
+        let mut record = self.pause_record.lock().expect("pause record lock");
+        match *record {
+            PauseRecord::Unread => match load_pair_paused(index) {
+                Ok(paused) => {
+                    self.paused.store(paused, Ordering::SeqCst);
+                    *record = PauseRecord::Saved;
+                    if paused {
+                        info!(pair = %self.name, "folder pair is paused (remembered from before)");
+                    }
+                }
+                Err(error) => {
+                    self.paused.store(false, Ordering::SeqCst);
+                    warn!(
+                        pair = %self.name,
+                        %error,
+                        "could not read whether this folder pair was paused; starting it not paused"
+                    );
+                }
+            },
+            PauseRecord::Saved | PauseRecord::Unsaved => {
+                match store_pair_paused(index, self.is_paused()) {
+                    Ok(()) => *record = PauseRecord::Saved,
+                    Err(error) => {
+                        *record = PauseRecord::Unsaved;
+                        warn!(
+                            pair = %self.name,
+                            %error,
+                            "could not record whether this folder pair is paused; the request \
+                             holds until the daemon restarts"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Writes out a pause the index has not taken yet, through the index of a pair that is ready.
+    /// A write can fail on a ready pair (a busy timeout during a long checkpoint), which leaves the
+    /// record [`PauseRecord::Unsaved`] with nothing else to retry it before a restart. Called on the
+    /// main loop before each `Sync` job of a ready pair. A failure keeps the record `Unsaved` and is
+    /// logged once per cause; a record that is not `Unsaved` costs nothing.
+    fn flush_unsaved_pause(&self, index: &Connection) {
+        let mut record = self.pause_record.lock().expect("pause record lock");
+        if *record != PauseRecord::Unsaved {
+            return;
+        }
+        let mut logged = self.pause_flush_logged.lock().expect("pause flush lock");
+        match store_pair_paused(index, self.is_paused()) {
+            Ok(()) => {
+                *record = PauseRecord::Saved;
+                *logged = None;
+            }
+            Err(error) => {
+                let cause = error.to_string();
+                if logged.as_deref() != Some(cause.as_str()) {
+                    warn!(
+                        pair = %self.name,
+                        %cause,
+                        "still could not record whether this folder pair is paused; trying again \
+                         before its next sync"
+                    );
+                    *logged = Some(cause);
+                }
+            }
+        }
     }
 
     fn has_runtime(&self) -> bool {
@@ -2009,6 +2145,8 @@ impl ControlShared {
             reconcile_seq: pair.reconcile_seq.load(Ordering::SeqCst),
             pending_changes: snapshot.pending_changes,
             message: message.to_owned(),
+            // Set by the `pause`/`resume` handlers alone, and only when the change was not saved.
+            pause_unsaved: None,
             last_sync_epoch_secs: snapshot.last_sync_epoch_secs,
             last_error: snapshot.last_error,
             last_plan_summary: snapshot.last_plan_summary,
@@ -2794,6 +2932,13 @@ impl<C: ProtonClient> Daemon<C> {
             _global_lock_guard: global_lock_guard,
         };
         for (pair, slot) in daemon.pairs.iter().enumerate() {
+            // Before the flag and before anything is published or scheduled: a pair that was
+            // paused when the daemon last stopped starts paused (#102, decision D12). A pair that
+            // is unavailable reads its pause when it is promoted (`retry_unavailable`).
+            if let PairSlot::Ready(runtime) = slot {
+                let _span = pair_span(&runtime.config.name).entered();
+                daemon.shared.pairs[pair].adopt_pause(&runtime.connection);
+            }
             daemon.shared.pairs[pair].set_has_runtime(matches!(slot, PairSlot::Ready(_)));
         }
         // Every pair's published history before the first pass, so a client polling a just-started
@@ -3085,6 +3230,12 @@ impl<C: ProtonClient> Daemon<C> {
         if job.kind == JobKind::Sync && job.cause == Cause::Sweep {
             self.latch_scheduled_full_sweep(job.pair);
         }
+        if job.kind == JobKind::Sync && self.slot_state(job.pair) == SlotState::Ready {
+            // Before the pause check below: a paused pair is the one that has something to save.
+            if let Some(runtime) = self.runtime(job.pair) {
+                self.shared.pairs[job.pair].flush_unsaved_pause(&runtime.connection);
+            }
+        }
         if job.kind == JobKind::Sync && !self.is_paused(job.pair) {
             // A pair whose folder was replaced by an empty one is held, and a pair whose state went
             // with its folder is demoted, first: the retry below then prepares the second again in
@@ -3330,6 +3481,10 @@ impl<C: ProtonClient> Daemon<C> {
         let previous_reason = self
             .unavailable(pair)
             .map(|unavailable| unavailable.reason.clone());
+        // Before the pair is ready: its remembered pause is read (a pair unavailable since boot),
+        // or the pause asked for while it was unavailable is written (#102, decision D12), so the
+        // job that follows sees the pause and the IPC task never writes around it.
+        self.shared.pairs[pair].adopt_pause(&runtime.connection);
         self.pairs[pair] = PairSlot::Ready(Box::new(runtime));
         self.shared.pairs[pair].set_has_runtime(true);
         // The first metrics write is part of being prepared. When it fails the pair goes straight
@@ -9051,6 +9206,18 @@ async fn approvals_connection<'a>(
     approvals
 }
 
+/// `pause`/`resume`: sets the pair's pause and records it in its own index through the connection
+/// this task already holds for the approval verbs (#102, decision D12). The reason it was not
+/// saved, when it was not, is the reply's to tell; the pause itself has taken effect either way.
+async fn set_paused_through(
+    plane_pair: &ControlPlanePair,
+    pair: &PairShared,
+    paused: bool,
+) -> Result<(), String> {
+    let approvals = approvals_connection(plane_pair, pair).await;
+    pair.set_paused(paused, approvals.as_ref())
+}
+
 /// `pause`/`resume` persist the metrics sidecar so a GUI that has lost the socket still sees the
 /// pause (best effort, as ever). Two things it must not do: write for a pair that is not ready —
 /// the file belongs to whoever holds that pair's lock, and its directory may be what is missing —
@@ -9154,16 +9321,34 @@ async fn handle_control_connection<C: ProtonClient + 'static>(
                 .await
         }
         ControlCommand::Pause => {
-            pair.paused.store(true, Ordering::SeqCst);
+            // The pause takes effect whatever the write does; the reply says when it will not
+            // survive a restart (#102, decision D12).
+            let saved = set_paused_through(plane_pair, pair, true).await;
             info!(pair = %pair.name, "sync paused");
             persist_pause_state(shared, pair, &plane_pair.metrics_path);
-            shared.response(pair, "sync paused")
+            let mut response = shared.response(pair, "sync paused");
+            if let Err(reason) = saved {
+                response.message = format!(
+                    "sync paused, but the pause is not saved and will not survive a restart: \
+                     {reason}"
+                );
+                response.pause_unsaved = Some(reason);
+            }
+            response
         }
         ControlCommand::Resume => {
-            pair.paused.store(false, Ordering::SeqCst);
+            let saved = set_paused_through(plane_pair, pair, false).await;
             info!(pair = %pair.name, "sync resumed");
             persist_pause_state(shared, pair, &plane_pair.metrics_path);
-            shared.response(pair, "sync resumed")
+            let mut response = shared.response(pair, "sync resumed");
+            if let Err(reason) = saved {
+                response.message = format!(
+                    "sync resumed, but that is not saved and a restart could bring the pair back \
+                     paused: {reason}"
+                );
+                response.pause_unsaved = Some(reason);
+            }
+            response
         }
         ControlCommand::Syncnow => {
             if pair.is_paused() {
@@ -25352,6 +25537,452 @@ mod tests {
         assert_eq!(
             daemon.shared.pairs[1].reconcile_seq.load(Ordering::SeqCst),
             2
+        );
+    }
+
+    // ---- a pause is remembered across a restart (#102, decision D12) ------------------------------
+
+    /// The control plane a daemon over `MultiRootClient` would serve, with a channel of its own, so
+    /// a test can send `pause`/`resume` through `handle_control_connection` without a stepper.
+    fn plane_over(
+        daemon: &Daemon<MultiRootClient>,
+    ) -> (
+        ControlPlane<MultiRootClient>,
+        mpsc::UnboundedReceiver<LoopCommand>,
+    ) {
+        let (loop_tx, loop_rx) = mpsc::unbounded_channel();
+        let plane = ControlPlane {
+            shared: Arc::clone(&daemon.shared),
+            pairs: (0..daemon.pairs.len())
+                .map(|pair| daemon.control_plane_pair(pair))
+                .collect(),
+            loop_tx,
+            io_timeout: Duration::from_secs(5),
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+            browse: BrowseContext {
+                proton: Arc::new(MultiRootClient::default()),
+                gate_wait: Duration::from_secs(5),
+            },
+        };
+        (plane, loop_rx)
+    }
+
+    /// `pause` or `resume` for the pair named `name`, through the wire handler.
+    async fn send_pause(
+        plane: &ControlPlane<MultiRootClient>,
+        command: ControlCommand,
+        name: &str,
+    ) -> ControlResponse {
+        let mut request = ControlRequest::new(command);
+        request.pair = Some(name.to_owned());
+        roundtrip(plane, request).await
+    }
+
+    fn walks_named(client: &MultiRootClient, name: &str) -> usize {
+        client
+            .walks()
+            .iter()
+            .filter(|root| **root == remote_root_of(name))
+            .count()
+    }
+
+    #[tokio::test]
+    async fn a_paused_pair_stays_paused_across_a_restart() {
+        let directory = tempdir().expect("tempdir");
+        let client = MultiRootClient::default();
+        let configs = pair_configs(directory.path(), &["a", "b"]);
+        let daemon = multi_pair_daemon(configs.clone(), client.clone(), None);
+        let (plane, _loop_rx) = plane_over(&daemon);
+        let reply = send_pause(&plane, ControlCommand::Pause, "b").await;
+        assert_eq!(reply.message, "sync paused", "saved: nothing to warn about");
+        assert_eq!(reply.pause_unsaved, None);
+        drop(plane);
+        drop(daemon);
+
+        // The restart: a new daemon over the same indexes.
+        let mut daemon = multi_pair_daemon(configs, client.clone(), None);
+        assert!(
+            daemon.shared.pairs[1].is_paused(),
+            "`b` was paused when the daemon stopped"
+        );
+        assert!(!daemon.shared.pairs[0].is_paused(), "`a` was not");
+        assert_eq!(
+            daemon.shared.response(&daemon.shared.pairs[1], "m").status,
+            "paused",
+            "and it is published as paused before any pass"
+        );
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        assert_eq!(walks_named(&client, "a"), 1, "`a`'s boot pass ran");
+        assert_eq!(walks_named(&client, "b"), 0, "`b`'s boot pass was skipped");
+        assert_eq!(
+            daemon.shared.pairs[1].reconcile_seq.load(Ordering::SeqCst),
+            0,
+            "no pass was counted for `b`"
+        );
+    }
+
+    #[tokio::test]
+    async fn resuming_is_remembered_too() {
+        let directory = tempdir().expect("tempdir");
+        let client = MultiRootClient::default();
+        let configs = pair_configs(directory.path(), &["a", "b"]);
+        let daemon = multi_pair_daemon(configs.clone(), client.clone(), None);
+        let (plane, _loop_rx) = plane_over(&daemon);
+        for name in ["a", "b"] {
+            send_pause(&plane, ControlCommand::Pause, name).await;
+        }
+        let reply = send_pause(&plane, ControlCommand::Resume, "a").await;
+        assert_eq!(reply.message, "sync resumed");
+        drop(plane);
+        drop(daemon);
+
+        let daemon = multi_pair_daemon(configs, client, None);
+
+        assert!(
+            !daemon.shared.pairs[0].is_paused(),
+            "`a` was resumed before the restart"
+        );
+        assert!(daemon.shared.pairs[1].is_paused(), "`b` was not");
+    }
+
+    #[tokio::test]
+    async fn a_pause_on_an_unavailable_pair_is_written_when_it_becomes_ready() {
+        let directory = tempdir().expect("tempdir");
+        let client = MultiRootClient::default();
+        let configs = pair_configs(directory.path(), &["a", "b"]);
+        let mut daemon = multi_pair_daemon(configs.clone(), client.clone(), None);
+        make_unavailable(&mut daemon, 1);
+        let (plane, _loop_rx) = plane_over(&daemon);
+
+        // No index is open for `b`: the pause takes effect, and the reply says it is not saved.
+        let reply = send_pause(&plane, ControlCommand::Pause, "b").await;
+        assert!(daemon.shared.pairs[1].is_paused(), "in force regardless");
+        assert!(
+            reply.message.contains("will not survive a restart"),
+            "{}",
+            reply.message
+        );
+        assert!(
+            reply.pause_unsaved.is_some(),
+            "and says so in a typed field"
+        );
+        assert_eq!(
+            *daemon.shared.pairs[1].pause_record.lock().expect("lock"),
+            PauseRecord::Unsaved
+        );
+
+        // The folder comes back and the pair is prepared again: the pending pause is written.
+        fs::create_dir_all(&daemon.pair_config(1).local_root).expect("the folder returns");
+        daemon.retry_unavailable(1);
+        assert_eq!(daemon.slot_state(1), SlotState::Ready, "promoted");
+        assert!(
+            load_pair_paused(&daemon.runtime(1).expect("ready").connection).expect("read"),
+            "the pause asked for while it was unavailable is in the index"
+        );
+        assert!(daemon.shared.pairs[1].is_paused());
+        drop(plane);
+        drop(daemon);
+
+        let daemon = multi_pair_daemon(configs, client, None);
+        assert!(daemon.shared.pairs[1].is_paused(), "and survives a restart");
+    }
+
+    #[test]
+    fn a_pair_that_was_unavailable_at_boot_reads_its_pause_when_it_is_promoted() {
+        let directory = tempdir().expect("tempdir");
+        let client = MultiRootClient::default();
+        let configs = pair_configs(directory.path(), &["a", "b"]);
+        {
+            // The pause a previous run recorded in `b`'s index.
+            let connection = open_database(&configs[1].db_path).expect("b's index");
+            store_pair_paused(&connection, true).expect("record the pause");
+        }
+        // `b` cannot be prepared at boot: a file stands where its folder should be.
+        let root = configs[1].local_root.clone();
+        fs::remove_dir_all(&root).expect("no folder");
+        fs::write(&root, b"a file").expect("an obstacle");
+        let mut daemon = multi_pair_daemon(configs, client, None);
+        assert_eq!(daemon.slot_state(1), SlotState::Unavailable, "precondition");
+        assert!(!daemon.shared.pairs[1].is_paused(), "nothing read yet");
+
+        fs::remove_file(&root).expect("the obstacle goes");
+        fs::create_dir_all(&root).expect("a folder");
+        daemon.retry_unavailable(1);
+
+        assert_eq!(daemon.slot_state(1), SlotState::Ready, "promoted");
+        assert!(
+            daemon.shared.pairs[1].is_paused(),
+            "read from the index before its first pass"
+        );
+    }
+
+    #[test]
+    fn a_failed_pause_read_starts_the_pair_unpaused_and_says_so() {
+        let directory = tempdir().expect("tempdir");
+        let client = MultiRootClient::default();
+        let configs = pair_configs(directory.path(), &["a", "b"]);
+        {
+            // An index whose pause cannot be read: the row is there and is not a number.
+            let connection = open_database(&configs[1].db_path).expect("b's index");
+            connection
+                .execute_batch(
+                    "DROP TABLE pair_pause; \
+                     CREATE TABLE pair_pause (id INTEGER PRIMARY KEY, paused TEXT); \
+                     INSERT INTO pair_pause (id, paused) VALUES (0, 'garbage');",
+                )
+                .expect("a pause nobody can read");
+        }
+
+        let mut built = None;
+        let log = capture_log("warn", || {
+            built = Some(multi_pair_daemon(configs, client.clone(), None));
+        });
+        let mut daemon = built.expect("the daemon started");
+
+        assert!(
+            !daemon.shared.pairs[1].is_paused(),
+            "fail safe: a pair nobody asked to pause is not paused by a read that failed"
+        );
+        assert!(
+            log.contains("could not read whether this folder pair was paused") && log.contains("b"),
+            "it says so, naming the pair:\n{log}"
+        );
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        assert_eq!(walks_named(&client, "b"), 1, "and it runs");
+    }
+
+    #[test]
+    fn a_pause_that_cannot_be_saved_still_pauses_and_is_logged_once() {
+        let directory = tempdir().expect("tempdir");
+        let client = MultiRootClient::default();
+        let configs = pair_configs(directory.path(), &["a", "b"]);
+        let daemon = multi_pair_daemon(configs, client, None);
+        let (plane, _loop_rx) = plane_over(&daemon);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        runtime.block_on(async {
+            // Every write to `b`'s pause fails.
+            let approvals = approvals_connection(&plane.pairs[1], &plane.shared.pairs[1]).await;
+            approvals
+                .as_ref()
+                .expect("a connection")
+                .execute_batch(
+                    "CREATE TRIGGER refuse_pause BEFORE INSERT ON pair_pause \
+                     BEGIN SELECT RAISE(ABORT, 'pause refused'); END;",
+                )
+                .expect("trigger");
+        });
+
+        let mut replies = Vec::new();
+        let log = capture_log("warn", || {
+            runtime.block_on(async {
+                for command in [
+                    ControlCommand::Pause,
+                    ControlCommand::Resume,
+                    ControlCommand::Pause,
+                ] {
+                    replies.push(send_pause(&plane, command, "b").await);
+                }
+            });
+        });
+
+        assert!(
+            replies[0].message.contains("will not survive a restart"),
+            "{}",
+            replies[0].message
+        );
+        assert!(
+            replies[1].message.contains("not saved"),
+            "{}",
+            replies[1].message
+        );
+        assert!(replies.iter().all(|reply| reply.pause_unsaved.is_some()));
+        assert!(daemon.shared.pairs[1].is_paused(), "the last request holds");
+        assert_eq!(
+            log.matches("could not record whether this folder pair is paused")
+                .count(),
+            1,
+            "logged once, not once per request:\n{log}"
+        );
+    }
+
+    #[test]
+    fn a_paused_pair_that_is_paused_again_after_a_demotion_keeps_its_pause_in_the_new_index() {
+        // A folder deleted and made again takes the default layout's index with it. The pause was
+        // saved in the old one; the pair is promoted over a fresh index and the in-memory pause is
+        // the authority, so it is written there too.
+        let directory = tempdir().expect("tempdir");
+        let client = MultiRootClient::default();
+        let mut configs = pair_configs(directory.path(), &["a", "b"]);
+        state_inside_root(&mut configs[1]);
+        let mut daemon = multi_pair_daemon(configs, client, None);
+        let connection = &daemon.runtime(1).expect("ready").connection;
+        daemon.shared.pairs[1]
+            .set_paused(true, Some(connection))
+            .expect("saved");
+
+        let root = daemon.pair_config(1).local_root.clone();
+        make_unavailable(&mut daemon, 1);
+        fs::remove_dir_all(&root).ok();
+        fs::create_dir_all(&root).expect("a new folder");
+        daemon.retry_unavailable(1);
+
+        assert_eq!(daemon.slot_state(1), SlotState::Ready);
+        assert!(
+            load_pair_paused(&daemon.runtime(1).expect("ready").connection).expect("read"),
+            "the new index holds the pause"
+        );
+    }
+
+    #[test]
+    fn a_pause_read_at_boot_survives_the_folder_being_deleted_and_made_again() {
+        // The index goes with the folder (default layout). The pause was read from the old index
+        // at boot, so the in-memory answer is the authority and is written to the fresh one.
+        let directory = tempdir().expect("tempdir");
+        let client = MultiRootClient::default();
+        let mut configs = pair_configs(directory.path(), &["a", "b"]);
+        state_inside_root(&mut configs[1]);
+        fs::create_dir_all(configs[1].db_path.parent().expect("a parent")).expect("state dir");
+        {
+            let connection = open_database(&configs[1].db_path).expect("b's index");
+            store_pair_paused(&connection, true).expect("record the pause");
+        }
+        let mut daemon = multi_pair_daemon(configs, client, None);
+        assert!(
+            daemon.shared.pairs[1].is_paused(),
+            "read from the index at boot"
+        );
+
+        let root = daemon.pair_config(1).local_root.clone();
+        make_unavailable(&mut daemon, 1);
+        fs::create_dir_all(&root).expect("a new folder");
+        daemon.retry_unavailable(1);
+
+        assert_eq!(daemon.slot_state(1), SlotState::Ready);
+        assert!(
+            daemon.shared.pairs[1].is_paused(),
+            "the pause is not lost to the fresh index"
+        );
+        assert!(
+            load_pair_paused(&daemon.runtime(1).expect("ready").connection).expect("read"),
+            "and the fresh index holds it"
+        );
+    }
+
+    #[test]
+    fn a_pause_a_ready_pair_could_not_save_is_written_before_its_next_sync_job() {
+        let directory = tempdir().expect("tempdir");
+        let client = MultiRootClient::default();
+        let configs = pair_configs(directory.path(), &["a", "b"]);
+        let mut daemon = multi_pair_daemon(configs.clone(), client.clone(), None);
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+
+        // The first write fails (a busy index, say): the pair is paused and the record is unsaved.
+        let connection = &daemon.runtime(1).expect("ready").connection;
+        connection
+            .execute_batch(
+                "CREATE TRIGGER refuse_pause BEFORE INSERT ON pair_pause \
+                 BEGIN SELECT RAISE(ABORT, 'pause refused'); END;",
+            )
+            .expect("trigger");
+        daemon.shared.pairs[1]
+            .set_paused(true, Some(connection))
+            .expect_err("the write is refused");
+        assert_eq!(
+            *daemon.shared.pairs[1].pause_record.lock().expect("lock"),
+            PauseRecord::Unsaved
+        );
+
+        // The next job fails the same way: still unsaved, and said once, not once per job.
+        let log = capture_log("warn", || {
+            for _ in 0..2 {
+                stepper.clock.advance(Duration::from_secs(300));
+                assert_eq!(stepper.step(&mut daemon), Step::Idle);
+            }
+        });
+        assert_eq!(
+            *daemon.shared.pairs[1].pause_record.lock().expect("lock"),
+            PauseRecord::Unsaved,
+            "a failed flush keeps the record unsaved"
+        );
+        assert_eq!(
+            log.matches("still could not record whether this folder pair is paused")
+                .count(),
+            1,
+            "once per cause:\n{log}"
+        );
+
+        // The index recovers: the next job writes the pause, though the pair is paused and runs
+        // no pass.
+        daemon
+            .runtime(1)
+            .expect("ready")
+            .connection
+            .execute_batch("DROP TRIGGER refuse_pause;")
+            .expect("drop trigger");
+        stepper.clock.advance(Duration::from_secs(300));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(
+            *daemon.shared.pairs[1].pause_record.lock().expect("lock"),
+            PauseRecord::Saved
+        );
+        assert!(
+            load_pair_paused(&daemon.runtime(1).expect("ready").connection).expect("read"),
+            "the pause is in the index"
+        );
+        drop(stepper);
+        drop(daemon);
+
+        let daemon = multi_pair_daemon(configs, client, None);
+        assert!(daemon.shared.pairs[1].is_paused(), "and a restart keeps it");
+    }
+
+    #[test]
+    fn the_flush_writes_the_current_pause_flag_not_the_one_that_failed_to_save() {
+        let directory = tempdir().expect("tempdir");
+        let client = MultiRootClient::default();
+        let mut daemon =
+            multi_pair_daemon(pair_configs(directory.path(), &["a", "b"]), client, None);
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+
+        let connection = &daemon.runtime(1).expect("ready").connection;
+        connection
+            .execute_batch(
+                "CREATE TRIGGER refuse_pause_insert BEFORE INSERT ON pair_pause \
+                 BEGIN SELECT RAISE(ABORT, 'pause refused'); END; \
+                 CREATE TRIGGER refuse_pause_update BEFORE UPDATE ON pair_pause \
+                 BEGIN SELECT RAISE(ABORT, 'pause refused'); END;",
+            )
+            .expect("triggers");
+        let pair = &daemon.shared.pairs[1];
+        pair.set_paused(true, Some(connection))
+            .expect_err("the pause is refused");
+        pair.set_paused(false, Some(connection))
+            .expect_err("the resume is refused too");
+        assert!(!pair.is_paused(), "the pair is resumed in memory");
+        assert_eq!(
+            *pair.pause_record.lock().expect("lock"),
+            PauseRecord::Unsaved
+        );
+
+        connection
+            .execute_batch("DROP TRIGGER refuse_pause_insert; DROP TRIGGER refuse_pause_update;")
+            .expect("drop triggers");
+        stepper.clock.advance(Duration::from_secs(300));
+        stepper.step(&mut daemon);
+        assert_eq!(
+            *daemon.shared.pairs[1].pause_record.lock().expect("lock"),
+            PauseRecord::Saved
+        );
+        assert!(
+            !load_pair_paused(&daemon.runtime(1).expect("ready").connection).expect("read"),
+            "the index holds the current flag (not paused), not the refused pause"
         );
     }
 

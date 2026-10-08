@@ -69,9 +69,11 @@ enum Commands {
         #[arg(long)]
         limit: Option<usize>,
     },
-    /// Pause syncing (edits are still tracked while paused).
+    /// Pause syncing for the selected folder pair (edits are still tracked while paused). The
+    /// pause is remembered across daemon restarts: a restarted daemon keeps the pair paused until
+    /// you resume it.
     Pause,
-    /// Resume syncing.
+    /// Resume syncing for the selected folder pair, and forget its remembered pause.
     Resume,
     /// Trigger a sync and watch it finish.
     Syncnow {
@@ -296,6 +298,11 @@ async fn run_for_pair(
                     "Sync paused. Edits are still tracked; resume with `{}`.",
                     cli_hint(pair, "resume")
                 );
+                if let Some(reason) = &response.pause_unsaved {
+                    println!(
+                        "Not saved: {reason}. If the daemon restarts first, this pair is not paused."
+                    );
+                }
             }
             ExitCode::SUCCESS
         }
@@ -304,6 +311,11 @@ async fn run_for_pair(
                 print_pretty_json(&response);
             } else {
                 println!("Sync resumed.");
+                if let Some(reason) = &response.pause_unsaved {
+                    println!(
+                        "Not saved: {reason}. If the daemon restarts first, this pair may be paused again."
+                    );
+                }
             }
             ExitCode::SUCCESS
         }
@@ -2917,6 +2929,7 @@ mod tests {
             reconcile_seq: 1,
             pending_changes: 0,
             message: "daemon status".to_owned(),
+            pause_unsaved: None,
             last_sync_epoch_secs: None,
             last_error: None,
             last_plan_summary: None,

@@ -1115,6 +1115,14 @@ pub struct ControlResponse {
     /// suppressed for `N == 1`. `#[serde(default)]` for an older daemon's reply.
     #[serde(default)]
     pub pairs: Vec<PairSummary>,
+    /// Set on a `pause` or `resume` reply when the daemon could not record the change in the
+    /// pair's index (#102, decision D12): the reason. The change **took effect** in the running
+    /// daemon either way, but a restart before it is saved brings the pair back as the index last
+    /// had it, so a client that tells the user "paused" should add that this does not survive a
+    /// restart. `None` on every other reply, on a saved change, and on a reply from an older
+    /// daemon (`#[serde(default)]`) — which is the honest reading, as that daemon remembered nothing.
+    #[serde(default)]
+    pub pause_unsaved: Option<String>,
 }
 
 /// One completed reconcile **attempt**, including the idle ones — a rolling debug trail of the
@@ -1883,6 +1891,7 @@ mod tests {
             reconcile_seq: 7,
             pending_changes: 0,
             message: "daemon status".to_owned(),
+            pause_unsaved: None,
             last_sync_epoch_secs: None,
             last_error: None,
             last_plan_summary: None,

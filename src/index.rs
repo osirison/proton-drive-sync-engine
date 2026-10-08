@@ -43,6 +43,10 @@ CREATE TABLE IF NOT EXISTS forced_delete_approval (
     id INTEGER PRIMARY KEY CHECK (id = 0),
     active INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS pair_pause (
+    id INTEGER PRIMARY KEY CHECK (id = 0),
+    paused INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS unsyncable_items (
     path BLOB PRIMARY KEY,
     entity_kind TEXT NOT NULL,
@@ -1011,6 +1015,8 @@ pub fn reset_index_state(connection: &Connection) -> AppResult<()> {
         // for a forced approval to withhold; one left standing would outlive the replacement it
         // was for (ADR 0005, the 4b note, item 14).
         "forced_delete_approval",
+        // NOT `pair_pause`: it is the user's standing request, not learned state (see
+        // `load_pair_paused`).
         "delete_approvals",
         "unsyncable_items",
         // The ancestor summaries are things the daemon has LEARNED about content it agreed on, so
@@ -1086,6 +1092,38 @@ pub fn store_forced_delete_approval(connection: &Connection, active: bool) -> Ap
         ON CONFLICT(id) DO UPDATE SET active = excluded.active
         "#,
         params![i64::from(active)],
+    )?;
+    Ok(())
+}
+
+/// Whether this folder pair is paused — the user's standing request that it run no pass — as the
+/// index remembers it, so that a restart does not resume it (#102, maintainer decision D12: every
+/// pair has its own pause and the daemon remembers it in that pair's own index). A single-row table
+/// (`id = 0`) like `warm_start_state`; no row means not paused, which is also what an index
+/// written before the table existed answers.
+///
+/// **Deliberately not cleared by [`reset_index_state`]**: a pause is what the user asked for, not
+/// something the daemon learned, and a start-over that quietly resumed the pair would sync a folder
+/// the user had told it to leave alone.
+pub fn load_pair_paused(connection: &Connection) -> AppResult<bool> {
+    let paused: Option<i64> = connection
+        .query_row("SELECT paused FROM pair_pause WHERE id = 0", [], |row| {
+            row.get(0)
+        })
+        .optional()?;
+    Ok(paused.unwrap_or(0) != 0)
+}
+
+/// Records [`load_pair_paused`]'s answer. A resume stores `false` rather than deleting the row, so
+/// the table says "the user resumed this" and not merely "nothing is recorded".
+pub fn store_pair_paused(connection: &Connection, paused: bool) -> AppResult<()> {
+    connection.execute(
+        r#"
+        INSERT INTO pair_pause (id, paused)
+        VALUES (0, ?1)
+        ON CONFLICT(id) DO UPDATE SET paused = excluded.paused
+        "#,
+        params![i64::from(paused)],
     )?;
     Ok(())
 }
@@ -4588,6 +4626,61 @@ mod tests {
         reset_index_state(&connection).expect("reset");
 
         assert!(!load_forced_delete_approval(&connection).expect("cleared"));
+    }
+
+    #[test]
+    fn an_index_from_main_opens_unpaused() {
+        // The schema `origin/main` ships, which is this one minus the `pair_pause` table: opening
+        // it through the real entry point adds the table and reads as "not paused", which is what
+        // every pair was before a pause could be remembered.
+        let table = "CREATE TABLE IF NOT EXISTS pair_pause (\n    id INTEGER PRIMARY KEY CHECK (id = 0),\n    paused INTEGER NOT NULL DEFAULT 0\n);\n";
+        assert!(
+            SCHEMA.contains(table),
+            "precondition: the table is in SCHEMA"
+        );
+        let directory = tempdir().expect("tempdir");
+        let db_path = directory.path().join("sync_index.db");
+        {
+            let connection = Connection::open(&db_path).expect("open");
+            connection
+                .execute_batch(&SCHEMA.replace(table, ""))
+                .expect("the schema as main ships it");
+            let before: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE name = 'pair_pause'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("count");
+            assert_eq!(before, 0, "precondition: the old index has no such table");
+        }
+
+        let connection = open_database(&db_path).expect("open database upgrades cleanly");
+
+        assert!(!load_pair_paused(&connection).expect("load"));
+        store_pair_paused(&connection, true).expect("store");
+        assert!(load_pair_paused(&connection).expect("reload"));
+        store_pair_paused(&connection, false).expect("store again");
+        assert!(!load_pair_paused(&connection).expect("reload"));
+    }
+
+    #[test]
+    fn reset_index_keeps_the_pause() {
+        // A pause is what the user asked for, not something the daemon learned: a start-over that
+        // resumed the pair would sync a folder they told it to leave alone.
+        let connection = Connection::open_in_memory().expect("open");
+        connection.execute_batch(SCHEMA).expect("schema");
+        store_pair_paused(&connection, true).expect("store");
+        store_warm_start_count(&connection, 3).expect("something that IS learned");
+
+        reset_index_state(&connection).expect("reset");
+
+        assert!(load_pair_paused(&connection).expect("read"), "still paused");
+        assert_eq!(
+            load_warm_start_count(&connection).expect("read"),
+            0,
+            "the reset did run"
+        );
     }
 
     // ---- pass and path history --------------------------------------------------------------
