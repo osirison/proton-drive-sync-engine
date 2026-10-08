@@ -1,6 +1,6 @@
 use clap::Parser;
 use proton_drive_sync_engine::config::{
-    DEFAULT_LOG_LEVEL, DaemonConfigInput, DeletionPolicy, resolve_runtime_config,
+    DEFAULT_LOG_LEVEL, DaemonConfigInput, DeletionPolicy, RunMode, resolve_runtime_configs,
 };
 use proton_drive_sync_engine::daemon::{Daemon, GlobalLockProbe, preview_plan, probe_daemon_lock};
 use proton_drive_sync_engine::trash::LocalDeleteMode;
@@ -106,6 +106,11 @@ struct Cli {
     /// Changing it leaves sidecars written under the old suffix behind as ordinary files.
     #[arg(long = "conflict-suffix", value_name = "SUFFIX")]
     conflict_suffix: Option<String>,
+    /// With `--dry-run` (or a config `dry_run = true`): preview this folder pair instead of the
+    /// default one, the first `[[pair]]` table. Matched exactly. A preview rehearses one pair per
+    /// invocation; without `--dry-run` this is an error, because the daemon runs every pair.
+    #[arg(long = "pair", value_name = "NAME")]
+    pair: Option<String>,
 }
 
 #[tokio::main]
@@ -114,15 +119,19 @@ async fn main() -> ExitCode {
     // verbosity (`log_level`). Clap's own parse errors print themselves and exit before this, and a
     // resolution failure falls back to the default filter below so its `error!` is never silent.
     let cli = Cli::parse();
-    let resolved = resolve_runtime_config(cli.into());
+    let resolved = resolve_runtime_configs(cli.into());
+    // Every pair carries the same log filter (it is daemon-wide, resolved once), so the first one
+    // speaks for all of them.
     init_tracing(
         resolved
             .as_ref()
-            .map(|(config, _)| config.log_filter.as_str())
+            .ok()
+            .and_then(|configs| configs.pairs.first())
+            .map(|config| config.log_filter.as_str())
             .unwrap_or(DEFAULT_LOG_LEVEL),
     );
-    let (config, dry_run) = match resolved {
-        Ok(config) => config,
+    let configs = match resolved {
+        Ok(configs) => configs,
         Err(error) => {
             error!(%error, "failed to resolve daemon configuration");
             eprintln!("{error}");
@@ -130,10 +139,17 @@ async fn main() -> ExitCode {
         }
     };
 
-    if dry_run {
+    if let RunMode::Preview { .. } = configs.mode {
+        // One pair per invocation: the default pair, or the one `--pair` named (a preview rehearses
+        // one tree, and the report has no pair dimension).
+        let Some(config) = configs.preview() else {
+            error!("a preview names a pair that does not exist; this is a bug in the resolver");
+            eprintln!("internal error: the preview names no folder pair");
+            return ExitCode::FAILURE;
+        };
         warn_if_a_daemon_is_already_running(&config.global_lock_path);
-        info!("running dry-run sync plan");
-        return match preview_plan(&config) {
+        info!(pair = %config.name, "running dry-run sync plan");
+        return match preview_plan(config) {
             Ok(report) => match serde_json::to_string_pretty(&report) {
                 Ok(json) => {
                     println!("{json}");
@@ -153,7 +169,7 @@ async fn main() -> ExitCode {
         };
     }
 
-    match Daemon::new(config) {
+    match Daemon::new(configs.pairs) {
         Ok(daemon) => match daemon.run().await {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
@@ -204,6 +220,7 @@ impl From<Cli> for DaemonConfigInput {
             // its input and parallel tests cannot race on the environment.
             rust_log: std::env::var("RUST_LOG").ok(),
             conflict_suffix: cli.conflict_suffix,
+            pair: cli.pair,
         }
     }
 }
@@ -320,6 +337,18 @@ mod tests {
             error.contains("ask_every_time"),
             "the error must name the spellings that do work: {error}"
         );
+    }
+
+    #[test]
+    fn pair_parses_without_dry_run_because_the_config_file_may_say_dry_run() {
+        // `--pair` is validated after resolution, not by clap: whether the run is a preview depends
+        // on `--dry-run`, `--no-dry-run` AND the file's `dry_run`, and clap cannot read the file. A
+        // `requires = "dry_run"` here would refuse `--pair` beside a file that says `dry_run = true`.
+        let cli = Cli::try_parse_from(["proton-syncd", "--config", "pairs.toml", "--pair", "b"])
+            .expect("--pair parses on its own");
+        let input = DaemonConfigInput::from(cli);
+        assert_eq!(input.pair.as_deref(), Some("b"));
+        assert!(!input.dry_run, "and says nothing about the mode");
     }
 
     #[test]

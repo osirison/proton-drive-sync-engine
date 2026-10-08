@@ -1136,15 +1136,65 @@ local = true
     }
 
     #[test]
+    fn a_two_pair_file_saves_daemon_wide_edits_and_refuses_per_pair_ones() {
+        // Phase 4c lifted the engine's two-pair refusal, and this writer inherits it: it validates
+        // the whole document through `validate_file_config_text`, so a two-pair file is a document
+        // it can save. What it still cannot do is edit a PER-PAIR key: it only knows top-level
+        // keys, so asking it to change one over a `[[pair]]` file would write a setting twice,
+        // which the engine refuses (ADR 0005 phase 5b is the array-of-tables API that lifts this).
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("proton-sync.toml");
+        let two_pairs = "# hand-written\nlog_level = \"info\"\n\n\
+             [[pair]]\nname = \"documents\"\nlocal_root = \"/home/me/Documents\"\n\
+             remote_root = \"/Drive/Docs\"\n\n\
+             [[pair]]\nname = \"photos\"\nlocal_root = \"/home/me/Pictures\"\n\
+             remote_root = \"/Drive/Photos\"\n";
+
+        // A daemon-wide edit saves, and leaves both tables and the comment alone.
+        let mut doc = ConfigDoc::from_toml_str(two_pairs).unwrap();
+        doc.validate().expect("a two-pair document is valid");
+        doc.set_str("log_level", "debug");
+        doc.save(&path).expect("a daemon-wide edit saves");
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(written.contains("log_level = \"debug\""), "got {written}");
+        assert_eq!(written.matches("[[pair]]").count(), 2, "got {written}");
+        assert!(written.contains("name = \"photos\""), "got {written}");
+        assert!(written.contains("# hand-written"), "comments preserved");
+
+        // A per-pair edit is refused legibly, and nothing is written.
+        let before = std::fs::read_to_string(&path).unwrap();
+        let mut doc = ConfigDoc::from_toml_str(&before).unwrap();
+        doc.set_str("local_root", "/home/me/Elsewhere");
+        let error = doc.save(&path).unwrap_err().to_string();
+        assert!(
+            error.contains("two spellings of one setting") && error.contains("`local_root`"),
+            "got {error}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            before,
+            "a refused save leaves the file as it was"
+        );
+    }
+
+    #[test]
     fn a_document_the_daemon_would_refuse_to_start_on_is_still_refused() {
         // The never-brick contract has to hold for the new shape too, or the GUI becomes the way to
-        // write a config that stops the daemon. Two pairs are refused because the capability does
-        // not exist yet; the other two are the shape rules that will still be rules after it does.
+        // write a config that stops the daemon. Two pairs used to be refused here because the
+        // daemon could not run them; since phase 4c it can, so a well-formed two-pair document is
+        // valid (see `a_two_pair_file_saves_daemon_wide_edits_and_refuses_per_pair_ones`) and the
+        // first two rows are the rules that only apply BESIDE other pairs.
         for (toml, needle) in [
             (
                 "[[pair]]\nname = \"a\"\nlocal_root = \"/a\"\nremote_root = \"/Drive/a\"\n\n\
-                 [[pair]]\nname = \"b\"\nlocal_root = \"/b\"\nremote_root = \"/Drive/b\"\n",
-                "not yet supported",
+                 [[pair]]\nname = \"b\"\nlocal_root = \"/b\"\n",
+                "every `[[pair]]` table must set both",
+            ),
+            (
+                "[[pair]]\nname = \"a\"\nlocal_root = \"/a\"\nremote_root = \"/Drive/a\"\n\n\
+                 [[pair]]\nname = \"b\"\nlocal_root = \"/b\"\nremote_root = \"/Drive/b\"\n\
+                 dry_run = true\n",
+                "`dry_run = true`",
             ),
             (
                 "local_root = \"/x\"\n\n[[pair]]\nname = \"a\"\nremote_root = \"/Drive/a\"\n",

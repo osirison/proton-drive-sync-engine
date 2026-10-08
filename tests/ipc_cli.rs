@@ -1257,6 +1257,386 @@ exit 64
         assert_eq!(array[0]["result"]["pair"], "default");
     }
 
+    // ---------------------------------------------------------------------------------------
+    // #102 phase 4c: the lift, driven against the real binaries. One daemon, a config of several
+    // `[[pair]]` tables, and only daemon-wide flags on the command line (a per-pair flag beside
+    // several pairs is refused, which `a_per_pair_flag_with_a_two_pair_config_...` proves).
+    // ---------------------------------------------------------------------------------------
+
+    /// One `[[pair]]` table per `(name, remote_root, scan_interval_secs)`, each with its root and
+    /// state under `directory/<name>/` and the two keys that keep a test off the real session and
+    /// off the clock: `events_driven = false` (the default would read the machine's keyring) and the
+    /// scan interval. Returns the config path and each pair's `(local_root, db_path)`, in order.
+    fn write_pairs_config(
+        directory: &Path,
+        extra_top_level: &str,
+        pairs: &[(&str, &str, u64)],
+    ) -> (PathBuf, Vec<(PathBuf, PathBuf)>) {
+        let mut text = String::from(extra_top_level);
+        let mut paths = Vec::new();
+        for (name, remote_root, scan_interval_secs) in pairs {
+            let local_root = directory.join(name).join("local");
+            let db_path = directory.join(name).join("state").join("sync_index.db");
+            let lockfile_path = directory.join(name).join("state").join("daemon.lock");
+            fs::create_dir_all(&local_root).expect("local root");
+            text.push_str(&format!(
+                "\n[[pair]]\nname = \"{name}\"\nlocal_root = \"{}\"\nremote_root = \"{remote_root}\"\n\
+                 db_path = \"{}\"\nlockfile_path = \"{}\"\nevents_driven = false\n\
+                 scan_interval_secs = {scan_interval_secs}\n",
+                local_root.display(),
+                db_path.display(),
+                lockfile_path.display(),
+            ));
+            paths.push((local_root, db_path));
+        }
+        let path = directory.join("pairs.toml");
+        fs::write(&path, text).expect("write pairs config");
+        (path, paths)
+    }
+
+    /// A fake `proton-drive` for several remote roots: `list` answers an empty tree for any root
+    /// under `/Drive/`, and `upload` appends `upload:<local>:<remote parent>` to `<script>.uploads`
+    /// **before** it does anything else. When `block_upload_for` names a remote root, an upload into
+    /// it touches `<script>.started` and then waits, for ever, for a `<script>.release` that no test
+    /// writes: a pair wedged mid-transfer, keyed on its root so the others are not.
+    fn write_multi_root_proton_drive(directory: &Path, block_upload_for: Option<&str>) -> PathBuf {
+        let blocking = match block_upload_for {
+            Some(root) => format!(
+                "  case \"$6\" in\n    {root}|{root}/)\n      touch \"$0.started\"\n      \
+                 while [ ! -f \"$0.release\" ]; do sleep 0.05; done\n      exit 0\n      ;;\n  esac\n"
+            ),
+            None => String::new(),
+        };
+        write_script(
+            directory,
+            "fake-multi-root-proton-drive",
+            &format!(
+                r#"#!/bin/sh
+if [ "$1" = "filesystem" ] && [ "$2" = "list" ] && [ "$3" = "--json" ]; then
+  case "$4" in
+    /Drive/*) printf '{{"entries":[]}}\n'; exit 0 ;;
+  esac
+fi
+if [ "$1" = "filesystem" ] && [ "$2" = "upload" ]; then
+  printf 'upload:%s:%s\n' "$5" "$6" >> "$0.uploads"
+{blocking}  exit 0
+fi
+echo "unexpected proton-drive args: $*" >&2
+exit 64
+"#
+            ),
+        )
+    }
+
+    /// What the fake recorded uploading, one `upload:<local>:<remote parent>` per line.
+    fn recorded_uploads(fake_proton_drive: &Path) -> Vec<String> {
+        fs::read_to_string(format!("{}.uploads", fake_proton_drive.display()))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// Two pairs with a file each, a daemon over them, and both boot passes done. The scan
+    /// intervals are the tests' to choose (60 keeps a pair quiet; 1 keeps it busy).
+    fn two_pair_daemon(
+        directory: &Path,
+        scan_intervals: [u64; 2],
+    ) -> (DaemonProcess, PathBuf, PathBuf, Vec<(PathBuf, PathBuf)>) {
+        let (config, paths) = write_pairs_config(
+            directory,
+            "",
+            &[
+                ("a", "/Drive/A", scan_intervals[0]),
+                ("b", "/Drive/B", scan_intervals[1]),
+            ],
+        );
+        for (local_root, _) in &paths {
+            fs::write(local_root.join("f.txt"), b"content").expect("a file to upload");
+        }
+        let socket_path = directory.join("daemon.sock");
+        let fake = write_multi_root_proton_drive(directory, None);
+        let mut daemon = DaemonProcess::spawn_with_config(&config, &socket_path, &fake);
+        wait_for_socket(&socket_path, &mut daemon);
+        wait_for_pair_reconcile_seq(&socket_path, &mut daemon, Some("a"), 1);
+        wait_for_pair_reconcile_seq(&socket_path, &mut daemon, Some("b"), 1);
+        (daemon, socket_path, fake, paths)
+    }
+
+    fn pair_seq(socket_path: &Path, pair: &str) -> u64 {
+        run_control_pair(socket_path, Some(pair), "status")["reconcile_seq"]
+            .as_u64()
+            .expect("reconcile_seq")
+    }
+
+    #[test]
+    fn two_pairs_sync_independently_through_one_daemon() {
+        let directory = tempdir().expect("tempdir");
+        let (daemon, socket_path, fake, paths) = two_pair_daemon(directory.path(), [60, 60]);
+
+        let a = run_control_pair(&socket_path, Some("a"), "status");
+        let b = run_control_pair(&socket_path, Some("b"), "status");
+        assert_eq!(
+            (a["pair"].as_str(), b["pair"].as_str()),
+            (Some("a"), Some("b"))
+        );
+        assert_eq!(a["pairs"].as_array().map(Vec::len), Some(2));
+        for status in [&a, &b] {
+            assert!(status["last_error"].is_null(), "{status}");
+            assert_eq!(
+                status["last_plan_summary"]["total"].as_u64(),
+                Some(1),
+                "{status}"
+            );
+        }
+        // No selector is the default pair, the first table.
+        let default = run_control(&socket_path, "status");
+        assert_eq!(default["pair"], "a");
+
+        // Each pair uploaded ITS file into ITS remote root, and nothing crossed.
+        let uploads = recorded_uploads(&fake);
+        let local_a = paths[0].0.join("f.txt");
+        let local_b = paths[1].0.join("f.txt");
+        assert_eq!(uploads.len(), 2, "{uploads:?}");
+        assert!(
+            uploads
+                .iter()
+                .any(|line| line.starts_with(&format!("upload:{}:/Drive/A", local_a.display()))),
+            "{uploads:?}"
+        );
+        assert!(
+            uploads
+                .iter()
+                .any(|line| line.starts_with(&format!("upload:{}:/Drive/B", local_b.display()))),
+            "{uploads:?}"
+        );
+        // And each baseline is in its own index.
+        for (_, db_path) in &paths {
+            let index = load_existing_index(db_path).expect("index");
+            assert!(index.contains_key(Path::new("f.txt")), "{index:?}");
+        }
+
+        // The notice about the desktop app, once, at startup (maintainer decision M4).
+        let log = fs::read_to_string(&daemon.stderr_path).expect("daemon log");
+        assert_eq!(
+            log.matches("act on the default pair only").count(),
+            1,
+            "{log}"
+        );
+    }
+
+    #[test]
+    fn syncnow_on_one_pair_advances_only_that_pairs_reconcile_seq() {
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, socket_path, _fake, _paths) = two_pair_daemon(directory.path(), [60, 60]);
+        let (a_before, b_before) = (pair_seq(&socket_path, "a"), pair_seq(&socket_path, "b"));
+
+        // `--no-wait`: the wait helper below is bounded, where a watcher for a pass that never
+        // comes (the failure this test exists to show) is not.
+        run_control_args(
+            &socket_path,
+            &["--pair", "b", "--json", "syncnow", "--no-wait"],
+        );
+        wait_for_pair_reconcile_seq(&socket_path, &mut daemon, Some("b"), b_before + 1);
+        assert_eq!(
+            pair_seq(&socket_path, "a"),
+            a_before,
+            "a request for b ran b's pass, not the default pair's"
+        );
+        assert_eq!(pair_seq(&socket_path, "b"), b_before + 1);
+    }
+
+    #[test]
+    fn pausing_one_pair_leaves_the_other_syncing() {
+        let directory = tempdir().expect("tempdir");
+        // `b` is on a one-second cadence, so "b keeps syncing" and "b stopped" are both visible in
+        // seconds rather than minutes. `a` stays quiet.
+        let (mut daemon, socket_path, _fake, _paths) = two_pair_daemon(directory.path(), [60, 1]);
+
+        // Pause the DEFAULT pair: b must carry on. (A pause read from pair 0 for every pair would
+        // stop it.)
+        let paused = run_control_args(&socket_path, &["--pair", "a", "--json", "pause"]);
+        assert_eq!(paused["paused"], true);
+        let before = pair_seq(&socket_path, "b");
+        wait_for_pair_reconcile_seq(&socket_path, &mut daemon, Some("b"), before + 2);
+        assert_eq!(
+            run_control_pair(&socket_path, Some("b"), "status")["paused"],
+            false
+        );
+        run_control_args(&socket_path, &["--pair", "a", "--json", "resume"]);
+
+        // Pause the SECOND pair: it stops, and the default pair is not what said so. (A pause read
+        // from pair 0 would never see it, and b would run on.)
+        run_control_args(&socket_path, &["--pair", "b", "--json", "pause"]);
+        thread::sleep(Duration::from_millis(1500)); // any pass already in flight finishes
+        let settled = pair_seq(&socket_path, "b");
+        thread::sleep(Duration::from_millis(2500));
+        assert_eq!(
+            pair_seq(&socket_path, "b"),
+            settled,
+            "a paused pair runs no pass on its own cadence"
+        );
+        assert_eq!(
+            run_control_pair(&socket_path, Some("a"), "status")["paused"],
+            false
+        );
+    }
+
+    #[test]
+    fn all_pairs_status_over_two_pairs_is_a_two_element_array() {
+        let directory = tempdir().expect("tempdir");
+        let (_daemon, socket_path, _fake, _paths) = two_pair_daemon(directory.path(), [60, 60]);
+
+        let response = run_control_args(&socket_path, &["--all-pairs", "--json", "status"]);
+        let array = response.as_array().expect("--all-pairs --json is an array");
+        assert_eq!(array.len(), 2, "one element per configured pair");
+        assert_eq!(array[0]["pair"], "a");
+        assert_eq!(array[1]["pair"], "b");
+        for element in array {
+            assert_eq!(element["result"]["pair"], element["pair"]);
+            assert_eq!(element["result"]["pairs"].as_array().map(Vec::len), Some(2));
+        }
+    }
+
+    #[test]
+    fn sigint_while_the_second_pair_is_mid_transfer_leaves_the_first_committed_and_the_third_untouched()
+     {
+        let directory = tempdir().expect("tempdir");
+        // A short CLI timeout bounds how long the blocked upload can hold the pass before the
+        // daemon kills it and re-observes the signal it already received.
+        let (config, paths) = write_pairs_config(
+            directory.path(),
+            "proton_timeout_secs = 2\n",
+            &[
+                ("a", "/Drive/A", 60),
+                ("b", "/Drive/B", 60),
+                ("c", "/Drive/C", 60),
+            ],
+        );
+        for (local_root, _) in &paths {
+            fs::write(local_root.join("f.txt"), b"content").expect("a file to upload");
+        }
+        let socket_path = directory.path().join("daemon.sock");
+        let fake = write_multi_root_proton_drive(directory.path(), Some("/Drive/B"));
+        let mut daemon = DaemonProcess::spawn_with_config(&config, &socket_path, &fake);
+        wait_for_socket(&socket_path, &mut daemon);
+        let pid = daemon.child.id();
+
+        // Pair `a` has uploaded and committed, and pair `b`'s upload is the blocked call.
+        wait_for_marker(
+            &PathBuf::from(format!("{}.started", fake.display())),
+            &mut daemon,
+        );
+        let status = Command::new("kill")
+            .arg("-INT")
+            .arg(pid.to_string())
+            .status()
+            .expect("send SIGINT to daemon");
+        assert!(status.success(), "kill -INT should succeed");
+        let exit_status = wait_for_exit(&mut daemon.child, Duration::from_secs(6))
+            .expect("the daemon exits once it re-observes the signal");
+        assert!(exit_status.success(), "a clean shutdown: {exit_status:?}");
+
+        assert!(
+            load_existing_index(&paths[0].1)
+                .expect("a's index")
+                .contains_key(Path::new("f.txt")),
+            "the pair that finished before the signal stays committed"
+        );
+        assert!(
+            load_existing_index(&paths[1].1)
+                .map(|index| index.is_empty())
+                .unwrap_or(true),
+            "the interrupted pair recorded nothing for the upload that never finished"
+        );
+        let uploads = recorded_uploads(&fake);
+        assert!(
+            uploads
+                .iter()
+                .any(|line| line.ends_with(":/Drive/A") || line.ends_with(":/Drive/A/")),
+            "a uploaded: {uploads:?}"
+        );
+        assert!(
+            !uploads.iter().any(|line| line.contains("/Drive/C")),
+            "no pair starts after shutdown is asked for: {uploads:?}"
+        );
+        assert!(
+            load_existing_index(&paths[2].1)
+                .map(|index| index.is_empty())
+                .unwrap_or(true),
+            "the third pair recorded nothing"
+        );
+        // A pass that STARTS leaves a trace even when shutdown cuts it short before it can spawn
+        // a child (the client refuses to once the flag is set, so the fake CLI never sees it, and
+        // the index stays empty either way): its status history is written when the attempt ends.
+        // Pair `a` finished a pass and has one; pair `c` never began one, and so has none.
+        assert!(
+            paths[0].1.with_extension("status.json").exists(),
+            "the sidecar this test keys on is written by a pair's attempt (pair a ran one)"
+        );
+        assert!(
+            !paths[2].1.with_extension("status.json").exists(),
+            "the third pair never started a pass"
+        );
+    }
+
+    #[test]
+    fn a_per_pair_flag_with_a_two_pair_config_exits_non_zero_naming_it() {
+        let directory = tempdir().expect("tempdir");
+        let (config, _paths) = write_pairs_config(
+            directory.path(),
+            "",
+            &[("a", "/Drive/A", 60), ("b", "/Drive/B", 60)],
+        );
+        // Sandboxed and bounded: if the flag rule were gone this would be a running daemon, and an
+        // unbounded wait for it would hang the suite (and, with the machine's own socket and
+        // runtime directory, put it on the real control socket).
+        let stderr_path = directory.path().join("refused.stderr");
+        let mut child = Command::new(env!("CARGO_BIN_EXE_proton-syncd"))
+            .arg("--config")
+            .arg(&config)
+            .arg("--socket-path")
+            .arg(directory.path().join("never-bound.sock"))
+            // The opt-outs are per-pair flags too: a safeguard turned off for "the" pair, with
+            // several, is the worst of the three ways to read it.
+            .arg("--no-delete-approval")
+            .arg("--scan-interval-secs")
+            .arg("5")
+            .env("XDG_RUNTIME_DIR", directory.path())
+            .env("XDG_STATE_HOME", directory.path())
+            .env("XDG_DATA_HOME", directory.path())
+            .env("RUST_LOG", "warn")
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(
+                fs::File::create(&stderr_path).expect("create stderr log"),
+            ))
+            .spawn()
+            .expect("spawn proton-syncd");
+        let Some(status) = wait_for_exit(&mut child, Duration::from_secs(10)) else {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("a per-pair flag beside two pairs started a daemon instead of being refused");
+        };
+        assert!(
+            !status.success(),
+            "a per-pair flag beside two pairs is fatal"
+        );
+        let stderr = fs::read_to_string(&stderr_path).expect("read stderr log");
+        for needle in ["--no-delete-approval", "--scan-interval-secs", "`a`", "`b`"] {
+            assert!(stderr.contains(needle), "names {needle}: {stderr}");
+        }
+        assert!(
+            !directory.path().join("never-bound.sock").exists(),
+            "and nothing started"
+        );
+
+        // The daemon-wide flags are not per-pair: the same config starts with them.
+        let fake = write_multi_root_proton_drive(directory.path(), None);
+        let socket_path = directory.path().join("daemon.sock");
+        let mut daemon = DaemonProcess::spawn_with_config(&config, &socket_path, &fake);
+        wait_for_socket(&socket_path, &mut daemon);
+    }
+
     /// A fake `proton-drive` whose every command fails the way an expired session does.
     fn write_signed_out_proton_drive(directory: &Path) -> PathBuf {
         write_script(
@@ -1411,6 +1791,37 @@ exit 64
             Self { child, stderr_path }
         }
 
+        /// A daemon over a config file of several pairs, started with **only daemon-wide flags**
+        /// (`--config`, `--socket-path`, `--proton-cli`): beside several pairs every per-pair flag
+        /// — `--local-root`, `--no-events-driven`, `--scan-interval-secs` — is refused, which is why
+        /// `spawn_with_args` cannot start one. The tables carry `events_driven = false` and a scan
+        /// interval themselves. The isolation is `spawn_with_args`'s: the user-global lock and the
+        /// trash are redirected into the test's directory, and `RUST_LOG` is `warn` (a failed
+        /// action is reported at `warn`).
+        fn spawn_with_config(config_path: &Path, socket_path: &Path, proton_cli: &Path) -> Self {
+            let directory = socket_path.parent().expect("socket has a parent dir");
+            let stderr_path = directory.join("daemon.stderr");
+            let stderr_file = fs::File::create(&stderr_path).expect("create daemon stderr log");
+            let child = Command::new(env!("CARGO_BIN_EXE_proton-syncd"))
+                .arg("--config")
+                .arg(config_path)
+                .arg("--socket-path")
+                .arg(socket_path)
+                .arg("--proton-cli")
+                .arg(proton_cli)
+                // The runtime directory is where the DEFAULT control socket lives. It is passed
+                // explicitly above, but a sandbox that relies on one flag is a sandbox with a hole.
+                .env("XDG_RUNTIME_DIR", directory)
+                .env("XDG_STATE_HOME", directory)
+                .env("XDG_DATA_HOME", directory)
+                .env("RUST_LOG", "warn")
+                .stdout(Stdio::null())
+                .stderr(Stdio::from(stderr_file))
+                .spawn()
+                .expect("spawn proton-syncd");
+            Self { child, stderr_path }
+        }
+
         /// The tail of this daemon's log, for a wait helper that is about to panic. The tempdir is
         /// removed as the test unwinds, so a helper that does not quote the log leaves nothing
         /// behind to read.
@@ -1505,7 +1916,7 @@ exit 64
     /// the precondition true rather than likely.
     ///
     /// It **asks** for a pass rather than waiting one out: nothing here reschedules on its own —
-    /// filesystem-watch events only accumulate `pending_changes` (see the `select!` loop in
+    /// filesystem-watch events only accumulate `pending_changes` (see `Daemon::step_blocking` in
     /// `src/daemon.rs`), and `--scan-interval-secs 60` outlives the test — so a startup pass that
     /// failed its download would otherwise leave the baseline missing for ever.
     fn wait_for_synced_baseline(
