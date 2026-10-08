@@ -182,7 +182,8 @@ inert. Re-run `pending` to see the current queue.
 
 ## Sync behavior looks wrong — inspect safely
 
-Pause the daemon and look at the local folder and the index before resuming. The index lives
+Pause the folder pair and look at the local folder and the index before resuming. The pause is
+remembered across daemon restarts, so it stays in force until you `proton-sync resume`. The index lives
 at `<local-root>/.sync/sync_index.db` (the `.sync` directory is ignored by scanning, so
 it's never uploaded):
 

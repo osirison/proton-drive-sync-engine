@@ -497,7 +497,7 @@ Verb-by-verb, the selector's meaning:
 | --- | --- |
 | `status` | which pair the single-pair fields describe (`pairs` is always present) |
 | `syncnow`, `resync`, `plan`, `apply`, `reset-index` | which pair's queue entry / latch |
-| `pause`, `resume` | **per-pair.** "Pause everything" is the client's `--all-pairs` loop |
+| `pause`, `resume` | **per-pair.** "Pause everything" is the client's `--all-pairs` loop. **Remembered across restarts (D12):** each pair's pause is recorded in that pair's own index (`pair_pause`), read before its first pass, and kept by `reset-index` |
 | `approve`, `deny`, `keep` | which pair's `delete_approvals` / `withheld_deletions`, and which pair's local root the path is relative to |
 | `activity` | which pair's `sync_events`; the path argument is relative to that pair's local root |
 | `list` | which pair's `remote_root` the *relative* frame resolves against. An **absolute** selector (#323) names a Drive location directly and is pair-independent — it already is today, and it is what `gui_core::folder_probe` uses to price a folder before any pair exists |

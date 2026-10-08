@@ -33,8 +33,8 @@ would resolve against each process's own working directory.
 | `history` | Show the recorded sync passes, newest first — duration, kind, outcome. |
 | `activity [<path>]` | Show what has moved recently, or one path's own history. |
 | `list [<path>]` | List one folder on Proton Drive, as the daemon sees it now. |
-| `pause` | Pause automatic **and** manual sync until resumed. |
-| `resume` | Resume sync work. |
+| `pause` | Pause automatic **and** manual sync for the selected folder pair until resumed. The pause is remembered in that pair's own index, so it survives a daemon restart. |
+| `resume` | Resume sync work for the selected folder pair, and forget its remembered pause. |
 | `syncnow` | Trigger a sync and watch it finish (`--no-wait` to just schedule it). |
 | `resync` | Force a full remote re-scan on the next pass instead of the fast warm start. |
 | `reset-index --yes` | Discard the baseline, the event cursors and the standing delete approvals, and rebuild them from a full scan of both sides. Your files are not touched; the rebuild adopts what already agrees, downloads what is missing and deletes nothing. It is also how you start a folder over from Proton when the daemon [holds it as replaced by an empty folder](/reference/troubleshooting/#a-folder-pair-shows-an-error-and-isnt-syncing). |
@@ -157,7 +157,9 @@ $ proton-sync syncnow
 The exit code is non-zero if the watched pass failed. Use `--no-wait` to only schedule the
 sync and return at once, and `--json` to print the final status object (or, with
 `--no-wait`, the acknowledgement). While the daemon is paused, `syncnow` reports the skip
-and schedules nothing.
+and schedules nothing. A pause is remembered per folder pair across daemon restarts (and across the
+restart the desktop app does after you save settings): a restarted daemon keeps a paused pair
+paused, and skips its first pass, until you `resume` it.
 
 ## The status object (`--json`)
 
@@ -184,6 +186,7 @@ and schedules nothing.
   activity: it stays `syncing` while a pass is in flight even if a pause was just accepted
   mid-pass (`paused` carries the standing request; the CLI shows this combination as
   "pausing").
+- `pause_unsaved` — present only on a `pause` or `resume` reply, and only when the daemon could not record the change in the pair's index (the reason). The change took effect, but a restart before it is saved would not keep it; `proton-sync` prints this as a `Not saved` line.
 - `syncing` — `true` while a reconcile pass is actually in flight.
 - `reconcile_seq` — count of completed passes since the daemon started; clients that
   scheduled a sync poll until it advances to know their pass finished.

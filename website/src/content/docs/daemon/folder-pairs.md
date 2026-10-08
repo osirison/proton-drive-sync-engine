@@ -129,7 +129,9 @@ run is an error too, because the daemon runs every pair. See [Dry-run](/safety/d
 
 `proton-sync` addresses one pair per command: `proton-sync --pair photos pause`,
 `proton-sync --pair documents syncnow`. `--all-pairs` runs the command once per pair. Pausing a pair
-pauses only that pair; the others keep syncing on their own schedules. See the
+pauses only that pair; the others keep syncing on their own schedules. A pair's pause is
+remembered in that pair's own index, so it survives a daemon restart: the pair stays paused until you
+resume it, and `proton-sync reset-index` does not clear it. See the
 [CLI reference](/cli/reference/#folder-pairs).
 
 ## Known limits
