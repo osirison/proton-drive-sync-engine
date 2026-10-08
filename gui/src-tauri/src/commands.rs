@@ -663,6 +663,10 @@ struct DryRunInputs {
     /// The pair being previewed: its name (for the child's `--pair`) and the selector its daemon
     /// requests carry.
     pair: PairRef,
+    /// The name the config FILE gives that pair, which is not always the name it is selected by:
+    /// the selection is validated against the daemon's pairs once it has answered, and the child
+    /// `--dry-run` reads the file.
+    file_pair: Option<String>,
     /// Whether the file states its pairs as `[[pair]]` tables rather than as the implicit pair.
     pair_tables: bool,
     file_local: Option<std::path::PathBuf>,
@@ -675,11 +679,16 @@ struct DryRunInputs {
 
 impl DryRunInputs {
     fn read(paths: &RuntimePaths, pair: PairRef) -> Self {
-        let configured = paths.pair(&pair.name);
+        // The FILE'S table for this pair, which the daemon's name for it may not be (see
+        // `RuntimePaths::file_pair_name`): its roots are what the file says about this pair, so they
+        // are what `daemon_plans_the_same_roots` compares the daemon's against.
+        let file_pair = paths.file_pair_name(&pair.name).map(str::to_owned);
+        let configured = file_pair.as_deref().and_then(|name| paths.pair(name));
         let reported = paths.reported(&pair.name);
         Self {
             socket: paths.socket_path.clone(),
             config_path: paths.config_path.clone(),
+            file_pair,
             pair_tables: paths.pair_tables,
             file_local: configured.and_then(|c| c.local_root.clone()),
             file_remote: configured.and_then(|c| c.remote_root.clone()),
@@ -835,8 +844,17 @@ fn dry_run_args(
         args.push("--config".into());
         args.push(inputs.config_path.clone().into_os_string());
         if inputs.pair_tables {
+            // THE FILE'S NAME for the pair, because the child reads the file: the selected name is
+            // validated against the daemon's list and can be one the file does not contain.
+            // Without a file name the selected one goes through and the engine says what it has.
             args.push("--pair".into());
-            args.push(inputs.pair.name.clone().into());
+            args.push(
+                inputs
+                    .file_pair
+                    .clone()
+                    .unwrap_or_else(|| inputs.pair.name.clone())
+                    .into(),
+            );
             return Ok(args);
         }
         // The config file wins wherever it speaks; a live daemon's reported values fill only the
@@ -1237,7 +1255,7 @@ pub async fn scan_conflicts(
         let pair = paths.resolve_pair(pair.as_deref())?;
         let local_root = paths
             .effective_local_root(&pair.name)
-            .ok_or_else(|| "local_root is not configured".to_string())?;
+            .ok_or_else(|| paths.unplaced("local_root is not configured"))?;
         (local_root, paths.conflict_naming(&pair.name))
     };
     tauri::async_runtime::spawn_blocking(move || {
@@ -1262,7 +1280,7 @@ pub fn resolve_conflict(
         let pair = paths.resolve_pair(pair.as_deref())?;
         paths
             .effective_local_root(&pair.name)
-            .ok_or_else(|| "local_root is not configured".to_string())?
+            .ok_or_else(|| paths.unplaced("local_root is not configured"))?
     };
     conflicts::apply_resolution(&local_root, &conflict, choice).map_err(|e| e.to_string())
 }
@@ -1283,7 +1301,7 @@ pub fn read_conflict_pair(
         (
             paths
                 .effective_local_root(&pair.name)
-                .ok_or_else(|| "local_root is not configured".to_string())?,
+                .ok_or_else(|| paths.unplaced("local_root is not configured"))?,
             paths.effective_db_path(&pair.name),
         )
     };
@@ -1404,9 +1422,9 @@ pub async fn path_sync_status(
     let db_path = {
         let paths = state.lock().unwrap();
         let pair = paths.resolve_pair(pair.as_deref())?;
-        paths
-            .effective_db_path(&pair.name)
-            .ok_or_else(|| "no index database configured or reported by the daemon".to_string())?
+        paths.effective_db_path(&pair.name).ok_or_else(|| {
+            paths.unplaced("no index database configured or reported by the daemon")
+        })?
     };
     tauri::async_runtime::spawn_blocking(move || {
         let connection = index_read::open_readonly(&db_path, index_read::DEFAULT_BUSY_TIMEOUT)?;
@@ -1468,12 +1486,12 @@ pub async fn search_files<R: tauri::Runtime>(
         let paths = paths.lock().unwrap();
         let pair = paths.resolve_pair(pair.as_deref())?;
         (
-            paths.effective_db_path(&pair.name),
+            paths.effective_db_path(&pair.name).ok_or_else(|| {
+                paths.unplaced("no index database configured or reported by the daemon")
+            })?,
             paths.effective_local_root(&pair.name),
         )
     };
-    let db_path = db_path
-        .ok_or_else(|| "no index database configured or reported by the daemon".to_string())?;
     let limit = limit.unwrap_or(SEARCH_LIMIT).clamp(1, 500);
     tauri::async_runtime::spawn_blocking(move || {
         let query = relative_query(&query, local_root.as_deref());
@@ -2210,6 +2228,48 @@ fn open_target(program: &str, target: &std::ffi::OsStr) -> Result<(), String> {
     }
 }
 
+/// The single place `open_paths` and `open_folder` hand a resolved path to the desktop.
+#[cfg(not(test))]
+fn hand_to_opener(target: &std::ffi::OsStr) -> Result<(), String> {
+    open_target(OPENER, target)
+}
+
+/// **In a test build the openers spawn nothing, ever.** A command test that gets past the path
+/// guard would otherwise reach `xdg-open` on the developer's desktop and open a window there. The
+/// target is recorded instead, which is also the only way a test can see WHICH folder a command
+/// meant to open: the path it resolved, not a launch. (`open_target` itself is tested directly with
+/// stand-in programs; it is not this.)
+#[cfg(test)]
+fn hand_to_opener(target: &std::ffi::OsStr) -> Result<(), String> {
+    opener_record::hand(target)
+}
+
+#[cfg(test)]
+mod opener_record {
+    use std::ffi::{OsStr, OsString};
+    use std::sync::{Mutex, PoisonError};
+
+    /// Every target the openers were handed, in order. Appended to and never cleared: tests have
+    /// roots of their own (a fresh temp directory each), so one finds its targets by prefix and
+    /// needs no reset that a test running beside it could race.
+    static HANDED: Mutex<Vec<OsString>> = Mutex::new(Vec::new());
+
+    pub(super) fn hand(target: &OsStr) -> Result<(), String> {
+        HANDED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(target.to_owned());
+        Ok(())
+    }
+
+    pub(crate) fn handed() -> Vec<OsString> {
+        HANDED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+}
+
 /// Open one or both sides of a conflict in whatever the desktop opens that kind of file with
 /// (#220 — S2's `Open both in an editor`).
 ///
@@ -2227,10 +2287,13 @@ pub async fn open_paths(
     relative: Vec<String>,
     pair: Option<String>,
 ) -> Result<(), String> {
-    let local_root = {
+    let (local_root, no_root) = {
         let paths = state.lock().unwrap();
         let pair = paths.resolve_pair(pair.as_deref())?;
-        paths.effective_local_root(&pair.name)
+        (
+            paths.effective_local_root(&pair.name),
+            paths.unplaced(&gui_core::opener::OpenRefusal::NoLocalRoot.to_string()),
+        )
     };
     tauri::async_runtime::spawn_blocking(move || {
         if relative.is_empty() {
@@ -2241,7 +2304,7 @@ pub async fn open_paths(
         // against `None` pushed the identical sentence twice and joined it to itself. Every OTHER
         // refusal names the path it is about, so only this one can duplicate. (Copilot, PR #283.)
         if local_root.is_none() {
-            return Err(gui_core::opener::OpenRefusal::NoLocalRoot.to_string());
+            return Err(no_root);
         }
         let mut failures = Vec::new();
         for path in &relative {
@@ -2252,7 +2315,7 @@ pub async fn open_paths(
                     continue;
                 }
             };
-            if let Err(e) = open_target(OPENER, resolved.as_os_str()) {
+            if let Err(e) = hand_to_opener(resolved.as_os_str()) {
                 failures.push(e);
             }
         }
@@ -2279,15 +2342,21 @@ pub async fn open_folder(
     relative: String,
     pair: Option<String>,
 ) -> Result<(), String> {
-    let local_root = {
+    let (local_root, no_root) = {
         let paths = state.lock().unwrap();
         let pair = paths.resolve_pair(pair.as_deref())?;
-        paths.effective_local_root(&pair.name)
+        (
+            paths.effective_local_root(&pair.name),
+            paths.unplaced(&gui_core::opener::OpenRefusal::NoLocalRoot.to_string()),
+        )
     };
     tauri::async_runtime::spawn_blocking(move || {
         let folder = gui_core::opener::folder_under_root(local_root.as_deref(), &relative)
-            .map_err(|refusal| refusal.to_string())?;
-        open_target(OPENER, folder.as_os_str())
+            .map_err(|refusal| match refusal {
+                gui_core::opener::OpenRefusal::NoLocalRoot => no_root,
+                other => other.to_string(),
+            })?;
+        hand_to_opener(folder.as_os_str())
     })
     .await
     .map_err(|error| format!("open task failed: {error}"))?
@@ -2522,7 +2591,7 @@ pub async fn free_space<R: tauri::Runtime>(
             let pair = paths.resolve_pair(pair.as_deref())?;
             paths
                 .effective_local_root(&pair.name)
-                .ok_or_else(|| "local_root is not configured".to_string())?
+                .ok_or_else(|| paths.unplaced("local_root is not configured"))?
         }
     };
     tauri::async_runtime::spawn_blocking(move || gui_core::free_space::for_path(&target))
@@ -2654,7 +2723,9 @@ pub async fn skip_rule_usage<R: tauri::Runtime>(
         let paths = paths.lock().unwrap();
         let pair = paths.resolve_pair(pair.as_deref())?;
         (
-            paths.effective_local_root(&pair.name),
+            paths
+                .effective_local_root(&pair.name)
+                .ok_or_else(|| paths.unplaced("local_root is not configured")),
             paths.effective_db_path(&pair.name),
             // The baseline `measure` builds is the denominator — "would the daemon sync this
             // file" — and a conflict sidecar is one of the things it answers no to, so it has to
@@ -2670,7 +2741,7 @@ pub async fn skip_rule_usage<R: tauri::Runtime>(
     // `files: 0` with `folder_exists: Some(false)`, which the tab draws as **`Matching nothing · no
     // such folder here any more — safe to remove`** on every rule at once. Removing them would then
     // start syncing everything they were hiding, the moment the drive came back.
-    let local_root = local_root.ok_or_else(|| "local_root is not configured".to_string())?;
+    let local_root = local_root?;
     tauri::async_runtime::spawn_blocking(move || {
         if !local_root.is_dir() {
             return Err(format!(

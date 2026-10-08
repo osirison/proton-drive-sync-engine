@@ -67,6 +67,9 @@ pub struct RuntimePaths {
     /// all (the daemon would not start on it either), in which case the daemon's own report is the
     /// only source.
     pub pairs: Vec<PairPaths>,
+    /// Why `pairs` is empty when the reason is the FILE: the engine's own message for a config it
+    /// cannot read. `None` for a file it reads, however little that file says.
+    pub config_error: Option<String>,
     /// What the running daemon last said, per pair. Fallbacks only: an explicit value in the GUI
     /// config always wins.
     pub daemon: DaemonView,
@@ -161,16 +164,24 @@ impl RuntimePaths {
 
     /// Resolve from `config_path`, applying engine defaults where a key is unset.
     pub fn resolve_at(config_path: &Path) -> Self {
-        let doc = gui_core::config_io::ConfigDoc::load(config_path).ok();
+        Self::resolve_with_default_socket(config_path, environment_default_socket)
+    }
+
+    /// [`Self::resolve_at`], with the answer to "which socket, when the file names none" supplied.
+    /// Production always supplies the environment's ([`environment_default_socket`]); the seam is
+    /// here so that choice can be tested without a test ever resolving the real one.
+    fn resolve_with_default_socket(
+        config_path: &Path,
+        default_socket: impl FnOnce() -> Result<PathBuf, String>,
+    ) -> Self {
+        let loaded = gui_core::config_io::ConfigDoc::load(config_path);
+        let load_error = loaded.as_ref().err().map(ToString::to_string);
+        let doc = loaded.ok();
         let get = |key: &str| doc.as_ref().and_then(|d| d.get_str(key));
 
-        // The default comes from the engine (`gui_core::ipc::default_socket_path`), never from a
-        // private copy here: the copy this replaced pointed at `<temp>/proton-sync.sock` while the
-        // daemon bound `<temp>/proton-drive-sync-<uid>/proton-sync.sock` whenever
-        // `XDG_RUNTIME_DIR` was unset (#277).
         let socket_path = match get("socket_path") {
             Some(value) => Ok(expand(value, "socket_path")),
-            None => gui_core::ipc::default_socket_path(),
+            None => default_socket(),
         };
         let proton_cli = get("proton_cli")
             .map(|value| expand(value, "proton_cli").to_string_lossy().into_owned())
@@ -181,10 +192,20 @@ impl RuntimePaths {
         // readers of one format is how the GUI and the daemon came to disagree about `~` in the first
         // place (#135). The engine expands `~` once, in `local_root` before the index path derives
         // from it, and never in `remote_root`, which is a Drive path where `~` means nothing.
-        let pairs = doc
-            .as_ref()
-            .and_then(|d| pair_paths_from_text(&d.to_toml_string()))
-            .unwrap_or_default();
+        //
+        // **A file the engine refuses declares no pairs, and the app keeps the reason.** Before
+        // this the top-level keys were read whatever else the file held, so `local_root` still
+        // placed a folder beside a key the daemon would reject. The daemon does not start on such a
+        // file either, so reading it leniently here would show a folder nothing is syncing. The
+        // reason travels instead (`config_error`), because "no pairs" with no explanation reads to
+        // every command that needs a folder as "local_root is not configured", which is false.
+        let (pairs, config_error) = match &doc {
+            Some(doc) => match pair_paths_from_text(&doc.to_toml_string()) {
+                Ok(pairs) => (pairs, None),
+                Err(error) => (Vec::new(), Some(error)),
+            },
+            None => (Vec::new(), load_error),
+        };
 
         Self {
             config_path: config_path.to_owned(),
@@ -192,7 +213,19 @@ impl RuntimePaths {
             proton_cli,
             pair_tables: doc.as_ref().is_some_and(|d| d.declares_pair_tables()),
             pairs,
+            config_error,
             daemon: DaemonView::default(),
+        }
+    }
+
+    /// What to tell someone whose command needs a folder the app cannot place. `what` is the plain
+    /// answer ("local_root is not configured"), which is right only when nothing is wrong with the
+    /// file: when the file is the reason there are no pairs, the file's own error is the answer, in
+    /// the engine's words.
+    pub fn unplaced(&self, what: &str) -> String {
+        match &self.config_error {
+            Some(error) => format!("the config file has an error: {error}"),
+            None => what.to_owned(),
         }
     }
 
@@ -293,6 +326,32 @@ impl RuntimePaths {
         })
     }
 
+    /// The name the config FILE gives the pair `selected` — what the child `proton-syncd --dry-run`
+    /// must be told, because it reads the file and nothing else.
+    ///
+    /// A selection is validated against [`Self::known_pair_names`], which is the DAEMON's list once
+    /// it has answered, so the name a pair is selected by and the name the file gives it can differ:
+    /// a daemon started before the file grew `[[pair]]` tables calls its one pair `default`, while
+    /// the file's only table is `photos`. Handing the child the daemon's name made the preview fail
+    /// with "names no configured folder pair" where it used to run.
+    ///
+    /// **By name first** — the file may have been reordered since the daemon read it. **Then by
+    /// position**, because the daemon's order is the file's order (`resolve_pairs`) and the first is
+    /// the default pair in both: the table standing where the daemon's pair stands. That second
+    /// step only counts when the table's name is not also one of the daemon's own pairs, since then
+    /// it is demonstrably a different pair and handing it over would preview the wrong folder.
+    /// `None` when neither holds; the caller keeps the selected name, and the engine's refusal says
+    /// which pairs the file does have.
+    pub fn file_pair_name(&self, selected: &str) -> Option<&str> {
+        if let Some(pair) = self.pair(selected) {
+            return Some(pair.name.as_str());
+        }
+        let known = self.known_pair_names();
+        let position = known.iter().position(|name| *name == selected)?;
+        let candidate = self.pairs.get(position)?;
+        (!known.contains(&candidate.name.as_str())).then_some(candidate.name.as_str())
+    }
+
     /// What the file says about `pair`, if it declares one by that name.
     pub fn pair(&self, pair: &str) -> Option<&PairPaths> {
         self.pairs.iter().find(|candidate| candidate.name == pair)
@@ -341,25 +400,60 @@ impl RuntimePaths {
     }
 }
 
-/// The engine's reading of `text`, as this module's slots. `None` when the text is not a config
-/// file the engine can parse.
-fn pair_paths_from_text(text: &str) -> Option<Vec<PairPaths>> {
-    gui_core::config_io::pair_views(text).ok().map(|views| {
-        views
-            .into_iter()
-            .map(|view| PairPaths {
-                conflict_naming: view
-                    .conflict_suffix
-                    .as_deref()
-                    .and_then(|suffix| ConflictNaming::new(suffix).ok())
-                    .unwrap_or_default(),
-                name: view.name,
-                db_path: view.db_path,
-                local_root: view.local_root,
-                remote_root: view.remote_root,
-            })
-            .collect()
-    })
+/// The control socket when the config file names none: the one the daemon binds by default.
+///
+/// The default comes from the engine (`gui_core::ipc::default_socket_path`), never from a private
+/// copy here: the copy this replaced pointed at `<temp>/proton-sync.sock` while the daemon bound
+/// `<temp>/proton-drive-sync-<uid>/proton-sync.sock` whenever `XDG_RUNTIME_DIR` was unset (#277).
+#[cfg(not(test))]
+fn environment_default_socket() -> Result<PathBuf, String> {
+    gui_core::ipc::default_socket_path()
+}
+
+/// **In a test build the environment's socket does not exist as far as this crate is concerned.**
+///
+/// A test that resolves a config in a temp directory and forgets to point the socket at its fake
+/// daemon used to inherit `$XDG_RUNTIME_DIR/proton-sync.sock`, which on a developer's machine is the
+/// live daemon's: the next command a test ran (`pause`, `resync`, `approve`) was delivered to it.
+/// Measured with a listener bound at that path — it received `"command":"pause"`, and the isolation
+/// scan stayed green. A convention a test has to remember is not a guard, so the default is removed
+/// instead: the socket is an `Err` that says what to do, every command folds that into an
+/// `unreachable` payload before it opens anything, and there is no environment socket to reach. A
+/// test names its socket (`paths.socket_path = Ok(fake.socket_path().to_owned())`), or it gets this.
+///
+/// An `Err` and not a panic: most tests never touch the socket and must keep running; the ones that
+/// do fail on their own assertion with the reason in the message. The other way round — a test
+/// writing `gui_core::ipc::default_socket_path()` into the field itself — is `isolation_scan`'s.
+#[cfg(test)]
+fn environment_default_socket() -> Result<PathBuf, String> {
+    Err(
+        "this test build does not resolve the environment's control socket: name one \
+         (`paths.socket_path = Ok(<a fake daemon's socket>)`)"
+            .to_owned(),
+    )
+}
+
+/// The engine's reading of `text`, as this module's slots. `Err` carries the engine's own message
+/// when the text is not a config file it can parse.
+fn pair_paths_from_text(text: &str) -> Result<Vec<PairPaths>, String> {
+    gui_core::config_io::pair_views(text)
+        .map(|views| {
+            views
+                .into_iter()
+                .map(|view| PairPaths {
+                    conflict_naming: view
+                        .conflict_suffix
+                        .as_deref()
+                        .and_then(|suffix| ConflictNaming::new(suffix).ok())
+                        .unwrap_or_default(),
+                    name: view.name,
+                    db_path: view.db_path,
+                    local_root: view.local_root,
+                    remote_root: view.remote_root,
+                })
+                .collect()
+        })
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -526,12 +620,152 @@ conflict_suffix = \"beta\"
     }
 
     /// A file the engine cannot parse names no pair — the daemon would not start on it either, and
-    /// the daemon's own report is then the only source.
+    /// the daemon's own report is then the only source. **And the app keeps the engine's reason**
+    /// (`config_error`), because "no pair" otherwise reads as "nothing configured" to every command
+    /// that needs a folder, which is a different thing to tell someone whose folder IS configured
+    /// and whose file has one key the daemon would refuse.
     #[test]
-    fn a_file_the_engine_cannot_parse_declares_no_pairs() {
+    fn a_file_the_engine_cannot_parse_declares_no_pairs_and_says_why() {
         let (paths, _dir) = resolved("no_such_key = 1\nlocal_root = \"/x\"\n");
         assert!(paths.pairs.is_empty());
         assert_eq!(paths.default_pair_name(), "default");
+        let reason = paths
+            .config_error
+            .as_deref()
+            .expect("the engine's reason is kept");
+        assert!(reason.contains("no_such_key"), "{reason}");
+        // A file the engine reads has no error to carry.
+        let (fine, _dir) = resolved("local_root = \"/x\"\n");
+        assert_eq!(fine.config_error, None);
+    }
+
+    /// What a command answers when it needs a folder the app cannot place: the config file's own
+    /// error when that is the reason, and "not configured" only when nothing is wrong with the file.
+    #[test]
+    fn an_unplaceable_folder_is_blamed_on_the_file_when_the_file_is_the_reason() {
+        let (broken, _dir) = resolved("no_such_key = 1\nlocal_root = \"/x\"\n");
+        let said = broken.unplaced("local_root is not configured");
+        assert!(said.starts_with("the config file has an error: "), "{said}");
+        assert!(said.contains("no_such_key"), "{said}");
+        assert!(!said.contains("not configured"), "{said}");
+
+        let (empty, _dir) = resolved("");
+        assert_eq!(
+            empty.unplaced("local_root is not configured"),
+            "local_root is not configured"
+        );
+    }
+
+    /// A file that is not even TOML is the same case: the reason is the file's, not a missing
+    /// setting.
+    #[test]
+    fn a_file_that_is_not_toml_is_blamed_too() {
+        let (paths, _dir) = resolved("local_root = = broken\n");
+        assert!(paths.pairs.is_empty());
+        let said = paths.unplaced("local_root is not configured");
+        assert!(said.starts_with("the config file has an error: "), "{said}");
+    }
+
+    /// The daemon's own report still fills in beside a file the engine refuses: the broken file is
+    /// no reason to lose the folder a running daemon says it is syncing.
+    #[test]
+    fn a_running_daemons_report_still_places_a_folder_beside_a_refused_file() {
+        let daemon = FakeDaemon::multi_pair(vec![FakePair::with_roots(
+            "default",
+            Path::new("/reported/only"),
+            Path::new("/Drive/Only"),
+            Path::new("/reported/only.db"),
+        )])
+        .start();
+        let (mut paths, _dir) = resolved("no_such_key = 1\n");
+        let reply = gui_core::ipc::command(
+            daemon.socket_path(),
+            gui_core::pairs::Target::DEFAULT,
+            ControlCommand::Status,
+            gui_core::ipc::DEFAULT_TIMEOUT,
+        )
+        .unwrap();
+        paths.remember_daemon_reply(&reply);
+        assert_eq!(
+            paths.effective_local_root("default"),
+            Some(PathBuf::from("/reported/only"))
+        );
+    }
+
+    // ---- the environment's control socket is not reachable from a test (J2b) ----
+
+    /// A file that names no `socket_path` USED to fall through to the environment's default, so a
+    /// test that called `resolve_at(<temp file>)` and forgot to override the socket dialled the
+    /// developer's real daemon the moment a command ran (measured: a listener at the default path
+    /// received `"command":"pause"`). In a test build the default is now a refusal, so there is no
+    /// socket to forget about.
+    #[test]
+    fn a_test_build_never_falls_back_to_the_environments_control_socket() {
+        let (paths, _dir) = resolved("local_root = \"/x\"\n");
+        let reason = paths
+            .socket_path
+            .as_ref()
+            .expect_err("a test must name its socket; the environment's is not an option");
+        assert!(reason.contains("test build"), "{reason}");
+        // A file that names one still gets exactly that one.
+        let (named, _dir) = resolved("socket_path = \"/tmp/named-by-the-file.sock\"\n");
+        assert_eq!(
+            named.socket_path.as_deref().ok(),
+            Some(Path::new("/tmp/named-by-the-file.sock"))
+        );
+    }
+
+    /// And the command layer stops at that refusal: it reports the reason, rather than dialling
+    /// anything and reporting `No such file`.
+    #[test]
+    fn a_command_on_a_socketless_test_app_reports_the_refusal_and_dials_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = RuntimePaths::resolve_at(&dir.path().join("proton-sync.toml"));
+        let app = tauri::test::mock_builder()
+            .manage(std::sync::Mutex::new(paths))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock app should build");
+        let payload =
+            tauri::async_runtime::block_on(crate::commands::pause(app.handle().clone(), None));
+        let error = serde_json::to_value(&payload).unwrap()["error"]
+            .as_str()
+            .expect("no socket is an error, not a state")
+            .to_owned();
+        assert!(error.contains("test build"), "{error}");
+        assert!(!error.contains("No such file"), "it dialled: {error}");
+    }
+
+    /// The production seam is unchanged: with nothing in the file, the default is the environment's
+    /// (here, the closure standing in for it), and a file that names a socket never asks.
+    #[test]
+    fn outside_a_test_build_the_default_socket_is_used_exactly_when_the_file_names_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("proton-sync.toml");
+        let asked = std::cell::Cell::new(false);
+        let default = || {
+            asked.set(true);
+            Ok(PathBuf::from("/the/default.sock"))
+        };
+
+        std::fs::write(&path, "local_root = \"/x\"\n").unwrap();
+        let unnamed = RuntimePaths::resolve_with_default_socket(&path, default);
+        assert_eq!(
+            unnamed.socket_path.as_deref().ok(),
+            Some(Path::new("/the/default.sock"))
+        );
+        assert!(asked.get());
+
+        asked.set(false);
+        std::fs::write(&path, "socket_path = \"/the/files.sock\"\n").unwrap();
+        let named = RuntimePaths::resolve_with_default_socket(&path, default);
+        assert_eq!(
+            named.socket_path.as_deref().ok(),
+            Some(Path::new("/the/files.sock"))
+        );
+        assert!(
+            !asked.get(),
+            "the environment is asked only when the file is silent"
+        );
     }
 
     #[test]

@@ -409,6 +409,38 @@ fn reply_for(shape: Shape, pairs: &[FakePair], index: usize) -> ControlResponse 
     }
 }
 
+/// Create the index database at `db_path` (and its directory) holding one synced file per entry of
+/// `relative_paths`, so a test can give each pair an index of its own and see which one a command
+/// opened. The engine's own writer, not a hand-made schema: what a command reads back is what the
+/// daemon would have written.
+pub fn write_index(db_path: &Path, relative_paths: &[&str]) {
+    use crate::wire::{EntityKind, FileRecord};
+    use proton_drive_sync_engine::index::{
+        SyncStatus, initialize_schema, open_database, upsert_record,
+    };
+
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent).expect("the index directory is created");
+    }
+    let connection = open_database(db_path).expect("the index opens");
+    initialize_schema(&connection).expect("the schema is created");
+    for relative in relative_paths {
+        upsert_record(
+            &connection,
+            &FileRecord {
+                file_path: PathBuf::from(relative),
+                entity_kind: EntityKind::File,
+                file_size: 10,
+                mtime: 0,
+                sha1_hash: Some("da39a3ee5e6b4b0d3255bfef95601890afd80709".to_owned()),
+                proton_id: None,
+                sync_status: SyncStatus::Synced,
+            },
+        )
+        .expect("the record is written");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
