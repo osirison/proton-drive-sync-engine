@@ -1465,7 +1465,7 @@ Expect this phase to be as large as phase 2 and riskier. Closes: the feature, he
 > **Review round: a third caller, for a pair that is already running.** Boot and a promotion look
 > once, so two running pairs that came to overlap later (`b`'s folder moved into `a`'s, a link
 > left where it was) stayed `Ready`, and `a` uploaded `b`'s `.sync` as ordinary files. The same
-> function is now asked of every other *ready* pair before each of a ready pair's `Sync` jobs
+> function is now asked of every other pair before each of a ready pair's `Sync` jobs
 > (`examine_ready_pair`, through `stop_overlapping_pairs`). **Both pairs of an overlap become
 > unavailable**, each with its own side's wording: stopping only the inner pair leaves the outer one
 > — correctly configured, still `Ready` — uploading the inner one's `.sync`, which is already in its
@@ -1474,6 +1474,19 @@ Expect this phase to be as large as phase 2 and riskier. Closes: the feature, he
 > `.sync`) was weighed and not built: `is_sync_state_path` is name-based and top-level only by
 > decision, and keying it on other pairs' real state directories would reach `ScanOptions`, the
 > watcher and gui-core's disk walk and be recomputed whenever the layout changes.
+>
+> **Second review round: the running pair asks about unavailable pairs too, and stops only ready
+> ones.** The first version asked only other *ready* pairs, on the reasoning that an unavailable pair
+> runs nothing. That holds for the unavailable pair's own writes and not for what the running pair
+> reads: an unavailable pair's folder, with the `.sync` it had while it ran, is what the running pair
+> uploads once that folder is inside its tree. A pair can be down for a reason unrelated to the
+> overlap (a held lock, an index that failed to open, a folder restored from a backup), and then
+> nothing about its own retry asks. So a running pair is asked against every other pair, and only a
+> ready one is stopped. An unavailable pair's folder counts only if it exists: a missing or unmounted
+> neighbour has nothing in the tree, and one unplugged drive must not become two stopped pairs. A
+> neighbour whose folder is missing is skipped whole, state files included, so a state file of its
+> that lies in the running pair's tree beside a missing folder is not found until the folder is
+> (boot refuses that layout, and a retry asks about it).
 >
 > (2) **A test that built nested roots directly now builds them after construction.** 4a's
 > `an_event_under_pair_a_is_never_tested_against_pair_bs_filters` made a daemon whose roots nest to

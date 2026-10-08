@@ -77,13 +77,16 @@ tables changes which pair that is.
   unavailable (with the same message as its error in `proton-sync status`) instead of syncing into
   another pair's tree.
 - **A pair that is already running is checked again.** Before each of its passes the daemon asks
-  the same question of every other running pair. If a layout changes under a running daemon — a
-  pair's folder moved into another pair's with a link left where it was — **both pairs stop**
-  (each shows as unavailable, with the overlap as its reason) rather than the outer pair
+  the same question of every other pair, running or not. If a layout changes under a running
+  daemon — a pair's folder moved into another pair's with a link left where it was — **both pairs
+  stop** (each shows as unavailable, with the overlap as its reason) rather than the outer pair
   uploading the inner pair's `.sync` files as its own. Stopping only the inner one would not be
-  enough: its `.sync` is already inside the outer pair's folder. Nothing is deleted or tidied; undo
-  the move or the link and both pairs resume at their next attempt. (The same layout would refuse
-  to start the daemon.)
+  enough: its `.sync` is already inside the outer pair's folder. A pair that is *already
+  unavailable*, for any other reason, is asked about too, because its `.sync` is still on disk:
+  the running pair stops if that folder is inside it, and the unavailable pair stays as it was. Its
+  folder counts only if it exists, so an unmounted drive stops nothing. Nothing is deleted or
+  tidied; undo the move or the link and both pairs resume at their next attempt. (The same layout
+  would refuse to start the daemon.)
 - **`dry_run = true` inside a `[[pair]]` table is refused** when there is more than one pair. A
   dry run previews one pair and exits, so a key inside one table cannot decide what the whole
   daemon does. The two readers of the file differ only in what a command line can do: **the

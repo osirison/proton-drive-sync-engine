@@ -3411,7 +3411,7 @@ impl<C: ProtonClient> Daemon<C> {
 
     /// **The overlap check, for a pair that is already running** (PR #434 review, F2): the same
     /// [`real_path_overlap`] boot and a promotion ask, put to this ready pair against every other
-    /// ready one before each of its `Sync` jobs. Boot and a promotion look once; a link made
+    /// pair before each of its `Sync` jobs. Boot and a promotion look once; a link made
     /// afterwards (a folder moved into another pair's, with a link left where it was) kept both
     /// `Ready` with nothing said, and the outer pair then uploaded the inner one's `.sync` — its
     /// lockfile and status files — as ordinary files, because `is_sync_state_path` ignores only a
@@ -3425,8 +3425,20 @@ impl<C: ProtonClient> Daemon<C> {
     /// finds (a shared folder and a shared state file have no inner side at all), so one rule serves
     /// every relation it knows and there is no "who is at fault" to get wrong. Each pair's reason is
     /// worded from its own side, which is also how a retry words it, so the retry that keeps a pair
-    /// unavailable restates nothing. An unavailable pair runs nothing, so it is not asked: its own
-    /// retry asks the question of every slot.
+    /// unavailable restates nothing.
+    ///
+    /// **Every other pair is asked, ready or not, and only a ready one is stopped** (second review,
+    /// H1). An unavailable pair runs nothing, but that is true of its own writes only: this pair
+    /// *reads* the tree it is in, and an unavailable pair's folder — `.sync` and all, from when it
+    /// last ran — is exactly what it would upload once that folder is inside it. The other pair is
+    /// down for a reason unrelated to the overlap (a held lock, an index that failed to open, a
+    /// folder restored from a backup), so nothing about *its* retry will ever ask. It is stopped by
+    /// nothing here (it is down already, and its own retry words its cause), and **its folder counts
+    /// only if it exists**: a missing or unmounted neighbour has nothing in this pair's tree, and
+    /// stopping a healthy pair for an unplugged drive would turn one problem into two. A neighbour
+    /// whose folder is missing is skipped whole, state files included, so a state file of its that
+    /// lies in this pair's tree beside a folder that is not there is not found until the folder is
+    /// (boot refuses that layout, and a retry asks about it).
     ///
     /// Returns whether `pair` itself was stopped.
     fn stop_overlapping_pairs(&mut self, pair: usize) -> bool {
@@ -3435,26 +3447,30 @@ impl<C: ProtonClient> Daemon<C> {
         };
         let mut stops: Vec<(usize, String)> = Vec::new();
         for other in (0..self.pairs.len()).filter(|other| *other != pair) {
-            let Some(other_runtime) = self.runtime(other) else {
+            let other_config = slot_config(&self.pairs[other]);
+            let other_is_ready = self.runtime(other).is_some();
+            if !other_is_ready && !other_config.local_root.is_dir() {
+                continue;
+            }
+            let Some(reason) = real_path_overlap(&runtime.config, other_config) else {
                 continue;
             };
-            let Some(reason) = real_path_overlap(&runtime.config, &other_runtime.config) else {
-                continue;
-            };
-            let from_the_other_side = real_path_overlap(&other_runtime.config, &runtime.config)
-                .unwrap_or_else(|| reason.clone());
+            let from_the_other_side =
+                real_path_overlap(other_config, &runtime.config).unwrap_or_else(|| reason.clone());
             if !stops.iter().any(|(stopped, _)| *stopped == pair) {
                 stops.push((pair, reason));
             }
-            stops.push((other, from_the_other_side));
+            if other_is_ready {
+                stops.push((other, from_the_other_side));
+            }
         }
         let stopped_itself = stops.iter().any(|(stopped, _)| *stopped == pair);
         for (stopped, reason) in stops {
             let _span = pair_span(&self.pair_config(stopped).name).entered();
             warn!(
                 %reason,
-                "folder pair overlaps another running pair; it is unavailable until that changes \
-                 and the daemon keeps running"
+                "folder pair overlaps another pair; it is unavailable until that changes and the \
+                 daemon keeps running"
             );
             self.demote_pair(stopped, reason);
         }
@@ -4675,11 +4691,12 @@ impl RealPairPaths {
 /// caught only illegibly, by `flock` on the shared lockfile inode ("daemon already running");
 /// nesting through a symlink was not caught at all.
 ///
-/// Symmetric in its two arguments except for the wording. **One function, two callers**: the daemon
-/// at boot (every pair against every earlier one, before anything is created or locked) and a
+/// Symmetric in its two arguments except for the wording. **One function, three callers**: the
+/// daemon at boot (every pair against every earlier one, before anything is created or locked), a
 /// retry (`Daemon::retry_unavailable`, the pair being promoted against all the others), so a pair
 /// that becomes available later stays unavailable on an overlap exactly as one at boot refuses the
-/// start.
+/// start, and a pair that is already running (`Daemon::stop_overlapping_pairs`, against every other
+/// pair, ready or not, and stopping only the ready ones).
 fn real_path_overlap(candidate: &PairConfig, other: &PairConfig) -> Option<String> {
     let (this, that) = (RealPairPaths::of(candidate), RealPairPaths::of(other));
     let (this_name, that_name) = (&candidate.name, &other.name);
@@ -26806,14 +26823,30 @@ mod tests {
             "nothing was prepared in the other pair's tree: that is the point of asking first"
         );
         assert!(daemon.runtime(0).is_some(), "and pair a is untouched");
-        // Nor is it stopped when its own turn comes: the pair that overlaps is the one that is not
-        // running, and `b` runs nothing in `a`'s tree, so there is nothing for `a` to be stopped
-        // for. (`stop_overlapping_pairs` asks only ready pairs.)
+        // Nor is it stopped when its own turn comes while `b`'s folder is not there: a missing or
+        // unmounted neighbour has nothing in `a`'s tree, and must never stop a healthy pair.
+        fs::remove_dir(a_root.join("inner/local")).expect("the folder b names goes again");
         stepper.send(LoopCommand::SyncNow(0));
         assert_eq!(stepper.step(&mut daemon), Step::Idle);
         assert!(
             daemon.runtime(0).is_some() && daemon.unavailable(1).is_some(),
-            "a keeps running beside an unavailable pair that overlaps it"
+            "a keeps running beside an unavailable pair whose folder is not there"
+        );
+        // ...but only while that folder is not there (PR #434 second review, H1): once it is, the
+        // outer pair's tree holds another pair's folder, and whatever is in it is what the outer
+        // pair would upload.
+        fs::create_dir_all(a_root.join("inner/local")).expect("the folder b names appears");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(
+            daemon.runtime(0).is_none() && daemon.unavailable(0).is_some(),
+            "a is stopped by the unavailable pair's folder now that it exists in a's tree"
+        );
+        assert!(
+            published_error(&daemon, 0)
+                .expect("and says why")
+                .contains("folder pair 'a'"),
+            "worded from a's side"
         );
 
         // The overlap goes (the link points elsewhere): the next attempt takes it.
@@ -26968,6 +27001,143 @@ mod tests {
             uploads_stopped,
             "and nothing was left to upload: neither pair uploaded the other's tree"
         );
+    }
+
+    #[test]
+    fn a_ready_pair_is_stopped_by_an_unavailable_pairs_state_in_its_tree() {
+        // PR #434 second review, H1. The first fix asked only ready pairs, on the reasoning that an
+        // unavailable pair "runs nothing". True of its own writes, false of what the ready pair
+        // READS: `b`'s `.sync` is already on disk, and once `b`'s folder is inside `a`'s tree `a`
+        // uploads it. `b` is unavailable here for a reason unrelated to the overlap (a held lock,
+        // an index that failed to open), so nothing about `b` itself will ever ask the question.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper, roots) =
+            booted_default_layout_pairs(directory.path(), &["a", "b"]);
+        daemon.demote_pair(1, "its lockfile is held by another process".to_owned());
+        assert!(daemon.unavailable(1).is_some(), "precondition: b is down");
+        let uploads_before = client.uploads().len();
+
+        nest_b_in_a(&roots[0], &roots[1]);
+        stepper.send(LoopCommand::SyncNow(0));
+        let log = capture_log("warn", || {
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        });
+
+        let uploads = client.uploads();
+        assert!(
+            !uploads[uploads_before..]
+                .iter()
+                .any(|(local, _)| local.starts_with("b-moved")),
+            "pair a must not upload b's `.sync` or files: {:?}",
+            &uploads[uploads_before..]
+        );
+        assert!(
+            daemon.runtime(0).is_none() && daemon.unavailable(0).is_some(),
+            "a is stopped by an unavailable neighbour whose folder is in a's tree"
+        );
+        let reason = published_error(&daemon, 0).expect("a says why");
+        assert!(
+            reason.contains("folder pair 'a'")
+                && reason.contains("Two pairs may not share a folder or nest"),
+            "worded from a's side: {reason}"
+        );
+        assert_eq!(
+            published_error(&daemon, 1).as_deref(),
+            Some("its lockfile is held by another process"),
+            "b keeps the cause it is down for: only a READY pair is demoted"
+        );
+        assert_eq!(
+            log.matches("unavailable until that changes").count(),
+            1,
+            "one pair was stopped, so one is said: {log}"
+        );
+    }
+
+    #[test]
+    fn a_neighbours_state_files_in_a_ready_pairs_tree_stop_it_through_a_link_made_later() {
+        use std::os::unix::fs::symlink;
+        // The same rule for the other two relations the one overlap function knows: a state file
+        // (index, lockfile) of another pair that now resolves INTO this pair's tree. Boot refuses
+        // such a layout, so it is reached the only way it can be while running: a link retargeted.
+        for field in ["db_path", "lockfile_path"] {
+            let directory = tempdir().expect("tempdir");
+            let mut configs = pair_configs(directory.path(), &["a", "b"]);
+            let link = directory.path().join("b-state-link");
+            let elsewhere = directory.path().join("b-state");
+            fs::create_dir(&elsewhere).expect("b's state directory");
+            symlink(&elsewhere, &link).expect("the link, pointing away from a");
+            match field {
+                "db_path" => configs[1].db_path = link.join("sync_index.db"),
+                _ => configs[1].lockfile_path = link.join("daemon.lock"),
+            }
+            let a_root = configs[0].local_root.clone();
+            let mut daemon = multi_pair_daemon(configs, MultiRootClient::default(), None);
+            let mut stepper = Stepper::new(&mut daemon);
+            assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+            assert!(
+                daemon.runtime(0).is_some() && daemon.runtime(1).is_some(),
+                "{field}: both ready, the link points away from a"
+            );
+            daemon.demote_pair(1, "down for another reason".to_owned());
+
+            fs::remove_file(&link).expect("the link goes");
+            symlink(&a_root, &link).expect("and points into a's tree");
+            stepper.send(LoopCommand::SyncNow(0));
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+            assert!(
+                daemon.runtime(0).is_none(),
+                "{field}: a is stopped, b's state file is in its tree"
+            );
+            let reason = published_error(&daemon, 0).expect("a says why");
+            assert!(
+                reason.contains(&format!("its {field}")),
+                "{field}: names the file, got {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_ready_pair_beside_an_unavailable_pair_with_no_folder_is_never_stopped() {
+        use std::os::unix::fs::symlink;
+        // The other half of the same rule: a neighbour that is down and has nothing on disk (an
+        // unmounted drive, a folder not made yet) has nothing in this pair's tree. Stopping the
+        // healthy pair for it would turn one unplugged drive into two stopped pairs. The layout
+        // really does overlap — the folder `b` names resolves inside `a`'s — so the only thing that
+        // spares `a` is that the folder is not there.
+        let directory = tempdir().expect("tempdir");
+        let mut configs = pair_configs(directory.path(), &["a", "b"]);
+        let mount = directory.path().join("b-mount");
+        fs::create_dir_all(mount.join("local")).expect("where b's drive is mounted");
+        let link = directory.path().join("b-link");
+        symlink(&mount, &link).expect("the mount point");
+        configs[1].local_root = link.join("local");
+        let a_root = configs[0].local_root.clone();
+        let (a_config, b_config) = (configs[0].clone(), configs[1].clone());
+        let mut daemon = multi_pair_daemon(configs, MultiRootClient::default(), None);
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        daemon.demote_pair(1, "its drive is not mounted".to_owned());
+
+        // The drive is unplugged and its mount point now leads into a's tree.
+        fs::remove_file(&link).expect("the mount point goes");
+        symlink(&a_root, &link).expect("and leads into a");
+        assert!(!b_config.local_root.exists(), "b's folder is not there");
+        assert!(
+            real_path_overlap(&a_config.into_parts().1, &b_config.clone().into_parts().1).is_some(),
+            "precondition: the paths DO overlap, so only the missing folder can spare a"
+        );
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(
+            daemon.runtime(0).is_some(),
+            "a keeps syncing: b's folder is not there to be uploaded"
+        );
+
+        // The folder appears: now there is something in a's tree that is b's.
+        fs::create_dir_all(a_root.join("local")).expect("b's folder appears inside a's tree");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(daemon.runtime(0).is_none(), "and a is stopped for it");
     }
 
     #[test]
