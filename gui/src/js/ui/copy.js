@@ -1571,8 +1571,8 @@ export const TRAY = {
    * deck has no words for, because in the window it is unreachable at one folder: `app.js` intercepts
    * `firstRun` with the onboarding takeover before the main screen renders. The tray has no takeover,
    * so it is the surface that must say something, and the alternative was `Everything is up to date`
-   * over a daemon that has never copied a file. At TWO folders or more the takeover never arms (its
-   * `Next` writes top-level roots a `[[pair]]` file refuses), so the window says the same two
+   * over a daemon that has never copied a file. At TWO folders or more the takeover never arms (it is
+   * the first-folder flow), so the window says the same two
    * sentences for a pair that has not synced yet (#102 phase 5a-2) — the same words, undrawn there
    * too, until the frame that draws a second folder.
    *

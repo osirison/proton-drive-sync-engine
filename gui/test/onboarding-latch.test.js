@@ -286,8 +286,8 @@ test("driving the sequence: arm, advance to step 2, rehearse and tick, release, 
 const EVERY_STATE = ["idle", "running", "paused", "authExpired", "failed", "firstRun", "unreachable"];
 
 test("the_takeover_never_arms_at_two_pairs", () => {
-  // The wizard is the FIRST-folder flow: `Next` writes top-level roots, and the engine refuses a
-  // `[[pair]]` file that also sets them. At N>=2 it could only be opened on a state it cannot fix.
+  // The wizard is the FIRST-folder flow. At N>=2 it could only be opened over folders that are
+  // already running.
   // Every state, every prior latch, every combination of the gates that otherwise ARM it — and the
   // two entry triggers are exactly the ones that must not:
   for (const state of EVERY_STATE) {

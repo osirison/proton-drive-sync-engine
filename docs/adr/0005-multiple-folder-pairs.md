@@ -1,12 +1,15 @@
 # ADR 0005 — Multiple folder pairs in one daemon
 
-- **Status:** Implemented through phase 4 — a config may declare any number of pairs and one daemon
-  runs them all (the lift, phase 4c). Phase 5 (the GUI) and phase 6 (the shared-volume event scope)
-  are not built. Written as a design (2026-08-17); the phases below carry their own "Shipped, with
-  departures" notes.
+- **Status:** Implemented through phase 5 — a config may declare any number of pairs, one daemon
+  runs them all (the lift, phase 4c), and the desktop app lists, selects, pauses, adds and removes
+  them (phase 5, closed out 2026-10-09: see "Phase 5 shipped, with departures" under the phase
+  plan). Phase 6 (the shared-volume event scope) is not scheduled and is not built; it is tracked
+  in its own issue, #456. Written as a design (2026-08-17); the phases below carry their own
+  "Shipped, with departures" notes.
 - **Date:** 2026-08-17
 - **Issue:** #102 (E5 · Multiple folder pairs). This ADR is the "scoping pass" the maintainer's
-  decision comment asked for; it does not close the issue.
+  decision comment asked for; phases 1 to 5 shipped under it, and the open items are listed in the
+  phase 5 close-out.
 - **Relations:** constrained by #23 (the `proton-drive` CLI is not concurrency-safe) and by
   `paths.rs`'s two-tier locking; reuses ADR 0001's per-volume event cursor and ADR 0004's warm
   start, both of which become per-pair; leaves ADR 0002's guard and ADR 0003's checkpoint commits
@@ -51,7 +54,9 @@ sync several — `Documents → /Docs` and `Photos → /Pictures` — each indep
 - **The app window has no room for a folder switcher.** The old design had one in a sidebar;
   design-v2 deleted it. Layouts are checked pixel-by-pixel, and the header's flexible spacer is
   pinned to an exact width on 22 frames — so inserting anything there fails the gate on all of them.
-  **The GUI is the expensive part, not the cheap one.**
+  **The GUI is the expensive part, not the cheap one.** *(Phase 5 close-out: the gate did not fail on
+  the 22 frames; see departure 7 under "Phase 5 shipped, with departures". The GUI cost was real in
+  other ways: 17 added frames, nine PRs.)*
 - **An old daemon with a new client is dangerous.** The "which folder" field would be *silently
   ignored* by a daemon that predates it, which would then act on its own folder. For `reset-index`,
   `keep` or `approve` that is a destructive wrong target, so the client checks capability before
@@ -61,8 +66,9 @@ sync several — `Documents → /Docs` and `Photos → /Pictures` — each indep
   correctness bug; worth knowing before multiplying it.
 
 **Build order** (engine first, per the maintainer's decision on 2026-08-17): phases 1–4 make
-multiple folders work fully from the command line; the GUI selector (phase 5c) waits for re-drawn
-frames; the multiplied-walk cost (phase 6) gets its own ADR.
+multiple folders work fully from the command line (shipped); the GUI selector (phase 5c) waits for
+re-drawn frames (shipped, with the frames drawn in the PR that built each screen); the
+multiplied-walk cost (phase 6) gets its own ADR (not scheduled).
 
 ## The shape, in six sentences
 
@@ -83,7 +89,9 @@ For a reader who needs to agree the shape rather than audit it:
 6. **The GUI is the *expensive* part, not the cheap one** — the pair selector the issue remembers
    does not exist in design-v2, and adding one to the header fails the fidelity box gate on the 22
    frames that pin the header's spacer (20 `window` + 2 `dialog`, measured) until the prototype is
-   re-drawn.
+   re-drawn. *(Phase 5 close-out: measured again when the pill was built, it does not fail that
+   check; see departure 7 under "Phase 5 shipped, with departures". The prototype was still
+   re-drawn, for the frames the pill and the rest of phase 5 added.)*
 
 ## Context
 
@@ -616,7 +624,8 @@ config — that file exists precisely because `deny_unknown_fields` bricks on GU
   Inserting anything into the 52px header row shrinks the flex absorber and fails the box gate on
   **every frame that pins that spacer — 22 of the 51, measured: all 20 `window` frames and 2
   `dialog` frames, at five distinct widths (563.88, 696.08, 709.28, 731.08, 763.88), each compared
-  exactly**. Add the copy gate (every fixed string must appear verbatim in a drawn
+  exactly**. *(Superseded at the phase 5 close-out: departure 7 records that this was measured again
+  against the built pill and does not hold, because the style gate never compares that box.)* Add the copy gate (every fixed string must appear verbatim in a drawn
   frame; exemptions are treated as defects), the hue gate (five settled frames must contain no
   saturated colour anywhere — so a folder swatch or an accent on the selector fails them), and the
   stale gate (the prototype and the fixtures must draw the same frame set, both directions).
@@ -631,15 +640,19 @@ config — that file exists precisely because `deny_unknown_fields` bricks on GU
   or add a daemon-wide flag beside it — §8b) — bearing in mind `tray_menu.rs`'s own warning that "a
   stale menu dispatches the action its label promised, or none". Notification bodies already carry a
   root-*relative* path, which is ambiguous the moment there are two roots, so every such body needs
-  the pair named.
+  the pair named. *Closed in phase 5d (notes 13 to 21) and phase 5e (notes 46 to 53); the pause
+  question is closed in §8b.*
 - **The in-app emblem path disagrees with the packaged one.** `path_sync_status` opens
   `effective_db_path()` — one index — and takes a relative path with no discriminator, while the
   file-manager extensions resolve per file. Until it takes a root, the overlay and the in-app
-  status can disagree under multiple pairs.
+  status can disagree under multiple pairs. *Closed in phase 5a-1 (#436): `path_sync_status` takes a
+  pair and opens that pair's index.*
 
-**What does not change:** `SyncActivity` stays singular and gains a pair name. Only one pass runs at
-a time, so the live activity surface describes at most one pair; a per-pair activity array would
-model a state that cannot exist. Likewise the plan/conflicts/deletions screens render one selected
+**What does not change:** `SyncActivity` stays singular and gains a pair name. *(Correction made at
+the phase 5 close-out: it did not gain one. `SyncActivity` in `src/ipc.rs` has no `pair` field, and
+the app names the folder that is busy from the `syncing` flag of each entry in `pairs[]`.)* Only one
+pass runs at a time, so the live activity surface describes at most one pair; a per-pair activity
+array would model a state that cannot exist. Likewise the plan/conflicts/deletions screens render one selected
 pair, never two side by side.
 
 ### 7. Migration: nothing happens, and that is the design
@@ -743,7 +756,10 @@ without it and it is not usable without multi-pair to motivate it.
 
 ### 8b. Smaller open questions
 
-- **What the tray's single pause toggle means.** The *wire and daemon state* are decided, not open:
+- **What the tray's single pause toggle means.** *Closed (maintainer decision, 2026-10-08; phase 5d,
+  note 13): every pair has its own pause, there is no daemon-wide pause and no `Pause all` row, so
+  neither candidate below was built. The daemon keeps each pair's pause across restarts (#441).* The
+  text below is the question as it was asked. The *wire and daemon state* are decided, not open:
   `paused` is per-pair (§1, §4), because everything else about a pair is. What is open is one layer
   up — the tray has one `Pause syncing` row, and pausing one of three folders from it would be a
   surprise. Two candidates: the row fans out as the client's `--all-pairs` loop (no new daemon state, but
@@ -1820,6 +1836,128 @@ Closes: the feature for users.
 > the client's own words (F4): the engine accepts it and the daemon starts on it (measured), but a pass that finds
 > the root missing then fails with `unsafe remote root path` for ever. Config resolution is unchanged on purpose.
 > DEVIATIONS §110.
+
+> **Phase 5 shipped, with departures (close-out, 2026-10-09; the PR that records it is the tenth of
+> the phase).** The numbered notes above are the record. This section lists the PRs, gathers the
+> departures with the decision behind each, and names what is open. Every PR number below was read
+> from `gh pr view` and `git log` on `main`.
+>
+> | PR | Part | What it shipped | Notes |
+> | --- | --- | --- | --- |
+> | #436 | 5a-1 | The app's runtime paths are per pair, read from the engine's new `pair_views`; commands can name a pair; one fake daemon for the GUI tests. The child `--dry-run` for a `[[pair]]` file gets `--config FILE --pair NAME`, which fixes the failure recorded in the phase 4c note (5). Every request the app sends is what it was (13 request shapes held byte for byte). Three corners of how a hand-written config is read differ on purpose, because the app now reads the file through the engine (from the PR body): a relative `db_path` is placed under `local_root` and a blank one is not placed; a file holding a key the engine rejects gives no pairs, and the commands that need a folder answer `the config file has an error: <the engine's message>` where they said `local_root is not configured`; and on a file with `[[pair]]` tables the file's roots, index and conflict suffix win over the daemon-reported ones, so a file edited after the daemon started is trusted over what the daemon reported. | none: no numbered note |
+> | #439 | 5a-2 | The selected pair (in `gui.toml`), the capability gate for a daemon that does not read a selector, per-pair state, and writes that name their pair. | 1 to 12 |
+> | #441 | engine | The daemon keeps each pair's pause across restarts, in the pair's own index. | 58, and the verb table in §4 |
+> | #443 | 5d | The tray: one pause row per folder, the worst folder's glyph, title and panel, one `Sync now`. | 13 to 21 |
+> | #445 | 5b-1 | `ConfigDoc` over tables: a per-pair setting is read from and saved to the chosen pair's own `[[pair]]` table. | 22 to 27 |
+> | #446 | 5b-2 | Commands to add, remove and promote a pair, and to set a removed pair's history aside. | 28 to 32 |
+> | #447 | 5c-1 | The folder pill in the header, and a window that follows it. | 33 to 45 |
+> | #448 | 5e | Notifications: a banner names its folder and its buttons act on it. | 46 to 53 |
+> | #450 | 5c-2 | Settings: the Folders list, the Add folder dialog, the remove confirmation, and `Add folder…` in the ⋯ menu. | 54 to 62 |
+>
+> Below two folders nothing the app draws in a frame changed, and one thing the app does changed: the
+> ⋯ menu offers `Add folder…` at every count, one folder included (note 54, maintainer decision D7), so
+> that a person with one folder can start a second. No frame draws that menu open (DEVIATIONS §46), so no
+> gate sees it. For the frames, `fidelity:n1` compares the one-folder frames: a plain render and a
+> `?pairs=1` render must give equal bytes. Frames that list two folders are rendered twice instead, since
+> they have no one-folder rendering to equal. Note 39 gives the split as it stood when #447 merged, at 63
+> frames: 55 compared and eight rendered twice; the five frames added after it were not recounted here.
+> The frame set went from 51 to 68 (17 added: 4 for the tray, 8 for the window, 1 banner, 4 in Settings;
+> counted from the files in `gui/tools/fidelity/frames`).
+>
+> **Departures from the phase 5 brief, and the decision behind each.**
+>
+> 1. **D12 was closed in the engine, by an extra PR (#441), not in the app.** The brief recommended
+>    that the app note which folders were paused before a restart and pause them again, with the
+>    engine change as a later issue. The maintainer chose the engine change, landed before the tray
+>    work (decision comment on #102, 2026-10-08). The app re-pauses nothing (note 58).
+> 2. **Removing a folder sets its history aside; it does not leave the index in place.** The brief's
+>    D8 said the index stays and adding the folder back resumes from it, planning anything changed in
+>    between as deletions. The maintainer decided that the history is moved out of the folder and
+>    adding it back starts fresh (2026-10-08). Notes 30, 31, 57.
+> 3. **The pill marks a failed or unavailable folder as well as a folder that needs a decision.** The
+>    brief's D4 had one marker, for something waiting. The maintainer decided on 2026-10-09 (comment on
+>    #102) that the pill rings for another folder that needs a decision and also for one that failed or
+>    is unavailable (an unplugged drive), the second "using a distinct problem form", and that a paused
+>    folder marks nothing. What the distinct form is, and that it wins when both apply, is the design of
+>    the PR (note 34): a ring for a decision, a solid dot for a problem. The comment does not name the
+>    dot or the precedence.
+> 4. **The window does not get a typed "that folder does not exist" state.** 5a-2 note 5 asked 5c to
+>    add one. `DaemonState` has no honest variant for it, so the window shows the default folder with
+>    a notice block (note 36).
+> 5. **The selection is a field of `RuntimePaths`, not separate managed state** (note 1).
+> 6. **A tray folder row writes its folder's name on the wire, the default folder's included.** The
+>    brief omitted the name for the default folder. A stale menu would otherwise act on whichever
+>    folder became the default after a restart (note 19). `pause_unsaved` has no surface in the tray
+>    panel and is shown in the window instead (notes 18, 37).
+> 7. **The pill does not fail the header-spacer box check.** The brief and §6 expected it to fail on
+>    the 22 frames that pin the spacer. Measured, it does not: the style gate never compares that
+>    box (note 39, `docs/agent-notes/the-header-spacer-box-is-never-compared.md`). The gate states the
+>    pill's absence outright instead.
+> 8. **`remove_pair` performs the restart itself**, where the brief had it return "restart needed",
+>    because the history can only be moved once the daemon has stopped running the pair (note 31).
+>    `ConfigDoc`'s setters return `Result`, and there is a `ConfigError::NoSuchPair` the brief did not
+>    name (note 27).
+> 9. **Notifications: there is no separate 60-second scan of folders that are not on screen** (note
+>    49), `Try again now` and `Keep them` do not move the window (note 50), and the daemon's startup
+>    warning (M4) no longer mentions the app (note 51).
+> 10. **The add dialog refuses a Drive path containing `..` and expands a leading `~`** (notes 62,
+>     60), neither of which the brief listed. The engine's config resolution is unchanged.
+> 11. **Seventeen frames, not about eleven** (the brief's D2 estimate), because the tray, the window,
+>     a banner and Settings each needed their own at two folders or more.
+>
+> **Not built.** D6 option (b), an engine setting that starts a new folder paused, so a new folder
+> could be reviewed before its first pass. D6 was the brief's recommendation, option (e1): a new folder
+> is priced on both sides and then given first-run's merge dialog, with no preview and no claim about
+> one (note 56). The maintainer took it with the other plan recommendations on 2026-10-08 (comment on
+> #102, "Taken from the phase-5 plan's recommendations"). The brief had said to file the start-paused
+> setting as an engine issue; none was filed, because (e1) was taken and no comment on #102 asks for
+> option (b). The other half of that sentence, persisting the pause, became #441.
+>
+> **Open, by issue.**
+>
+> | Issue | What is open |
+> | --- | --- |
+> | #424 | A `syncnow` that lands as a pass ends waits one pass too many (found while scoping phase 4, filed 2026-10-06). |
+> | #425 | The watcher-echo suppression (#49) is a race, not a guarantee (found while scoping phase 4, filed 2026-10-06; #426 the same day). |
+> | #426 | An unmounted drive's empty mount point reads as an empty sync root (phase 4b). |
+> | #431 | The engine accepts a relative `local_root` and the watcher then drops every event. The app's add dialog refuses one (note 55); a hand-written config can still set one. |
+> | #433 | Three low-severity edges of the replaced-folder hold (phase 4b). |
+> | #435 | Test-guard gaps, a fail-open `stat` in the overlap filter, and §8a unmeasured (phase 4c). |
+> | #442 | A pause set while a folder is unavailable is lost by a restart (follows #441). |
+> | #444 | Tray residuals: the count and the folder line can disagree, two guards are unpinned, wording edges. |
+> | #449 | Notification residuals: a hand-edited rename re-announces a first sync, and the n1 gate's wording. |
+> | #451 | Settings folders: a folder in the file but not run by the daemon cannot be selected, and a banner's `Review` moves the selection under a dialog that cannot be left. |
+> | #453 | The index records no remote root. A pair started with a different `remote_root` over an existing index plans `LocalDelete` for what the old Proton folder had. Gated by delete approval and recoverable by default; neither holds when the guard is off or `local_delete_mode` is `permanent`. Found by the brief (A9). Phase 5 does not remove the app-driven route: the Proton folder field in Settings re-points an existing folder's `remote_root` at one folder or many, and the Add folder dialog over a surviving index names that index without comparing roots. What the set-aside closes is one route, adding back a folder that was removed through the app. |
+> | #454 | The app does not check that the daemon can run more than one folder before it writes a second. A daemon from before #434 exits on a file with two `[[pair]]` tables and nothing syncs until one is removed (see the last paragraph of this section). |
+> | #455 | At two folders or more, the window tells someone whose folder has not synced yet to "Open Drive Sync to choose your two folders", which is the tray's sentence. |
+> | #456 | Phase 6, the shared-volume event scope (§8a), as its own issue so #102 can close. It needs its own ADR. |
+>
+> To get this, upgrade the installed daemon and the installed app together. A daemon from before #434
+> refuses a file with more than one `[[pair]]` table (it exits with "syncing more than one pair is not
+> yet supported"), and one from before #441 forgets a pause when it restarts. An app from before
+> these PRs has no folder selector.
+>
+> **A new app against an older daemon is not safe to use for adding a folder.** For reading and for
+> requests aimed at one folder it behaves: it checks for the pair list first and sends unaddressed
+> requests until the daemon shows it can read a selector (note 3). That check asks whether a reply
+> carries `pairs[]`, which a daemon from #409 on does, so a daemon from #409 to #433 passes it while
+> running one pair. `Add folder` makes no capability check at all (`add_pair` and the dialog read
+> none). So with such a daemon running, adding a second folder writes the second `[[pair]]` table,
+> stops the daemon and starts it again, and the new process refuses the file and exits. (If the
+> daemon was not running, the add leaves it stopped, as a settings save does.) The dialog then says
+> that the folder "was added to the settings, but the sync service has not listed it yet", and
+> nothing syncs until the table is removed. The app has a way out in `Remove` on the Folders list,
+> which works from the file and takes the table out. `Remove` restarts the daemon only if one is
+> running, and a daemon that has already exited on the file is not running, so `Remove` does not
+> start it. It comes back through the unit's `Restart=on-failure` (`RestartSec=10`), or the Start
+> button; with no unit and the app's direct start, only the Start button does it. **Confirmed by
+> running** a daemon built from the commit before #434, in a scratch environment, on a two-pair
+> file: it exits with status 1 and that message, and creates no folder. **Read from the code, not
+> run:** the app's dialog wording and the restart ending it reports (`systemctl --user start`
+> returning success is enough for it to say the service restarted), what `Remove` does when the
+> daemon is not running (`remove_pair` restarts with `only_if_running`, which leaves a stopped
+> daemon stopped), and the unit's `Restart=on-failure` with `RestartSec=10`, which would start and
+> refuse the file every ten seconds until the table is removed.
 
 **Phase 6 — Shared-volume event scope (its own ADR).** §8a. Independent of everything above and
 worth doing on its own merits, since one pair already pays the cost. Not scheduled here.

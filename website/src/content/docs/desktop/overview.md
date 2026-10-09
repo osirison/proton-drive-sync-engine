@@ -58,7 +58,7 @@ the tray icon, and whether counters are shown:
 | **Auth expired** | The daemon's own sign-in verdict says the Proton session is gone — or, only while it has no verdict yet, a fallback match against the last error's wording. | Try again now |
 | **Failed** | Reachable, but the last pass failed for some other reason — a timeout, a missing `proton-drive` binary, a transfer error. | Try again now |
 | **Unreachable** | The control socket can't be reached, or the reply couldn't be trusted. | Start the sync service |
-| **First run** | Nothing has synced yet. | None — the onboarding takeover covers the window; there is no Home screen to offer buttons on |
+| **First run** | Nothing has synced yet. | None — the onboarding takeover covers the window; there is no Home screen to offer buttons on. (With two or more folders the takeover does not open; see [First run](/desktop/screens/#first-run).) |
 
 **Failed** is the state most worth naming explicitly. Without it, every kind of failure used
 to fall through to **Idle**, and the app drew "Everything is up to date" over a pass that had

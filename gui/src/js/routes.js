@@ -286,10 +286,10 @@ export function nextOnboardingLatch(
   pairCount = 0,
 ) {
   // NEVER AT TWO OR MORE PAIRS (#102 phase 5a-2, E14), whatever the state and whatever came before.
-  // The takeover is the FIRST-folder flow: its `Next` writes `local_root`/`remote_root` as top-level
-  // keys, and the engine refuses a `[[pair]]` file that also sets them, so at N>=2 the wizard could
-  // only be opened on a state it cannot fix. It is not just "not entered": a pair added behind a
-  // running takeover's back releases it, because there is no step of it that is right any more.
+  // The takeover is the FIRST-folder flow: a machine with none, or the one implicit pair. At N>=2 the
+  // app is already running other folders, so the wizard could only be opened over them. It is not just
+  // "not entered": a pair added behind a running takeover's back releases it, because there is no
+  // step of it that is right any more.
   //
   // FIRST, ahead of the release set and the entry triggers: a `firstRun` reply at N>=2 is a NEW
   // pair that has not synced yet, which is exactly the state that used to open the wizard over a

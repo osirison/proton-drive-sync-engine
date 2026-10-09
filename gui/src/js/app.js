@@ -621,7 +621,7 @@ function activeRoute() {
 
 // ---- the ⋯ menu ----
 
-// No frame draws this menu open (DEVIATIONS.md §45), so its contents come from 02-shell.md's one
+// No frame draws this menu open (DEVIATIONS.md §46), so its contents come from 02-shell.md's one
 // sentence: the theme toggle moved here from the title bar.
 function renderMenu() {
   if (!menuOpen) return null;
@@ -631,7 +631,7 @@ function renderMenu() {
     { class: "menu-popover", role: "menu" },
     // AT EVERY COUNT (decision D7): below two folders there is no list to put the button in, and the
     // menu is where a person with one folder finds the second. Nothing about it is drawn — this menu is
-    // undrawn (DEVIATIONS §45) — so it costs no frame.
+    // undrawn (DEVIATIONS §46) — so it costs no frame.
     el("button", { class: "menu-item", role: "menuitem", onClick: openAddFolder }, FOLDERS.addFolder),
     el(
       "button",

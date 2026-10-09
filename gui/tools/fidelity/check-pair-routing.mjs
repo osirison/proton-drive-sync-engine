@@ -33,8 +33,8 @@
 //   4. THE HERO'S BUTTONS. Two folders in the same state draw the same hero, so a switch patches the
 //      screen instead of rebuilding it, and its buttons are the ones built for the previous folder.
 //      `Pause` must still pause the folder the hero is now about.
-//   5. A PAIR THAT HAS NEVER SYNCED. At two folders the first-run wizard (whose `Next` writes
-//      top-level roots a `[[pair]]` file refuses) must stay shut, and the window must say the pair has
+//   5. A PAIR THAT HAS NEVER SYNCED. At two folders the first-run wizard (the first-folder flow)
+//      must stay shut, and the window must say the pair has
 //      not synced rather than `Everything is up to date`; ...
 //   6. ... and at one folder the same reply still opens the wizard, because it is the count and not
 //      the state that decides.
