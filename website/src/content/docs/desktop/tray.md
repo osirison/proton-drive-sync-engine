@@ -122,6 +122,11 @@ answering.
 The app can fire native desktop notifications through the OS notification service, so
 noteworthy events can surface even when the window is hidden.
 
+With two or more [folder pairs](/daemon/folder-pairs/), the application line of a banner names the
+folder it is about — `Drive Sync · photos` — and its buttons act on that folder, not on whichever one
+the window is showing. Only one banner is on screen at a time, whatever folder it is about. With one
+folder a banner is unchanged.
+
 ## Requirements
 
 The tray speaks `org.kde.StatusNotifierItem` directly over D-Bus — the same protocol

@@ -88,6 +88,36 @@ Actions `Go through them` / `Later`.
 
 Coalesce within a 30-second window. Never stack more than one Drive Sync banner.
 
+## At two folders or more
+
+Everything above is a banner about one folder. When the daemon runs two or more
+[folder pairs](../adr/0005-multiple-folder-pairs.md), a banner is about **one of them**, and says which:
+
+- **The header row names the folder.** `Drive Sync · photos` in place of `Drive Sync` — the same 12px/600
+  `#99A2AE` span, one node, a middle dot and the folder's name. No sentence of the four changes and none
+  grows: the deletion banner's body still opens with its mono path. A desktop's notification server draws
+  that line as its own header (it is the notification's application name), so the folder is named without
+  touching the title or the body. With **one** folder the line is `Drive Sync` and the banner is the banner
+  above, byte for byte — "two or more" is the daemon's count of pairs, not the number of folders that happen
+  to have something to say. (Drawn: `11a Two folders`.)
+- **Each folder has its own memory; the banner has one.** What was said, whether the first sync was
+  witnessed, and the newest sync seen are kept per folder, so the same queue in two folders is two things to
+  say, adding a folder does not make the first one repeat what it has said, and a folder added later
+  announces **its own** first sync, once. The 30-second window and "a deletion may interrupt a quieter banner"
+  are about the banner on screen, whatever folder it is about: two conflicts in two folders are one banner now
+  and the second later, never two at once. Folders are considered in the order the daemon lists them, most
+  serious event first.
+- **A pause is the folder's.** A folder the person paused does not trigger the outage banner, however long
+  ago it last synced; another folder, not paused, does.
+- **Only what is known is said.** A folder is read from what the daemon last said about it and nothing older:
+  while the daemon is not answering, no banner is raised about any folder but the one on screen (read, as at
+  one folder, from what that folder last showed), and what was said about the others is not forgotten.
+- **The buttons act on the folder the banner named**, not the one the window happens to be showing when it is
+  pressed — which can be minutes later and a different folder. `Keep them` keeps that folder's permanent
+  deletions and no other's. `Review` and `Compare` switch the window to the folder **first** and open the
+  screen only then (if that folder is no longer there, the window opens and goes nowhere). `Try again now`
+  syncs that folder alone. `Open Drive Sync` opens the window on that folder.
+
 ## Settings — three choices, not twelve switches
 
 `When to interrupt me` 18px/600 / `Everything else stays in Activity regardless.`

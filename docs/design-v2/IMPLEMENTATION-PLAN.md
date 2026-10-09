@@ -21,7 +21,7 @@ tree, in `DECISIONS.md` — which also records the one the build overturned):
 
 ### 1.1 What "all screens" means, exactly
 
-`Drive Sync.dc.html` contains **72** frames carrying a `data-screen-label`. **63 are in scope** (51 when this was written; the four `10a` frames at two folders or more, #102 phase 5d, and the eight `2a`/`12a` frames at two folders or more, #102 phase 5c-1, are the difference).
+`Drive Sync.dc.html` contains **73** frames carrying a `data-screen-label`. **64 are in scope** (51 when this was written; the four `10a` frames at two folders or more, #102 phase 5d, the eight `2a`/`12a` frames at two folders or more, #102 phase 5c-1, and the banner at two folders or more, `11a Two folders`, #102 phase 5e, are the difference).
 
 | Group | Frames | Size |
 | --- | --- | --- |
@@ -34,7 +34,7 @@ tree, in `DECISIONS.md` — which also records the one the build overturned):
 | **8a Settings** | Settings · Skip rules · Deletions tab · Schedule monthly · Save refused | 2×1040×764, 600×520, 2×600 |
 | **9a Onboarding** | Folders · Review · First sync · Consent · CLI missing | 2×1040×764, 600×540, 2×600 |
 | **10a Tray** | In situ · Glyph states · Settled · Syncing · Offline · Paused · Two folders · Two folders paused · Two folders failed · Many folders | 1040×520, 560, 8×360 |
-| **11a Notifications** | In situ (4 banners) · Rules · Settings · Outage · Grouped | 1040×560, 600, 3×520 |
+| **11a Notifications** | In situ (4 banners) · Rules · Settings · Outage · Grouped · and at two folders or more: Two folders | 1040×560, 600, 4×520 |
 | **12a Light theme** | Settled · Syncing · Deletions · Conflict · Compact settled · Compact syncing · Compact needs · and at two folders or more: Two folders light · Two folders open light | 6×1040×764, 3×360 |
 | **12a Tray light** | Specimen card, not a product surface — see §1.2 | 360 |
 

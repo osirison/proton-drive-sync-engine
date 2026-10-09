@@ -1740,6 +1740,32 @@ Closes: the feature for users.
 > guard, so a scan on a mount that never answers neither stops the shown folder's polls nor stacks. (44) **A
 > failed `Restart syncing` is remembered for the folder the notice was for.** (45) **A list of more than eleven
 > folders scrolls inside itself.** DEVIATIONS §108g.
+>
+> **Phase 5e (notifications), recorded because each changes a rule above.** (46) **A banner names its
+> folder in its application line at two folders or more** (`Drive Sync · photos`, maintainer decision D10) and
+> nowhere else: no sentence of the four events changes. With one folder the banner is byte-identical — the spec
+> and the payload carry no `pair` at all. (47) **One notifier, per-folder memory, one banner.** What was said,
+> whether the first sync was witnessed and the newest sync seen are kept per folder; the 30-second window, "a
+> deletion may jump it" and which banner is up (`lastPair`) are global. The default folder (the first the
+> daemon lists) keeps the shape every saved state already has, so a state saved before folders is read as its
+> own with no migration; the others are `kind@name` and `@name`. A folder added later announces its own first
+> sync once. (48) **The notifier reads the LIVE roster and nothing else** (`rosterLive`, `livePairs`,
+> `livePairStates`): the store keeps the last roster across a failed read so the window can still name its
+> folders, and a banner built from it would say a stopped daemon's last words about another folder as news
+> (#246). With the daemon silent only the folder on screen is read, and what was said about the others is
+> neither forgotten nor withdrawn. (49) **A departure from the brief: there is no 60-second scan of the
+> folders that are not on screen for the notifier.** The poll already refreshes them (note 35: their queues
+> only while their summary counts one, their conflicts at most once a minute) and the notifier reads what that
+> put in the store; a second schedule would be two places computing one thing. (50) **A banner's buttons act
+> on the folder it named**, which `notify.rs` keeps beside the notification id and returns on
+> `notification-action` (the server's signal carries only an id). `Keep them` keeps that folder's permanent
+> deletions; `Review`/`Compare` select the folder and navigate only once the store is on it; `Try again now`
+> is a `syncnow` for that folder, not the tray's sync-every-unpaused row. A departure from the brief's
+> "all four select the pair first": `retry` and `keep` are addressed by name and do not move the window,
+> because moving what a person is looking at is not what either button says it does. (51) **The daemon's
+> startup warning (M4) no longer blames the app**: its notifications clause was the last true one, and what is
+> left says that a request naming no pair acts on the default pair, which is true of every client without
+> `--pair`. DEVIATIONS §109.
 
 **Phase 6 — Shared-volume event scope (its own ADR).** §8a. Independent of everything above and
 worth doing on its own merits, since one pair already pays the cost. Not scheduled here.

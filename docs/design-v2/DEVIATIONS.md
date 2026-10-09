@@ -6171,3 +6171,100 @@ and the rest are fixed with a test that fails without each fix.
   unsaved notice flipped to `unreachable` for a read that was never about them). Measured: rows are 31px, so 360px
   holds eleven rows and 5px of the twelfth, not "ten and a half"; the scroll class is set from twelve folders,
   where eleven (355px) overflow nothing.
+
+## 109. Notifications at two folders or more: one frame the design never drew, and what the rest leaves undrawn
+
+`11-notifications.md` is about one folder. With two or more, a banner is about **one of them**, and the
+decisions below (maintainer D10, issue #102; the brief's section 4.5) are new normative text there ("At two
+folders or more") and in `13-copy-deck.md`. One new frame, drawn in the change that builds it (the brief's
+correction A1: no design-only commit): `11a Two folders`, class `notification`, a single conflict banner
+whose application line reads `Drive Sync · photos`.
+
+### §109a · The decisions applied
+
+- **D10 — the meta row.** `Drive Sync · {folder}` in the banner's application line, and only when the daemon
+  runs two or more folders. The line is one node (`bannerApp`), the same 12px/600 span the five older frames
+  draw, with a middle dot and the name added: no title, body or button of the four events changes, and the
+  deletion body's leading mono path keeps its width. A notification server draws that line as its own header
+  (it is the notification's `app_name`), so the folder is named without a sentence moving. **With one folder
+  the banner is byte-identical**: the spec has no `pair` key, the payload has none, and the line is `Drive
+  Sync` (`a banner at one folder is the banner it always was`; the gate checks the page's own payload).
+  `desktop-entry` is still sent, so on a server that groups by desktop entry the name is cosmetic; that is
+  not measured on GNOME or Plasma [inferred].
+- **One notifier, per-folder memory, one banner.** What was said (`said`), whether the first sync was
+  witnessed (`sawUnsynced`) and the newest sync seen (`lastSeenSync`) are kept per folder; when anything was
+  last shown, and what, are global (`lastAt`, `lastKind`, and `lastPair`, which says whose banner is up). The
+  default folder — the first the daemon lists — keeps the shape every saved state already has (bare kinds,
+  the two witnesses at the top), so a state saved before folders is read as the default folder's with no
+  migration and adding a second folder makes the first forget nothing. Every other folder is `kind@name` in
+  `said` and `@name` in `seen`: the `@` is outside a folder name's alphabet, so a key can be neither a kind
+  nor another folder's, and a folder called `constructor` or `__proto__` is an ordinary key.
+- **The 30-second window and "a deletion may jump it" are about the banner on screen.** Two folders with the
+  same queue are two things to say, said one banner at a time; a permanent deletion in one folder jumps a
+  conflict banner about another; the next folder's held banner arrives when the window is over. Folders are
+  considered in the order the daemon lists them, most serious first (the sort is stable).
+- **`firstSync` is once per folder.** An added folder announces its own first sync once, at the moment its
+  summary first carries a sync after the app watched it carry none; the default folder's `said.firstSync` is
+  not the one that silences it.
+- **A pause is the folder's.** The outage trigger reads each folder's own `paused` (and its state, for the
+  cause: `authExpired` is each unpaused folder's, `unreachable` otherwise).
+- **The buttons act on the banner's folder** (the facade rule: a write names the pair it was drawn for).
+  `notify.rs` keeps the folder beside the notification id and puts it on `notification-action`; the server's
+  `ActionInvoked` carries only an id. `Keep them` keeps that folder's permanent deletions and no other's (it
+  used to read the SELECTED folder's queue). `Review` and `Compare` select the folder and navigate only
+  once the store is on it (a folder that cannot be selected opens the window and goes nowhere). `Try again
+  now` is `syncnow` addressed to that folder, not the tray's sync-every-unpaused row. `Open Drive Sync`
+  selects the folder and opens the window.
+
+### §109b · What the frame draws
+
+1. **`11a Two folders`** — the conflict banner, because it needs no sentence the other frames do not already
+   draw (`NOTIFY.conflictTitle`, `conflictBody`, `Compare`, `Later` are the existing rows); the only new text
+   is `NOTIFY.appFor("photos")`, whose `DRAWN` row is `11a Two folders`. The path is relative to the folder's
+   root (`2019/IMG_2041.jpg`), as a conflict's always is. It is mapped (`notifyFids("twoFolders")`) and asserted
+   like the other two standalone banners: no new `KNOWN_*` row, no new deviation row.
+2. **A long folder name.** A name may be 64 characters; a flex item refuses to shrink below its text and would
+   push the time out of the banner. `.notify-app` takes `min-width:0; overflow-wrap:anywhere`: neither changes a
+   line that fits, and neither is a property the style gate compares, so the five older frames are the boxes they
+   were. (The shipped app draws no banner of its own: the desktop's server does.)
+
+### §109c · What the app does that no frame can show
+
+- **Only what is known is said.** The notifier reads the folders through the store's live accessors
+  (`rosterLive`, `livePairs`, `livePairStates`), never the raw roster, which the store keeps across a failed read
+  so the window can still NAME its folders. A stopped daemon would otherwise be read as "photos still has a
+  deletion waiting" and "photos last synced yesterday" — #246's false statement, said aloud, about a folder
+  nothing has looked at since. With the daemon silent only the folder on screen is read, from its own slice,
+  as at one folder; what was said about the others is **not forgotten** (no evidence is not an empty queue) and a
+  banner about one is not withdrawn on no evidence. Held by `with the daemon stopped, a stale roster speaks for no
+  other folder` and, on the real page with the page's clock moved, by `fidelity:pairs`.
+- **No second schedule.** The brief called for a 60-second scan of the folders that are not on screen. The poll
+  already refreshes them (`refreshOtherPairs`, #447): one job per folder, a folder's withheld deletions fetched
+  only while its summary counts some, its conflicts scanned at most once a minute, and the notifier reads what
+  that put in the store. A second schedule would be two places computing the same thing. A queue is read only
+  while its summary counts one, and a list never fetched says nothing until it is.
+- **A folder the daemon stops running is forgotten**, but only on a LIVE roster: what was said about it, whether
+  it was watched, and — so a folder added later under the same name announces its own first sync — the rest; a
+  banner about it is withdrawn, because its buttons would act on a folder that is not there.
+- **The default folder is the first the daemon lists, by position.** If the default folder is removed, the next
+  one becomes the default and inherits the bare keys of the one that went: its queue has a different signature so
+  it is said once, and its first sync is not announced again. Recorded rather than fixed: the daemon names no
+  stable identity for a folder across a removal.
+- **A first sync can be announced for a folder that was never new.** A non-default folder this install has never
+  watched, answering `null` for its last sync after a daemon restart, is witnessed as unsynced (the default
+  folder's guard — `lastSeenSync == null` — is all the evidence there is), so the first pass after a restart that
+  follows an upgrade can announce `Both sides now match` once for it. One banner, once per folder.
+- **The daemon's startup warning** (maintainer decision M4) said the desktop app's notifications act on the default
+  pair only; that stopped being true here, and the sentence is what is left of it — a request that names no pair
+  acts on the default one — which is true of `proton-sync` without `--pair` and of any client that predates
+  folders. The function was renamed with it and its two tests read the new phrase.
+
+### §109d · Counts that moved
+
+63 in-scope frames became 64 (notification class 2 became 3); `assert.mjs` 64/64 mapped (120,969 assertions became
+121,864); the contrast gate reads 1,423 nodes across 64 frames (it was 1,417 across 63); the copy gate's drawn
+strings 382 (107 templates rendered at their frame's arguments; the exemptions are still 95); `fidelity:pairs` 59
+scenarios became 65 (banner naming and `Keep them`, `Review`'s order, `Try again now`, the stopped daemon, the
+fetch gate, and a one-folder banner). The `63` is quoted in `extract.mjs`, `frame-classes.mjs`, `check-fixtures.mjs`,
+`check-contrast.mjs`, `fidelity/README.md`, `IMPLEMENTATION-PLAN.md` and the comments that gave it as a current
+count; measurements dated to a past run (§108f) are left as they were measured.

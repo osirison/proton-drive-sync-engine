@@ -190,3 +190,7 @@ the main screen's above, unchanged.
 ## Notifications
 
 See `11-notifications.md` — all four are quoted verbatim there.
+
+Two folders or more (`11-notifications.md` "At two folders or more", DEVIATIONS §109): a banner's header row
+reads `Drive Sync · {name}` (`Drive Sync · photos`, `NOTIFY.appFor`) in place of `Drive Sync`. It is the only
+string added: no title, body or button of the four changes, and with one folder the row is `Drive Sync`.
