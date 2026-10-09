@@ -30,7 +30,40 @@ When a pending change has a cost, this is replaced by a `#FF9F1C` line stating i
 
 Right: `Discard changes` (quiet) + `Save` (primary; `#2A2E36`/`#6D7783` disabled until dirty).
 
+**At two folders or more** a staged change the daemon reads has one more cost, and it is the same for every
+folder, because a save restarts the one daemon: the line becomes
+`Saving restarts syncing for all two folders, briefly. Anything running now stops, and folders you paused stay paused.`
+(`#FF9F1C`, 12px, `max-width:600px` — two sentences — and following a rule-removal cost when both are staged).
+It says what is true and no more: a folder's pause is kept by the daemon across a restart (#441), and a pause
+set while a folder was unavailable is the known gap (#442) the line does not mention. It is drawn only while a
+daemon-config change is staged — a policy kept in the app's own file restarts nothing — and never below two.
+(Drawn: `8a Save two folders`, a 600px crop of the bar; DEVIATIONS §110.)
+
 ## Tab 1 — Folders
+
+**At two folders or more** (nothing below two; DEVIATIONS §110) the tab opens with the list of folders, above
+the settings it chooses between:
+
+- **Your folders** (10px label) over a panel, `border:1px solid #1A1D22; border-radius:13px; background:#0D0E11`,
+  one row per folder **in the settings file's order** (the first is the default folder). A row is
+  `padding:11px 18px; gap:14px`, the folder on screen on `#101216` with a filled `8px` `#F2F4F7` dot: the
+  **name** (14px/600) over the two paths in mono 11px `#6D7783` (`~/Documents ⇄ /Drive/Documents`), the word for the
+  folder's state (12px `#828B98`, the folder selector's own words, or `not running yet` for a folder the file
+  lists and the daemon does not run) and `Remove`. The name block is one button: a click on it is `select_pair`,
+  the same choice the header's pill makes.
+- Under it, 12px `#6D7783`: `The settings below are for documents. Click another folder to change its settings
+  instead.` — **Settings edits the selected folder**; everything under the list is that folder's, and what is
+  typed for one folder is kept for it when another is chosen.
+- `Add folder…` (a `Choose…`-sized button), which opens the add dialog below. The ⋯ menu carries the same
+  entry at **every** count; it is how a person with one folder finds the second.
+- The settings themselves are unchanged and sit in their own block under the list, so the seam keeps the
+  position it was measured at. **Advanced** says `Applies to all folders.` under the command, the log level
+  and the socket — the settings the daemon reads once for every folder (`include` and the conflict suffix follow
+  the selected folder).
+- **Remove** asks first, in a 600px dialog (below). The last folder cannot be removed: the engine refuses an
+  empty list, and with two or more there is always another.
+
+(Drawn: `8a Folders list`, a 600px crop of the list. The rest of the tab is `8a Settings`.)
 
 **The pair being kept in step** (10px label), then a seam block. The seam here is short:
 `position:absolute; top:44px; height:86px; left:50%` — sized to span only the two inputs, because
@@ -158,6 +191,66 @@ modes*).
 Not drawn. It holds: include globs, the socket path, the CLI binary path, log level, conflict
 suffix, and a *Reset the index* action. Use the same panel pattern; keep the plain-language title +
 mono key structure. Anything genuinely dangerous here gets the typed-word gate.
+
+## Add a folder (720px dialog, two sides side by side)
+
+Opened from `Add folder…` and from the ⋯ menu. Not the first-run takeover (which writes the implicit single
+pair and is shut at two folders): a small question, and then the merge dialog first-run shows, for the new
+folder. (Drawn: `8a Add folder`, DEVIATIONS §110.)
+
+`Add a folder` 18px/600 / `A folder on this computer and a folder on Proton Drive, kept identical.` and a ✕.
+
+- **Name** (10px label) and a mono field, `padding:11px 13px`, full width. It **follows the folder's own name**
+  (`~/My Photos` → `my-photos`, made by the app from the engine's own charset and never a second copy of it)
+  until it is typed in, and then it is the person's. Under it, 12px `#6D7783`:
+  `How this folder is named in the app and in commands, such as proton-sync --pair photos. It can't be changed afterwards.`
+  — or, when the engine refuses the name, **the engine's own sentence, verbatim, in mono** (`#FF9C9C`), asked as
+  the name is typed.
+- **This computer** (`#FF9F1C`) with `Choose…`, and **Proton Drive** (`#22D3EE`, right-aligned), in two columns.
+  After `Check folders` each says what it holds in mono 11.5px: `1,204 files, 3.4 GB` and `1,190 files` — the Proton
+  side reports a count and **no size** (a remote listing exposes none), and a walk that stopped at its bound or could
+  not read a directory says `at least`.
+- **Skip rules** (10px label) — `Optional. Anything matching a rule stays on this computer and is never copied to
+  Proton Drive.` — a field and `Add`; the rules ride in the same single write that adds the folder.
+- When the folder already holds `.sync/sync_index.db`, an amber block (the never-synced band's tint) says so,
+  **before** anything is written, in the maintainer's words: `This folder already holds sync history from an
+  earlier setup (…); adding it resumes from that history, so anything changed since may show up as deletions to
+  approve. To start fresh instead, run proton-sync reset-index --yes --pair photos after adding.` The app cannot
+  reset an index.
+- Foot: 12px `#6D7783` `There is no preview for a new folder. Its first sync starts as soon as you add it, so what
+  differs between the two sides is only known once it runs.` — and **nothing about what the first sync will do to a
+  file**: no plan was made, and the dialog claims none. `Cancel` and the primary button.
+
+**The primary is two buttons and a person sees them in order.** `Check folders` asks the engine whether the add
+would go ahead (`check_add_pair`, the same function the add itself runs, so the two cannot disagree: the name, the
+roots, a relative local folder — #431 — and a real-path overlap through a symlink) and prices both sides
+(`probe_folder`; the remote side asks the daemon behind its one gate, #23). Nothing is written. It becomes
+`Add folder` only for the text it was made for: **editing a field puts `Check folders` back**, and Enter never adds
+what was not checked. A side that could not be measured says why (`Couldn't be measured — …`, the reason verbatim)
+and does not block: a daemon that is busy says nothing about the folder.
+
+`Add folder` writes ONCE (`add_pair`: promotes an implicit file to `[[pair]]` tables, `default` first, and carries
+the staged rules), restarts the daemon only if it was running, **waits for the daemon's own list to name the
+folder**, selects it, and opens `9a First sync` addressed to the new folder. That dialog has **no plan footer** —
+nothing rehearsed this merge — and watches the NEW folder's own pass counter, read from its own summary. While the
+add is in flight the dialog cannot be left (Esc and ✕ do nothing), because the file is written before the restart.
+A restart that did not work says so in the Settings save's own five sentences, with `Restart it now` there and on
+the Settings bar.
+
+## Remove a folder (600px dialog)
+
+`Remove documents?` 18px/600, then four sentences, 13px `#99A2AE`, `gap:10px` (the fourth only when the folder is
+the first, because the first is the default one):
+
+1. `Syncing stops for documents.`
+2. `Nothing is deleted on this computer or in Proton Drive.`
+3. `Its sync history is moved aside to ~/.local/state/proton-sync/removed-pairs, so adding the folder back later starts fresh.`
+4. `photos becomes the default folder: commands that name no folder, and older versions of this app, will mean it.`
+
+`Cancel` is the **primary** (the safe choice is the loud one) and `Remove folder` the quiet button beside it. The
+dialog then shows the command's actual reply in place of the sentences — `was removed from the settings.`, then the
+account of where the history went (moved to X, nothing to move, or **pending, with the reason**), verbatim — and
+`Done`. (Drawn: `8a Remove folder`, the first folder; the answer is the command's own words and is not drawn.)
 
 ## Save refused (600px dialog)
 

@@ -6311,3 +6311,90 @@ frames that can. It is still rendered both ways; that it carries no status is me
 at one folder is the unit tests and the `at one folder a banner names none` scenario, not that gate. The `63` is quoted in `extract.mjs`, `frame-classes.mjs`, `check-fixtures.mjs`,
 `check-contrast.mjs`, `fidelity/README.md`, `IMPLEMENTATION-PLAN.md` and the comments that gave it as a current
 count; measurements dated to a past run (§108f) are left as they were measured.
+
+## The folders list, add and remove (#102 phase 5c-2, 2026-10-09)
+
+## 110. Four frames the design never drew for managing folders, and the rules they hold
+
+`08-settings.md` (the Folders tab, the footer bar, and two new dialogs), `09-onboarding.md` ("Adding a folder
+later is not this flow") and `13-copy-deck.md` carry the new normative text. Four frames, drawn in the change that
+builds them (the brief's correction A1: no design-only commit), all dark: `8a Folders list` and `8a Save two
+folders` (class `crop`, 600px), `8a Add folder` (a 720px dialog) and `8a Remove folder` (a 600px dialog). Nothing
+draws below two folders **except the ⋯ menu's `Add folder…`**, which sits in a menu no frame draws (§45) and so
+costs none; `fidelity:n1` keeps holding the one-folder app to the 55 frames it already compared.
+
+### §110a · The decisions applied
+
+- **D7 — Settings edits the selected folder, and adding is a dialog.** The list sits above the settings it chooses
+  between and says which folder they are for (`The settings below are for documents. Click another folder to change
+  its settings instead.`); a row's name is `select_pair`, the same choice the pill makes. The first-run takeover is
+  not reused: it writes the implicit single pair and is shut at two folders (E14). Daemon-wide Advanced settings
+  say `Applies to all folders.` (no frame: that tab is drawn in none).
+- **D6 — price both sides, add, then the merge dialog for the NEW folder, with no footer and no claim.** The
+  dialog's foot says there is no preview and nothing about what a first sync will do: no plan was made, and the
+  brief's own "a bootstrap never deletes" is a property of the planner, not a sentence a dialog may say about files
+  it has not looked at — least of all when the folder holds an index and the pass is **not** a bootstrap. The merge
+  watches the NEW folder's counter, read from its own summary when the daemon first listed it and compared only
+  against a reply that says it is about that folder (`replyAbout`).
+- **D8 (updated) — the confirmation says four things and the reply says what happened.** The brief's "the index
+  (`.sync`) stays, so adding the same folder back RESUMES from it" is **outdated and not used**: a removed folder's
+  history is moved aside to the app's state folder (#446), and the confirmation names where (`set_aside_dir`, new on
+  the config payload). The fourth sentence — which folder becomes the default — is drawn only for the first folder.
+  The dialog then shows the command's own account verbatim, `pending` with its reason included. Removing the last
+  folder is refused (the engine refuses an empty list).
+- **D9 — the name is suggested from the folder and editable until it is added.** `suggest_pair_name` lives in
+  `gui-core` beside the engine's validator and is held to it by a property test over folders whose names are nothing
+  like a name; the dialog shows the engine's own sentence as the name is typed (`validate_pair_name_among`, through
+  `check_add_pair`). A suggestion never overwrites a name the person typed.
+- **D12 is superseded by #441 — the app re-pauses nothing.** The daemon keeps each folder's pause across a restart.
+  The save sentence at two folders or more says what is true and no more; it does not mention the one case that is
+  not (#442: a pause set while a folder was unavailable).
+
+### §110b · What the frames draw, and the rule that made two of them crops
+
+1. **`8a Folders list`** and **`8a Save two folders`** are crops (§78's class): each is the part of the Settings
+   window that is new, drawn at 600px. A full-window frame would have made the whole Folders tab a second ground
+   truth for nodes `8a Settings` already pins, and its header spacer would have been a seventh number (B15). The
+   fixture is still the whole app, so `npm run screenshots -- --frame "8a Folders list"` is the window the list is
+   part of. Their boxes are not compared (`OWES_BOX` is false for a crop) and everything else is: the 600px bar crop
+   found one real difference on its first run (`flex-shrink`, the prototype's bar lacked `flex:none`).
+2. **`8a Add folder`** is drawn in the state a person confirms in — checked, both sides priced, and with an index
+   the folder would resume, which is the state that has the most nodes. The unchecked state differs by the price
+   lines and the notice being absent and `Check folders` on the button; `fidelity:pairs` drives it.
+3. **`8a Remove folder`** is the first folder's confirmation (all four sentences); another folder's is the same
+   without the fourth, held by a unit test and a page scenario.
+
+### §110c · What no frame draws, and what holds each
+
+- The add dialog's busy phases (`Saving…`, `Restarting the sync service…`, `Waiting for the sync service to list …`),
+  its failed measurement (`Couldn't be measured — …`), its refusals, and a restart that did not work: rows in
+  `UNGATED_TEMPLATES`/`NOT_DRAWN` with the reason each, and `fidelity:pairs` drives them on the real page.
+- The removal's answer. It is the command's sentence and a fixture's would be words about an account nothing made.
+- A folder the file lists and the daemon does not run (`not running yet`): it needs a daemon that has not restarted
+  since an edit.
+
+### §110d · Departures from the brief
+
+- **The add dialog is 720px, two columns**, not the 600px of the folders step: at 600 the two sides stack and the
+  dialog is taller than the 764px window leaves room for.
+- **No `free_space` line**: the first-run step prices the download side against free disk; the add dialog prices
+  what each side holds and leaves the disk to the merge, which already reports progress.
+- **The ⋯ entry lands here, not in a later PR** (A12), and costs no frame.
+- **A pending removal does not block an add**: `add_pair` finishes an earlier removal first (#446), and a refusal
+  still carries what it settled.
+- **The list is built from the settings file's roster, not the daemon's** (rule 3 of `folders.js`): the folder a
+  restart has not reached would otherwise be missing from the one place that adds and removes folders.
+
+### §110e · Counts that moved
+
+64 in-scope frames became 68 (crops 4 became 6, dialogs 10 became 12); `assert.mjs` 68/68 mapped (121,864
+assertions became 125,981); the contrast gate reads 1,696 nodes across 68 frames (it was 1,423 across 64); the copy
+gate's drawn strings 404 (116 templates rendered at their frame's arguments; the exemptions are 99, up from 95: the
+four are the strings no frame can draw, each with its reason in `copy-gate.mjs`); `fidelity:pairs` 74 scenarios
+became 89 (adding and removing a folder: fifteen); the unit tests became 597, 25 of them in the new
+`folders.test.js`; `fidelity:fixtures` 68/68 with 1,521 fids keys. **`fidelity:n1` is still 55/55**: the four new
+frames draw two folders, so each is compared with itself alone (eight such frames became twelve), and the one counted
+apart is unchanged. The `64` is quoted in `extract.mjs`, `frame-classes.mjs`, `check-fixtures.mjs`,
+`check-contrast.mjs`, `assert.mjs`, `check-n1-identity.mjs`, `props.mjs`, `fidelity/README.md`,
+`IMPLEMENTATION-PLAN.md` and the fixture comments that gave it as a current count; all now say 68. Measurements dated
+to a past run are left as they were measured.

@@ -1778,6 +1778,40 @@ Closes: the feature for users.
 > name, from the live roster's first entry; no owner is read as the current default's). When the default
 > changes, each folder's memory moves with the folder; the removed default's is dropped, and the next folder
 > no longer inherits a `conflict` key whose signature is only relative paths. DEVIATIONS §109c.
+>
+> **Phase 5c-2 (the Settings list, add and remove), recorded because each changes a rule above.** (54) **Adding
+> a folder is a dialog, and the first-run takeover is not reused** (maintainer decision D7): the takeover writes
+> the implicit single pair and is shut at two folders (note 18's rule), so a second folder is asked for from
+> Settings or the ⋯ menu at **every** count, and then shown the merge first-run shows, addressed to the new
+> folder. First-ever setup is unchanged. (55) **The dialog asks the engine before it writes, through the same
+> function the write runs** (`check_add_pair`; the add is `prepare_add` plus a save): the engine's refusal of a
+> name comes first and on its own, as the name is typed, then everything `add_pair` would refuse with — a relative
+> local folder (#431), a real-path overlap through a symlink — and the index the folder would resume. Both sides
+> are priced with `probe_folder` (the remote through the daemon's one gate, #23); a side that cannot be measured
+> says why and does not block, because a busy daemon says nothing about a folder. The answer is filed with the
+> text it was asked about, so a check that passed for one folder cannot arm the button for another. A suggested
+> name is `suggest_pair_name`, built in `gui-core` beside the engine's validator and held to it by a property test
+> over folders whose names are nothing like a name. (56) **D6, as ruled: no preview, and no claim.** Nothing can
+> plan a folder before it exists (the child `--dry-run` is forbidden beside a live daemon, #23/#317), so the dialog
+> says there is no preview and the merge dialog of an added folder draws no plan footer — `nothing deleted · …` is
+> about a plan someone approved. The merge waits for the NEW folder's own pass counter, read from its own summary
+> when the daemon first listed it and compared only against a reply that says it is about that folder; the folder
+> is selected only once the daemon's list names it (`showFolder`, the one step that moves the selection without a
+> click). (57) **D8's confirmation, and what replaced the brief's "the index stays"** (A9): a removed folder's
+> history is moved aside to the app's state folder (`set_aside_dir`, now on the config payload, so the confirmation
+> can name where), so adding the folder back starts fresh. Four sentences — syncing stops, nothing is deleted on
+> either side, where the history goes, and, when the removed folder is the first, which folder becomes the default
+> — and then the command's own account of what happened (moved to X, nothing to move, or pending with the reason),
+> verbatim. The surviving-index sentence names `--pair NAME`, because `proton-sync reset-index --yes` alone resets
+> the DEFAULT pair, which is not the one just added. (58) **D12 is closed by #441, not by the app:** the daemon keeps
+> each folder's pause across a restart, so the app re-pauses nothing. What a save costs at two folders or more is one
+> sentence — it restarts syncing for all of them, briefly, and folders you paused stay paused — drawn only while a
+> change the daemon reads is staged, and silent on the one case that is not true (a pause set while a folder was
+> unavailable, #442). (59) **A dialog with an add in flight cannot be left** (Esc and the ✕ are swallowed): the
+> file is written before the restart, and a dialog closed between the two would leave a folder added and nothing
+> watching for it to appear. A restart that did not work is the Settings save's own five sentences, in the dialog
+> and latched for the bar's `Restart it now`. (60) **`probe_folder` expands a leading `~` on the local side** by the
+> engine's own rule (#135), because the dialog prices what was typed. DEVIATIONS §110.
 
 **Phase 6 — Shared-volume event scope (its own ADR).** §8a. Independent of everything above and
 worth doing on its own merits, since one pair already pays the cost. Not scheduled here.
