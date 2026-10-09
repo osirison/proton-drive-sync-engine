@@ -6243,13 +6243,51 @@ whose application line reads `Drive Sync · photos`.
   only while its summary counts some, its conflicts scanned at most once a minute, and the notifier reads what
   that put in the store. A second schedule would be two places computing the same thing. A queue is read only
   while its summary counts one, and a list never fetched says nothing until it is.
+- **Only what has landed is known** (review round). A folder that is not on screen is read from the roster's
+  summary, which every poll refreshes, and from two separate reads that land later: the list behind the
+  summary's count of withheld deletions, and its conflict scan. The first version treated both as if they were as
+  new as the summary, and two false things were said. (1) **A list older than its count.** `Keep them` on a banner
+  drains the folder's queue, the summary falls to 0, and nothing refetches at 0, so the store went on holding the
+  file that was kept; when a new deletion arrived the notifier, running in the same tick as the fire-and-forget
+  fetch, built its banner from that list: it named a file that was already kept, the 30-second window then held
+  the real banner, and `Keep them` on it kept a file it had never named. (2) **A list that has not landed.** On
+  the first poll after a launch the summary counted a queue whose list had not arrived and the conflict scan had
+  not run; both were read as empty, what had been said was forgotten, and it was said again when they landed:
+  every standing banner of every folder not on screen, once per launch. Now the store dates each list with the
+  status clock, read before the request leaves (`deletionsIssue`, `conflictsIssue`), and notes in
+  `rosterFacts` when each folder joined the roster and when its current count was first reported.
+  `deletionsFreshOf` is true only for a list fetched after that count, and `conflictsFreshOf` only for a dated
+  scan that left after the folder joined, so a folder removed and added again under the same name is not read
+  from the old one's scan. A kind that is not fresh is listed in the view's `unknown`, and `decide` **neither
+  says nor forgets** anything about it, nor withdraws a banner of that kind; a summary that counts 0 needs no list
+  and is known. The folder on screen and the one folder below two are always known. One predicate gates the
+  notifier, `Keep them` and the folder list's count, so the three cannot disagree. Held by
+  `notifier-freshness.test.js` (each case on a store of its own) and on the real page by
+  `a banner never names a file Keep them already kept…`, `while another folder's list is older than its count…`,
+  and the launch-after-launch scenarios for a deletion, a conflict, the shown folder and one folder.
+  **Residuals, stated.** A count that does not change (one deletion kept and another arriving between two
+  polls, two seconds apart) is not seen as a change until the next read lands. The shown folder's own conflict
+  scan is not dated (nothing reads it as a notifier input): for up to a minute after a folder stops being the
+  one on screen its conflicts are unknown rather than known, which says less and never more.
 - **A folder the daemon stops running is forgotten**, but only on a LIVE roster: what was said about it, whether
   it was watched, and — so a folder added later under the same name announces its own first sync — the rest; a
   banner about it is withdrawn, because its buttons would act on a folder that is not there.
-- **The default folder is the first the daemon lists, by position.** If the default folder is removed, the next
-  one becomes the default and inherits the bare keys of the one that went: its queue has a different signature so
-  it is said once, and its first sync is not announced again. Recorded rather than fixed: the daemon names no
-  stable identity for a folder across a removal.
+- **The default folder is the first the daemon lists, and the state remembers whose the bare keys are** (review
+  round). `owner` is the default folder's name, kept beside the state and read from the live roster's first
+  entry; a state with no owner (every one saved before this) is read as the current default's own, so the
+  one-folder decisions are exactly what they were (a differential over 225,000 random ticks against the notifier
+  of the previous commit: event, `resolved`, `said`, `lastAt`, `lastKind`, `sawUnsynced`, `lastSeenSync`
+  identical). When the default changes (the first folder is removed, or the file is reordered) each folder's memory
+  moves with the folder: a removed default's is dropped, one that is still listed keeps its own under `kind@name`,
+  and the folder that became the default takes its `kind@name` and its first-sync witness into the bare keys; a
+  banner on screen follows its folder and is withdrawn with a folder that is gone. The first version handed the
+  bare keys to the next folder and recorded the consequence as harmless, on the ground that its queue has a
+  different signature. That was true of a deletion and false of a conflict, whose signature is only its relative
+  paths: a never-announced conflict at the same path (`note.txt`) stayed silent. The daemon still names no stable
+  identity for a folder across a removal, so a folder removed and added again is a new folder, and failing toward
+  saying something is the safe direction. Held by `a default folder that is removed does not hand its memory to
+  the folder that becomes the default` and the four after it, and on the real page by `when the default folder is
+  removed, the next folder's own conflict at the same path is still said`.
 - **A first sync can be announced for a folder that was never new.** A non-default folder this install has never
   watched, answering `null` for its last sync after a daemon restart, is witnessed as unsynced (the default
   folder's guard — `lastSeenSync == null` — is all the evidence there is), so the first pass after a restart that
@@ -6265,6 +6303,11 @@ whose application line reads `Drive Sync · photos`.
 121,864); the contrast gate reads 1,423 nodes across 64 frames (it was 1,417 across 63); the copy gate's drawn
 strings 382 (107 templates rendered at their frame's arguments; the exemptions are still 95); `fidelity:pairs` 59
 scenarios became 65 (banner naming and `Keep them`, `Review`'s order, `Try again now`, the stopped daemon, the
-fetch gate, and a one-folder banner). The `63` is quoted in `extract.mjs`, `frame-classes.mjs`, `check-fixtures.mjs`,
+fetch gate, and a one-folder banner), and 74 after the review round (what is known about a folder that is not on
+screen: nine scenarios); the unit tests 551 became 571. **`fidelity:n1` is 55/55, not 56/56**, with one more
+frame counted apart and eight against themselves: `11a Two folders` is a banner drawn at two folders and mounted
+from its own arguments, so no listing of one pair can change it, and the headline had counted it with the
+frames that can. It is still rendered both ways; that it carries no status is measured; and what holds a banner
+at one folder is the unit tests and the `at one folder a banner names none` scenario, not that gate. The `63` is quoted in `extract.mjs`, `frame-classes.mjs`, `check-fixtures.mjs`,
 `check-contrast.mjs`, `fidelity/README.md`, `IMPLEMENTATION-PLAN.md` and the comments that gave it as a current
 count; measurements dated to a past run (§108f) are left as they were measured.

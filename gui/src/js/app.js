@@ -607,7 +607,7 @@ function waitingIn(pair) {
   const queued = summary?.pending_deletions ?? 0;
   let deletions = 0;
   if (queued > 0) {
-    deletions = store.select.deletionsFiledOf(pair) ? visibleDeletionsOf(pair).length : queued;
+    deletions = store.select.deletionsFreshOf(pair) ? visibleDeletionsOf(pair).length : queued;
   }
   return store.select.conflictsOf(pair).length + deletions;
 }
@@ -1938,12 +1938,15 @@ function visibleDeletions() {
  * `visibleDeletions()` itself — the chip, the band and the Deletions screen read that one. Any other
  * folder is what the poll fetched for it, and only while its summary says it has some: a list fetched
  * earlier and not since is not evidence about a queue the summary now counts as empty. Empty for a
- * folder whose queue has not been fetched yet — a caller that needs "unknown" asks `deletionsFiledOf`.
+ * folder whose queue has not been fetched yet — a caller that needs "unknown" asks `deletionsFreshOf`.
+ *
+ * `deletionsFreshOf` AND NOT "WAS EVER FETCHED": a list fetched before the count last changed is the old
+ * queue's, and `Keep them` on a banner built from it keeps files the person was never shown.
  */
 function visibleDeletionsOf(pair) {
   if (pair == null || pair === store.select.pairName()) return visibleDeletions();
   const summary = store.select.pairs().find((entry) => entry.name === pair);
-  if (!(summary?.pending_deletions > 0) || !store.select.deletionsFiledOf(pair)) return [];
+  if (!(summary?.pending_deletions > 0) || !store.select.deletionsFreshOf(pair)) return [];
   return store.select
     .pendingDeletionsOf(pair)
     .filter((item) => deletionsDecided.get(itemKey(item)) !== item.fingerprint);
@@ -4601,6 +4604,9 @@ async function poll() {
     // selection has moved is a fact about a pair that is no longer on screen and not a replacement
     // for the one that is (the store keys it by pair; see `store.js`).
     const pair = store.select.pairName();
+    // NOT DATED (`setConflicts`): the notifier reads the shown folder from this list as it always did, and the
+    // moment it stops being the shown one `refreshOtherPair` scans it again and dates that — a minute at the
+    // most, saying nothing about it, is the price of not stamping a second call site nothing depends on.
     try {
       store.setConflicts(await api.scanConflicts({ pair }), pair);
     } catch (_) {
@@ -4679,8 +4685,11 @@ async function refreshOtherPair(pair, hasQueue) {
   const now = Date.now();
   if (now - (lastOtherScan.get(pair) ?? 0) > OTHER_SCAN_MS) {
     lastOtherScan.set(pair, now);
+    // Read before the request leaves: the scan is evidence about the moment it left, and the store dates it
+    // against the roster with this (`setConflicts`) — the notifier speaks from a scan only if it is dated.
+    const asOf = store.select.statusesIssued();
     try {
-      store.setConflicts(await api.scanConflicts({ pair }), pair);
+      store.setConflicts(await api.scanConflicts({ pair }), pair, asOf);
     } catch (error) {
       console.error("scan_conflicts failed:", error);
     }

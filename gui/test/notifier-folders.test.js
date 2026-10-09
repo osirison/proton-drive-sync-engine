@@ -96,8 +96,10 @@ function load({ docs = {}, photos = {}, photosQueue = [], docsQueue = [], confli
   store.setStatus(reply("docs", pairs, { queue: docsQueue }), next());
   // The poll fetches a folder that is not on screen only while its summary counts a queue (E6).
   if (photosQueue.length) store.setStatus(reply("photos", pairs, { queue: photosQueue }), next(), "photos");
-  store.setConflicts(conflicts.docs ?? [], "docs");
-  store.setConflicts(conflicts.photos ?? [], "photos");
+  // A scan is dated with the clock of the request that left for it (`app.js` reads `statusesIssued` before
+  // the scan goes out); this file's own counter stands in for it. An undated list is not known to the notifier.
+  store.setConflicts(conflicts.docs ?? [], "docs", next());
+  store.setConflicts(conflicts.photos ?? [], "photos", next());
 }
 
 // ------------------------------------------------------------------------------ one folder ----
@@ -406,4 +408,215 @@ test("a folder called `constructor` is an ordinary folder", () => {
   const again = tick(first.state, NOW_MS + COALESCE_MS * 10);
   assert.equal(again.event, null);
   assert.deepEqual(Object.keys(first.state.seen), ["@constructor"]);
+});
+
+// ------------------------------------------------------------------- which folder is the default ----
+//
+// THE BARE KEYS BELONG TO A FOLDER, and a conflict's signature is only its relative paths. When the folder
+// they belonged to is removed, the next folder in the roster becomes the default, and reading the bare keys
+// as its own would silence a conflict it never announced because another folder once announced one at the
+// same relative path (`note.txt` is a very common name). `owner` is the default folder's name, kept beside
+// the state; `decide` reads the live roster's first entry as the default, as `notifierViews` does.
+
+const conflictView = (pair, isDefault, paths) => ({
+  response: { pending_deletions: [], last_sync_epoch_secs: NOW_SECS - 60, paused: false, pending_changes: 0 },
+  conflicts: paths.map((path) => ({ original: path, sidecar: `${path}.proton-cloud`, path })),
+  daemonState: "idle",
+  pair,
+  isDefault,
+});
+
+test("a default folder that is removed does not hand its memory to the folder that becomes the default", () => {
+  const first = decide({
+    state: emptyState(),
+    views: [conflictView("docs", true, ["note.txt"]), conflictView("photos", false, [])],
+    roster: ["docs", "photos"],
+    policy,
+    nowMs: NOW_MS,
+  });
+  assert.equal(first.event.kind, "conflict");
+  assert.equal(first.event.pair, "docs");
+  assert.equal(first.state.owner, "docs");
+
+  // docs is removed. photos is the default now, with ITS OWN conflict at the same relative path, which has
+  // never been said: the bare `conflict` key is docs' and must not silence it.
+  const after = decide({
+    state: JSON.parse(JSON.stringify(first.state)),
+    views: [{ ...conflictView(null, true, ["note.txt"]), pair: null }],
+    roster: ["photos"],
+    policy,
+    nowMs: NOW_MS + 120_000,
+  });
+  assert.equal(
+    after.event?.kind,
+    "conflict",
+    "a conflict photos never announced was held back by docs' memory",
+  );
+  assert.equal(after.state.owner, "photos");
+});
+
+test("a removed default folder's banner is withdrawn with it, even when its successor has the same conflict", () => {
+  const first = decide({
+    state: emptyState(),
+    views: [conflictView("docs", true, ["note.txt"]), conflictView("photos", false, [])],
+    roster: ["docs", "photos"],
+    policy,
+    nowMs: NOW_MS,
+  });
+  assert.equal(first.state.lastKind, "conflict");
+  assert.equal(first.state.lastPair, null);
+  // Two seconds later docs is gone and photos has a conflict at the same path. Its own banner waits for the
+  // window; the one on screen was docs' and its buttons would act on a folder that is not there.
+  const after = decide({
+    state: first.state,
+    views: [{ ...conflictView(null, true, ["note.txt"]), pair: null }],
+    roster: ["photos"],
+    policy,
+    nowMs: NOW_MS + 2_000,
+  });
+  assert.equal(after.event, null, "held by the window");
+  assert.equal(after.resolved, true, "docs' banner was left up for a folder that is not there");
+  assert.equal(after.state.lastKind, null);
+  // And photos' own is said once the window is over.
+  const later = decide({
+    state: after.state,
+    views: [{ ...conflictView(null, true, ["note.txt"]), pair: null }],
+    roster: ["photos"],
+    policy,
+    nowMs: NOW_MS + COALESCE_MS + 1,
+  });
+  assert.equal(later.event?.kind, "conflict");
+});
+
+test("the folder that becomes the default keeps what it had said, under the bare keys", () => {
+  // photos said its own conflict while it was an ordinary folder; docs is then removed. The conflict is
+  // standing and was announced: it must not be announced again for having changed rank.
+  const first = decide({
+    state: { ...emptyState(), said: { conflict: "other\u0000sig" }, owner: "docs" },
+    views: [conflictView("docs", true, []), conflictView("photos", false, ["note.txt"])],
+    roster: ["docs", "photos"],
+    policy,
+    nowMs: NOW_MS,
+  });
+  assert.equal(first.event.pair, "photos");
+  assert.ok("conflict@photos" in first.state.said);
+
+  const after = decide({
+    state: JSON.parse(JSON.stringify(first.state)),
+    views: [{ ...conflictView(null, true, ["note.txt"]), pair: null }],
+    roster: ["photos"],
+    policy,
+    nowMs: NOW_MS + 120_000,
+  });
+  assert.equal(after.event, null, "said again for changing rank");
+  assert.equal(after.state.said.conflict, first.state.said["conflict@photos"]);
+  assert.equal("conflict@photos" in after.state.said, false, "the old key is not left behind");
+
+  // The banner on screen was photos'; photos is the default now, so it is kept under the bare name — and
+  // comes down when photos' conflict is resolved, which it could not if it still named the old key.
+  assert.equal(first.state.lastPair, "photos");
+  assert.equal(after.state.lastPair, null);
+  const resolved = decide({
+    state: after.state,
+    views: [{ ...conflictView(null, true, []), pair: null }],
+    roster: ["photos"],
+    policy,
+    nowMs: NOW_MS + 130_000,
+  });
+  assert.equal(resolved.resolved, true, "the banner of the folder that changed rank was never taken down");
+});
+
+test("two folders that swap rank keep what each had said, with the folder it was said about", () => {
+  // docs, the default, was watched with nothing synced yet: its witness is at the top of the state.
+  const first = decide({
+    state: { ...emptyState(), sawUnsynced: true, said: { firstSync: "first" } },
+    views: [conflictView("docs", true, ["note.txt"]), conflictView("photos", false, [])],
+    roster: ["docs", "photos"],
+    policy,
+    nowMs: NOW_MS,
+  });
+  assert.equal(first.event.pair, "docs");
+  // The config is reordered: photos is first, docs second. Both are still listed.
+  const after = decide({
+    state: JSON.parse(JSON.stringify(first.state)),
+    views: [conflictView("photos", true, []), conflictView("docs", false, ["note.txt"])],
+    roster: ["photos", "docs"],
+    policy,
+    nowMs: NOW_MS + 120_000,
+  });
+  assert.equal(after.event, null, "docs' standing conflict was said again for changing rank");
+  assert.ok("conflict@docs" in after.state.said, "it is now an ordinary folder's");
+  assert.equal("conflict" in after.state.said, false, "and the bare key is not left to photos");
+  assert.equal(after.state.owner, "photos");
+  assert.equal(after.resolved, false, "the banner on screen is still about docs");
+  assert.equal(after.state.lastPair, "docs");
+  assert.equal(after.state.seen["@docs"]?.sawUnsynced, true, "what had been watched of docs goes with docs");
+  assert.equal(after.state.said["firstSync@docs"], "first", "and so does its first sync, said once");
+});
+
+test("the folder that becomes the default takes its first-sync witness with it", () => {
+  // photos was watched with nothing synced yet (`@photos`); docs, the default, was not. docs is removed and
+  // photos' first sync lands: it was watched, and it is announced — from the witness it had as an ordinary
+  // folder, now kept at the top of the state.
+  const state = {
+    ...emptyState(),
+    owner: "docs",
+    sawUnsynced: false,
+    lastSeenSync: NOW_SECS - 5_000,
+    seen: { "@photos": { sawUnsynced: true, lastSeenSync: null } },
+  };
+  const result = decide({
+    state,
+    views: [{ ...conflictView(null, true, []), pair: null }],
+    roster: ["photos"],
+    policy,
+    nowMs: NOW_MS,
+  });
+  assert.equal(result.event?.kind, "firstSync");
+  assert.equal(result.state.sawUnsynced, true);
+  assert.deepEqual(result.state.seen, {}, "and nothing is left under its old name");
+});
+
+test("a state with no stored owner is read as the current default's, so nothing it said is said again", () => {
+  const saved = restoreState(
+    JSON.parse(
+      JSON.stringify({
+        said: { conflict: "note.txt", firstSync: "first" },
+        lastAt: 0,
+        lastKind: null,
+        sawUnsynced: true,
+      }),
+    ),
+  );
+  assert.equal(saved.owner, null);
+  const result = decide({
+    state: saved,
+    views: [conflictView("docs", true, ["note.txt"]), conflictView("photos", false, [])],
+    roster: ["docs", "photos"],
+    policy,
+    nowMs: NOW_MS,
+  });
+  assert.equal(result.event, null, "an old state's memory was thrown away");
+  assert.equal(result.state.said.conflict, "note.txt");
+  assert.equal(result.state.owner, "docs", "and from now on it is known whose it is");
+});
+
+test("a roster that is not live changes nothing about whose the bare keys are", () => {
+  const owned = { ...emptyState(), said: { conflict: "note.txt" }, owner: "docs" };
+  const result = decide({
+    state: owned,
+    views: [{ ...conflictView("photos", true, ["note.txt"]) }],
+    roster: null,
+    policy,
+    nowMs: NOW_MS,
+  });
+  assert.equal(result.state.owner, "docs");
+  assert.equal(result.state.said.conflict, "note.txt");
+});
+
+test("the owner survives a round trip through storage, and a value that is not a name is no owner", () => {
+  assert.equal(restoreState(JSON.parse(JSON.stringify({ ...emptyState(), owner: "docs" }))).owner, "docs");
+  for (const junk of [7, {}, [], true, ""]) {
+    assert.equal(restoreState({ said: {}, owner: junk }).owner, null);
+  }
 });

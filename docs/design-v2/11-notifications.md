@@ -111,7 +111,13 @@ Everything above is a banner about one folder. When the daemon runs two or more
   ago it last synced; another folder, not paused, does.
 - **Only what is known is said.** A folder is read from what the daemon last said about it and nothing older:
   while the daemon is not answering, no banner is raised about any folder but the one on screen (read, as at
-  one folder, from what that folder last showed), and what was said about the others is not forgotten.
+  one folder, from what that folder last showed), and what was said about the others is not forgotten. A
+  folder that is not on screen is summarised on every poll, but the list behind its count of withheld
+  deletions and its conflict scan are separate reads that arrive later; a banner about it is built only from a
+  list fetched **after** the count it explains, never from one the person has since dealt with. Until a kind's
+  data has arrived (the first moments after the app starts) the folder is not heard for that kind: nothing
+  is said about it and nothing already said is forgotten, so a banner that is still standing is not said
+  again by the next launch.
 - **The buttons act on the folder the banner named**, not the one the window happens to be showing when it is
   pressed — which can be minutes later and a different folder. `Keep them` keeps that folder's permanent
   deletions and no other's. `Review` and `Compare` switch the window to the folder **first** and open the

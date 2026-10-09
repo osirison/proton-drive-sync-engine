@@ -53,6 +53,14 @@ const ALLOWED = {
 // OTHER folder is `kind@name` in `said` and `@name` in `seen`; the `@` is outside a folder's alphabet
 // (`[A-Za-z0-9._-]`), so such a key can be neither a kind nor another folder's, and a folder called
 // `constructor` or `__proto__` is an ordinary key rather than a property of the object.
+//
+// WHICH FOLDER IS THE DEFAULT IS PART OF THE STATE (`owner`). The bare keys are the default folder's, and a
+// conflict's signature is only its relative paths — so when the default folder is removed and the next one
+// becomes the default, reading the bare keys as the new default's would silence a conflict it never announced
+// because another folder once announced one at the same path. `decide` therefore remembers whose the bare keys
+// are, and when the default changes it moves each folder's memory to where that folder now lives: the removed
+// folder's is dropped, a folder that is still listed keeps its own under `kind@name`, and the folder that
+// became the default takes its `kind@name` memory into the bare keys.
 
 /** The key `kind` is remembered under for the folder kept as `home` — `null` is the default folder. */
 export const keyOf = (kind, home) => (home == null ? kind : `${kind}@${home}`);
@@ -72,6 +80,12 @@ export const emptyState = () => ({
   lastKind: null,
   /** The folder that banner was about, kept as `home`: `null` is the default folder (and every state saved before folders). */
   lastPair: null,
+  /**
+   * The NAME of the default folder the bare keys above belong to, or `null` when no live roster has said yet — a
+   * state saved before this field existed, read as the current default's own. `decide` fills it in from the
+   * roster's first entry (the folder an unaddressed request means) and re-homes the memory when it changes.
+   */
+  owner: null,
   /** The two witnesses below are the DEFAULT folder's; this is the same pair of facts for every other folder, by `@name`. */
   seen: {},
   /**
@@ -134,6 +148,7 @@ export function restoreState(saved) {
     ...saved,
     said: { ...saved.said },
     lastPair: typeof saved.lastPair === "string" ? saved.lastPair : null,
+    owner: typeof saved.owner === "string" && saved.owner ? saved.owner : null,
     seen,
   };
 }
@@ -264,6 +279,49 @@ function splitKey(key) {
 }
 
 /**
+ * The default folder changed from `next.owner` to `to`: move each folder's memory to where that folder now lives.
+ *
+ * The bare keys were the old default's. If it is still listed (`known`) it keeps them as an ordinary folder's;
+ * if it is not, they are dropped — handed to `to` they would silence a conflict `to` never announced, because
+ * a signature is only relative paths. `to`'s own memory, kept under `kind@to`, becomes the bare keys. The banner
+ * on screen follows its folder, and is withdrawn (the return value) when its folder is the one that is gone.
+ * Mutates `next`, which is `decide`'s own copy.
+ */
+function rehomeDefault(next, to, known) {
+  const from = next.owner;
+  const oldSeen = { sawUnsynced: next.sawUnsynced, lastSeenSync: next.lastSeenSync };
+  const moved = {};
+  for (const key of Object.keys(next.said)) {
+    const { kind, home } = splitKey(key);
+    if (home == null) {
+      if (known.has(from)) moved[keyOf(kind, from)] = next.said[key];
+    } else if (home === to) {
+      moved[keyOf(kind, null)] = next.said[key];
+    } else {
+      moved[key] = next.said[key];
+    }
+  }
+  next.said = moved;
+  const incoming = next.seen[seenKey(to)] ?? UNSEEN;
+  delete next.seen[seenKey(to)];
+  if (known.has(from)) next.seen[seenKey(from)] = oldSeen;
+  next.sawUnsynced = incoming.sawUnsynced;
+  next.lastSeenSync = incoming.lastSeenSync;
+  next.owner = to;
+
+  if (!next.lastKind) return false;
+  if (next.lastPair == null) {
+    if (known.has(from)) {
+      next.lastPair = from;
+      return false;
+    }
+    return true;
+  }
+  if (next.lastPair === to) next.lastPair = null;
+  return false;
+}
+
+/**
  * Decide what to show, if anything, and what to remember.
  *
  * Returns `{ event, state, resolved }` — `event` is null when nothing should interrupt, `resolved`
@@ -271,10 +329,11 @@ function splitKey(key) {
  * state to keep (it advances `sawUnsynced` and `lastSeenSync` even on a silent tick).
  *
  * `views` is one entry per folder the window can see: the world as `candidates` reads it, plus
- * `pair` (the folder's name, or `null` at one folder) and `isDefault`. Without it, `view` is the one and
- * only folder and everything is exactly what it was before folders existed. `roster` is the names the
- * daemon runs when it has just said so, or `null` when it has not; a folder it no longer lists is
- * forgotten.
+ * `pair` (the folder's name, or `null` at one folder), `isDefault` and `unknown` (the kinds, `deletion` and/or
+ * `conflict`, whose data has not landed for that folder — absent means all are known). Without it, `view` is
+ * the one and only folder and everything is exactly what it was before folders existed. `roster` is the names
+ * the daemon runs when it has just said so, or `null` when it has not; a folder it no longer lists is
+ * forgotten, and its first entry is the default folder, whose name is kept as `state.owner`.
  *
  * THE FOLDERS ARE DECIDED TOGETHER, in one severity order, against ONE rate limit. Each folder's
  * triggers are its own (a signature is remembered per folder, so the same queue in two folders is two
@@ -294,6 +353,13 @@ export function decide({ state, view, views, roster = null, policy = "only_when_
   let gone = false;
   if (roster) {
     const known = new Set(roster);
+    // The first folder the daemon lists is the default one, as `notifierViews` reads it. A state with no
+    // owner is read as the current default's own; one whose owner is another folder has had its default
+    // changed under it, and its bare keys are not this folder's to inherit.
+    if (roster.length) {
+      if (next.owner == null) next.owner = roster[0];
+      else if (next.owner !== roster[0]) gone = rehomeDefault(next, roster[0], known);
+    }
     for (const key of Object.keys(next.said)) {
       const { home } = splitKey(key);
       if (home != null && !known.has(home)) delete next.said[key];
@@ -301,7 +367,7 @@ export function decide({ state, view, views, roster = null, policy = "only_when_
     for (const key of Object.keys(next.seen)) {
       if (!known.has(key.slice(1))) delete next.seen[key];
     }
-    gone = Boolean(state.lastKind) && state.lastPair != null && !known.has(state.lastPair);
+    gone = gone || (Boolean(next.lastKind) && next.lastPair != null && !known.has(next.lastPair));
     if (gone) {
       next.lastKind = null;
       next.lastPair = null;
@@ -310,11 +376,16 @@ export function decide({ state, view, views, roster = null, policy = "only_when_
 
   const entries = [];
   const viewed = new Set();
+  // For each folder this tick could see: the kinds it could NOT hear (`view.unknown`), whose data has not
+  // landed. Such a kind is neither said nor forgotten — see the forgetting rule below.
+  const unheard = new Map();
   for (const folder of seen) {
     const home = homeOf(folder);
     viewed.add(home);
+    unheard.set(home, new Set(folder?.unknown ?? []));
     const lastSync = folder?.response?.last_sync_epoch_secs ?? null;
-    const was = witnessOf(state, home);
+    // From `next`, not `state`: a default folder that changed this tick has had its witnesses moved.
+    const was = witnessOf(next, home);
     // Witnessed before anything is decided, so a tick that shows nothing still records what it saw.
     // `response` present and `last_sync` absent is the daemon answering "nothing has ever synced";
     // an unreachable daemon answers nothing at all and must not count as a witness.
@@ -341,21 +412,31 @@ export function decide({ state, view, views, roster = null, policy = "only_when_
   // not answering) has not been shown to have an empty queue, and forgetting what was said about it
   // would say it all again when the daemon came back. At one folder that folder is always seen, so
   // this is the rule it always was.
+  //
+  // AND ONLY FOR A KIND WHOSE DATA HAS LANDED. A folder that is not on screen is summarised every poll but
+  // its queue and its conflicts are separate reads, and on the first poll after a launch neither has come
+  // home: an empty list there is "not yet", not "nothing". Forgetting on it said every standing banner again
+  // once per launch. Until a kind's data has landed the folder is not seen for that kind, so it neither says
+  // nor forgets anything about it.
   for (const key of Object.keys(next.said)) {
     const { kind, home } = splitKey(key);
-    if (kind !== "firstSync" && viewed.has(home) && !present.has(key)) delete next.said[key];
+    if (kind !== "firstSync" && viewed.has(home) && !unheard.get(home).has(kind) && !present.has(key)) {
+      delete next.said[key];
+    }
   }
 
   // The live banner is about something that no longer exists — approved, resolved, or synced. It
   // comes down rather than sitting there as a question nobody can answer any more. Of a folder this
   // tick could not see it says nothing: a banner is not withdrawn on no evidence.
-  const liveHome = state.lastPair ?? null;
+  const liveHome = next.lastPair ?? null;
+  const liveKind = gone ? null : next.lastKind;
   const resolved =
     gone ||
-    (Boolean(state.lastKind) &&
-      state.lastKind !== "firstSync" &&
+    (Boolean(liveKind) &&
+      liveKind !== "firstSync" &&
       viewed.has(liveHome) &&
-      !present.has(keyOf(state.lastKind, liveHome)));
+      !unheard.get(liveHome).has(liveKind) &&
+      !present.has(keyOf(liveKind, liveHome)));
   if (resolved) {
     next.lastKind = null;
     next.lastPair = null;
@@ -407,6 +488,8 @@ export function decide({ state, view, views, roster = null, policy = "only_when_
  * silent only the folder on screen is read, and from its own slice, as at one folder.
  *
  * `pair` is `null` below two folders — the banner names a folder only when there is a choice of them.
+ * `unknown` names the kinds of a folder that is not on screen whose data has not landed (above); the folder on
+ * screen, and the one folder below two, have none — their lists arrive with the reply the window is drawn from.
  */
 export function notifierViews(select) {
   const shown = {
@@ -426,6 +509,17 @@ export function notifierViews(select) {
 
   const views = select.livePairs().map((summary) => {
     if (summary.name === selected) return folder(summary.name, shown);
+    // WHAT HAS NOT LANDED IS NOT THERE. The summary is as fresh as the poll; the list behind its count and the
+    // conflict scan are separate reads that come home later, and a list fetched BEFORE the count last changed
+    // is the old queue's — the one `Keep them` drained, which nothing refetches at 0. A kind whose data is not
+    // known to be about the folder as it is now is listed in `unknown`, and `decide` neither says nor forgets
+    // anything about it (`11-notifications.md`: "Only what is known is said"). A count of 0 needs no list.
+    const unknown = [];
+    const queued = summary.pending_deletions > 0;
+    const queue = queued && select.deletionsFreshOf(summary.name);
+    if (queued && !queue) unknown.push("deletion");
+    const scanned = select.conflictsFreshOf(summary.name);
+    if (!scanned) unknown.push("conflict");
     return folder(summary.name, {
       response: {
         pending_changes: summary.pending_changes,
@@ -433,13 +527,11 @@ export function notifierViews(select) {
         paused: summary.paused,
         // Its queue is the one the poll fetched, and only while the summary says there is one: a list
         // fetched earlier and not since is not evidence about a queue the summary now counts as empty.
-        pending_deletions:
-          summary.pending_deletions > 0 && select.deletionsFiledOf(summary.name)
-            ? select.pendingDeletionsOf(summary.name)
-            : [],
+        pending_deletions: queue ? select.pendingDeletionsOf(summary.name) : [],
       },
-      conflicts: select.conflictsOf(summary.name),
+      conflicts: scanned ? select.conflictsOf(summary.name) : [],
       daemonState: states.get(summary.name) ?? null,
+      unknown,
     });
   });
   if (!views.some((entry) => entry.pair === selected)) views.unshift(folder(selected, shown));

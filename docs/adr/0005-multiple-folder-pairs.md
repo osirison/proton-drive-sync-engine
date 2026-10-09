@@ -1766,6 +1766,18 @@ Closes: the feature for users.
 > startup warning (M4) no longer blames the app**: its notifications clause was the last true one, and what is
 > left says that a request naming no pair acts on the default pair, which is true of every client without
 > `--pair`. DEVIATIONS §109.
+>
+> **Phase 5e, review round.** (52) **Only what has landed is known.** A folder that is not on screen is read from
+> the roster's summary (as new as the poll, with a count) and from two reads that arrive later: the list behind
+> the count of withheld deletions and the conflict scan. The store dates each with the status clock
+> (`deletionsIssue`, `conflictsIssue`) and notes in `rosterFacts` when a folder joined and when its current count
+> was first reported; `deletionsFreshOf`/`conflictsFreshOf` say whether a list may be believed. A list fetched
+> before the count last changed is the old queue's (`Keep them` drains a queue and nothing refetches at 0), and a
+> kind whose data has not landed after a launch is `unknown` to `decide`, which neither says nor forgets
+> anything about it. (53) **Whose the bare keys are is part of the saved state** (`owner`, the default folder's
+> name, from the live roster's first entry; no owner is read as the current default's). When the default
+> changes, each folder's memory moves with the folder; the removed default's is dropped, and the next folder
+> no longer inherits a `conflict` key whose signature is only relative paths. DEVIATIONS §109c.
 
 **Phase 6 — Shared-volume event scope (its own ADR).** §8a. Independent of everything above and
 worth doing on its own merits, since one pair already pays the cost. Not scheduled here.

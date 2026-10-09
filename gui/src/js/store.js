@@ -25,12 +25,22 @@ const listeners = new Set();
 /** The pair a legacy reply, a fixture, and the time before the first reply all belong to. */
 export const DEFAULT_PAIR = "default";
 
+/**
+ * The date of a list that no request has filled, or that a caller did not date. Below every real clock reading
+ * (the clock starts at 1, and a list is fresh only when its date is NOT BELOW a reading), so "never filled" and
+ * "filled without a date" need no flag beside the number — a flag and a number that can disagree is two places
+ * saying one thing.
+ */
+const UNDATED = -1;
+
 const emptySlice = () => ({
   status: null, // last get_status payload for THIS pair: { state, response, error }
   statusIssue: 0, // which status REQUEST produced `status` — see `beginStatus`
   conflicts: [], // last scan_conflicts result for this pair (the unresolved set), each tagged `pair`
+  conflictsIssue: UNDATED, // the status clock when the scan behind the list above LEFT — see `setConflicts`
   pendingDeletions: [], // this pair's withheld deletions (S9), each tagged `pair`
   deletionsFiled: false, // has a reply ever filled the list above? `[]` alone cannot say "not yet"
+  deletionsIssue: UNDATED, // which status REQUEST produced that list — see `select.deletionsFreshOf`
   staged: {}, // path -> Resolution, for the Conflicts screen (staged, not yet applied)
 });
 
@@ -69,6 +79,13 @@ const state = {
    * request is not newer than the last failure describes a daemon that has since stopped answering.
    */
   pairsFailedIssue: 0,
+  /**
+   * What the roster has said about each folder over time, by name (`noteRoster`): the request that FIRST listed
+   * it in this stretch of membership (`joined`), its pending-deletion count, and the request that first
+   * reported THAT count (`countIssue`). A list fetched for a folder is evidence about the folder only if it was
+   * fetched after these — see `select.deletionsFreshOf` and `select.conflictsFreshOf`.
+   */
+  rosterFacts: pairTable(),
   byPair: pairTable(),
   ledgerFilter: "all",
 };
@@ -176,6 +193,10 @@ export function setStatus(payload, issue, asked = null) {
   if (payload?.response) {
     slice.pendingDeletions = tagged(payload.response.pending_deletions, name);
     slice.deletionsFiled = true;
+    // WHICH REQUEST PRODUCED IT, because the list is only as new as the request that left for it: the summary
+    // that counts a folder's queue is refreshed by every poll, and this list by a read that lands later (and
+    // not at all while the count is 0). Dated, a reader can tell a list from before the count changed.
+    slice.deletionsIssue = issue;
   }
 
   // The roster. A reply from a daemon that predates the selector carries none, and that IS the
@@ -193,10 +214,12 @@ export function setStatus(payload, issue, asked = null) {
       state.pairs = pairs;
       state.pairStates = Array.isArray(payload?.pair_states) ? payload.pair_states : [];
       state.pairsIssue = issue;
+      noteRoster(pairs, issue);
     } else if (payload?.response) {
       state.pairs = [];
       state.pairStates = [];
       state.pairsIssue = issue;
+      noteRoster([], issue);
     }
   }
   // A failure that NAMED a folder is that folder's, not the daemon's: the poll's own read decides whether the
@@ -229,12 +252,48 @@ export function setStatus(payload, issue, asked = null) {
 const tagged = (list, pair) => (Array.isArray(list) ? list : []).map((item) => ({ ...item, pair }));
 
 /**
+ * Record what a roster just said about each folder, so a list fetched for one can be dated against it.
+ *
+ * A folder's pending-deletion count is the only thing the roster says about its queue, and the list behind it
+ * is a separate read. `countIssue` is the request that first reported the count the folder has NOW: it moves
+ * when the count changes (including to and from 0) and stays while the same count is reported again, so a list
+ * fetched after it is a list the count can be believed to explain. `joined` is the request that first listed
+ * the folder in this stretch of membership: a folder removed and added again under the same name is another
+ * folder, and whatever was held for the old one is not about it. Rebuilt from the roster each time, so a
+ * folder it no longer lists is forgotten.
+ */
+function noteRoster(pairs, issue) {
+  const facts = pairTable();
+  for (const entry of pairs) {
+    const name = entry?.name;
+    if (typeof name !== "string") continue;
+    const count = Number(entry.pending_deletions) > 0 ? Number(entry.pending_deletions) : 0;
+    const before = state.rosterFacts.get(name);
+    facts.set(name, {
+      joined: before ? before.joined : issue,
+      count,
+      countIssue: before && before.count === count ? before.countIssue : issue,
+    });
+  }
+  state.rosterFacts = facts;
+}
+
+/**
  * File a conflict scan under the pair it was asked for. `pair` is the pair the scan was ISSUED for,
  * captured by the caller before the request left; defaulting to the selected pair is only right for
  * a caller that did not wait.
+ *
+ * `issue` is the status clock (`select.statusesIssued`) read BEFORE the scan left, and it is what makes this
+ * a scan the notifier may speak from: without it the list is held (the screens read it) but is not DATED, and
+ * `select.conflictsFreshOf` answers no. Deliberately not defaulted to the clock at call time — for the same
+ * reason `setStatus` does not allocate its own id: a set-time stamp would call a scan that left before some
+ * event a scan that left after it. A caller that edits a list in place (a decision just taken) passes none,
+ * and the list keeps the date of the scan it was edited from.
  */
-export function setConflicts(list, pair = selectedName()) {
-  sliceFor(pair).conflicts = tagged(list, pair);
+export function setConflicts(list, pair = selectedName(), issue = null) {
+  const slice = sliceFor(pair);
+  slice.conflicts = tagged(list, pair);
+  if (issue != null) slice.conflictsIssue = issue;
   emit();
 }
 export function setLedgerFilter(filter) {
@@ -285,6 +344,29 @@ export const select = {
   conflictsOf: (pair) => state.byPair.get(pair)?.conflicts ?? [],
   pendingDeletionsOf: (pair) => state.byPair.get(pair)?.pendingDeletions ?? [],
   deletionsFiledOf: (pair) => state.byPair.get(pair)?.deletionsFiled ?? false,
+  /**
+   * May the list held for a folder that is NOT on screen be believed about its queue NOW? Only if it was
+   * fetched after the roster first reported the count the folder has today. `deletionsFiledOf` says a list
+   * was ever filled; this says it is not older than what it is meant to explain — a queue drained by
+   * `Keep them` is not refetched at 0, so the list held afterwards still names what was kept, and the next
+   * deletion would otherwise be read as that old list. A folder whose count is 0 has no list to believe: its
+   * queue is empty, which the roster says.
+   */
+  deletionsFreshOf: (pair) => {
+    const slice = state.byPair.get(pair);
+    const fact = state.rosterFacts.get(pair);
+    return Boolean(slice && fact && slice.deletionsIssue >= fact.countIssue);
+  },
+  /**
+   * May the conflict scan held for a folder that is NOT on screen be believed? Only if a dated scan has landed
+   * (`[]` alone cannot say "nothing found" from "not looked yet" — an undated list is not known) and it left
+   * after the folder joined the roster — a folder removed and added again under the same name is another folder.
+   */
+  conflictsFreshOf: (pair) => {
+    const slice = state.byPair.get(pair);
+    const fact = state.rosterFacts.get(pair);
+    return Boolean(slice && fact && slice.conflictsIssue >= fact.joined);
+  },
 
   daemonState: () => viewed().status?.state ?? "unreachable",
   /** Which request the state above came home from, and the highest one issued (#335). */
