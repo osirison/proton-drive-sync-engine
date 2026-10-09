@@ -2306,7 +2306,12 @@ fn normalize_ignored_path(root: &Path, path: &Path) -> Option<PathBuf> {
 /// missing and `link` a symlink is `<target of link>/b`, and answering with the lexical `link/b`
 /// (which is all this used to do for a path that does not exist) would put the folder somewhere it
 /// will not be created. The part that does not exist cannot be a symlink, so appending it is exact.
-pub(crate) fn canonicalize_best_effort(path: &Path) -> PathBuf {
+///
+/// Public since #102 phase 5b-2: the desktop app sets a removed pair's state aside **outside every
+/// sync root** and has to ask that question of a destination that does not exist yet, with the same
+/// answer the daemon's own overlap rule gives — a second copy of this walk is a second opinion about
+/// what a symlink points at.
+pub fn canonicalize_best_effort(path: &Path) -> PathBuf {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else if let Ok(current_dir) = std::env::current_dir() {
