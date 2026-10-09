@@ -6930,7 +6930,7 @@ local_delete_mode = \"permanent\"
     fn the_key_an_index_records_its_proton_folder_under_is_the_same_for_every_spelling() {
         // #453. An index stores this key, and a pair is held when the stored key differs from the
         // configured one, so a spelling that keyed differently would hold a pair whose folder did
-        // not change. These four are one Drive location (`/Drive/X` is `Drive/X`; a trailing
+        // not change. These are all one Drive location (`/Drive/X` is `Drive/X`; a trailing
         // separator and a leading `.` name nothing).
         let key = PathBuf::from("Drive/X");
         for spelling in ["/Drive/X", "Drive/X", "/Drive/X/", "./Drive/X", "Drive/./X"] {
