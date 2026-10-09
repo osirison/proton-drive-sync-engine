@@ -6,7 +6,9 @@
 // in the style gate can make it, because that gate compares one rendering against one drawing:
 //
 //   · the frame as authored — a fixture shaped like a daemon that predates folder pairs (no `pair`,
-//     no `pairs`); that is 56 of the 64 (the other eight draw two folders on purpose — see below), and
+//     no `pairs`); that is 56 of the 64 (the other eight draw two folders on purpose — see below), 55 of
+//     which a listing can change (the 56th is `11a Two folders`, a banner mounted from its own arguments,
+//     which no listing reaches and which is counted apart — see `STATIC_BANNERS`), and
 //   · the same frame answered as a CURRENT daemon running one pair would answer it — `pair: "default"`
 //     and a one-entry `pairs` on the reply, `selected`/`pairs`/`pair_states` on the payload, and a
 //     `pairs` list on `read_config` (`?pairs=1`, handled in `fixtures/preview.js`).
@@ -139,13 +141,26 @@ let identical = 0;
  * `?pairs=1` would rewrite its reply as one folder and draw a different window, which is the point of
  * the frame and not a regression. They are still rendered twice from one URL (a frame that does not
  * settle to the same bytes twice is a finding whatever it draws), and what they carry for the claim is
- * everything else here — the 56 frames that list no folder, which are the ones a one-folder user has,
+ * everything else here — the 55 frames that list no folder and can differ, which are the ones a one-folder user has,
  * and the pill's absence at one folder, which the rest of this gate cannot see unless the pill is drawn
  * at one (poison: draw it at `pairs.length >= 1` and every frame below differs; at any count, and the
  * 22 frames that pin the header's `flex:1` spacer fail `assert.mjs`'s box compare).
  */
 const atManyFolders = (label) => (resolveFixture(label)?.status?.pairs?.length ?? 0) >= 2;
 const manyFolders = [];
+/**
+ * A BANNER DRAWN AT TWO FOLDERS HAS NOTHING FOR A LISTING TO CHANGE (#102 phase 5e). `11a Two folders` names a
+ * folder in the banner's application line on purpose, and it is mounted from its own arguments: no window, no
+ * status reply, no config for the one-pair injection to rewrite. Listing one pair cannot move a byte of it, so it
+ * passes the comparison below for a reason that has nothing to do with the app — and counting it with the frames
+ * that CAN differ made the headline read as fifty-six frames each held to a one-folder daemon, when fifty-five
+ * are. It is still rendered both ways (a difference would be a finding) and counted apart, and "cannot differ" is
+ * MEASURED, not asserted: a listed frame that carries a status is a problem. What holds a banner at ONE folder is
+ * not this gate: it is the unit tests of `notifierViews`/`bannerFor` and the page scenario "at one folder a
+ * banner names none" in `check-pair-routing.mjs`.
+ */
+const STATIC_BANNERS = new Set(["11a Two folders"]);
+const staticBanners = [];
 /** What the folder selector's container looks like in the app root's markup. */
 const PILL = 'class="pair-select"';
 for (const frame of index) {
@@ -196,7 +211,20 @@ for (const frame of index) {
     );
     continue;
   }
+  if (STATIC_BANNERS.has(frame.label)) {
+    staticBanners.push(frame.label);
+    if (resolveFixture(frame.label)?.status) {
+      problems.push(
+        `${frame.label}: is counted as a banner no listing reaches, but its fixture carries a status`,
+      );
+    }
+    continue;
+  }
   identical += 1;
+}
+for (const label of STATIC_BANNERS) {
+  if (!staticBanners.includes(label))
+    problems.push(`${label}: named as a static banner, but no such frame was compared`);
 }
 
 // ---- the live tray panel ----------------------------------------------------------------------------------
@@ -365,7 +393,7 @@ if (problems.length) {
 
 /**
  * WHAT THE LISTING ACTUALLY REACHES, MEASURED: each fixture is handed to the injection the app itself
- * calls, and a reply counts as rewritten when what came back is not what went in. "56/56" reads as
+ * calls, and a reply counts as rewritten when what came back is not what went in. "55/55" reads as
  * fifty-five frames each rewritten end to end, and that is not what happens. The injection rewrites two
  * replies, and a frame only has what it has:
  *
@@ -394,7 +422,7 @@ function reach() {
     configAuthored: 0,
   };
   for (const { label } of index) {
-    if (atManyFolders(label)) continue;
+    if (atManyFolders(label) || STATIC_BANNERS.has(label)) continue;
     const fixture = FIXTURES[label];
     if (!fixture.status) tally.noStatus += 1;
     else {
@@ -425,7 +453,8 @@ if (r.reply === 0 || r.configRewritten === 0 || liveRewritten === 0) {
   process.exit(1);
 }
 console.log(
-  `fidelity:n1 — ${identical}/${index.length - manyFolders.length} frames render the same bytes with one pair listed\n` +
+  `fidelity:n1 — ${identical}/${index.length - manyFolders.length - staticBanners.length} frames render the same bytes with one pair listed\n` +
+    `  ${staticBanners.length} more is a banner drawn at two folders, mounted from its own arguments, which no listing reaches, so it is counted apart (${staticBanners.join(", ")})\n` +
     `  ${manyFolders.length} more draw two folders or more and are compared with themselves alone (${manyFolders.join(", ")})\n` +
     `  the live tray panel (\`?surface=tray\`, which no frame mounts through): ${liveIdentical}/${LIVE_PANELS.length} states, ` +
     `the reply rewritten on ${liveRewritten}\n` +
