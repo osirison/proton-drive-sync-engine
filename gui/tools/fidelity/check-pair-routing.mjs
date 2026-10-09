@@ -8,8 +8,8 @@
 // that answers each command and **holds a reply open when told to**, which is what makes the window
 // between "the person pressed it" and "the daemon answered" a thing a test can stand in.
 //
-// Fifty-six scenarios (the first sixteen are phases 5a-2, 5d and 5b-1's; the other forty are phase 5c-1's —
-// twenty-one built with the selector, and the nineteen its review added — below the list). The first four are each a way a write can land on a different pair than the one it was
+// Fifty-nine scenarios (the first sixteen are phases 5a-2, 5d and 5b-1's; the other forty-three are phase 5c-1's —
+// twenty-one built with the selector, the nineteen its review added and the three its second review added — below the list). The first four are each a way a write can land on a different pair than the one it was
 // drawn for — each was a bug before the capture existed or would be again if it were removed. The fifth
 // and sixth are the first-run rule at two pairs and at one. The next three are the rest of the capture:
 // a late READ, the decision on a conflict, and the tray panel's pin. The next two are the tray panel's
@@ -122,9 +122,17 @@
 //  55. A SCAN THAT NEVER RETURNS for a folder that is not on screen does not stop the shown folder's polls,
 //      and is one scan, not one per poll.
 //
+// THE SECOND REVIEW OF #447 (three more):
+//
+//  56. THE TRAY PANEL OVER A STOPPED DAEMON at two folders is the one-folder stopped-daemon panel: no `Up to
+//      date`, no `Sync now`, no pause row per folder (the store keeps the last folder list across a failed read).
+//  57. A FAILED READ OF A FOLDER THAT IS NOT ON SCREEN is filed under that folder: the chip, the list's rows and
+//      the pill's ring of the folder that IS on screen do not change.
+//  58. THE LIST SCROLLS FROM THE TWELFTH FOLDER: 31px rows, 11 of them 355px, under the 360px cap.
+//
 // WHAT IT CANNOT SEE: it scripts the bridge, so it proves the facade and the screens agree with each
 // other, not that the real Rust agrees with either (that is `selection_tests.rs`); and it drives the
-// window, not the tray panel.
+// window, except the tray panel scenarios above, which drive `?surface=tray` through the same bridge.
 
 import puppeteer from "puppeteer";
 import { serve } from "./serve.mjs";
@@ -198,6 +206,9 @@ class Bridge {
     this.names = names;
     // The control socket does not answer: a status read comes home as Rust's unreachable payload.
     this.down = false;
+    // Folders whose NAMED status read fails while the daemon is otherwise fine (a socket error on one
+    // request): the reply is the same unreachable payload, stamped with the folder on screen.
+    this.failFor = new Set();
     // Whether `pause`/`resume` change what the next status says. Off by default — a scenario that presses
     // Pause twice relies on the hero offering it twice — and on for the ones about WHEN a notice ends.
     this.trackPause = trackPause;
@@ -356,13 +367,15 @@ class Bridge {
       case "fence":
         return null;
       case "get_status":
-        return this.down ? this.unreachable() : this.status(args?.pair ?? this.selected);
+        return this.down || this.failFor.has(args?.pair)
+          ? this.unreachable()
+          : this.status(args?.pair ?? this.selected);
       case "tray_status":
         // What Rust answers: the DEFAULT pair, whatever the window has selected and whatever is asked.
-        return this.status(this.names[0]);
+        return this.down ? this.unreachable() : this.status(this.names[0]);
       case "tray_action":
         // A row of the panel: the reply is the panel's own status, never the addressed folder's.
-        return this.status(this.names[0]);
+        return this.down ? this.unreachable() : this.status(this.names[0]);
       case "read_config": {
         // Answered for the pair the request names, else the selected one — and says which, as Rust does.
         const pair = args?.pair ?? this.selected;
@@ -1497,6 +1510,93 @@ await scenario(
   },
 );
 
+/** One tray-panel poll, forced and awaited (`pair-selected` is the page's "look again"). */
+async function trayPoll(page, bridge) {
+  const before = bridge.called("tray_status").length;
+  await page.evaluate(() => window.__listeners["pair-selected"]({ payload: null }));
+  await until("a tray poll", () => bridge.called("tray_status").length > before);
+  await settle(page);
+}
+
+await scenario(
+  "the tray panel over a daemon that stopped answering is the stopped-daemon panel, not the last folders'",
+  async () => {
+    // Review of #447: with two folders the panel drew from the roster the store keeps across a failed read, so a
+    // stopped daemon read `Up to date`, `Sync now` and a pause row per folder (#246, in the one surface without
+    // the window's guard).
+    const bridge = new Bridge({ docs: [], photos: [] });
+    const page = await open(bridge, "?surface=tray");
+    await until("the folders' panel", () => hasButton(page, TRAY.pausePair("photos")));
+    // The positive control: while it answers, this is the several-folder panel, and says it is up to date.
+    if (!(await pageText(page)).includes(MAIN.compact.upToDate)) {
+      throw new Error(`the live panel does not say up to date: ${JSON.stringify(await pageText(page))}`);
+    }
+
+    bridge.down = true;
+    await trayPoll(page, bridge);
+    await until("the folder rows to go", async () => !(await hasButton(page, TRAY.pausePair("photos"))));
+    const stopped = await pageText(page);
+    if (stopped.includes(MAIN.compact.upToDate)) {
+      throw new Error(`a stopped daemon is drawn as up to date: ${JSON.stringify(stopped)}`);
+    }
+    for (const label of [TRAY.pausePair("docs"), TRAY.pausePair("photos")]) {
+      if (await hasButton(page, label)) throw new Error(`"${label}" is offered over a stopped daemon`);
+    }
+
+    // The panel a ONE-folder install draws over the same stopped daemon, which is the one it must be.
+    const single = new Bridge({ docs: [] }, { names: ["docs"] });
+    single.down = true;
+    const reference = await open(single, "?surface=tray");
+    await until("the first poll", () => single.called("tray_status").length >= 1);
+    await settle(reference);
+    const expected = await pageText(reference);
+    if (stopped !== expected) {
+      throw new Error(
+        `the panel is ${JSON.stringify(stopped)}, a one-folder panel says ${JSON.stringify(expected)}`,
+      );
+    }
+    await reference.close();
+
+    // And it is the folders' panel again when the daemon answers.
+    bridge.down = false;
+    await trayPoll(page, bridge);
+    await until("the folders' panel again", () => hasButton(page, TRAY.pausePair("photos")));
+    await page.close();
+  },
+);
+
+await scenario(
+  "a failed read of a folder that is not on screen changes nothing about the folder that is",
+  async () => {
+    // `photos` has a deletion waiting, so the poll reads it by name (E6). That one request fails — the reply is
+    // Rust's unreachable payload, stamped with the folder ON SCREEN. Filed under that, the chip said
+    // `unreachable`, the list's rows said so too and the pill's ring went, until the next poll.
+    const bridge = new Bridge({ docs: [], photos: [deletion("a.txt")] });
+    const page = await open(bridge);
+    await until("the ring", async () => (await markerForm(page)) === "decision");
+    await openList(page);
+    bridge.failFor.add("photos");
+    const named = () => bridge.called("get_status").filter((call) => call.args?.pair === "photos").length;
+    const before = named();
+    await poll(page, bridge);
+    await until("the read of photos", () => named() > before);
+    await settle(page);
+    await settle(page);
+    if ((await chipText(page)) !== CHROME.chips.idle) {
+      throw new Error(`the chip took another folder's failed read: ${JSON.stringify(await chipText(page))}`);
+    }
+    const rows = await listRows(page);
+    if (rows.docs[0] !== CHROME.pair.states.idle) {
+      throw new Error(
+        `the folder on screen reads ${JSON.stringify(rows.docs)} after another folder's failed read`,
+      );
+    }
+    if ((await markerForm(page)) !== "decision")
+      throw new Error("the ring went with another folder's failed read");
+    await page.close();
+  },
+);
+
 await scenario(
   "a pause the daemon could not save is said under the hero and the next press retires it",
   async () => {
@@ -2401,6 +2501,52 @@ await scenario("a long list of folders scrolls inside the window and every row c
   }
   await page.close();
 });
+
+await scenario(
+  "the list scrolls from the first folder that does not fit in 360px, and not before",
+  async () => {
+    // MEASURED, not computed: a row is 31px and the list has its own padding, so 11 rows are 355px and fit
+    // under the 360px cap, while 12 are 386px and do not. The class used to be set from 11 folders (a list
+    // of ten and a half rows, which the numbers do not support), so a list of 11 got a scroll container that
+    // had nothing to scroll.
+    for (const [count, scrolls] of [
+      [2, false],
+      [11, false],
+      [12, true],
+    ]) {
+      const names = Array.from({ length: count }, (_, i) => `folder${String(i + 1).padStart(2, "0")}`);
+      const bridge = new Bridge(Object.fromEntries(names.map((name) => [name, []])), {
+        names,
+        selected: names[0],
+      });
+      const page = await open(bridge);
+      await until("the pill", () => page.$(".pair-pill"));
+      await openList(page);
+      const measured = await page.evaluate(() => {
+        const list = document.querySelector(".pair-popover");
+        return {
+          rows: list.querySelectorAll(".pair-row").length,
+          rowHeight: list.querySelector(".pair-row").getBoundingClientRect().height,
+          height: list.getBoundingClientRect().height,
+          overflows: list.scrollHeight > list.clientHeight + 1,
+          class: list.classList.contains("is-scrolling"),
+        };
+      });
+      console.log(`fidelity:pairs — ${count} folders measure ${JSON.stringify(measured)}`);
+      if (measured.rows !== count) throw new Error(`${measured.rows} rows for ${count} folders`);
+      if (measured.class !== scrolls || measured.overflows !== scrolls) {
+        throw new Error(
+          `${count} folders: class ${measured.class}, overflow ${measured.overflows}, expected both ${scrolls} ` +
+            `(${JSON.stringify(measured)})`,
+        );
+      }
+      if (scrolls && Math.round(measured.height) !== 360) {
+        throw new Error(`the scrolling list is ${measured.height}px, not the 360px cap`);
+      }
+      await page.close();
+    }
+  },
+);
 
 // ---- the poll does not wait on the folders that are not on screen (the review of #447) ---------------------
 

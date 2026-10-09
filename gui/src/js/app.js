@@ -635,9 +635,9 @@ function selectorProps() {
       selected: name,
       waiting: waitingIn,
       // THE STORE KEEPS THE LAST ROSTER AND THE LAST STATES ACROSS A FAILED READ, so a stopped daemon would
-      // leave every row saying `up to date` beside a chip that says `unreachable` (#246). `unreachable`
-      // is the one state `derive_state` gives to exactly that: the socket did not answer.
-      reachable: store.select.daemonState() !== "unreachable",
+      // leave every row saying `up to date` beside a chip that says `unreachable` (#246). The store knows
+      // whether what it holds is still what the daemon said (`rosterLive`), and the tray panel asks the same.
+      reachable: store.select.rosterLive(),
     }),
     // A FRAME NAMES ITS OWN `open`, as it names its own route and dialog: `2a Two folders open` is a
     // popover, and `pairMenuOpen` is module state no `?frame=` can reach.
@@ -900,9 +900,12 @@ function mountTrayPanel(root) {
     response: store.select.response(),
     conflicts: store.select.conflicts(),
     deletions: store.select.pendingDeletions(),
-    // The folders, and the state Rust derived for each (two or more draw a worst-folder panel).
-    pairs: store.select.pairs(),
-    pairStates: store.select.pairStates(),
+    // The folders, and the state Rust derived for each (two or more draw a worst-folder panel). THE LIVE
+    // ROSTER: the store keeps the last one across a failed read, and a panel drawn from it said
+    // `Up to date` with `Sync now` and a pause row per folder over a daemon that was not there (#246).
+    // With none, this is the one-folder panel, which draws a stopped daemon as it always did.
+    pairs: store.select.livePairs(),
+    pairStates: store.select.livePairStates(),
   });
   if (dom.trayPanel && updateTrayPanel(dom.trayPanel, view)) {
     reportTrayHeight();
@@ -4617,7 +4620,8 @@ async function refreshOtherPair(pair, hasQueue) {
   if (hasQueue) {
     const issue = store.beginStatus();
     try {
-      store.setStatus(await api.getStatus({ pair }), issue);
+      // `pair` is passed on so a read that FAILS is filed under it, not under the folder on screen.
+      store.setStatus(await api.getStatus({ pair }), issue, pair);
     } catch (error) {
       console.error("get_status failed:", error);
     }

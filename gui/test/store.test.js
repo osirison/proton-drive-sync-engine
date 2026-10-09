@@ -172,3 +172,94 @@ test("pairOf files a payload by the rule setStatus uses", () => {
   assert.equal(store.pairOf(payload(["a", "b"], "b", "a")), "b", "the pair the reply describes");
   assert.equal(store.pairOf({ state: "unreachable", selected: "a" }), "a", "else the one asked about");
 });
+
+// ---- the roster is evidence dated by the request that carried it (review of #447, round 3) ----
+
+/** A reply that lists `names`, each paused or not as `paused` says, for the poll (no folder named). */
+const listing = (names, selected, paused = []) => ({
+  ...payload(names, selected, selected),
+  pairs: names.map((name) => summary(name, { paused: paused.includes(name) })),
+});
+const OUTAGE = { state: "unreachable", error: "connect: no such file or directory", selected: "docs" };
+
+test("a roster is live until a poll fails, and live again with the next reply that lists it", () => {
+  store.configure({ follows: "selection" });
+  store.setStatus(listing(["docs", "photos"], "docs"), next());
+  assert.equal(store.select.rosterLive(), true);
+  assert.equal(store.select.livePairs().length, 2);
+  assert.equal(store.select.livePairStates().length, 2);
+
+  store.setStatus(OUTAGE, next());
+  // The folders are still NAMED (the window draws its list from them), but nothing says what they are doing.
+  assert.equal(store.select.pairs().length, 2, "the roster is kept across the outage");
+  assert.equal(store.select.rosterLive(), false);
+  assert.deepEqual(store.select.livePairs(), [], "a surface that draws a state is handed no folders");
+  assert.deepEqual(store.select.livePairStates(), []);
+
+  store.setStatus(listing(["docs", "photos"], "docs"), next());
+  assert.equal(store.select.rosterLive(), true);
+  assert.equal(store.select.livePairs().length, 2);
+});
+
+test("a roster from a request older than the outage is kept for its names but is not live", () => {
+  store.configure({ follows: "selection" });
+  store.setStatus(listing(["docs", "photos"], "docs"), next());
+  const slow = next(); // left before the socket failed
+  const failed = next();
+  store.setStatus(OUTAGE, failed);
+  store.setStatus(listing(["docs", "photos", "music"], "docs"), slow);
+  assert.equal(store.select.pairs().length, 3, "it is newer than the roster held, so its names are taken");
+  assert.equal(
+    store.select.rosterLive(),
+    false,
+    "…but a request that left before the failure cannot undo it",
+  );
+});
+
+test("a reply that says unreachable is not live even though it lists folders", () => {
+  store.configure({ follows: "selection" });
+  store.setStatus({ ...listing(["docs", "photos"], "docs"), state: "unreachable" }, next());
+  assert.equal(store.select.rosterLive(), false);
+  assert.deepEqual(store.select.livePairs(), []);
+});
+
+test("a failed read of a folder that was NAMED is filed under it and leaves the folder on screen alone", () => {
+  store.configure({ follows: "selection" });
+  store.setStatus(payload(["docs", "photos"], "docs", "docs", { pending_changes: 4 }), next());
+  // Rust stamps a failed read with the SELECTED folder, which is not the folder the request was for.
+  store.setStatus({ ...OUTAGE, selected: "docs" }, next(), "photos");
+  assert.equal(store.select.pairName(), "docs");
+  assert.equal(store.select.daemonState(), "idle", "docs was not read, so docs is not unreachable");
+  assert.equal(store.select.response().pending_changes, 4, "and what it last said is still there");
+  assert.equal(store.select.rosterLive(), true, "a failed side read does not date the roster");
+  assert.equal(store.pairOf(OUTAGE, "photos"), "photos");
+  assert.equal(store.pairOf(OUTAGE), "docs", "the poll names none, so it is the selected folder's");
+  // The poll failing is the daemon's: that one IS filed under the folder on screen.
+  store.setStatus(OUTAGE, next());
+  assert.equal(store.select.daemonState(), "unreachable");
+});
+
+test("a late reply carrying an older roster does not replace the newer one", () => {
+  store.configure({ follows: "selection" });
+  const older = next(); // left first
+  const newer = next();
+  // The newer reply says photos has something waiting, and the older one — from before — says it had not.
+  store.setStatus(
+    {
+      ...listing(["docs", "photos"], "docs"),
+      pairs: [summary("docs"), summary("photos", { pending_deletions: 2 })],
+    },
+    newer,
+  );
+  store.setStatus(
+    { ...listing(["docs", "photos"], "docs"), pairs: [summary("docs"), summary("photos")] },
+    older,
+  );
+  assert.equal(store.select.pairs().find((p) => p.name === "photos").pending_deletions, 2);
+  assert.equal(store.select.pairsIssue(), newer);
+  // A reply that lists none is an answer too, and is ordered the same way.
+  store.setStatus({ state: "idle", response: { pending_changes: 0 } }, older);
+  assert.equal(store.select.pairs().length, 2, "an old reply that lists none does not clear the roster");
+  store.setStatus({ state: "idle", response: { pending_changes: 0 } }, next());
+  assert.deepEqual(store.select.pairs(), []);
+});

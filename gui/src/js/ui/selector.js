@@ -238,8 +238,11 @@ function stampRow(node, index) {
   fid(count, "rowCount", index);
 }
 
-/** How many folders the list shows at full height before it scrolls (`.pair-popover.is-scrolling`: ten and a half rows). */
-const ROWS_BEFORE_SCROLLING = 10;
+/**
+ * How many folders the list shows before it scrolls (`.pair-popover.is-scrolling`). Measured, and held by
+ * `fidelity:pairs`: a row is 31px, 11 rows are 355px and fit under the 360px cap, 12 are 386px and do not.
+ */
+const ROWS_BEFORE_SCROLLING = 11;
 
 function ensurePopover(container, rows) {
   let popover = container.querySelector(".pair-popover");
