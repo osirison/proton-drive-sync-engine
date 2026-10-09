@@ -236,6 +236,17 @@
 }
 
 /*
+ * The notice block (#102 phase 5c-1), between the columns and the footer: the warm band that says a folder
+ * is not being synced yet, or that a pause was not saved. The band's own wrapper's box exactly — `flex:none`
+ * and the same side and bottom padding — so the two are interchangeable under the hero and the hero does not
+ * move when either arrives. Empty, it is a zero-height block the screen does not mount at all.
+ */
+.main-notice-wrap {
+  flex: none;
+  padding: 0 32px 18px;
+}
+
+/*
  * `220ms ease-out`, sliding up from the bottom: "New decision arrives → attention band slides in
  * from the bottom 220ms ease-out".
  *

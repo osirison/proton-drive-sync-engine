@@ -51,6 +51,12 @@ const LEDGER = [
   ["dialogOverlay", GLOBAL, "the floating dialog"],
   ["dialogReturn", GLOBAL, "where focus returns to"],
   ["menuOpen", GLOBAL, "the ⋯ menu"],
+  [
+    "pairMenuOpen",
+    RESET,
+    "the folder selector's popover lists a choice; a switch means it has been made (or was made elsewhere)",
+  ],
+  ["SELECTOR_HANDLERS", GLOBAL, "constant handlers that read module state when an event arrives"],
   ["dom", GLOBAL, "cached nodes of the shell"],
   ["pollTimer", GLOBAL, "the poll's timer"],
   ["statusPolled", GLOBAL, "whether any poll has completed"],
@@ -65,6 +71,12 @@ const LEDGER = [
   ["viewedPair", GLOBAL, "the memory of the switch itself"],
   ["serviceStarting", GLOBAL, "a start of the one daemon"],
   ["serviceStartError", GLOBAL, "why that failed"],
+  ["pairRestart", GLOBAL, "a restart of the one daemon from the notice for a folder it does not run"],
+  [
+    "unsavedPause",
+    RESET,
+    "a pause the daemon could not save, tagged with its folder; speaks only while that folder is shown",
+  ],
   ["openerError", GLOBAL, "the last refused open; cleared on navigation"],
   ["NOTIFIER_KEY", GLOBAL, "a constant"],
   ["LOOKUP_DEBOUNCE_MS", GLOBAL, "a constant"],
@@ -93,6 +105,12 @@ const LEDGER = [
   ["conflictShowing", RESET, "the conflict the body was last built for"],
   ["conflictKeyOf", GLOBAL, "a pure function: the (pair, path) that names a conflict"],
   ["lastConflictScan", RESET, "so the first scan of the pair now shown is immediate"],
+  ["OTHER_SCAN_MS", GLOBAL, "a constant: how often the folders not on screen are scanned"],
+  [
+    "lastOtherScan",
+    KEYED,
+    "when each OTHER folder was last scanned, by name (a Map); the folder shown is never in it",
+  ],
 
   // ---- the deletions screen ----
   ["deletionArmed", RESET, "an armed typed-DELETE field belongs to one row of one pair"],

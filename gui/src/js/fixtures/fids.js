@@ -65,6 +65,21 @@ export const SHELL_FIDS = {
     footerBar: "div[3]/div",
     door: doorKeys("div[3]/div"),
   },
+  // The settled window at TWO FOLDERS OR MORE with a notice block under the hero (#102 phase 5c-1): the
+  // hero, the spacer and the notice are three blocks, so the footer is the fourth and keeps its mono line.
+  "2a Folder not running": {
+    header: "header",
+    mark: "header/img",
+    name: "header/span[0]",
+    spacer: "header/span[1]",
+    chip: "header/span[2]",
+    chipDot: "header/span[2]/span",
+    menu: "header/button",
+    footerNav: "div[3]",
+    footerBar: "div[3]/div[0]",
+    door: doorKeys("div[3]/div[0]"),
+    footerLine: "div[3]/div[1]",
+  },
 };
 
 /**
@@ -133,6 +148,74 @@ function hexFids(under, state) {
     hexDefs: `${under}/svg/defs`,
     hexGradient: (i) => `${under}/svg/defs/lineargradient[${i}]`,
     hexStop: (i, j) => `${under}/svg/defs/lineargradient[${i}]/stop[${j}]`,
+  };
+}
+
+/**
+ * The folder selector's slots (#102 phase 5c-1), for the frames that draw two folders or more.
+ *
+ * The pill and its popover live INSIDE the header, in a container `div` between the product name and
+ * the flex spacer — so none of the header's existing keys move (the name, the spacer and the chip are
+ * `span[0]`, `span[1]` and `span[2]` whether or not the container is there: it is a `div`, and the index
+ * counts same-tag siblings only). The popover is the container's second child.
+ *
+ * The prototype's index-only-when-a-tag-has-siblings rule bites twice: the pill's two or three children
+ * are `span`s, so the NAME is `span` alone without the marker and `span[1]` with it; and the popover's
+ * rows are `button[i]` from two rows up and a bare `button` for one.
+ *
+ * @param marker    whether the pill carries the decision ring (another folder is waiting)
+ * @param rows      how many rows the popover draws, or 0 for a closed one
+ * @param selected  which row is the chosen one (the only row with a check)
+ */
+export function pairSelectFids({ marker = false, rows = 0, selected = 0 } = {}) {
+  const pill = "header/div/button";
+  const spanAt = (i) => (marker ? `span[${i}]` : "span");
+  const map = {
+    pairSelect: "header/div",
+    pill,
+    ...(marker ? { pillMarker: `${pill}/span[0]` } : {}),
+    pillName: `${pill}/${spanAt(1)}`,
+    pillCaret: `${pill}/svg`,
+    pillCaretPath: `${pill}/svg/path`,
+  };
+  if (rows > 0) {
+    const row = (i) => `header/div/div/button${rows > 1 ? `[${i}]` : ""}`;
+    Object.assign(map, {
+      popover: "header/div/div",
+      popoverRow: row,
+      rowLead: (i) => (i < rows ? `${row(i)}/span[0]` : null),
+      rowCheck: (i) => (i === selected ? `${row(i)}/span[0]/svg` : null),
+      rowCheckPath: (i) => (i === selected ? `${row(i)}/span[0]/svg/path` : null),
+      rowName: (i) => (i < rows ? `${row(i)}/span[1]` : null),
+      rowState: (i) => (i < rows ? `${row(i)}/span[2]` : null),
+      rowCount: (i) => (i < rows ? `${row(i)}/span[3]` : null),
+    });
+  }
+  return map;
+}
+
+/**
+ * The notice block's slots (#102 phase 5c-1): the warm band between the columns and the footer, drawn in
+ * its two-node form (a block carrying the tint and a flex row inside it — the form `7a Activity quiet`'s
+ * never-synced band is drawn in).
+ *
+ * @param at      the index of the wrapper among the window's children (the hero and the spacer are 0, 1)
+ * @param reason  whether the daemon's own words are quoted under the note
+ * @param action  whether the band has a button
+ */
+export function noticeFids({ at = 2, reason = false, action = false } = {}) {
+  const wrap = `div[${at}]`;
+  const row = `${wrap}/div/div`;
+  return {
+    noticeWrap: wrap,
+    notice: `${wrap}/div`,
+    noticeRow: row,
+    noticeGlyph: `${row}/span`,
+    noticeBody: `${row}/div`,
+    noticeTitle: `${row}/div/div[0]`,
+    noticeNote: `${row}/div/div[1]`,
+    ...(reason ? { noticeReason: `${row}/div/div[1]/div` } : {}),
+    ...(action ? { noticeAction: `${row}/button` } : {}),
   };
 }
 

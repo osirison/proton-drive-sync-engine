@@ -16,6 +16,7 @@
 //   · THE DECISION RING IS 1px, not the 2px §2 states — in both themes.
 
 import { el } from "./el.js";
+import { pairSelect, updatePairSelect } from "./selector.js";
 // `data-fid` stamping (F8/F9). A no-op unless `?frame=` selected a fixture, so the attribute never
 // reaches a user — it exists so the fidelity harness knows which drawn node each app node stands
 // for. Nothing can derive that: the app's tree is not the prototype's.
@@ -102,12 +103,22 @@ export function statusChip(variant, text) {
 
 /**
  * 52px, `flex:none`, `padding:0 20px`, `gap:12px`, **no bottom border** — the header floats on the
- * surface. Slots: mark · name · flex spacer · chip · ⋯.
+ * surface. Slots: mark · name · [folder selector] · flex spacer · chip · ⋯.
  *
  * `onMenu == null` drops the ⋯ button entirely, which is what onboarding draws. Passing a handler
  * that no-ops would leave a dead 30×30 target in a flow that has no menu.
+ *
+ * `pairs` IS THE FOLDER SELECTOR'S PROPS, or `null` — and `null` is the case that matters (#102 phase
+ * 5c-1, decision D2): below two folders the slot is not built at all, so the header is the one the 22
+ * frames that pin its `flex:1` spacer were measured against, node for node.
  */
-export function renderHeader({ chip = "idle", chipText = "idle", onMenu = null, onHome = null } = {}) {
+export function renderHeader({
+  chip = "idle",
+  chipText = "idle",
+  onMenu = null,
+  onHome = null,
+  pairs = null,
+} = {}) {
   const quiet = isQuietChip(chip);
   // No width/height ATTRIBUTES: the frames set neither, and shell.css already sizes the mark. The
   // fidelity gate compares attributes node for node, so a redundant one fails on a node that looks
@@ -149,7 +160,8 @@ export function renderHeader({ chip = "idle", chipText = "idle", onMenu = null, 
       )
     : null;
 
-  return fid(el("header", { class: "shell-header" }, home, name, spacer, chipNode, menu), "header");
+  const select = pairs ? pairSelect(pairs) : null;
+  return fid(el("header", { class: "shell-header" }, home, name, select, spacer, chipNode, menu), "header");
 }
 
 /**
@@ -160,15 +172,21 @@ export function renderHeader({ chip = "idle", chipText = "idle", onMenu = null, 
  * The chip node is REPLACED only when its variant changes, and its text patched otherwise — so a
  * count ticking from 2 to 3 does not restart the animation on a dot that has one.
  *
- * Returns false when the header's shape changed (the ⋯ or the home button appearing or
- * disappearing), which is the caller's signal to rebuild.
+ * Returns false when the header's shape changed (the ⋯, the home button or the folder selector
+ * appearing or disappearing), which is the caller's signal to rebuild.
  */
 export function updateHeader(
   header,
-  { chip = "idle", chipText = "idle", hasMenu = true, hasHome = false } = {},
+  { chip = "idle", chipText = "idle", hasMenu = true, hasHome = false, pairs = null } = {},
 ) {
   if (Boolean(header.querySelector(".menu-btn")) !== hasMenu) return false;
   if (Boolean(header.querySelector("button.app-home")) !== hasHome) return false;
+  // THE SELECTOR APPEARING OR GOING IS A CHANGE OF SHAPE, and the rebuild is the only way to put it in
+  // the right slot (between the name and the spacer, which a patch would have to guess at). Patched
+  // otherwise: its pill and rows are never rebuilt, so a keyboard standing on either survives a poll.
+  const select = header.querySelector(".pair-select");
+  if (Boolean(select) !== Boolean(pairs)) return false;
+  if (select) updatePairSelect(select, pairs);
 
   const quiet = isQuietChip(chip);
   header.querySelector(".app-mark").classList.toggle("is-quiet", quiet);

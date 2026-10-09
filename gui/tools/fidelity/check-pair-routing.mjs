@@ -8,7 +8,8 @@
 // that answers each command and **holds a reply open when told to**, which is what makes the window
 // between "the person pressed it" and "the daemon answered" a thing a test can stand in.
 //
-// Fifteen scenarios. The first four are each a way a write can land on a different pair than the one it was
+// Thirty-seven scenarios (the first sixteen are phases 5a-2, 5d and 5b-1's; the rest are phase 5c-1's, below
+// the list). The first four are each a way a write can land on a different pair than the one it was
 // drawn for — each was a bug before the capture existed or would be again if it were removed. The fifth
 // and sixth are the first-run rule at two pairs and at one. The next three are the rest of the capture:
 // a late READ, the decision on a conflict, and the tray panel's pin. The next two are the tray panel's
@@ -65,13 +66,42 @@
 //  15. WHAT THE WINDOW READS BACK IS THE FOLDER ON SCREEN'S. The Details dialog states the scan interval
 //      of the folder it is about, from the config reply filed for that folder.
 //
+// PHASE 5c-1 (the selector and the scoped window; the carried reviews of #439, #441/#443 and #445):
+//
+//  16. THE PILL IS DRAWN AT TWO FOLDERS AND AT NO FEWER, and the header grows and loses it across a poll
+//      (`updateHeader`'s shape check); the hero's button names its folder exactly while the pill is there.
+//  17. THE KEYBOARD. Down on the pill opens the list on the chosen folder, the arrows/Home/End walk it, Esc
+//      closes it and returns to the pill, Enter chooses (Rust is told), a press elsewhere closes it — and
+//      three polls leave the pill, the list and the row the keyboard is on the SAME nodes.
+//  18. A LATE STATUS. A poll that left before the person chose another folder answers after; it must not take
+//      the window back to the folder that was left.
+//  19. A SWITCH DISARMS. A typed-`DELETE` gate armed for one folder is not armed on the other folder's
+//      identical row.
+//  20. THE FOOTER LINE names the folder on screen.
+//  21. THE RING is on the pill when another folder waits on a person (a deletion, or a conflict the poll's
+//      60-second scan found), the chip stays the selected folder's, a number is never on the pill.
+//  22. `pause_unsaved`: said under the hero from the hero's own press, from the tray row's event, only for the
+//      folder on screen, retired by the next press.
+//  23. A FOLDER THE DAEMON DOES NOT RUN gets the notice and the one button, only when the settings file lists
+//      it, and a restart that did not work quotes the daemon.
+//  24-29. THE SETTINGS HANDLERS ARE THE SCREEN'S. Each of `onRoot`, `onField`, `onEvents`, `onRemoveRule`,
+//      `onAddRule` and `chooseLocalRoot` is used after the selection has moved (a click landing in the gap);
+//      back on the folder it was drawn for, `Save` writes what was staged, to that folder and no other.
+//  30. `onRestart` retires the notice of the folder whose bar it was drawn on.
+//  31. `loaded`: a folder whose settings have not arrived draws none (no policy card chosen from another
+//      folder's file or an empty one).
+//  32. `Discard changes` discards the folder on screen's edits and no other folder's.
+//  33. A KEYSTROKE IN A SAVE IN FLIGHT is still staged when the save lands.
+//  34-35. A FOLDER NAMED `constructor` / `__proto__` is chosen, shown, staged for and saved like any other.
+//  36. THE TALLY of a late decision counts the visit it was made on (the cleared screen says `one`, not two).
+//
 // WHAT IT CANNOT SEE: it scripts the bridge, so it proves the facade and the screens agree with each
 // other, not that the real Rust agrees with either (that is `selection_tests.rs`); and it drives the
 // window, not the tray panel.
 
 import puppeteer from "puppeteer";
 import { serve } from "./serve.mjs";
-import { CONFLICTS, DELETIONS, MAIN, PLAN, SETTINGS, TRAY } from "../../src/js/ui/copy.js";
+import { CHROME, CONFLICTS, DELETIONS, MAIN, PLAN, SETTINGS, TRAY } from "../../src/js/ui/copy.js";
 import { EMPTY_CONFIG } from "../../src/js/api.js";
 
 const PAIRS = ["docs", "photos"];
@@ -122,9 +152,32 @@ const CONFLICT = { original: "note.txt", sidecar: "note.proton-cloud.txt", kind:
 class Bridge {
   constructor(
     queues,
-    { names = PAIRS, neverSynced = [], conflicts = {}, selected = "docs", states = {}, configs = {} } = {},
+    {
+      names = PAIRS,
+      neverSynced = [],
+      conflicts = {},
+      selected = "docs",
+      states = {},
+      configs = {},
+      pairUnknown = null,
+      roster = null,
+    } = {},
   ) {
     this.names = names;
+    // The folder the window remembered and the daemon does not run: what a selection read that fell
+    // back to the default folder says (`pair_unknown`), until a restart.
+    this.pairUnknown = pairUnknown;
+    // The folders the settings FILE lists (`read_config.pairs`), which can be more than the daemon runs.
+    this.roster = roster;
+    // The reason a `pause`/`resume` answers `pause_unsaved` with, or null for a saved one.
+    this.unsaved = null;
+    // How `restart_service` ends, and what `resync` and `choose_folder` answer.
+    this.restartEnding = "restarted";
+    this.resyncError = null;
+    this.picked = "/picked/folder";
+    // Replies composed NOW and delivered after `release()`: the answer to a request that left before
+    // something happened. `holds` is the other kind, where the daemon answers only once released.
+    this.lateHolds = new Map();
     // pair -> the per-pair values its `read_config` reply carries beyond the empty config's.
     this.configs = configs;
     this.neverSynced = neverSynced;
@@ -163,6 +216,7 @@ class Bridge {
       // What `derive_state` says: a reachable daemon that has never synced THIS pair.
       state: never(name) ? "firstRun" : "idle",
       selected: this.selected,
+      ...(this.pairUnknown ? { pair_unknown: this.pairUnknown } : {}),
       pairs,
       pair_states: this.names.map((pair) => ({
         name: pair,
@@ -207,12 +261,35 @@ class Bridge {
     return release;
   }
 
+  /**
+   * Like `hold`, but the reply is COMPOSED when the request arrives and delivered after `release()`. The
+   * answer to a request that left before the selection moved says what was true when it left — which is
+   * what an in-flight reply for the folder that was just left is, and what an early hold cannot be.
+   */
+  holdLate(command, pair) {
+    let release;
+    const released = new Promise((resolve) => {
+      release = resolve;
+    });
+    this.lateHolds.set(pair ? `${command}:${pair}` : command, { released, release });
+    return release;
+  }
+
   called(command) {
     return this.calls.filter((call) => call.cmd === command);
   }
 
   async handle(cmd, args) {
     this.calls.push({ cmd, args, selectedThen: this.selected });
+    for (const key of [`${cmd}:${args?.pair}`, cmd]) {
+      const late = this.lateHolds.get(key);
+      if (late) {
+        this.lateHolds.delete(key);
+        const composed = this.answer(cmd, args);
+        await late.released;
+        return composed;
+      }
+    }
     for (const key of [`${cmd}:${args?.pair}`, cmd]) {
       const held = this.holds.get(key);
       if (held) {
@@ -221,6 +298,11 @@ class Bridge {
         break;
       }
     }
+    return this.answer(cmd, args);
+  }
+
+  /** What the daemon says to one command, as of now. */
+  answer(cmd, args) {
     switch (cmd) {
       case "fence":
         return null;
@@ -239,7 +321,7 @@ class Bridge {
           ...EMPTY_CONFIG,
           exists: true,
           pair,
-          pairs: this.names.map((name) => ({
+          pairs: (this.roster ?? this.names).map((name) => ({
             name,
             local_root: `/home/u/${name}`,
             remote_root: `/Drive/${name}`,
@@ -265,7 +347,34 @@ class Bridge {
         return { original: side("mine"), sidecar: side("theirs"), happened: null };
       }
       case "resolve_conflict":
+        // Settling a conflict removes it: the next scan of that folder finds one fewer.
+        this.conflicts[args?.pair] = (this.conflicts[args?.pair] ?? []).filter(
+          (conflict) => conflict.original !== args?.conflict?.original,
+        );
         return null;
+      case "select_pair":
+        this.selected = args?.name;
+        return args?.name;
+      case "pause":
+      case "resume": {
+        const reply = this.status(args?.pair);
+        if (this.unsaved) reply.response.pause_unsaved = this.unsaved;
+        return reply;
+      }
+      case "restart_service":
+        // A restart that worked puts the daemon on the file's settings: it runs the file's folders now.
+        if (this.restartEnding === "restarted") {
+          this.pairUnknown = null;
+          if (this.roster) this.names = [...this.roster];
+        }
+        return {
+          ending: this.restartEnding,
+          reason: this.restartEnding === "restarted" ? undefined : "it would not stop",
+        };
+      case "resync":
+        return { ...this.status(args?.pair), error: this.resyncError };
+      case "choose_folder":
+        return this.picked;
       case "path_sync_status":
         return { tracked: false };
       case "approve":
@@ -336,6 +445,24 @@ async function open(bridge, query = "") {
  * screen has been drawn. It is a condition, where a sleep was a guess at how long that takes.
  */
 const settle = (page) => page.evaluate(() => window.__bridge("fence", null));
+
+/** Is there a button reading exactly `label`? */
+const hasButton = (page, label) =>
+  page.evaluate(
+    (text) => [...document.querySelectorAll("button")].some((b) => b.textContent.trim() === text),
+    label,
+  );
+
+/**
+ * One poll, forced and awaited: the page's own `pair-selected` listener polls at once, which is the
+ * daemon's way of saying "look again" and the only way to make the page ask without waiting two seconds.
+ */
+async function poll(page, bridge) {
+  const before = bridge.called("get_status").length;
+  await page.evaluate(() => window.__listeners["pair-selected"]({ payload: null }));
+  await until("a poll", () => bridge.called("get_status").length > before);
+  await settle(page);
+}
 
 const pageText = (page) => page.evaluate(() => document.getElementById("app-root")?.innerText ?? "");
 
@@ -454,14 +581,16 @@ await scenario("after a switch, the hero's Pause pauses the pair the hero is now
   // not rebuilt. A button bound when it was built would go on acting on the pair it was built for.
   const bridge = new Bridge({ docs: [], photos: [] });
   const page = await open(bridge);
-  await until("the settled hero", () =>
-    page.evaluate(
-      (label) => [...document.querySelectorAll("button")].some((b) => b.textContent.trim() === label),
-      MAIN.pause,
-    ),
-  );
+  // At two folders the button names its folder (decision D11), so the hero built for `docs` says so and
+  // the one the switch patches into must say `photos` — a stale label over a live handler would be a
+  // button that reads `Pause docs` and pauses photos.
+  await until("the settled hero", () => hasButton(page, TRAY.pausePair("docs")));
   await select(page, bridge, "photos");
-  await press(page, MAIN.pause);
+  await until("the hero named for photos", () => hasButton(page, TRAY.pausePair("photos")));
+  if (await hasButton(page, TRAY.pausePair("docs"))) {
+    throw new Error("after the switch the hero still offers to pause docs");
+  }
+  await press(page, TRAY.pausePair("photos"));
   await until("the pause", () => bridge.called("pause").length === 1);
   expectPair(bridge.called("pause"), "photos", "pause");
   await page.close();
@@ -892,6 +1021,675 @@ await scenario("the Details dialog reads the config of the folder on screen", as
   if (shown.includes("300s")) throw new Error("the Details dialog states docs' interval over photos");
   await page.close();
 });
+
+// ---- 16-24. the folder selector and what the window says about two folders (#102 phase 5c-1) ----------
+
+await scenario(
+  "the selector is drawn at two folders and at no fewer, and the hero's buttons follow it",
+  async () => {
+    const bridge = new Bridge({ docs: [] }, { names: ["docs"] });
+    const page = await open(bridge);
+    await until("the settled hero", () => hasButton(page, MAIN.pause));
+    if (await page.$(".pair-select")) throw new Error("a pill was drawn for ONE folder (decision D2)");
+    if (await hasButton(page, TRAY.pausePair("docs")))
+      throw new Error("the one-folder hero names its folder");
+
+    // A second folder arrives with the next poll: the header has to GROW the pill, not keep the one it had.
+    bridge.names = ["docs", "photos"];
+    bridge.queues = { docs: [], photos: [] };
+    await poll(page, bridge);
+    await until("the pill", () => page.$(".pair-select .pair-pill"));
+    const named = await page.evaluate(() => document.querySelector(".pair-pill-name")?.textContent);
+    if (named !== "docs") throw new Error(`the pill names ${JSON.stringify(named)}, not the folder shown`);
+    await until("the hero naming its folder", () => hasButton(page, TRAY.pausePair("docs")));
+    if (await hasButton(page, MAIN.pause))
+      throw new Error("two folders, and the hero's button still says plain `Pause`");
+
+    // …and when it goes again the header shrinks back to the one-folder header.
+    bridge.names = ["docs"];
+    await poll(page, bridge);
+    await until("the pill to go", async () => !(await page.$(".pair-select")));
+    await until("the one-folder hero", () => hasButton(page, MAIN.pause));
+    await page.close();
+  },
+);
+
+await scenario(
+  "the folder list opens by keyboard and the poll leaves the keyboard where it was",
+  async () => {
+    const bridge = new Bridge({ docs: [], photos: [] });
+    const page = await open(bridge);
+    await until("the pill", () => page.$(".pair-pill"));
+    await settle(page);
+    const focused = () =>
+      page.evaluate(() => {
+        const node = document.activeElement;
+        return node?.classList.contains("pair-pill") ? "pill" : (node?.dataset?.pair ?? null);
+      });
+
+    // THE PILL SURVIVES A POLL. A header rebuilt on the tick is a different node, and the keyboard is on the
+    // old one: it falls to <body> inside two seconds, which is the failure the patching discipline exists for.
+    await page.focus(".pair-pill");
+    await page.evaluate(() => {
+      document.querySelector(".pair-pill").__probe = "the same node";
+    });
+    await poll(page, bridge);
+    await poll(page, bridge);
+    const survived = await page.evaluate(
+      () =>
+        document.activeElement?.__probe === "the same node" &&
+        document.activeElement.classList.contains("pair-pill"),
+    );
+    if (!survived) throw new Error("the pill was rebuilt by a poll: the keyboard is no longer on it");
+
+    // Down opens the list ON THE FOLDER THAT IS CHOSEN, and the arrows walk it.
+    await page.keyboard.press("ArrowDown");
+    await until("the list", () => page.$(".pair-popover"));
+    await until("the keyboard in the list", async () => (await focused()) === "docs");
+    await page.keyboard.press("ArrowDown");
+    if ((await focused()) !== "photos") throw new Error(`ArrowDown moved to ${await focused()}, not photos`);
+
+    // THE LIST SURVIVES A POLL TOO: three of them, and the row the keyboard is on is still the same one.
+    await page.evaluate(() => {
+      document.querySelector('.pair-row[data-pair="photos"]').__probe = "the same row";
+    });
+    await poll(page, bridge);
+    await poll(page, bridge);
+    await poll(page, bridge);
+    const rowSurvived = await page.evaluate(
+      () =>
+        document.activeElement?.__probe === "the same row" &&
+        Boolean(document.querySelector(".pair-popover")),
+    );
+    if (!rowSurvived) {
+      throw new Error(
+        "a poll rebuilt the folder list under the keyboard (the row is gone, or the list closed)",
+      );
+    }
+
+    await page.keyboard.press("Home");
+    if ((await focused()) !== "docs") throw new Error("Home did not go to the first folder");
+    await page.keyboard.press("End");
+    if ((await focused()) !== "photos") throw new Error("End did not go to the last folder");
+
+    // Esc closes it and gives the keyboard back to the pill — and does NOT also leave the screen under it.
+    await page.keyboard.press("Escape");
+    await until("the list to close", async () => !(await page.$(".pair-popover")));
+    if ((await focused()) !== "pill") throw new Error("Esc did not return the keyboard to the pill");
+
+    // Enter on a row chooses it: Rust is told, the list closes, and the window follows.
+    await page.keyboard.press("ArrowDown");
+    await until("the list again", async () => (await focused()) === "docs");
+    await page.keyboard.press("ArrowDown");
+    await page.keyboard.press("Enter");
+    await until("select_pair", () => bridge.called("select_pair").length === 1);
+    if (bridge.called("select_pair")[0].args?.name !== "photos") {
+      throw new Error(`select_pair carried ${JSON.stringify(bridge.called("select_pair")[0].args)}`);
+    }
+    await settle(page);
+    await until("the window on photos", () => hasButton(page, TRAY.pausePair("photos")));
+    const named = await page.evaluate(() => document.querySelector(".pair-pill-name")?.textContent);
+    if (named !== "photos") throw new Error(`the pill names ${named} after choosing photos`);
+    if (await page.$(".pair-popover")) throw new Error("the list stayed open after a choice");
+
+    // Choosing the folder already shown asks Rust for nothing.
+    await page.keyboard.press("ArrowDown");
+    await until("the list once more", async () => (await focused()) === "photos");
+    await page.keyboard.press("Enter");
+    await settle(page);
+    if (bridge.called("select_pair").length !== 1)
+      throw new Error("choosing the folder already shown sent select_pair");
+
+    // A press outside closes it.
+    await page.focus(".pair-pill");
+    await page.keyboard.press("ArrowDown");
+    await until("the list a third time", () => page.$(".pair-popover"));
+    await page.mouse.click(520, 600);
+    await until("the list to close on a press elsewhere", async () => !(await page.$(".pair-popover")));
+    await page.close();
+  },
+);
+
+await scenario("a status reply for the folder that was left never takes the window back to it", async () => {
+  const bridge = new Bridge({ docs: [], photos: [] });
+  const page = await open(bridge);
+  await until("the pill", () => page.$(".pair-pill"));
+  await settle(page);
+
+  // A poll leaves NOW, about docs, and is answered only after the person has moved on.
+  const releaseDocs = bridge.holdLate("get_status");
+  const before = bridge.called("get_status").length;
+  await page.evaluate(() => window.__listeners["pair-selected"]({ payload: null }));
+  await until("the poll to leave", () => bridge.called("get_status").length > before);
+
+  await page.focus(".pair-pill");
+  await page.keyboard.press("ArrowDown");
+  await until("the list", () => page.$(".pair-row"));
+  await page.evaluate(() => document.querySelector('.pair-row[data-pair="photos"]').click());
+  await until("select_pair", () => bridge.called("select_pair").length === 1);
+  await until("the window on photos", () => hasButton(page, TRAY.pausePair("photos")));
+
+  releaseDocs(); // the OLD reply lands, saying docs is selected
+  await settle(page);
+  await settle(page);
+  const named = await page.evaluate(() => document.querySelector(".pair-pill-name")?.textContent);
+  if (named !== "photos") throw new Error(`a late reply moved the window back to ${named}`);
+  if (!(await hasButton(page, TRAY.pausePair("photos"))))
+    throw new Error("the hero went back to the folder that was left");
+  await page.close();
+});
+
+await scenario(
+  "a switch disarms a typed-DELETE gate and does not carry it onto the other folder's row",
+  async () => {
+    // The SAME permanent deletion in both folders, so the row the switch lands on could answer to the
+    // gate that was armed for the other one.
+    const same = { ...deletion("same.txt"), direction: "local", disposal: "permanent" };
+    const bridge = new Bridge({ docs: [same], photos: [same] });
+    const page = await open(bridge);
+    await press(page, MAIN.band.deletionAction);
+    await until("the typed gate", () => page.$(".delete-gate"));
+    await page.type(".delete-gate", "DELETE");
+    await press(page, DELETIONS.delete);
+    await until("the armed takeover", () => hasButton(page, DELETIONS.armedConfirm));
+    await select(page, bridge, "photos");
+    if (await hasButton(page, DELETIONS.armedConfirm)) {
+      throw new Error("the gate armed for docs is armed on photos' identical row");
+    }
+    // The positive control: photos' own card is there, un-armed.
+    await until("photos' own card", () => hasButton(page, DELETIONS.delete));
+    await page.close();
+  },
+);
+
+await scenario("the footer line names the folder on screen", async () => {
+  const bridge = new Bridge({ docs: [], photos: [] });
+  const page = await open(bridge);
+  await until("docs' line", async () =>
+    (await pageText(page)).includes(MAIN.footerPair("/home/u/docs", "/Drive/docs")),
+  );
+  await select(page, bridge, "photos");
+  await until("photos' line", async () =>
+    (await pageText(page)).includes(MAIN.footerPair("/home/u/photos", "/Drive/photos")),
+  );
+  if ((await pageText(page)).includes("/home/u/docs"))
+    throw new Error("docs' root is on screen under photos");
+  await page.close();
+});
+
+await scenario(
+  "the ring is on the pill when another folder is waiting, and the chip stays the selected folder's",
+  async () => {
+    const bridge = new Bridge({ docs: [], photos: [deletion("a.txt")] });
+    const page = await open(bridge);
+    await until("the ring", () => page.$(".pair-pill .pair-pill-marker"));
+    const chip = () => page.evaluate(() => document.querySelector("[data-variant]")?.textContent.trim());
+    if ((await chip()) !== CHROME.chips.idle) {
+      throw new Error(`the chip counts another folder's queue: ${JSON.stringify(await chip())}`);
+    }
+    // The list says which folder, and how many — a count, in the list and never on the pill.
+    await page.focus(".pair-pill");
+    await page.keyboard.press("ArrowDown");
+    await until("the list", () => page.$(".pair-row"));
+    const counts = await page.evaluate(() =>
+      Object.fromEntries(
+        [...document.querySelectorAll(".pair-row")].map((row) => [
+          row.dataset.pair,
+          row.querySelector(".pair-row-count").textContent,
+        ]),
+      ),
+    );
+    if (counts.photos !== CHROME.chips.waiting(1) || counts.docs !== "") {
+      throw new Error(`the list's counts are ${JSON.stringify(counts)}`);
+    }
+    if (/\d/.test(await page.evaluate(() => document.querySelector(".pair-pill").textContent))) {
+      throw new Error("a number is on the pill — the ring is the marker, never a count");
+    }
+    await page.keyboard.press("Escape");
+
+    // Photos on screen: its own queue is the chip's, and the ring is for docs, which waits for nothing.
+    await select(page, bridge, "photos");
+    await until("photos' chip", async () => (await chip()) === CHROME.chips.waiting(1));
+    if (await page.$(".pair-pill .pair-pill-marker"))
+      throw new Error("the ring is on the pill for the folder's own queue");
+    await page.close();
+
+    // A conflict waiting in the other folder rings it too — found by the scan the poll runs for it.
+    const second = new Bridge({ docs: [], photos: [] }, { conflicts: { photos: [CONFLICT] } });
+    const other = await open(second);
+    await until("the scan of photos", () =>
+      second.called("scan_conflicts").some((c) => c.args?.pair === "photos"),
+    );
+    await until("the ring for a conflict", () => other.$(".pair-pill .pair-pill-marker"));
+    await other.close();
+  },
+);
+
+await scenario(
+  "a pause the daemon could not save is said under the hero and the next press retires it",
+  async () => {
+    const bridge = new Bridge({ docs: [], photos: [] });
+    const page = await open(bridge);
+    await until("the hero", () => hasButton(page, TRAY.pausePair("docs")));
+    bridge.unsaved = "disk full";
+    await press(page, TRAY.pausePair("docs"));
+    await until("the notice", async () => (await pageText(page)).includes(MAIN.notice.pauseUnsaved));
+    const shown = await pageText(page);
+    if (!shown.includes("disk full")) throw new Error("the daemon's own reason is not quoted");
+    if (!shown.includes(MAIN.notice.pauseUnsavedSub)) throw new Error("the sentence is not there");
+
+    bridge.unsaved = null;
+    await press(page, TRAY.pausePair("docs"));
+    await until("the notice to go", async () => !(await pageText(page)).includes(MAIN.notice.pauseUnsaved));
+
+    // THE TRAY'S ROW: its reply cannot be shown in a panel that every row dismisses, so Rust tells the window.
+    await page.evaluate(() =>
+      window.__listeners["pause-unsaved"]({
+        payload: { pair: "docs", paused: false, reason: "read-only index" },
+      }),
+    );
+    await until("the resume notice", async () => (await pageText(page)).includes(MAIN.notice.resumeUnsaved));
+    if (!(await pageText(page)).includes("read-only index"))
+      throw new Error("the tray row's reason is not quoted");
+    // …and a notice about a folder that is not the one on screen says nothing here.
+    await select(page, bridge, "photos");
+    if ((await pageText(page)).includes(MAIN.notice.resumeUnsaved)) {
+      throw new Error("a notice about docs is on photos' screen");
+    }
+    await page.evaluate(() =>
+      window.__listeners["pause-unsaved"]({ payload: { pair: "docs", paused: true, reason: "x" } }),
+    );
+    await settle(page);
+    if ((await pageText(page)).includes(MAIN.notice.pauseUnsaved)) {
+      throw new Error("an event for another folder drew a notice");
+    }
+    await page.close();
+  },
+);
+
+await scenario("a folder the daemon does not run is named, with the one thing to do about it", async () => {
+  const queues = { docs: [], music: [], photos: [] };
+  const bridge = new Bridge(queues, {
+    names: ["docs", "music"],
+    roster: ["docs", "music", "photos"],
+    pairUnknown: "photos",
+  });
+  const page = await open(bridge);
+  await until("the notice", async () =>
+    (await pageText(page)).includes(MAIN.notice.pairNotRunning("photos")),
+  );
+  // The window is on the default folder meanwhile, and says it is.
+  await until("docs on screen", () => hasButton(page, TRAY.pausePair("docs")));
+
+  await press(page, MAIN.notice.restartSyncing);
+  await until("the restart", () => bridge.called("restart_service").length === 1);
+  if (bridge.called("restart_service")[0].args?.onlyIfRunning !== false) {
+    throw new Error("the restart was `only if running`: the daemon IS running, on the old settings");
+  }
+  await until(
+    "the notice to go",
+    async () => !(await pageText(page)).includes(MAIN.notice.pairNotRunning("photos")),
+  );
+  await page.close();
+
+  // A restart that did not work says so, and quotes the daemon.
+  const failing = new Bridge(queues, {
+    names: ["docs", "music"],
+    roster: ["docs", "music", "photos"],
+    pairUnknown: "photos",
+  });
+  failing.restartEnding = "never_stopped";
+  const failed = await open(failing);
+  await press(failed, MAIN.notice.restartSyncing);
+  await until("the failure", async () => (await pageText(failed)).includes(MAIN.notice.restartFailed));
+  if (!(await pageText(failed)).includes("it would not stop")) throw new Error("the reason is not quoted");
+  await failed.close();
+
+  // A remembered folder the settings file does not list is stale preference: nothing to say, nothing to restart.
+  const stale = new Bridge(
+    { docs: [], music: [] },
+    { names: ["docs", "music"], roster: ["docs", "music"], pairUnknown: "photos" },
+  );
+  const quiet = await open(stale);
+  await until("the hero", () => hasButton(quiet, TRAY.pausePair("docs")));
+  await settle(quiet);
+  if ((await pageText(quiet)).includes("isn't being synced yet"))
+    throw new Error("a folder the file does not list got a notice");
+  await quiet.close();
+});
+
+// ---- 25-35. the Settings screen's handlers are the screen's, and the conflict tally is the visit's -------
+
+/** A conflict card's choice button: its text is the name AND the consequence, so it is found by its name. */
+async function pressChoice(page, label) {
+  const handle = await until("the card's choices", async () => {
+    const found = await page.evaluateHandle(
+      (text) =>
+        [...document.querySelectorAll("button")].find(
+          (b) => b.querySelector(".btn-choice-name")?.textContent.trim() === text,
+        ) ?? null,
+      label,
+    );
+    return found.asElement();
+  });
+  await handle.evaluate((button) => button.click());
+}
+
+/** A handle on the first button reading exactly `label`, or null. */
+const buttonNamed = (label) => async (page) =>
+  (
+    await page.evaluateHandle(
+      (text) => [...document.querySelectorAll("button")].find((b) => b.textContent.trim() === text) ?? null,
+      label,
+    )
+  ).asElement();
+const fieldNamed = (selector) => async (page) =>
+  (await page.evaluateHandle((sel) => document.querySelector(sel), selector)).asElement();
+
+const typeInto = (value) => (handle) =>
+  handle.evaluate((input, text) => {
+    input.value = text;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  }, value);
+const clickIt = (handle) => handle.evaluate((node) => node.click());
+
+const SETTINGS_FILES = {
+  docs: {
+    exclude: ["*.tmp", "*.log"],
+    events_driven: true,
+    remote_root: "/Drive/docs",
+    deletion_policy: "ask_every_time",
+  },
+  photos: {
+    exclude: ["*.raw"],
+    events_driven: true,
+    remote_root: "/Drive/photos",
+    deletion_policy: "only_permanent",
+  },
+};
+
+/**
+ * Open Settings on `tab` for docs and take hold of the control the person is about to use; MOVE THE
+ * SELECTION under it; then use it — the press (or the keystroke) arrives after the switch, which is what a
+ * click landing in the gap looks like. Back on docs, `Save` must write what was staged, to docs: the
+ * handler is bound to the folder the screen was DRAWN for, not to the one selected when it runs.
+ */
+async function stagedInTheGap({ tab, control, use, key, expected }) {
+  const bridge = new Bridge({ docs: [], photos: [] }, { configs: SETTINGS_FILES });
+  const page = await open(bridge);
+  await press(page, "Settings");
+  if (tab) await press(page, tab);
+  const handle = await until("the control", () => control(page));
+  await select(page, bridge, "photos");
+  await use(handle);
+  await settle(page);
+  await select(page, bridge, "docs");
+  await press(page, SETTINGS.save);
+  await until("docs' write", () => bridge.called("write_config").length >= 1);
+  expectPair(bridge.called("write_config"), "docs", "write_config");
+  const update = bridge.called("write_config")[0].args.update;
+  if (JSON.stringify(update[key]) !== JSON.stringify(expected)) {
+    throw new Error(`the write carried ${JSON.stringify(update)}, not ${key} = ${JSON.stringify(expected)}`);
+  }
+  if (bridge.called("write_config").length !== 1) throw new Error("more than one write went out");
+  await page.close();
+}
+
+await scenario("a typed remote folder is staged for the folder the screen was drawn for (onRoot)", () =>
+  stagedInTheGap({
+    control: fieldNamed('[data-field="remote_root"]'),
+    use: typeInto("/Drive/typed"),
+    key: "remote_root",
+    expected: "/Drive/typed",
+  }),
+);
+
+await scenario("a typed Advanced field is staged for the folder the screen was drawn for (onField)", () =>
+  stagedInTheGap({
+    tab: SETTINGS.tabs.advanced,
+    control: fieldNamed('[data-sfocus="field:proton_cli"]'),
+    use: typeInto("/opt/proton-drive"),
+    key: "proton_cli",
+    expected: "/opt/proton-drive",
+  }),
+);
+
+await scenario("the live-updates switch is staged for the folder the screen was drawn for (onEvents)", () =>
+  stagedInTheGap({
+    control: fieldNamed('button[role="switch"]'),
+    use: clickIt,
+    key: "events_driven",
+    expected: false,
+  }),
+);
+
+await scenario("a rule removed in the gap leaves the folder the Remove was drawn for (onRemoveRule)", () =>
+  stagedInTheGap({
+    tab: SETTINGS.tabs.skip,
+    control: buttonNamed(SETTINGS.remove),
+    use: clickIt,
+    key: "exclude",
+    expected: ["*.log"],
+  }),
+);
+
+await scenario("a rule added in the gap goes to the folder the Add was drawn for (onAddRule)", async () => {
+  const bridge = new Bridge({ docs: [], photos: [] }, { configs: SETTINGS_FILES });
+  const page = await open(bridge);
+  await press(page, "Settings");
+  await press(page, SETTINGS.tabs.skip);
+  await until("the draft field", () => page.$('[data-sfocus="field:draft-exclude"]'));
+  await page.type('[data-sfocus="field:draft-exclude"]', "*.psd"); // the draft is docs'
+  await settle(page);
+  const add = await until("the Add button", () => buttonNamed(SETTINGS.add)(page));
+  await select(page, bridge, "photos");
+  await clickIt(add);
+  await settle(page);
+  await select(page, bridge, "docs");
+  await press(page, SETTINGS.save);
+  await until("docs' write", () => bridge.called("write_config").length >= 1);
+  expectPair(bridge.called("write_config"), "docs", "write_config");
+  const sent = bridge.called("write_config")[0].args.update.exclude;
+  if (JSON.stringify(sent) !== JSON.stringify(["*.tmp", "*.log", "*.psd"])) {
+    throw new Error(`the write carried exclude = ${JSON.stringify(sent)}`);
+  }
+  await page.close();
+});
+
+await scenario(
+  "a folder chosen while the picker was open is staged for the folder it was opened for (chooseLocalRoot)",
+  async () => {
+    const bridge = new Bridge({ docs: [], photos: [] }, { configs: SETTINGS_FILES });
+    const page = await open(bridge);
+    await press(page, "Settings");
+    const release = bridge.hold("choose_folder");
+    await press(page, SETTINGS.choose); // the picker opens on docs' root, and is modal
+    await until("the picker", () => bridge.called("choose_folder").length === 1);
+    await select(page, bridge, "photos"); // the selection moves while it is open
+    release(); // …and the person picks
+    await settle(page);
+    await settle(page);
+    await select(page, bridge, "docs");
+    await press(page, SETTINGS.save);
+    await until("docs' write", () => bridge.called("write_config").length >= 1);
+    expectPair(bridge.called("write_config"), "docs", "write_config");
+    if (bridge.called("write_config")[0].args.update.local_root !== "/picked/folder") {
+      throw new Error(`the write carried ${JSON.stringify(bridge.called("write_config")[0].args.update)}`);
+    }
+    await page.close();
+  },
+);
+
+await scenario("Restart it now acts for the folder whose bar it was drawn on (onRestart)", async () => {
+  const bridge = new Bridge({ docs: [], photos: [] }, { configs: SETTINGS_FILES });
+  const page = await open(bridge);
+  await openDeletions(page);
+  // A save whose restart did not finish leaves the retry on the bar…
+  bridge.restartEnding = "never_stopped";
+  await pressCard(page, SETTINGS.askNever);
+  await press(page, SETTINGS.save);
+  await until("the retry", () => hasButton(page, SETTINGS.restart));
+  // …and a failed sweep leaves a notice on docs' bar, which a restart that DOES finish retires.
+  bridge.resyncError = "boom";
+  await press(page, SETTINGS.tabs.folders);
+  await press(page, SETTINGS.sweepNow);
+  await until("docs' notice", async () => (await pageText(page)).includes("boom"));
+  const retry = await until("the retry button", () => buttonNamed(SETTINGS.restart)(page));
+  bridge.restartEnding = "restarted";
+  await select(page, bridge, "photos");
+  await clickIt(retry); // drawn for docs, pressed while photos is on screen
+  await until("the restart", () => bridge.called("restart_service").length >= 2);
+  await settle(page);
+  await select(page, bridge, "docs");
+  if ((await pageText(page)).includes("boom")) {
+    throw new Error("the restart cleared photos' notice and left docs' — it acted for the folder on screen");
+  }
+  await page.close();
+});
+
+await scenario(
+  "a folder whose settings have not arrived draws none, not another folder's or an empty file's",
+  async () => {
+    const bridge = new Bridge({ docs: [], photos: [] }, { configs: SETTINGS_CONFIGS });
+    const page = await open(bridge);
+    await openDeletions(page); // docs' policy is drawn
+    const releasePhotos = bridge.hold("read_config", "photos");
+    await select(page, bridge, "photos"); // its settings are asked for and held
+    await until("the read for photos", () =>
+      bridge.called("read_config").some((c) => c.args?.pair === "photos"),
+    );
+    await settle(page);
+    const drawn = await policyCards(page);
+    if (Object.values(drawn).some(Boolean)) {
+      throw new Error(
+        `a policy card is chosen for photos before its settings arrived: ${JSON.stringify(drawn)}`,
+      );
+    }
+    releasePhotos();
+    await until("photos' own policy", async () => (await policyCards(page))[SETTINGS.askPermanent]);
+    await page.close();
+  },
+);
+
+await scenario("Discard changes discards the folder on screen's edits and no other folder's", async () => {
+  const bridge = new Bridge({ docs: [], photos: [] }, { configs: SETTINGS_CONFIGS });
+  const page = await open(bridge);
+  await openDeletions(page);
+  await pressCard(page, SETTINGS.askNever); // staged for docs
+  await select(page, bridge, "photos");
+  await until("photos' own policy", async () => (await policyCards(page))[SETTINGS.askPermanent]);
+  await pressCard(page, SETTINGS.askEvery); // staged for photos
+  await press(page, SETTINGS.discard); // photos' only
+  await until("photos back to its own policy", async () => (await policyCards(page))[SETTINGS.askPermanent]);
+  await select(page, bridge, "docs");
+  const docs = await until("docs' staged policy", async () => {
+    const cards = await policyCards(page);
+    return cards[SETTINGS.askNever] ? cards : null;
+  });
+  if (!docs[SETTINGS.askNever]) throw new Error("photos' Discard threw docs' staged edit away");
+  await page.close();
+});
+
+await scenario(
+  "a keystroke typed while a save is in flight is still staged when the save lands",
+  async () => {
+    const bridge = new Bridge({ docs: [], photos: [] }, { configs: SETTINGS_CONFIGS });
+    const page = await open(bridge);
+    await openDeletions(page);
+    await pressCard(page, SETTINGS.askNever); // the edit that is saved
+    const release = bridge.hold("write_config");
+    await press(page, SETTINGS.save);
+    await until("the write to leave", () => bridge.called("write_config").length === 1);
+    // While it is out, a second edit is staged: a different setting, so the card it chooses is its own.
+    await pressCard(page, SETTINGS.disposalPermanent);
+    release();
+    await until("the save to finish", async () => !(await pageText(page)).includes(SETTINGS.saving));
+    await settle(page);
+    const armed = await page.evaluate(
+      (label) =>
+        [...document.querySelectorAll("button")].some((b) => b.textContent.trim() === label && !b.disabled),
+      SETTINGS.save,
+    );
+    if (!armed) throw new Error("the edit typed during the save was discarded with the one that was saved");
+    await page.close();
+  },
+);
+
+for (const awkward of ["constructor", "__proto__"]) {
+  await scenario(
+    `a folder named ${awkward} is chosen, shown, staged for and saved like any other (names are not object keys)`,
+    async () => {
+      // A name the engine accepts that a plain object answers from its prototype: every table the window
+      // keys by folder must be a Map, or the screen below throws or draws another folder's settings.
+      const queues = { docs: [] };
+      Object.defineProperty(queues, awkward, {
+        value: [],
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+      const bridge = new Bridge(queues, {
+        names: ["docs", awkward],
+        configs: { docs: { remote_root: "/Drive/docs" } },
+      });
+      const page = await open(bridge);
+      await until("the pill", () => page.$(".pair-pill"));
+      await page.focus(".pair-pill");
+      await page.keyboard.press("ArrowDown");
+      await until("the list", () => page.$(".pair-row"));
+      await page.evaluate((name) => {
+        [...document.querySelectorAll(".pair-row")].find((row) => row.dataset.pair === name).click();
+      }, awkward);
+      await until("select_pair", () => bridge.called("select_pair").length === 1);
+      await until("the window on it", () => hasButton(page, TRAY.pausePair(awkward)));
+      await press(page, "Settings");
+      const field = await until("the remote field", () => fieldNamed('[data-field="remote_root"]')(page));
+      await typeInto("/Drive/typed")(field);
+      await settle(page);
+      await press(page, SETTINGS.save);
+      await until("the write", () => bridge.called("write_config").length >= 1);
+      expectPair(bridge.called("write_config"), awkward, "write_config");
+      if (bridge.called("write_config")[0].args.update.remote_root !== "/Drive/typed") {
+        throw new Error(`the write carried ${JSON.stringify(bridge.called("write_config")[0].args.update)}`);
+      }
+      await page.close();
+    },
+  );
+}
+
+await scenario(
+  "the tally of a late decision counts the visit it was made on, not the one now showing",
+  async () => {
+    // docs and photos each have one conflict. The decision on docs' is held; the selection moves to photos,
+    // whose screen starts a visit of its own; the decision lands. Photos is then settled by hand. The
+    // cleared screen says how many YOU settled here — one — and not two, which is what counting docs' late
+    // decision into photos' tally says.
+    const bridge = new Bridge(
+      { docs: [], photos: [] },
+      { conflicts: { docs: [CONFLICT], photos: [CONFLICT] } },
+    );
+    const release = bridge.hold("resolve_conflict", "docs");
+    const page = await open(bridge);
+    await press(page, MAIN.band.conflictAction);
+    await pressChoice(page, CONFLICTS.keepBoth);
+    await until("docs' decision to leave", () => bridge.called("resolve_conflict").length === 1);
+    await select(page, bridge, "photos");
+    release();
+    await until(
+      "the rescan of docs",
+      () => bridge.called("scan_conflicts").filter((c) => c.args?.pair === "docs").length >= 2,
+    );
+    await settle(page);
+    await pressChoice(page, CONFLICTS.keepBoth); // photos' own conflict
+    await until("the cleared screen", async () => (await pageText(page)).includes(CONFLICTS.clearedTitle));
+    const shown = await pageText(page);
+    const once = CONFLICTS.clearedSub({ total: 1, keptBoth: 1, tookProton: 0 });
+    if (!shown.includes(once)) {
+      throw new Error(`the cleared screen says ${JSON.stringify(shown)}, not ${JSON.stringify(once)}`);
+    }
+    await page.close();
+  },
+);
 
 await browser.close();
 server.close();

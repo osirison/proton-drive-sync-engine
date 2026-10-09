@@ -22,7 +22,7 @@
 // where the design is right is a gate that gets an exemption list and then gets ignored.
 //
 // The failure this is built for is asymmetric by construction: the dark theme is drawn, measured
-// and asserted against 55 frames, so dark is the reference. A node that carries 8:1 in dark and
+// and asserted against 62 frames, so dark is the reference. A node that carries 8:1 in dark and
 // 1.4:1 in light has had its token mapped to the wrong end of the ramp, whatever the absolute
 // numbers are.
 //

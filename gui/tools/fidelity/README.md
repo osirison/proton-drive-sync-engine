@@ -1,6 +1,6 @@
 # The fidelity harness (F8, F9)
 
-What makes "100% fidelity" checkable rather than a claim. Twelve gates over the 55 in-scope frames of
+What makes "100% fidelity" checkable rather than a claim. Twelve gates over the 62 in-scope frames of
 `docs/design-v2/Drive Sync.dc.html`.
 
 ```
@@ -14,20 +14,20 @@ npm run fidelity:pairs      # the pair-routing gate on its own
 
 ## The twelve gates
 
-| Gate                               | Compares                                                                        | Runs today?                             |
-| ---------------------------------- | ------------------------------------------------------------------------------- | --------------------------------------- |
-| **style** `assert.mjs`             | every mapped app node's computed styles against the drawn node                  | on whatever carries a `data-fid`        |
-| **unstamped** `assert.mjs`         | a frame's declared fid slots against the ones the app stamped                   | yes, every declared slot                |
-| **unclaimed** `assert.mjs`         | every drawn node against the slots that name it — the mirror of the row above   | yes, 268 declared in 29 entries         |
-| **collision** `assert.mjs`         | two elements carrying one `data-fid` — a duplication no per-node gate counts    | yes, every stamped node                 |
-| **fit** `assert.mjs`               | every full window renders at exactly 1040×764, nothing painting over the footer | yes                                     |
-| **hue** `assert.mjs`               | a settled surface contains no saturated colour anywhere                         | yes, all 6 settled frames               |
-| **squeeze** `assert.mjs`           | a compact panel keeps its drawn height in a window too short for it             | yes, all 15 compact frames              |
-| **copy** `copy-gate.mjs`           | every fixed string in `ui/copy.js` appears verbatim in the frames               | yes, every string and 103 templates     |
-| **contrast** `check-contrast.mjs`  | every text node is legible against what is actually behind it, in both themes   | yes, 1279 nodes across 55 frames        |
-| **fixtures** `check-fixtures.mjs`  | every in-scope frame has a dataset, of the shape its class implies              | yes, all 55                             |
-| **n1** `check-n1-identity.mjs`     | every frame renders the same bytes when the daemon lists one folder pair        | yes, all 55 — see its reach below       |
-| **pairs** `check-pair-routing.mjs` | a write acts on the pair it was drawn for, not the one selected when it runs    | yes, 12 scenarios (#102 phase 5a-2, 5d) |
+| Gate                               | Compares                                                                        | Runs today?                                 |
+| ---------------------------------- | ------------------------------------------------------------------------------- | ------------------------------------------- |
+| **style** `assert.mjs`             | every mapped app node's computed styles against the drawn node                  | on whatever carries a `data-fid`            |
+| **unstamped** `assert.mjs`         | a frame's declared fid slots against the ones the app stamped                   | yes, every declared slot                    |
+| **unclaimed** `assert.mjs`         | every drawn node against the slots that name it — the mirror of the row above   | yes, 268 declared in 29 entries             |
+| **collision** `assert.mjs`         | two elements carrying one `data-fid` — a duplication no per-node gate counts    | yes, every stamped node                     |
+| **fit** `assert.mjs`               | every full window renders at exactly 1040×764, nothing painting over the footer | yes                                         |
+| **hue** `assert.mjs`               | a settled surface contains no saturated colour anywhere                         | yes, all 8 settled frames                   |
+| **squeeze** `assert.mjs`           | a compact panel keeps its drawn height in a window too short for it             | yes, all 15 compact frames                  |
+| **copy** `copy-gate.mjs`           | every fixed string in `ui/copy.js` appears verbatim in the frames               | yes, every string and 103 templates         |
+| **contrast** `check-contrast.mjs`  | every text node is legible against what is actually behind it, in both themes   | yes, 1403 nodes across 62 frames            |
+| **fixtures** `check-fixtures.mjs`  | every in-scope frame has a dataset, of the shape its class implies              | yes, all 62                                 |
+| **n1** `check-n1-identity.mjs`     | every frame renders the same bytes when the daemon lists one folder pair        | yes, 55 of 62 — see its reach below         |
+| **pairs** `check-pair-routing.mjs` | a write acts on the pair it was drawn for, not the one selected when it runs    | yes, 37 scenarios (#102 phase 5a-2 to 5c-1) |
 
 Seven of the twelve are `assert.mjs` and need a browser. **contrast**, **n1** and **pairs** need one
 too. **copy** does
@@ -42,8 +42,10 @@ with one folder sees nothing new** (D2) — and a rule the app must keep — **a
 was drawn for** — are claims about _two renderings_ and about _time_, which a gate that looks at one
 rendering of one drawing at one instant cannot make.
 
-- **n1.** All 55 fixtures are replies from a daemon that predates folder pairs (no `pair`, no
-  `pairs`). `?pairs=1` (`fixtures/preview.js`) answers the same frame the way a current daemon with one
+- **n1.** 55 of the 62 fixtures are replies from a daemon that predates folder pairs (no `pair`, no
+  `pairs`); the other seven (`2a Two folders` and its six siblings, #102 phase 5c-1) list two folders on purpose,
+  have no one-folder rendering to equal, and are rendered twice from one URL and compared with themselves
+  alone — the line under the result names them. `?pairs=1` (`fixtures/preview.js`) answers the same frame the way a current daemon with one
   pair does, and the gate requires the two `outerHTML`s of the app root to be equal — no tolerance, no
   stored digest. A frame that does not render the same bytes twice from one URL fails as such, so the
   comparison does not fail at random — which holds because **the clock is pinned** (below) and because a
@@ -84,7 +86,7 @@ rendering of one drawing at one instant cannot make.
 - **pairs.** `app.js` cannot be imported, so this runs the real page against a scripted stand-in for the
   Tauri bridge that answers each command and can hold a reply open — for a named pair, so two reads of one
   command for two folders can be released in either order — which is what makes the gap between a press and
-  the daemon's answer something a test can stand in. Twelve scenarios: the follow-up to an approval; the press
+  the daemon's answer something a test can stand in. Thirty-seven scenarios — the first twelve (#102 phases 5a-2, 5d, 5b-1), and the twenty-five of phase 5c-1 listed in the gate's own header (the selector, its keyboard and its late replies, the ring, the notice block, the Settings handlers' captured folder, a folder called `constructor`): the follow-up to an approval; the press
   of `Run this sync` (pair and token are committed at the press); a switch between two folders that draw
   identical cards; the hero's buttons after a switch that patches the hero in place; a never-synced pair at
   two folders and at one; a **late conflict read** for the folder that was left (two folders in conflict at

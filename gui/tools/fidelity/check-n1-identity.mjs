@@ -6,7 +6,7 @@
 // in the style gate can make it, because that gate compares one rendering against one drawing:
 //
 //   · the frame as authored — a fixture shaped like a daemon that predates folder pairs (no `pair`,
-//     no `pairs`); that is all 55 of them, and
+//     no `pairs`); that is 55 of the 62 (the other seven draw two folders on purpose — see below), and
 //   · the same frame answered as a CURRENT daemon running one pair would answer it — `pair: "default"`
 //     and a one-entry `pairs` on the reply, `selected`/`pairs`/`pair_states` on the payload, and a
 //     `pairs` list on `read_config` (`?pairs=1`, handled in `fixtures/preview.js`).
@@ -53,7 +53,7 @@ import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer";
 import { armClock, PINNED_NOW_MS, SKEW_STEP_MS } from "./clock-pin.mjs";
 import { serve } from "./serve.mjs";
-import { FIXTURES } from "../../src/js/fixtures/frames.js";
+import { FIXTURES, resolveFixture } from "../../src/js/fixtures/frames.js";
 import { withOnePair, withOnePairConfig } from "../../src/js/fixtures/preview.js";
 import { EMPTY_CONFIG } from "../../src/js/api.js";
 
@@ -133,6 +133,21 @@ function firstDifference(a, b) {
 
 const problems = [];
 let identical = 0;
+/**
+ * THE FRAMES THAT DRAW TWO FOLDERS OR MORE (#102 phase 5c-1), and why they are not in the comparison
+ * below. A frame whose fixture lists two pairs has no one-folder rendering to be identical to:
+ * `?pairs=1` would rewrite its reply as one folder and draw a different window, which is the point of
+ * the frame and not a regression. They are still rendered twice from one URL (a frame that does not
+ * settle to the same bytes twice is a finding whatever it draws), and what they carry for the claim is
+ * everything else here — the 55 frames that list no folder, which are the ones a one-folder user has,
+ * and the pill's absence at one folder, which the rest of this gate cannot see unless the pill is drawn
+ * at one (poison: draw it at `pairs.length >= 1` and every frame below differs; at any count, and the
+ * 22 frames that pin the header's `flex:1` spacer fail `assert.mjs`'s box compare).
+ */
+const atManyFolders = (label) => (resolveFixture(label)?.status?.pairs?.length ?? 0) >= 2;
+const manyFolders = [];
+/** What the folder selector's container looks like in the app root's markup. */
+const PILL = 'class="pair-select"';
 for (const frame of index) {
   const first = await render(frame, "");
   const second = await render(frame, "");
@@ -147,9 +162,32 @@ for (const frame of index) {
     );
     continue;
   }
+  if (atManyFolders(frame.label)) {
+    manyFolders.push(frame.label);
+    // The positive control: a frame that lists two folders draws the selector, so the absence checked
+    // below is the app's decision and not a pill that never renders anywhere.
+    if (!first.html.includes(PILL))
+      problems.push(`${frame.label}: lists two folders and draws no folder pill`);
+    continue;
+  }
+  // THE PILL IS ABSENT, stated outright and not left to the comparison below. The two renderings are
+  // equal if the pill is drawn in BOTH — a pill drawn unconditionally, or for a daemon that lists none,
+  // would pass `withPair.html !== first.html` — and the style gate cannot see it either: the header's
+  // `⋯` glyph is not in the bundled faces, so `boxComparability` takes the header's whole subtree out of
+  // the box comparison (the spacer's `731.08` is recorded and asserted nowhere), and an extra node no
+  // fixture names is stamped by nothing. Measured: with the pill drawn unconditionally `assert.mjs` still
+  // reported 0 failures on `2a Settled` and `2a Syncing`. This line is what makes decision D2 a check.
+  if (first.html.includes(PILL)) {
+    problems.push(`${frame.label}: draws the folder pill for a daemon that lists no more than one folder`);
+    continue;
+  }
   const withPair = await render(frame, "&pairs=1");
   if (!withPair.settled) {
     problems.push(`${frame.label}: never stopped changing with one pair listed`);
+    continue;
+  }
+  if (withPair.html.includes(PILL)) {
+    problems.push(`${frame.label}: draws the folder pill with ONE pair listed`);
     continue;
   }
   if (withPair.html !== first.html) {
@@ -356,6 +394,7 @@ function reach() {
     configAuthored: 0,
   };
   for (const { label } of index) {
+    if (atManyFolders(label)) continue;
     const fixture = FIXTURES[label];
     if (!fixture.status) tally.noStatus += 1;
     else {
@@ -386,7 +425,8 @@ if (r.reply === 0 || r.configRewritten === 0 || liveRewritten === 0) {
   process.exit(1);
 }
 console.log(
-  `fidelity:n1 — ${identical}/${index.length} frames render the same bytes with one pair listed\n` +
+  `fidelity:n1 — ${identical}/${index.length - manyFolders.length} frames render the same bytes with one pair listed\n` +
+    `  ${manyFolders.length} more draw two folders or more and are compared with themselves alone (${manyFolders.join(", ")})\n` +
     `  the live tray panel (\`?surface=tray\`, which no frame mounts through): ${liveIdentical}/${LIVE_PANELS.length} states, ` +
     `the reply rewritten on ${liveRewritten}\n` +
     `  reach (measured by running the injection on every fixture): status reply rewritten on ${r.reply}, ` +

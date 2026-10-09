@@ -18,6 +18,8 @@
 // poll all file under `DEFAULT_PAIR`; there is one slice, it is the selected one, and the screens read
 // what they always read.
 
+import { pairTable } from "./pairmap.js";
+
 const listeners = new Set();
 
 /** The pair a legacy reply, a fixture, and the time before the first reply all belong to. */
@@ -28,6 +30,7 @@ const emptySlice = () => ({
   statusIssue: 0, // which status REQUEST produced `status` — see `beginStatus`
   conflicts: [], // last scan_conflicts result for this pair (the unresolved set), each tagged `pair`
   pendingDeletions: [], // this pair's withheld deletions (S9), each tagged `pair`
+  deletionsFiled: false, // has a reply ever filled the list above? `[]` alone cannot say "not yet"
   staged: {}, // path -> Resolution, for the Conflicts screen (staged, not yet applied)
 });
 
@@ -45,15 +48,28 @@ const state = {
   follows: "selection",
   /** Every pair the daemon runs, as its last reply listed them (`PairSummary[]`). */
   pairs: [],
+  /**
+   * The folder the app remembered and the running daemon does not run (`payload.pair_unknown`), or null.
+   * The window shows the default folder meanwhile, and this is what lets it say so (5c-1).
+   */
+  pairUnknown: null,
   /** The derived state of each, by name (`{ name, state }[]`), computed in Rust. */
   pairStates: [],
-  byPair: {},
+  byPair: pairTable(),
   ledgerFilter: "all",
 };
 
-const sliceFor = (name) => (state.byPair[name] ??= emptySlice());
+// A `Map`, never an object: a pair may be named `constructor` or `__proto__` (`pairmap.js`).
+function sliceFor(name) {
+  let slice = state.byPair.get(name);
+  if (!slice) {
+    slice = emptySlice();
+    state.byPair.set(name, slice);
+  }
+  return slice;
+}
 const selectedName = () => state.selected ?? DEFAULT_PAIR;
-const viewed = () => state.byPair[selectedName()] ?? EMPTY;
+const viewed = () => state.byPair.get(selectedName()) ?? EMPTY;
 const EMPTY = Object.freeze(emptySlice());
 
 /**
@@ -121,6 +137,11 @@ export function pairOf(payload) {
  * out of order, and an old one reporting the previous selection must not win it back.
  */
 export function setStatus(payload, issue) {
+  // A REFUSAL IS NOT AN OBSERVATION. A request the app turned back before it left — a name no folder
+  // has — comes home as a payload with no reply, `pair_unknown` set, and a placeholder `state` that
+  // `StatusPayload` documents a caller must not read. Filed, it would draw the folder it was about as
+  // unreachable on a daemon that never stopped answering.
+  if (payload?.pair_unknown && !payload.response) return;
   const name = pairOf(payload);
   const slice = sliceFor(name);
   slice.status = payload;
@@ -130,7 +151,10 @@ export function setStatus(payload, issue) {
   // an EMPTY queue for one render — `Nothing waiting to be deleted` — before its own arrived, which
   // is a flash at start-up and, across a switch, the whole screen redrawn from nothing. A payload with
   // no reply (the socket failed) says nothing new about the queue, and leaves what was last seen.
-  if (payload?.response) slice.pendingDeletions = tagged(payload.response.pending_deletions, name);
+  if (payload?.response) {
+    slice.pendingDeletions = tagged(payload.response.pending_deletions, name);
+    slice.deletionsFiled = true;
+  }
 
   // The roster. A reply from a daemon that predates the selector carries none, and that IS the
   // answer ("no pairs"); a payload with no reply at all (the socket failed) knows nothing new and
@@ -155,6 +179,11 @@ export function setStatus(payload, issue) {
   if (next === name && issue >= state.selectedIssue) {
     state.selected = next;
     state.selectedIssue = issue;
+    // WHAT THE SELECTION READ SAID ABOUT THE FOLDER THAT WAS ASKED FOR. Only the reply that moves the
+    // selection speaks for it: a read that NAMES another folder never carries the note, and letting it
+    // set (or clear) this would flip the window's notice with every such read. A reply from a daemon
+    // that predates the field has none, and that is the answer.
+    state.pairUnknown = payload?.response ? (payload.pair_unknown ?? null) : state.pairUnknown;
   }
   emit();
 }
@@ -193,6 +222,16 @@ export const select = {
   pairs: () => state.pairs,
   /** The derived state of each pair (`{ name, state }[]`). */
   pairStates: () => state.pairStates,
+  /** The remembered folder the daemon does not run, or null (see `state.pairUnknown`). */
+  pairUnknown: () => state.pairUnknown,
+  /**
+   * What the store holds for a folder OTHER than the selected one — the folder selector's marker and
+   * counts. A folder never heard of answers empty, and `deletionsFiledOf` says whether "empty" is a
+   * fact or only the absence of a reply.
+   */
+  conflictsOf: (pair) => state.byPair.get(pair)?.conflicts ?? [],
+  pendingDeletionsOf: (pair) => state.byPair.get(pair)?.pendingDeletions ?? [],
+  deletionsFiledOf: (pair) => state.byPair.get(pair)?.deletionsFiled ?? false,
 
   daemonState: () => viewed().status?.state ?? "unreachable",
   /** Which request the state above came home from, and the highest one issued (#335). */

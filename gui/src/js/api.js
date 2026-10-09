@@ -199,6 +199,15 @@ export const api = {
       .listen("pair-selected", (e) => cb(e.payload))
       .catch((err) => console.error("pair-selected listen failed:", err));
   },
+  // A tray row paused or resumed a folder and the daemon could not save it (`pause_unsaved`, decision
+  // D12): `{ pair, paused, reason }`. The panel is dismissed by every row before the reply arrives, so
+  // Rust tells the window, which is where a sentence about it can be read. A no-op in browser preview.
+  onPauseUnsaved: (cb) => {
+    if (!inTauri()) return;
+    window.__TAURI__.event
+      .listen("pause-unsaved", (e) => cb(e.payload))
+      .catch((err) => console.error("pause-unsaved listen failed:", err));
+  },
   /**
    * A click on one of a banner's buttons (S9). The payload is `{ id, kind, action }` — the action id
    * from `SAFE_ACTIONS`, and which of the four events it belongs to.
