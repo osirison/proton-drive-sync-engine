@@ -11,7 +11,9 @@ two programs the GUI runs by bare name, looked up on `PATH`. A scratch environme
 leaves both pointing at the developer's installed ones.
 
 **Confirmed by reading `commands.rs` (not run):** `start_service_impl` runs `systemctl --user start
-proton-syncd` first, and when that does not succeed it spawns `proton-syncd --config <path>`. The
+proton-syncd` first, and when that does not succeed it spawns `proton-syncd --config <path>` **only
+if the config file exists** (`commands.rs` ~2315; otherwise it returns an error and spawns nothing, so
+a scratch environment with no config file never reaches the direct spawn). The
 window's `Start the sync service`, the tray's `Start` row (`start_service_in_background` ->
 `start_service_and_adopt`) and a Settings save that restarts a running daemon (`restart_service_impl`)
 all reach it. The tray row and the button need only a daemon that does not answer, which is what an
@@ -23,7 +25,7 @@ isolated environment with no socket gives you.
   run:** scratch `XDG_*` variables move the runtime directory, but a `DBUS_SESSION_BUS_ADDRESS` carried
   through unchanged (the recipe in `gui-isolated-from-the-real-daemon.md`, needed for the tray to
   register) is a way for `systemctl --user` to find the real manager. Do not run it to find out.
-- If `systemctl` fails, the installed `proton-syncd` starts against the scratch config, with the
+- If `systemctl` fails and the scratch config file exists, the installed `proton-syncd` starts against it, with the
   developer's `proton-drive` and keyring session if the environment does not hide them.
 
 **Precondition:** put a scratch directory first on `PATH` holding a `systemctl` that logs its arguments
