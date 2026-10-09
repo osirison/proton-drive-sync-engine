@@ -1587,7 +1587,7 @@ enum Class {
 /// Every `#[tauri::command]` and what it is. Adding a command without adding it here fails
 /// `every_pair_slot_command_names_its_class`, which is the point: a command that reads a pair slot
 /// must say how it takes the pair.
-const COMMAND_CLASSES: [(&str, Class); 40] = [
+const COMMAND_CLASSES: [(&str, Class); 42] = [
     ("get_status", Class::R),
     ("list_pending_deletions", Class::R),
     ("scan_conflicts", Class::R),
@@ -1611,6 +1611,10 @@ const COMMAND_CLASSES: [(&str, Class); 40] = [
     ("select_pair", Class::Selection),
     ("read_config", Class::R),
     ("write_config", Class::W),
+    // Class W with one difference, stated at the command: `pair` is the NEW pair's name, so the engine
+    // refuses one that already exists where every other W command refuses one that does not.
+    ("add_pair", Class::W),
+    ("remove_pair", Class::W),
     ("tray_action", Class::Row),
     ("tray_status", Class::DefaultPair),
     ("choose_folder", Class::Independent),

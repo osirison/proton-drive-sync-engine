@@ -1285,34 +1285,69 @@ pub(crate) fn pair_name_key(name: &str) -> String {
 fn validate_pair_names(pairs: &[PairFileConfig]) -> AppResult<()> {
     let mut seen: Vec<String> = Vec::with_capacity(pairs.len());
     for (position, pair) in pairs.iter().enumerate() {
-        validate_pair_name(&pair.name)?;
-        let folded = pair_name_key(&pair.name);
-        // The duplicate check runs FIRST. Two tables both named `default` are two names that are
-        // the same, not one name in the wrong position, and the reservation's advice ("move its
-        // table first") would produce two `default`s if it spoke about them.
-        if seen.contains(&folded) {
-            return Err(boxed_error(format!(
-                "two `[[pair]]` tables are named `{}` (names are compared without regard to \
-                 case, because a selector that matches two pairs can only pick one of them): give \
-                 each pair a distinct name",
-                pair.name
-            )));
-        }
-        if position > 0 && folded == DEFAULT_PAIR_NAME {
-            return Err(boxed_error(format!(
-                "pair `{}` is named `{DEFAULT_PAIR_NAME}` but is not the first `[[pair]]` table: \
-                 that name already means the pair a command addresses when it names none, which is \
-                 the first table, so one selector would have two answers. Rename this pair, or \
-                 move its table first",
-                pair.name
-            )));
-        }
-        seen.push(folded);
+        check_pair_name_among(&pair.name, &seen, position)?;
+        seen.push(pair_name_key(&pair.name));
     }
     Ok(())
 }
 
-fn validate_pair_name(name: &str) -> AppResult<()> {
+/// One name against the pairs it has to coexist with: its own shape ([`check_pair_name`]), then
+/// uniqueness, then the `default` reservation. **The one body of the set rules**, called by the file
+/// reader ([`validate_pair_names`], which hands it the names *before* this one, so the later of two
+/// equal names is the one reported) and by [`validate_pair_name_among`] (which hands it every other
+/// name, because a client adding a name has no "before" to speak of).
+///
+/// `others` are already folded by [`pair_name_key`]; `position` is where the name sits in the file.
+fn check_pair_name_among(name: &str, others: &[String], position: usize) -> AppResult<()> {
+    check_pair_name(name)?;
+    let folded = pair_name_key(name);
+    // The duplicate check runs FIRST. Two tables both named `default` are two names that are
+    // the same, not one name in the wrong position, and the reservation's advice ("move its
+    // table first") would produce two `default`s if it spoke about them.
+    if others.contains(&folded) {
+        return Err(boxed_error(format!(
+            "two `[[pair]]` tables are named `{name}` (names are compared without regard to \
+             case, because a selector that matches two pairs can only pick one of them): give \
+             each pair a distinct name"
+        )));
+    }
+    if position > 0 && folded == DEFAULT_PAIR_NAME {
+        return Err(boxed_error(format!(
+            "pair `{name}` is named `{DEFAULT_PAIR_NAME}` but is not the first `[[pair]]` table: \
+             that name already means the pair a command addresses when it names none, which is \
+             the first table, so one selector would have two answers. Rename this pair, or \
+             move its table first"
+        )));
+    }
+    Ok(())
+}
+
+/// Whether `name` is a pair name at all: the shape rules of ADR 0005 §2 rule 3, and nothing about
+/// the other pairs ([`validate_pair_name_among`] is that half). The sentence is the one the daemon
+/// would exit with for a `[[pair]]` table of that name, because it is the same body — a client that
+/// checks a name as someone types it (the add-folder form, #102 phase 5b-2) quotes the daemon rather
+/// than keeping a regex of its own, which is how the GUI came to disagree with it about `~` (#135).
+pub fn validate_pair_name(name: &str) -> Result<(), String> {
+    check_pair_name(name).map_err(|error| error.to_string())
+}
+
+/// [`validate_pair_name`], and the rules that need the other pairs: `name` is not any of `existing`
+/// (compared without regard to ASCII case, [`pair_name_key`]), and the reserved `default` is the
+/// **first** table's alone, so it is refused unless `position` is `0`.
+///
+/// `existing` is every *other* pair's name. `position` is where `name` will sit among the `[[pair]]`
+/// tables: `existing.len()` for a pair appended at the end, which is the only place an app adds one.
+/// A pair already in the file is checked with its own name left out of `existing`.
+pub fn validate_pair_name_among(
+    name: &str,
+    existing: &[&str],
+    position: usize,
+) -> Result<(), String> {
+    let others: Vec<String> = existing.iter().map(|other| pair_name_key(other)).collect();
+    check_pair_name_among(name, &others, position).map_err(|error| error.to_string())
+}
+
+fn check_pair_name(name: &str) -> AppResult<()> {
     if name.is_empty() {
         return Err(boxed_error(
             "a `[[pair]]` table has an empty `name`: every pair needs a name, which is how a \
@@ -4624,6 +4659,66 @@ download_batch_size = 5
         );
     }
 
+    /// Three pairs, lexically apart, in which the second is clear of both and the third really sits
+    /// where the first is: `alias` is a symlink to a folder inside (or around) `one`.
+    fn three_pairs_whose_first_and_third_overlap(base: &Path, third_is_inside: bool) -> String {
+        let around_one = base.join("around-one");
+        let one = around_one.join("one");
+        let two = base.join("apart").join("two");
+        fs::create_dir_all(one.join("inner")).expect("one/inner");
+        fs::create_dir_all(&two).expect("two");
+        let alias = base.join("alias");
+        // Inside: `alias` leads to a folder under `one`. Around: `alias` leads to the folder that
+        // holds `one` and nothing of `two`'s, so the later pair contains the earlier one.
+        let target = if third_is_inside {
+            one.join("inner")
+        } else {
+            around_one
+        };
+        std::os::unix::fs::symlink(&target, &alias).expect("symlink");
+        format!(
+            "[[pair]]\nname = \"one\"\nlocal_root = \"{}\"\nremote_root = \"/Drive/1\"\n\n\
+             [[pair]]\nname = \"two\"\nlocal_root = \"{}\"\nremote_root = \"/Drive/2\"\n\n\
+             [[pair]]\nname = \"three\"\nlocal_root = \"{}\"\nremote_root = \"/Drive/3\"\n",
+            one.display(),
+            two.display(),
+            alias.display()
+        )
+    }
+
+    #[test]
+    fn real_path_conflicts_compares_each_pair_with_every_earlier_one_not_only_its_neighbour() {
+        // The pair that overlaps is NOT next to the one it overlaps. A comparison of each pair with
+        // only the one before it asks (two, one) and (three, two), finds both apart, and passes a
+        // file the daemon refuses to start on — fatally, on a unit that restarts every ten seconds.
+        let directory = tempdir().expect("tempdir");
+        let text = three_pairs_whose_first_and_third_overlap(directory.path(), true);
+        validate_file_config_text(&text).expect("the lexical rule sees three apart folders");
+        let error = real_path_conflicts(&text)
+            .expect_err("pair three really sits inside pair one")
+            .to_string();
+        assert!(
+            error.starts_with("folder pair 'three': its local_root")
+                && error.contains("is inside folder pair 'one''s"),
+            "the sentence names the later pair as the candidate and the EARLIER, non-adjacent, pair: {error}"
+        );
+    }
+
+    #[test]
+    fn real_path_conflicts_finds_a_later_pair_that_contains_a_non_adjacent_earlier_one() {
+        // The other direction of the same rule: the candidate (three) is the OUTER folder.
+        let directory = tempdir().expect("tempdir");
+        let text = three_pairs_whose_first_and_third_overlap(directory.path(), false);
+        let error = real_path_conflicts(&text)
+            .expect_err("pair three really contains pair one")
+            .to_string();
+        assert!(
+            error.starts_with("folder pair 'three': its local_root")
+                && error.contains("contains folder pair 'one''s"),
+            "{error}"
+        );
+    }
+
     #[test]
     fn a_config_that_says_nothing_about_deletions_trashes_rather_than_unlinks() {
         // THE WHOLE CHANGE, at the layer a user's existing file goes through. Every config written
@@ -5830,6 +5925,87 @@ local_delete_mode = \"permanent\"
             !error.to_string().contains("longer than"),
             "a 40-character name must not be reported as too long, got {error}"
         );
+    }
+
+    /// A `[[pair]]` file with `existing` pairs and then one called `name`, every root apart.
+    fn pair_file_with_a_last_pair(existing: &[&str], name: &str) -> String {
+        let mut text = String::new();
+        for (index, pair) in existing.iter().chain(std::iter::once(&name)).enumerate() {
+            text.push_str(&format!(
+                "[[pair]]\nname = \"{pair}\"\nlocal_root = \"/p{index}\"\n\
+                 remote_root = \"/Drive/p{index}\"\n\n"
+            ));
+        }
+        text
+    }
+
+    #[test]
+    fn names_are_validated_by_the_engines_rule() {
+        // THE CLIENT-FACING WRAPPERS ARE THE FILE READER'S BODY, not a second statement of it. For
+        // every rule the set has, the sentence a form gets as someone types is the one the daemon
+        // would exit with for a `[[pair]]` table of that name in that place — compared whole, so a
+        // regex kept on the other side of the bridge (the thing this exists to prevent) differs.
+        let too_long = "a".repeat(PAIR_NAME_MAX_LEN + 1);
+        let refused: Vec<(Vec<&str>, &str)> = vec![
+            (vec![], ""),
+            (vec![], "my docs"),
+            (vec![], "caf\u{e9}"),
+            (vec![], "."),
+            (vec![], ".."),
+            (vec![], "-h"),
+            (vec![], "--pair"),
+            (vec![], too_long.as_str()),
+            (vec!["photos"], "Photos"),
+            (vec!["Photos"], "photos"),
+            (vec!["a"], "default"),
+            (vec!["a"], "Default"),
+            (vec!["a", "b"], "default"),
+            (vec!["default"], "DEFAULT"),
+        ];
+        for (existing, name) in refused {
+            let wrapper = validate_pair_name_among(name, &existing, existing.len());
+            let file = validate_file_config_text(&pair_file_with_a_last_pair(&existing, name));
+            match (&wrapper, &file) {
+                (Err(wrapper), Err(file)) => {
+                    assert_eq!(wrapper, &file.to_string(), "`{name}` after {existing:?}")
+                }
+                _ => panic!(
+                    "`{name}` after {existing:?}: wrapper {wrapper:?}, file {file:?}: both must refuse"
+                ),
+            }
+        }
+
+        // And the names a file accepts, a form accepts.
+        let accepted: Vec<(Vec<&str>, &str)> = vec![
+            (vec![], "default"),
+            (vec![], "Default"),
+            (vec!["default"], "photos"),
+            (vec!["a", "b"], "c.d_e-f"),
+        ];
+        for (existing, name) in accepted {
+            validate_pair_name_among(name, &existing, existing.len())
+                .unwrap_or_else(|error| panic!("`{name}` after {existing:?}: {error}"));
+            validate_file_config_text(&pair_file_with_a_last_pair(&existing, name)).unwrap_or_else(
+                |error| panic!("the file refuses `{name}` after {existing:?}: {error}"),
+            );
+        }
+    }
+
+    #[test]
+    fn a_name_is_checked_against_every_other_pair_not_only_the_ones_before_it() {
+        // The file reader reports the LATER of two equal names (it has only seen the earlier one);
+        // a client adding a name has no "before" and must be refused for a clash with any other
+        // pair. Position decides only the `default` reservation.
+        assert!(validate_pair_name_among("Photos", &["a", "photos"], 2).is_err());
+        assert!(validate_pair_name_among("photos", &["PHOTOS", "a"], 0).is_err());
+        assert!(validate_pair_name_among("photos", &["a", "b"], 2).is_ok());
+        // The name alone has no other pair to clash with, and no position.
+        assert!(validate_pair_name("default").is_ok());
+        assert!(validate_pair_name("Photos").is_ok());
+        assert!(validate_pair_name("").is_err());
+        // `default` belongs to the first table, wherever the list of others is empty or not.
+        assert!(validate_pair_name_among("default", &["a"], 0).is_ok());
+        assert!(validate_pair_name_among("default", &[], 1).is_err());
     }
 
     #[test]

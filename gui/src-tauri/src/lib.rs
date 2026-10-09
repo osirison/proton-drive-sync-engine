@@ -102,6 +102,10 @@ pub fn run() {
             commands::select_pair,
             commands::read_config,
             commands::write_config,
+            // Adding and removing a folder pair (#102 phase 5b-2). Commands only: no screen calls them
+            // until the Settings folder list (phase 5c-2).
+            commands::add_pair,
+            commands::remove_pair,
             commands::choose_folder,
             commands::run_dry_run,
             commands::apply_plan,
@@ -150,6 +154,12 @@ pub fn run() {
                 app.manage::<notify::NotifierState>(std::sync::Arc::new(tokio::sync::Mutex::new(
                     None,
                 )));
+            }
+            // The one place the environment is asked where the app keeps what it sets aside when a
+            // folder pair is removed (#102 phase 5b-2, D8). `resolve_at` reads no environment, so a
+            // test that resolves a config has no such directory; the process has this one.
+            if let Some(paths) = app.try_state::<Mutex<config_path::RuntimePaths>>() {
+                paths.lock().unwrap().state_dir = config_path::environment_state_dir();
             }
             // `main` is configured `"visible": false` so this lands before the window is realized,
             // and is shown here. Nothing else reads its start-up visibility — `tray::show_window`

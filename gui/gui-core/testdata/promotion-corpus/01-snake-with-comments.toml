@@ -1,0 +1,23 @@
+# my sync config
+
+# Where the daemon listens. Daemon-wide: stays at the top.
+socket_path = "/run/user/1000/proton-sync.sock"
+
+# The folder pair (these move)
+local_root = "/home/u/Sync"   # the local side
+remote_root = "/Drive/Sync"
+
+# how often to look, in seconds
+scan_interval_secs = 600
+
+# Daemon-wide, written between two per-pair keys.
+log_level = "debug"
+
+exclude = ["**/*.tmp", "**/node_modules/**"]
+events_driven = false
+
+# Ask before deleting anything.
+[delete_approval]
+# only the remote side is relaxed
+remote = false
+local = true

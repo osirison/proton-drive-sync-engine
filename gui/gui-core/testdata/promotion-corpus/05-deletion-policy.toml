@@ -1,0 +1,6 @@
+# The native spelling of the delete guard.
+local_root = "/home/u/Policy"
+remote_root = "/Drive/Policy"
+deletion_policy = "only_permanent"
+local_delete_mode = "permanent"
+log_level = "warn"

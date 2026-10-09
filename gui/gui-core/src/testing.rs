@@ -46,6 +46,17 @@ const MAX_SOCKET_PATH_BYTES: usize = 100;
 /// The epoch every fake reply reports as its last sync, so a reply is never `FirstRun` by accident.
 const FAKE_LAST_SYNC: u64 = 1_750_000_000;
 
+/// What a running daemon does to a pair's lockfile: holds it exclusively, without waiting, for as
+/// long as the returned file is alive (#102 phase 5b-2). A test that wants a daemon to "have" a pair's
+/// history takes this, and drops the file to let it go. Panics if somebody else already holds it —
+/// a test that meant a free lockfile has been handed a busy one.
+pub fn hold_lockfile(lockfile: &Path) -> std::fs::File {
+    let file = std::fs::File::open(lockfile).expect("open the lockfile to hold");
+    rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive)
+        .expect("nobody else holds this lockfile");
+    file
+}
+
 /// One folder pair the fake daemon is running.
 #[derive(Debug, Clone)]
 pub struct FakePair {

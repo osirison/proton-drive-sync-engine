@@ -1,0 +1,4 @@
+local_root = "/home/u/Inline"
+remote_root = "/Drive/Inline"
+delete_approval = { remote = false, local = false }   # never ask
+socket_path = "/run/user/1000/inline.sock"

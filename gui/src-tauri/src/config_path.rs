@@ -83,6 +83,17 @@ pub struct RuntimePaths {
     /// re-resolve — a save, a restart — re-reads the one file that holds it instead of each having
     /// to remember to carry it across; written only by `commands::select_pair`.
     pub selected: Option<String>,
+    /// The app's own state directory (`$XDG_STATE_HOME/proton-sync`, else `~/.local/state/proton-sync`):
+    /// where it puts what it sets aside when a folder pair is removed (#102 phase 5b-2, D8), and the
+    /// notes of moves that have not happened yet.
+    ///
+    /// **`None` unless the process's startup says otherwise** (`lib.rs` `setup`, from
+    /// [`environment_state_dir`]). [`Self::resolve_at`] names a config file and reads no environment,
+    /// so a test that resolves one in a temp directory has no state directory to write into and gets
+    /// the answer a missing one gives (the history stays where it is, recorded as pending) rather than
+    /// the developer's real `~/.local/state`. A test that wants to see a move names a directory in its
+    /// own temp dir. Carried across a re-resolve like `socket_path` and `daemon`, never re-derived.
+    pub state_dir: Option<PathBuf>,
 }
 
 /// Which pair a command means. The three questions are different and none may stand in for another.
@@ -164,6 +175,23 @@ pub struct PairReported {
 pub struct PairRef {
     pub name: String,
     pub selector: Option<String>,
+}
+
+/// The app's state directory, from the environment (#102 phase 5b-2). **Only the process's startup
+/// calls this** (`lib.rs`); the value then lives in [`RuntimePaths::state_dir`].
+///
+/// `None` when neither `XDG_STATE_HOME` nor `HOME` names an absolute location, and not a guess in
+/// the shared temp directory: what is set aside here is a copy of the index of everything a person
+/// syncs, and the one place a relative or world-writable fallback is wrong is the place that keeps it
+/// (#286, #74).
+pub fn environment_state_dir() -> Option<PathBuf> {
+    state_dir_in(std::env::var_os("XDG_STATE_HOME"), std::env::var_os("HOME"))
+}
+
+fn state_dir_in(state_home: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
+    absolute_dir(state_home)
+        .or_else(|| absolute_dir(home).map(|home| home.join(".local").join("state")))
+        .map(|base| base.join("proton-sync"))
 }
 
 /// The GUI's owned config path convention.
@@ -259,6 +287,7 @@ impl RuntimePaths {
             config_error,
             daemon: DaemonView::default(),
             selected: gui_prefs::load_selected_pair(&gui_prefs::gui_prefs_path(config_path)),
+            state_dir: None,
         }
     }
 
@@ -554,6 +583,40 @@ fn pair_paths_from_text(text: &str) -> Result<Vec<PairPaths>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_state_directory_is_the_xdg_one_when_absolute_and_nothing_otherwise() {
+        let home = Some(OsString::from("/home/me"));
+        assert_eq!(
+            state_dir_in(Some("/var/state".into()), home.clone()),
+            Some(PathBuf::from("/var/state/proton-sync"))
+        );
+        assert_eq!(
+            state_dir_in(None, home.clone()),
+            Some(PathBuf::from("/home/me/.local/state/proton-sync"))
+        );
+        // A relative value is ignored, as for every other XDG directory (#286)...
+        assert_eq!(
+            state_dir_in(Some("state".into()), home),
+            Some(PathBuf::from("/home/me/.local/state/proton-sync"))
+        );
+        // ...and with nothing absolute there is NO directory — not the shared temp one.
+        assert_eq!(
+            state_dir_in(Some("state".into()), Some("home/me".into())),
+            None
+        );
+        assert_eq!(state_dir_in(None, None), None);
+    }
+
+    #[test]
+    fn a_config_resolved_at_a_path_reads_no_environment_for_the_state_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = RuntimePaths::resolve_at(&dir.path().join("proton-sync.toml"));
+        assert_eq!(
+            paths.state_dir, None,
+            "a state directory comes from the process's startup or from the test, never from here"
+        );
+    }
 
     // #286. Asserted through the resolved paths, not the predicate: a relative value fails nothing
     // loudly — it resolves against whatever working directory the launcher left, per process, so

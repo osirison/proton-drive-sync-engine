@@ -1,0 +1,8 @@
+proton_cli = "/usr/bin/proton-drive"
+
+[[pair]]
+name = "default"
+local_root = "/home/u/Patterns"
+remote_root = "/Drive/Patterns"
+include_patterns = ["docs/**", "src/**"]
+exclude_patterns = ["**/*.bak"]

@@ -1,0 +1,6 @@
+[[pair]]
+name = "default"
+local_root = "/home/u/Bare"
+remote_root = "/Drive/Bare"
+include = ["photos/**"]
+exclude = ["photos/raw/**"]

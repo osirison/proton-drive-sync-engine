@@ -49,6 +49,8 @@ use tauri::{Emitter, Manager, State};
 
 type Paths<'a> = State<'a, Mutex<RuntimePaths>>;
 
+mod pair_admin;
+
 /// A status round trip, with the derived UI state folded in so the frontend never re-derives it.
 /// On a socket failure the `state` is `unreachable`/etc. and `error` is set — never zeroed counters.
 ///
@@ -1023,14 +1025,140 @@ pub async fn write_config(
     // test, and any session started with an explicit config — then re-read, and the next save wrote,
     // a different file: the developer's real one. The read happens before the lock is taken, so the
     // lock covers the swap and not the file I/O.
-    let mut resolved = RuntimePaths::resolve_at(&path);
+    re_resolve_after_a_write(&state, &path);
+    Ok(())
+}
+
+/// Re-resolve the session's paths from the config file a command has just written, keeping the three
+/// things a re-resolve must not reset (see `write_config`'s comment for the socket): the live socket,
+/// what the daemon last said, and the app's state directory (#102 phase 5b-2), which `resolve_at`
+/// cannot know — it reads no environment — and which the process's startup set.
+///
+/// Shared by every command that writes the config, so there is one list of what a write carries over.
+fn re_resolve_after_a_write(state: &Mutex<RuntimePaths>, path: &std::path::Path) {
+    let mut resolved = RuntimePaths::resolve_at(path);
     let mut paths = state.lock().unwrap();
     if paths.socket_path.is_ok() {
         resolved.socket_path = paths.socket_path.clone();
     }
     resolved.daemon = std::mem::take(&mut paths.daemon);
+    resolved.state_dir = paths.state_dir.clone();
     *paths = resolved;
-    Ok(())
+}
+
+/// Class W (#102 phase 5b-2): add a folder pair. `pair` is the NEW pair's name — the one the caller
+/// captured when the dialog began — so unlike every other class-W command it must be a name the app
+/// does **not** know yet: the engine refuses one it does (`validate_pair_name_among`), in its own
+/// words.
+///
+/// Writes one `[[pair]]` table (promoting a single-pair file to that form first, in the same write),
+/// atomically and with mode `0600`, and refuses — leaving the file byte-identical — on anything the
+/// daemon would refuse to start on, a relative or missing local folder (#431), and a folder that
+/// really overlaps another pair's through a symlink (`real_path_conflicts`, which canonicalizes: file
+/// I/O, so on a blocking thread). It starts nothing: the reply says a restart is needed, and names an
+/// index from an earlier run that the new pair would resume, and warns when the folder contains the
+/// app's own set-aside histories. A refusal still reports an earlier removal the call finished first.
+#[tauri::command]
+pub async fn add_pair(
+    state: Paths<'_>,
+    pair: String,
+    init: pair_admin::AddPairRequest,
+) -> Result<pair_admin::AddPairReply, String> {
+    let (path, state_dir) = {
+        let paths = state.lock().unwrap();
+        (paths.config_path.clone(), paths.state_dir.clone())
+    };
+    let reply = {
+        let path = path.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            pair_admin::add_pair_file(
+                &path,
+                state_dir.as_deref(),
+                &pair,
+                &init,
+                std::time::SystemTime::now(),
+            )
+        })
+        .await
+        .map_err(|error| format!("add-pair task failed: {error}"))?
+        // A refusal still says what the call settled before it looked at the request.
+        .map_err(pair_admin::AddPairFailure::into_message)?
+    };
+    re_resolve_after_a_write(&state, &path);
+    Ok(reply)
+}
+
+/// Class W (#102 phase 5b-2, maintainer decision D8): remove a folder pair, and set its sync history
+/// aside so that adding the same folder back starts fresh.
+///
+/// The order is the design (`pair_admin`'s module doc): the pair leaves the file; the daemon is
+/// restarted off it through the existing restart path; the daemon must then no longer list the pair;
+/// and only then is the history moved — outside every sync folder, with the pair's own lockfile taken
+/// first. A move that cannot happen yet is recorded as pending and the reply says why. **Never
+/// touches a file of the person's**, and refuses to remove the last pair.
+#[tauri::command]
+pub async fn remove_pair(
+    state: Paths<'_>,
+    pair: String,
+) -> Result<pair_admin::RemovePairReply, String> {
+    let (path, socket_path, state_dir, name) = {
+        let paths = state.lock().unwrap();
+        let name = paths.resolve_ask(Ask::Named(&pair))?.name;
+        (
+            paths.config_path.clone(),
+            paths.socket_path.clone(),
+            paths.state_dir.clone(),
+            name,
+        )
+    };
+    let removed = {
+        let (path, name) = (path.clone(), name.clone());
+        tauri::async_runtime::spawn_blocking(move || pair_admin::remove_pair_file(&path, &name))
+            .await
+            .map_err(|error| format!("remove-pair task failed: {error}"))??
+    };
+    re_resolve_after_a_write(&state, &path);
+    let reply = {
+        let path = path.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let restart = || {
+                socket_path
+                    .clone()
+                    .and_then(|socket| restart_service_impl(&path, &socket, true))
+            };
+            let ask_pairs = || pairs_the_daemon_runs(&socket_path);
+            pair_admin::finish_removal(
+                &removed,
+                &path,
+                state_dir.as_deref(),
+                restart,
+                ask_pairs,
+                std::thread::sleep,
+                std::time::SystemTime::now(),
+            )
+        })
+        .await
+        .map_err(|error| format!("remove-pair task failed: {error}"))?
+    };
+    // The restart above is the same one `restart_service` makes, so its socket follows the same rule.
+    if old_socket_is_settled(&reply.restart) {
+        apply_socket_adoption(&state, true);
+    }
+    Ok(reply)
+}
+
+/// The pairs a daemon runs right now, by its own `status` reply — `None` when it did not answer, or
+/// answered as a daemon that predates the list (which cannot confirm that a pair is gone).
+fn pairs_the_daemon_runs(socket_path: &Result<std::path::PathBuf, String>) -> Option<Vec<String>> {
+    let socket = socket_path.as_ref().ok()?;
+    let reply = ipc::command(
+        socket,
+        Target::DEFAULT,
+        ControlCommand::Status,
+        std::time::Duration::from_secs(2),
+    )
+    .ok()?;
+    (!reply.pairs.is_empty()).then(|| reply.pairs.iter().map(|pair| pair.name.clone()).collect())
 }
 
 /// Choose the folder pair the window shows (#102 phase 5a-2) — **the one writer of the selection**.
@@ -4335,6 +4463,9 @@ mod tray_tests;
 
 #[cfg(all(test, unix))]
 mod config_tests;
+
+#[cfg(all(test, unix))]
+mod pair_admin_tests;
 
 #[cfg(all(test, unix))]
 mod socket_tests {

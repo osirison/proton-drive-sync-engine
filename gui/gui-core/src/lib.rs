@@ -38,6 +38,7 @@ pub mod ipc;
 pub mod opener;
 pub mod pairs;
 pub mod plan;
+pub mod set_aside;
 pub mod sidecars;
 pub mod skip_rules;
 pub mod state;

@@ -1,0 +1,8 @@
+proton_list_attempts = 2
+
+[[pair]]
+name = "default"
+local_root = "/home/u/Dotted"
+remote_root = "/Drive/Dotted"
+delete_approval.remote = false
+delete_approval.local = true

@@ -38,8 +38,11 @@
 
 use proton_drive_sync_engine::config::{ConfigKey, KeyScope};
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use toml_edit::{Array, DocumentMut, Item, Table, TableLike, Value, value};
+use toml_edit::{
+    Array, ArrayOfTables, DocumentMut, Item, RawString, Table, TableLike, Value, value,
+};
 
 /// Why a config read/validate/write failed.
 #[derive(Debug)]
@@ -72,6 +75,28 @@ pub enum ConfigError {
         name: String,
         known: Vec<String>,
     },
+    /// A pair name the engine refuses ([`proton_drive_sync_engine::config::validate_pair_name_among`]),
+    /// carried **verbatim**: it is the sentence the daemon would exit with for a `[[pair]]` table of
+    /// that name, and a form that shows it as someone types must show the same words.
+    PairName(String),
+    /// Removing this pair would leave the config with none. The engine refuses an empty `pair = []`
+    /// (a daemon with no folder has nothing to do), so the refusal is made here, before a file is
+    /// written that the daemon would not start on.
+    LastPair {
+        name: String,
+    },
+    /// A value the app will not write because the config's other readers could not read it back
+    /// (`setup.sh` / `uninstall.sh` find each pair's folder by a line grep and do not unescape). The
+    /// engine accepts such a value; this is the app's own narrower rule about what it WRITES.
+    Unwritable {
+        field: &'static str,
+        reason: &'static str,
+    },
+    /// A rewrite that was supposed to leave the file meaning what it meant came out meaning
+    /// something else (promotion, add, remove). **A bug of this module, not of the file**: it is
+    /// returned instead of the result, with the file as it was, so the worst a mistake here can do is
+    /// refuse a save.
+    ChangedMeaning(String),
 }
 
 impl std::fmt::Display for ConfigError {
@@ -124,6 +149,20 @@ impl std::fmt::Display for ConfigError {
                     )
                 }
             }
+            ConfigError::PairName(sentence) => write!(f, "{sentence}"),
+            ConfigError::LastPair { name } => write!(
+                f,
+                "{name:?} is the only folder pair in the config, and a config needs at least one: \
+                 add the folder that replaces it first, or stop the sync service instead"
+            ),
+            ConfigError::Unwritable { field, reason } => {
+                write!(f, "this app will not write that {field}: {reason}")
+            }
+            ConfigError::ChangedMeaning(what) => write!(
+                f,
+                "the config was left as it was, because rewriting it would have changed what it \
+                 says ({what}). This is a fault in the app, not in your file"
+            ),
         }
     }
 }
@@ -180,7 +219,8 @@ pub use proton_drive_sync_engine::sync::ConflictNaming;
 /// 5b-1): the half of the daemon's boot check that follows symlinks, which no lexical validator can
 /// see. It touches the filesystem, so it is called from a blocking thread.
 pub use proton_drive_sync_engine::config::{
-    DEFAULT_PAIR_NAME, PairView, pair_views, real_path_conflicts,
+    DEFAULT_PAIR_NAME, PairView, pair_views, real_path_conflicts, validate_pair_name,
+    validate_pair_name_among,
 };
 
 /// How a config file states its folder pairs (ADR 0005 §2), which the pair list alone cannot say: an
@@ -195,6 +235,23 @@ pub enum PairLayout {
     /// A `pair` key that is not tables — in practice `pair = [{ … }]`. Valid TOML and a pair list the
     /// daemon reads; read here, refused as an edit ([`ConfigError::InlinePairs`]).
     InlineArray,
+}
+
+/// What a new `[[pair]]` table is born with (#102 phase 5b-2): the add-folder dialog's whole answer,
+/// carried in ONE write so that adding a folder with skip rules is one save and so one restart, not
+/// two. Every field becomes a `key = value` line of its own in the table — see
+/// [`ConfigDoc::add_pair`] for why the shape is fixed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PairInit {
+    /// The pair's name: a wire selector, a `gui.toml` key and a tray id, so it is checked by the
+    /// engine's own rule ([`validate_pair_name_among`]) and never changed afterwards.
+    pub name: String,
+    /// As the person wrote it. A leading `~` is the engine's to expand, not this module's.
+    pub local_root: String,
+    /// A Drive path, as the person wrote it.
+    pub remote_root: String,
+    /// The skip rules the dialog staged (written as `exclude`); empty writes no key at all.
+    pub exclude: Vec<String>,
 }
 
 /// An in-memory, edit-in-place view of a config file. Getters read known keys; setters mutate only
@@ -815,6 +872,452 @@ impl ConfigDoc {
     }
 }
 
+// ---- adding, removing and promoting folder pairs (#102 phase 5b-2) --------------------------------
+
+/// Settings by key, in a form that does not care how the file laid them out.
+type KeyMap = BTreeMap<String, toml::Value>;
+
+/// **What a config file says**, with the layout taken out: the daemon-wide keys, the keys nobody
+/// classified, and each pair's per-pair keys in file order. A rewrite of the file (promoting it to
+/// `[[pair]]` tables, adding a table, removing one) is correct exactly when this changes in the one
+/// way it was asked to — and it is read through the `toml` crate, not through the `toml_edit` calls
+/// that did the rewrite, so a mistake in the moving cannot also be a mistake in the checking.
+///
+/// A key of the implicit pair at the top level and the same key inside a `[[pair]]` table are the same
+/// entry here, which is what makes "promotion changes nothing" a comparison rather than a belief.
+#[derive(Debug, PartialEq)]
+struct Meaning {
+    daemon: KeyMap,
+    /// Top-level keys the engine does not list, and per-pair keys left beside `[[pair]]` tables. The
+    /// daemon refuses both, so this is empty in every file that validates; kept so a rewrite can
+    /// neither drop nor invent one without the comparison noticing.
+    rest: KeyMap,
+    /// `(name, per-pair keys without `name`)`, in file order.
+    pairs: Vec<(String, KeyMap)>,
+}
+
+impl Meaning {
+    fn of(text: &str) -> Result<Self, ConfigError> {
+        let root: toml::Table = text
+            .parse()
+            .map_err(|error: toml::de::Error| ConfigError::Parse(error.to_string()))?;
+        let (mut daemon, mut rest, mut root_pair) = (KeyMap::new(), KeyMap::new(), KeyMap::new());
+        let mut tables: Option<Vec<toml::Value>> = None;
+        for (key, value) in &root {
+            if key == "pair" {
+                tables = Some(value.as_array().cloned().unwrap_or_default());
+                continue;
+            }
+            let into = match ConfigKey::from_spelling(key).map(ConfigKey::scope) {
+                Some(KeyScope::Pair) => &mut root_pair,
+                Some(KeyScope::Daemon) => &mut daemon,
+                None => &mut rest,
+            };
+            into.insert(key.clone(), value.clone());
+        }
+        let pairs = match tables {
+            None => vec![(DEFAULT_PAIR_NAME.to_owned(), root_pair)],
+            Some(tables) => {
+                rest.extend(root_pair);
+                tables
+                    .iter()
+                    .map(|table| {
+                        let table = table.as_table().cloned().unwrap_or_default();
+                        let name = table
+                            .get("name")
+                            .and_then(toml::Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned();
+                        let keys = table
+                            .into_iter()
+                            .filter(|(key, _)| key != "name")
+                            .collect::<KeyMap>();
+                        (name, keys)
+                    })
+                    .collect()
+            }
+        };
+        Ok(Self {
+            daemon,
+            rest,
+            pairs,
+        })
+    }
+}
+
+/// The folder pairs of `text` as the ENGINE reads them, for the "paths are unchanged" half of every
+/// rewrite's self-check. A text the engine cannot read as a config is its refusal, in its words.
+fn views_of(text: &str) -> Result<Vec<PairView>, ConfigError> {
+    pair_views(text).map_err(|error| ConfigError::Invalid(error.to_string()))
+}
+
+/// A value the app is willing to put on a line of its own. `setup.sh` and `uninstall.sh` find each
+/// pair's folder by grepping for `local_root = "…"` (`config_values`): a key that starts its own line,
+/// in a basic or a literal string, with no unescaping. A control character would split the value over
+/// lines and a `"` or `\` is an escape the reader would not undo — both would make `uninstall.sh`
+/// read a folder that is not the pair's, and it purges what it reads. The engine accepts such values
+/// (they are legal on Linux); this is narrower on purpose, and only about what the app WRITES.
+fn writable_on_one_line(field: &'static str, value: &str) -> Result<(), ConfigError> {
+    if value.chars().any(char::is_control) {
+        return Err(ConfigError::Unwritable {
+            field,
+            reason: "it contains a control character, such as a line break",
+        });
+    }
+    if value.contains(['"', '\\']) {
+        return Err(ConfigError::Unwritable {
+            field,
+            reason: "it contains a `\"` or a `\\`, which the install and uninstall scripts do not \
+                     unescape when they read the config",
+        });
+    }
+    Ok(())
+}
+
+/// Cut the file's header off the front of `first`'s prefix: every line up to and including the LAST
+/// blank one, which is returned; what follows it stays as the key's own comment. `None` — and nothing
+/// cut — when the prefix has no blank line, because a comment sitting directly on a key is that key's.
+fn detach_header(root: &mut Table, first: &str) -> Option<String> {
+    let mut key = root.key_mut(first)?;
+    let decor = key.leaf_decor_mut();
+    let prefix = decor.prefix().and_then(RawString::as_str)?.to_owned();
+    let cut = header_end(&prefix)?;
+    decor.set_prefix(prefix[cut..].to_owned());
+    Some(prefix[..cut].to_owned())
+}
+
+/// Where the file's own header ends inside a decor prefix: just after its LAST blank line. `None`
+/// when there is no blank line, because a comment sitting directly on a key is that key's.
+fn header_end(prefix: &str) -> Option<usize> {
+    let mut cut = None;
+    let mut offset = 0;
+    for line in prefix.split_inclusive('\n') {
+        offset += line.len();
+        if line.trim().is_empty() {
+            cut = Some(offset);
+        }
+    }
+    cut
+}
+
+/// A header put back above what it was cut from: the header already ends in a blank line, and the
+/// blank line the thing below had above it would make two.
+fn title_over(header: &str, kept: &str) -> String {
+    format!("{header}{}", kept.strip_prefix('\n').unwrap_or(kept))
+}
+
+/// Whether `table` is the very first thing in the file `text`: nothing but its own prefix precedes
+/// its `[[` line.
+fn leads_the_file(text: &str, table: &Table) -> bool {
+    let prefix = table
+        .decor()
+        .prefix()
+        .and_then(RawString::as_str)
+        .unwrap_or_default();
+    text.strip_prefix(prefix)
+        .is_some_and(|rest| rest.starts_with("[["))
+}
+
+/// The file's title, when it sits in the header of `table` and that table is the first thing in the
+/// file (`text` begins with the table's own prefix): a comment block a blank line separates from the
+/// table. A promotion parks it there when no key stayed at the top, and a file written that way by
+/// hand has the same shape. `None` for a comment sitting directly on the table, and for a table that
+/// something precedes — its prefix is then only its own comments.
+fn first_table_title(text: &str, table: &Table) -> Option<String> {
+    let prefix = table.decor().prefix().and_then(RawString::as_str)?;
+    let header = &prefix[..header_end(prefix)?];
+    (header.contains('#') && text.starts_with(prefix)).then(|| header.to_owned())
+}
+
+impl ConfigDoc {
+    /// A copy of the document to rewrite. Every operation below edits a copy and only then replaces
+    /// `self`, so any failure — a refused name, a file the engine would reject, a self-check that
+    /// disagrees — leaves the document, and so the file the caller saves it to, **byte-identical**.
+    fn cloned(&self) -> Self {
+        Self {
+            doc: self.doc.clone(),
+            source: self.source.clone(),
+        }
+    }
+
+    /// The table the folder pairs live in, for a document whose layout is [`PairLayout::Tables`].
+    fn pair_tables_mut(&mut self) -> &mut ArrayOfTables {
+        self.doc
+            .get_mut("pair")
+            .and_then(Item::as_array_of_tables_mut)
+            .expect("the caller checked the layout is `[[pair]]` tables")
+    }
+
+    /// Rewrite an implicit single-pair file as one `[[pair]]` table named `default`, **meaning the
+    /// same thing** (ADR 0005 §7). A no-op on a file that already has tables; an inline array is
+    /// [`ConfigError::InlinePairs`], because rewriting the layout a person chose is not a save.
+    ///
+    /// Driven by the ENGINE's classification, not a list kept here: every key whose
+    /// [`ConfigKey::scope`] is [`KeyScope::Pair`] — under whichever spelling the file uses — moves
+    /// into the new table, in the order the file had them, **with its comments** (the key and its
+    /// value are moved as they are, never re-created, so the decor travels). A daemon-wide key stays
+    /// at the top level, comments and order untouched; `[delete_approval]` moves as
+    /// `[pair.delete_approval]`.
+    ///
+    /// Done on a copy and checked before it is kept: the result must pass the engine's
+    /// `validate_file_config_text`, say the same thing key for key ([`Meaning`]), and read as the
+    /// same pair through `pair_views`. A disagreement is [`ConfigError::ChangedMeaning`] and the
+    /// document is as it was.
+    pub fn promote_to_pair_tables(&mut self) -> Result<(), ConfigError> {
+        match self.layout() {
+            PairLayout::Tables => return Ok(()),
+            PairLayout::InlineArray => return Err(self.inline_pairs()),
+            PairLayout::Implicit => {}
+        }
+        *self = self.promoted()?;
+        Ok(())
+    }
+
+    fn promoted(&self) -> Result<Self, ConfigError> {
+        let mut next = self.cloned();
+        let root = next.doc.as_table_mut();
+        let moving: Vec<String> = root
+            .iter()
+            .map(|(key, _)| key.to_owned())
+            .filter(|key| {
+                ConfigKey::from_spelling(key).map(ConfigKey::scope) == Some(KeyScope::Pair)
+            })
+            .collect();
+        // A comment belongs to the key below it, so it moves with that key — except the file's own
+        // header: when the FIRST key of the file is one that moves, the comment block above it that a
+        // blank line separates from it is a title for the file, and a title that ends up inside a
+        // `[[pair]]` table, under `name = "default"`, says something the file no longer means.
+        let header = moving
+            .first()
+            .filter(|first| {
+                root.iter()
+                    .next()
+                    .is_some_and(|(key, _)| key == first.as_str())
+            })
+            .and_then(|first| detach_header(root, first));
+        let mut pair = Table::new();
+        pair.insert("name", value(DEFAULT_PAIR_NAME));
+        for key in moving {
+            if let Some((key, item)) = root.remove_entry(&key) {
+                pair.insert_formatted(&key, item);
+            }
+        }
+        if let Some(header) = header {
+            // Back at the top: above the first key that stayed, or above the table when none did.
+            let first_staying = root.iter().next().map(|(key, _)| key.to_owned());
+            match first_staying.and_then(|key| root.key_mut(&key)) {
+                Some(mut key) => {
+                    let decor = key.leaf_decor_mut();
+                    let kept = decor
+                        .prefix()
+                        .and_then(RawString::as_str)
+                        .unwrap_or_default()
+                        .to_owned();
+                    decor.set_prefix(title_over(&header, &kept));
+                }
+                None => pair.decor_mut().set_prefix(header),
+            }
+        }
+        let mut tables = ArrayOfTables::new();
+        tables.push(pair);
+        root.insert("pair", Item::ArrayOfTables(tables));
+
+        next.validate()?;
+        let (before, after) = (self.to_toml_string(), next.to_toml_string());
+        if Meaning::of(&before)? != Meaning::of(&after)? {
+            return Err(ConfigError::ChangedMeaning(
+                "a setting moved, changed or was lost in the promotion".to_owned(),
+            ));
+        }
+        if views_of(&before)? != views_of(&after)? {
+            return Err(ConfigError::ChangedMeaning(
+                "the folder's paths read differently after the promotion".to_owned(),
+            ));
+        }
+        Ok(next)
+    }
+
+    /// Append a `[[pair]]` table for a new folder (#102 phase 5b-2), promoting an implicit file first.
+    /// One write: the name, both roots and the staged skip rules arrive together, so the caller saves
+    /// and restarts once.
+    ///
+    /// **The table's shape is fixed**, because `uninstall.sh` reads it with a line grep: `name`,
+    /// `local_root`, `remote_root` and (when there are any) `exclude`, each a scalar or a one-line
+    /// array on a line of its own — no inline table, no dotted key. A value the grep could not read
+    /// back is [`ConfigError::Unwritable`].
+    ///
+    /// Refused, with the file untouched: an inline-array file, a name the engine refuses
+    /// ([`ConfigError::PairName`], its sentence verbatim), and **anything the daemon would then refuse
+    /// to start on** — the whole document goes through the engine's `validate_file_config_text`, so a
+    /// lexical overlap, a missing root beside other pairs and `dry_run = true` beside a second pair
+    /// (maintainer decision M3) each answer in the engine's own words. The overlap through a symlink
+    /// is the one rule a text cannot see; `real_path_conflicts` asks it of the result.
+    pub fn add_pair(&mut self, init: PairInit) -> Result<(), ConfigError> {
+        *self = self.with_pair_added(&init)?;
+        Ok(())
+    }
+
+    fn with_pair_added(&self, init: &PairInit) -> Result<Self, ConfigError> {
+        let mut next = match self.layout() {
+            PairLayout::InlineArray => return Err(self.inline_pairs()),
+            PairLayout::Implicit => self.promoted()?,
+            PairLayout::Tables => self.cloned(),
+        };
+        let existing = next.pair_names();
+        let others: Vec<&str> = existing.iter().map(String::as_str).collect();
+        validate_pair_name_among(&init.name, &others, others.len())
+            .map_err(ConfigError::PairName)?;
+        writable_on_one_line("local_root", &init.local_root)?;
+        writable_on_one_line("remote_root", &init.remote_root)?;
+        for rule in &init.exclude {
+            writable_on_one_line("skip rule", rule)?;
+        }
+
+        let mut table = Table::new();
+        table.insert("name", value(init.name.as_str()));
+        table.insert("local_root", value(init.local_root.as_str()));
+        table.insert("remote_root", value(init.remote_root.as_str()));
+        if !init.exclude.is_empty() {
+            set_string_array_in(&mut table, "exclude", &init.exclude);
+        }
+        next.pair_tables_mut().push(table);
+
+        next.validate()?;
+        let (before, after) = (self.to_toml_string(), next.to_toml_string());
+        let (old, new) = (Meaning::of(&before)?, Meaning::of(&after)?);
+        let mut expected = old.pairs;
+        let kept = expected.len();
+        let mut added = KeyMap::new();
+        added.insert(
+            "local_root".to_owned(),
+            toml::Value::from(init.local_root.as_str()),
+        );
+        added.insert(
+            "remote_root".to_owned(),
+            toml::Value::from(init.remote_root.as_str()),
+        );
+        if !init.exclude.is_empty() {
+            added.insert(
+                "exclude".to_owned(),
+                toml::Value::Array(
+                    init.exclude
+                        .iter()
+                        .map(|rule| rule.as_str().into())
+                        .collect(),
+                ),
+            );
+        }
+        expected.push((init.name.clone(), added));
+        if (new.daemon, new.rest, new.pairs) != (old.daemon, old.rest, expected) {
+            return Err(ConfigError::ChangedMeaning(
+                "the new folder pair is not exactly the one that was asked for, or another \
+                 setting changed with it"
+                    .to_owned(),
+            ));
+        }
+        if views_of(&before)? != views_of(&after)?[..kept] {
+            return Err(ConfigError::ChangedMeaning(
+                "an existing folder pair's paths read differently after the add".to_owned(),
+            ));
+        }
+        Ok(next)
+    }
+
+    /// Remove the `[[pair]]` table called `name` (#102 phase 5b-2): the table, with the comments
+    /// written above it, and nothing else. **The folder, its index and the remote are not this
+    /// module's** — it edits a document.
+    ///
+    /// Refused, with the document untouched: a name the file does not have
+    /// ([`ConfigError::NoSuchPair`]), the **last** pair ([`ConfigError::LastPair`] — the engine refuses
+    /// an empty list), and an inline-array file. An implicit file has exactly one pair, so removing it
+    /// is the last-pair refusal. A file left with one table stays in `[[pair]]` form: the layout is
+    /// never rewritten behind a person's back. Removing the FIRST table makes the next one the default
+    /// pair (the pair a command addressed to no pair reaches); the caller says so.
+    pub fn remove_pair(&mut self, name: &str) -> Result<(), ConfigError> {
+        *self = self.with_pair_removed(name)?;
+        Ok(())
+    }
+
+    fn with_pair_removed(&self, name: &str) -> Result<Self, ConfigError> {
+        let known = self.pair_names();
+        let missing = || ConfigError::NoSuchPair {
+            name: name.to_owned(),
+            known: known.clone(),
+        };
+        match self.layout() {
+            PairLayout::InlineArray => return Err(self.inline_pairs()),
+            PairLayout::Implicit => {
+                return Err(if name == DEFAULT_PAIR_NAME {
+                    ConfigError::LastPair {
+                        name: name.to_owned(),
+                    }
+                } else {
+                    missing()
+                });
+            }
+            PairLayout::Tables => {}
+        }
+        let mut next = self.cloned();
+        let text = self.to_toml_string();
+        let tables = next.pair_tables_mut();
+        let index = tables
+            .iter()
+            .position(|table| name_of(table) == Some(name))
+            .ok_or_else(missing)?;
+        if tables.len() < 2 {
+            return Err(ConfigError::LastPair {
+                name: name.to_owned(),
+            });
+        }
+        // The table goes with the comments written above it — but not the file's own title, which a
+        // promotion parks in the first table's header and which is not that table's to take away. The
+        // table after it becomes the top of the file: it gets the title, and no blank line above it.
+        let at_top = index == 0
+            && tables
+                .get(0)
+                .is_some_and(|first| leads_the_file(&text, first));
+        let title = at_top
+            .then(|| {
+                tables
+                    .get(0)
+                    .and_then(|first| first_table_title(&text, first))
+            })
+            .flatten();
+        tables.remove(index);
+        if let (true, Some(next_first)) = (at_top, tables.get_mut(0)) {
+            let kept = next_first
+                .decor()
+                .prefix()
+                .and_then(RawString::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            next_first
+                .decor_mut()
+                .set_prefix(title_over(title.as_deref().unwrap_or_default(), &kept));
+        }
+
+        next.validate()?;
+        let (before, after) = (self.to_toml_string(), next.to_toml_string());
+        let (old, new) = (Meaning::of(&before)?, Meaning::of(&after)?);
+        let mut expected = old.pairs;
+        expected.remove(index);
+        if (new.daemon, new.rest, new.pairs) != (old.daemon, old.rest, expected) {
+            return Err(ConfigError::ChangedMeaning(
+                "a pair other than the one removed changed, or a setting at the top level did"
+                    .to_owned(),
+            ));
+        }
+        let mut expected_views = views_of(&before)?;
+        expected_views.remove(index);
+        if views_of(&after)? != expected_views {
+            return Err(ConfigError::ChangedMeaning(
+                "a remaining folder pair's paths read differently after the removal".to_owned(),
+            ));
+        }
+        Ok(next)
+    }
+}
+
 /// Expand a leading `~` in a config value, using **the engine's own** expander.
 ///
 /// The GUI is the daemon's second shell-less reader of the same file, and `~` is where the two
@@ -895,6 +1398,9 @@ fn unique_suffix() -> u64 {
 fn write_atomic_0600(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     std::fs::write(path, bytes)
 }
+
+#[cfg(test)]
+mod pair_admin_tests;
 
 #[cfg(test)]
 mod tests {

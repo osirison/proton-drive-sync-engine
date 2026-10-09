@@ -1,0 +1,9 @@
+# Nothing about a folder yet.
+socket_path = "/run/user/1000/only.sock"
+log_level = "debug"
+proton_cli = "/usr/bin/proton-drive"
+proton_timeout_secs = 45
+proton_list_attempts = 4
+
+[[pair]]
+name = "default"
