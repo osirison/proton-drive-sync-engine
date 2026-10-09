@@ -1009,6 +1009,69 @@ fn a_folder_that_cannot_be_read_is_pending_and_never_nothing_to_move() {
 }
 
 #[test]
+fn a_state_file_on_a_missing_drive_is_pending_and_keeps_a_note() {
+    let session = session(|dir| {
+        let docs = make_folder(dir, "docs", true);
+        let photos = make_folder(dir, "photos", false);
+        let usb = dir.join("usb-not-plugged-in");
+        format!(
+            "{}[[pair]]\nname = \"photos\"\nlocal_root = \"{}\"\nremote_root = \"/Drive/photos\"\n\
+             db_path = \"{}\"\nlockfile_path = \"{}\"\n",
+            pair_text("docs", &docs),
+            photos.display(),
+            usb.join("idx.db").display(),
+            usb.join("pair.lock").display()
+        )
+    });
+    let reply = remove(&session, "photos").expect("the removal itself succeeds");
+    let SetAsideReport::Pending { record, reason, .. } = &reply.set_aside else {
+        panic!(
+            "the index may be on the missing drive: {:?}",
+            reply.set_aside
+        )
+    };
+    assert!(reason.contains("usb-not-plugged-in"), "{reason}");
+    assert!(record.is_some(), "a note is kept so it can be tried again");
+    assert_eq!(pending_records(&session), 1);
+}
+
+#[test]
+fn a_note_filed_for_an_unreadable_folder_does_not_claim_it_had_history_to_move() {
+    let session = session(|dir| {
+        let docs = make_folder(dir, "docs", true);
+        let photos = make_folder(dir, "photos", false);
+        format!(
+            "{}{}",
+            pair_text("docs", &docs),
+            pair_text("photos", &photos)
+        )
+    });
+    if !permissions_are_enforced(session.dir.path()) {
+        return;
+    }
+    let photos = session.dir.path().join("folders/photos");
+    set_mode(&photos, 0o000);
+    let reply = remove(&session, "photos").expect("the removal itself succeeds");
+    set_mode(&photos, 0o755);
+    assert!(
+        matches!(reply.set_aside, SetAsideReport::Pending { .. }),
+        "{:?}",
+        reply.set_aside
+    );
+    let music = session.folder("music", false);
+    let reply = add(&session, "music", &music, "/Drive/music").unwrap();
+    let [SetAsideReport::NothingToMove { message, .. }] = &reply.settled_earlier[..] else {
+        panic!("{:?}", reply.settled_earlier)
+    };
+    assert!(
+        message.contains("can now be read and holds no history; nothing was moved"),
+        "{message}"
+    );
+    assert!(!message.contains("had history to move"), "{message}");
+    assert_eq!(pending_records(&session), 0);
+}
+
+#[test]
 fn a_folder_that_is_not_there_is_pending_not_nothing_to_move() {
     // An unplugged drive. Its history is on it, and the app cannot see that.
     let session = two_pairs();
@@ -1256,7 +1319,11 @@ fn a_note_whose_history_has_gone_is_dropped_and_said_so() {
     let [SetAsideReport::NothingToMove { message, .. }] = &reply.settled_earlier[..] else {
         panic!("{:?}", reply.settled_earlier)
     };
-    assert!(message.contains("none is left"), "{message}");
+    // The note was filed because the folder could not be read, so it listed nothing to move.
+    assert!(
+        message.contains("can now be read and holds no history; nothing was moved"),
+        "{message}"
+    );
     assert_eq!(pending_records(&session), 0);
 }
 

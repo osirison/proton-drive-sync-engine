@@ -285,7 +285,8 @@ fn undetermined(reason: String, retry: bool) -> Planned {
 /// What setting this pair's history aside would move. Pure reading of the disk; moves nothing.
 ///
 /// **"Nothing" needs a folder that can be read.** `NotFound` for a path under a folder that was
-/// opened is an absence; every other answer — the folder itself missing (its drive may be unplugged),
+/// opened is an absence (for a state file outside the pair's folder, the folder it sits in must be
+/// listable too); every other answer — the folder itself missing (its drive may be unplugged),
 /// unreadable, not a folder, or any error looking at a state path — is [`Planned::Undetermined`].
 /// A relative path is refused before the disk is touched at all: the daemon resolves one against its
 /// own working directory, which is not this app's, and looking relative to ours would find (and move)
@@ -372,7 +373,22 @@ pub fn plan(view: &PairView) -> Planned {
                 file.display()
             )),
             Ok(_) => items.push(file),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                // Absent only if the folder it would be in can itself be listed: a state file on a
+                // drive that is not mounted has no parent to list, and that is not an absence.
+                if let Some(parent) = file.parent()
+                    && let Err(parent_error) = fs::read_dir(parent)
+                {
+                    return undetermined(
+                        format!(
+                            "the folder {} cannot be read ({parent_error}), so the app cannot tell                              whether {} is there; a drive that is unplugged or not mounted looks the                              same, and nothing was moved",
+                            parent.display(),
+                            file.display()
+                        ),
+                        true,
+                    );
+                }
+            }
             Err(error) => {
                 return undetermined(
                     format!("could not look at {}: {error}", file.display()),
@@ -1050,7 +1066,13 @@ pub enum Settled {
     Superseded { pair: String },
     /// Looked at again, the pair has no state left to move (it was moved or deleted by hand). The
     /// record is dropped.
-    NothingLeft { pair: String, notes: Vec<String> },
+    NothingLeft {
+        pair: String,
+        notes: Vec<String>,
+        /// Whether the note listed items to move. A note filed because the folder could not be read
+        /// lists none.
+        had_items: bool,
+    },
     /// Still cannot happen; the record stays.
     StillPending { pair: String, reason: String },
 }
@@ -1112,7 +1134,11 @@ pub fn settle_pending(context: &Context<'_>) -> Vec<Settled> {
             },
             Planned::Nothing { notes } => {
                 let _ = fs::remove_file(&path);
-                results.push(Settled::NothingLeft { pair, notes });
+                results.push(Settled::NothingLeft {
+                    pair,
+                    notes,
+                    had_items: !record.plan.items.is_empty(),
+                });
             }
             Planned::Undetermined(undetermined) => results.push(Settled::StillPending {
                 pair,

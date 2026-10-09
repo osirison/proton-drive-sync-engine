@@ -99,7 +99,8 @@ export const api = {
   // set_aside, … }`: `set_aside.outcome` is `moved` (and where, and any `left_behind` link), `link_moved`
   // (ONLY a link moved; the history is where it points), `nothing_to_move` (a readable folder with no
   // state), or `pending` (and why; `moved`/`still_at` say how far a partial move got, and an empty
-  // `still_at` means the folder could not be looked at, not that it holds nothing).
+  // `still_at` carries no information on its own: it is empty both when the folder could not be looked at
+  // and for a report built from settling an earlier note, so read `reason`/`message`, not its length).
   removePair: ({ pair } = {}) => write("remove_pair", {}, pair),
   // Settings › `Choose…`. Resolves `null` when the picker is DISMISSED and rejects when it could
   // not open — the two were one answer until Copilot's second pass, which made a broken picker

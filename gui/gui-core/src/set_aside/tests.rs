@@ -844,6 +844,29 @@ fn a_state_file_elsewhere_that_cannot_be_looked_at_is_not_absent() {
 }
 
 #[test]
+fn a_state_file_whose_folder_is_missing_is_not_absent() {
+    // An index on a drive that is not plugged in: the folder holds no history the app can see, and the
+    // state file has no parent to list.
+    let base = tempfile::tempdir().unwrap();
+    let root = base.path().join("docs");
+    write(&root.join("a.txt"), "mine");
+    let gone = base.path().join("usb-not-plugged-in");
+    let view = view("docs", &root, gone.join("idx.db"), gone.join("pair.lock"));
+    let Planned::Undetermined(undetermined) = super::plan(&view) else {
+        panic!("a state file on a missing drive was reported as nothing to move")
+    };
+    assert!(undetermined.retry, "the drive may come back");
+    assert!(
+        undetermined.reason.contains(gone.to_str().unwrap()),
+        "{}",
+        undetermined.reason
+    );
+    // With the parent present and listable, the same absence is an absence.
+    fs::create_dir_all(&gone).unwrap();
+    assert!(matches!(super::plan(&view), Planned::Nothing { .. }));
+}
+
+#[test]
 fn a_move_that_could_not_look_is_recorded_and_happens_when_the_drive_is_back() {
     // The whole flow of an unplugged drive: removal finds nothing it can look at, a record of the pair
     // is kept (no list of items: there was none to make), and when the folder is readable again the
@@ -880,7 +903,7 @@ fn a_move_that_could_not_look_is_recorded_and_happens_when_the_drive_is_back() {
     record_pending(state_dir.path(), &identity, "again", now()).unwrap();
     let results = settle_pending(&context(state_dir.path(), &[]));
     assert!(
-        matches!(&results[..], [Settled::NothingLeft { pair, .. }] if pair == "x"),
+        matches!(&results[..], [Settled::NothingLeft { pair, had_items: false, .. }] if pair == "x"),
         "{results:?}"
     );
     assert!(pending(state_dir.path()).is_empty());

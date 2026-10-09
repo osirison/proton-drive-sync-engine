@@ -312,12 +312,24 @@ fn settled_report(settled: Settled) -> SetAsideReport {
             ),
             pair,
         },
-        Settled::NothingLeft { pair, notes } => SetAsideReport::NothingToMove {
-            message: format!(
-                "An earlier removal of '{pair}' had history to move, and none is left on disk now \
-                 (it was moved or deleted by hand), so the note of it was dropped.{}",
-                notes_sentence(&notes)
-            ),
+        Settled::NothingLeft {
+            pair,
+            notes,
+            had_items,
+        } => SetAsideReport::NothingToMove {
+            message: if had_items {
+                format!(
+                    "An earlier removal of '{pair}' had history to move, and none is left on disk \
+                     now (it was moved or deleted by hand), so the note of it was dropped.{}",
+                    notes_sentence(&notes)
+                )
+            } else {
+                format!(
+                    "The folder of the earlier removal of '{pair}' can now be read and holds no \
+                     history; nothing was moved, so the note of it was dropped.{}",
+                    notes_sentence(&notes)
+                )
+            },
             pair,
             notes,
         },
