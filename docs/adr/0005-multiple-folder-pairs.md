@@ -1603,7 +1603,7 @@ Closes: the feature for users.
 > **`pause_unsaved` has no surface in the tray**: every row dismisses the panel before the reply arrives
 > and the reply is not repeated on `status`, so every row that pauses or resumes logs it (the one-folder
 > rows too, since the review of #443) and the way to show it as state is a field on the folder's summary
-> (engine work, deferred; showing it stays with the app PR).
+> (engine work, deferred; showing it stays with the app PR — done in the window in phase 5c-1, note 37).
 >
 > **Review of #443, recorded because each changes a rule above.** (19) **A folder's row writes its name on
 > the wire, the default folder's included** (`Ask::Explicit`), amending the "default by omission" rule for
@@ -1693,6 +1693,53 @@ Closes: the feature for users.
 > `config::validate_pair_name` and `validate_pair_name_among` are the set rules' own body
 > (`check_pair_name_among`, shared with the file reader), and `index::canonicalize_best_effort` is public so
 > "outside every sync folder" has the answer the daemon's overlap rule gives.
+>
+> **Phase 5c-1 (the selector and the scoped window), recorded because each changes a rule above.** (33)
+> **The pill is drawn from the daemon's list and from nothing else**, at two folders or more
+> (`store.select.pairs().length >= 2`); a folder only the settings file knows cannot be chosen. Below two,
+> the header is the one the 22 spacer-pinning frames were measured against, node for node (D2); the slot is
+> a `div` between two `span`s so the header's `span[0..2]` keep their keys at every count. The popover is a
+> child of the pill's container, not a sibling of the header (`setBody` anchors on `header.nextSibling`), and
+> both are patched across a poll and never rebuilt, so the keyboard stays on them. (34) **The marker
+> has two forms and is never a number.** The ring counts only what a person must decide (a conflict, a
+> withheld deletion not yet answered) **in another folder**; a solid dot says another folder failed or is
+> unavailable (an unplugged drive; the engine derives `failed` for both), and wins when both apply — added on
+> review by the maintainer's decision of 2026-10-09, which reversed this note's first reading (a failed other
+> folder did not mark the pill). A paused folder marks nothing. The chip and the band are the selected
+> folder's alone (D4). DEVIATIONS §108g. (35) **A folder that is not
+> on screen costs as little as it can**: its withheld deletions are fetched only while its summary says it has
+> some, its conflicts are scanned at most once a minute, and a count never fetched falls back to the
+> summary's rather than to zero. The tray panel does none of it. (36) **A refusal is not an observation.** A
+> payload with no reply and `pair_unknown` set is not filed; a selection read that fell back to the default
+> folder carries `pair_unknown`, and the window says so in a notice block — **a departure from "give the
+> screen a typed state" (5a-2 note 5)**, because the window still shows a real folder meanwhile and
+> `DaemonState` has no honest variant for it. The notice is shown only when the settings file lists that
+> folder, which is the case a restart fixes. (37) **`pause_unsaved` reaches the window from both of its
+> origins**: the hero's own press reads the reply (it was discarded), and the tray's rows, which dismiss the
+> panel before the reply arrives, emit `pause-unsaved` from the one body the panel and both native menus
+> share. The panel itself still shows nothing (18, amended). (38) **Every table keyed by a folder's name is a
+> `Map`** (`pairmap.js`): a name may be `constructor` or `__proto__`, which an object answers from its
+> prototype. (39) **`fidelity:n1` compares the 55 one-folder frames and renders the eight that list two
+> folders twice** (a frame that lists two folders has no one-folder rendering to equal). The brief expected a
+> pill drawn unconditionally to fail the style gate's header-spacer box; **measured, it does not** (the header's
+> `⋯` glyph takes the whole header out of the box comparison,
+> `docs/agent-notes/the-header-spacer-box-is-never-compared.md`), so the gate states the pill's absence
+> outright: no `class="pair-select"` in any frame that lists one folder or none, with or without `?pairs=1`,
+> and one in every frame that lists two. (40) **The Plan screen's paused refusal names the folder at two folders or more**
+> (`paused_plan_refusal`).
+>
+> **The review of the 5c-1 PR (#447), recorded because each changes a rule above.** (41) **The folder
+> list says what the chip says when the daemon stops answering**: the store keeps the last roster and the last
+> derived states across a failed read, and a list drawn from them read `up to date` beside a chip reading
+> `unreachable` (#246's shape). Every row now says `unreachable`, counts nothing, and the pill carries no
+> marker. (42) **A notice about an unsaved pause is kept per folder and ends when it stops being true**, not on
+> a switch: a status reply issued after the notice that shows the folder in the other pause state retires it
+> (a resume from the tray or the command line tells the window nothing), and a reply that left before the
+> notice cannot (`store.pairsIssue` is the request clock for the roster). (43) **The poll does not wait on the
+> folders that are not on screen**: their refresh is one fire-and-forget job per folder with an in-flight
+> guard, so a scan on a mount that never answers neither stops the shown folder's polls nor stacks. (44) **A
+> failed `Restart syncing` is remembered for the folder the notice was for.** (45) **A list of more than eleven
+> folders scrolls inside itself.** DEVIATIONS §108g.
 
 **Phase 6 — Shared-volume event scope (its own ADR).** §8a. Independent of everything above and
 worth doing on its own merits, since one pair already pays the cost. Not scheduled here.

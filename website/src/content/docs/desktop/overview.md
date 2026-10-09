@@ -93,22 +93,34 @@ notice:
   have had to invent.
 - **Applying a reviewed plan is a fresh pass.** Dry-run and the real reconcile are separate
   invocations, so the applied plan can differ from the reviewed one — the app says so.
-- **One folder pair in the window.** The daemon can sync several local↔remote pairs from one
-  config (see [Multiple folder pairs](/daemon/folder-pairs/)), and the control protocol addresses
-  a pair by name (the [CLI reference](/cli/reference/)'s `--pair`/`--all-pairs`), but **the
-  window does not use that yet**: it shows, and acts on, the **default pair** (the first
-  `[[pair]]` table) only. The Folders tab is two plain inputs for that one pair — no add or
-  remove control — and the app cannot create a `[[pair]]` file. The **tray** is the exception: it
-  lists every pair, with a pause row for each (see
-  [Two or more folders](/desktop/tray/#two-or-more-folders)). If you wrote a `[[pair]]` file by
-  hand, know that:
-  - the notifications, the status and the Plan screen describe the default pair, not the
-    others.
-  - Settings edits the default pair's own `[[pair]]` table for a per-pair setting (the folders,
+- **The window is about one folder pair at a time.** The daemon can sync several local↔remote
+  pairs from one config (see [Multiple folder pairs](/daemon/folder-pairs/)). When it runs two or
+  more, a **folder pill** appears in the header, right of the app name, and names the folder
+  the window is about; pressing it (or Down, from the keyboard) lists the folders, each with a
+  word for its state and a count of what is waiting in it, and choosing one moves the whole window
+  to it — the status chip, the attention band, Deletions, Conflicts, Plan a sync, Activity and
+  Settings all follow. A hollow ring on the pill means *another* folder has a conflict or a deletion
+  waiting on you, and a solid red dot means another folder has a problem — its last sync did not
+  finish, or its folder is not there (an unplugged drive). A folder you paused yourself marks
+  nothing, and if both apply the red dot is the one shown. While the daemon is not answering, the
+  list says every folder is *unreachable* rather than repeating what it last knew. The chip and the
+  band count the folder on screen only. A list of more than eleven folders scrolls. With one folder
+  there is no pill, and nothing about the window changes. The hero's button names its folder at two or
+  more (`Pause photos`), and a pause the daemon could not write down is said under the hero. The
+  app still cannot add a pair or create a `[[pair]]` file, and the **tray** lists every pair with a
+  pause row for each (see [Two or more folders](/desktop/tray/#two-or-more-folders)). If you
+  wrote a `[[pair]]` file by hand, know that:
+  - the notifications still describe the default pair, not the others.
+  - Settings edits the chosen folder's own `[[pair]]` table for a per-pair setting (the folders,
     skip rules, deletion policy) and the top level of the file for a daemon-wide one (log level,
     the socket, the CLI path). A file that writes its pairs as an inline array
     (`pair = [{ … }]`) is read but not edited: a per-pair save is refused, saying the app edits
     `[[pair]]` tables only.
+  - a folder that is in your config but not yet in the running daemon (you edited the file and have
+    not restarted) shows a note under the hero with a **Restart syncing** button — but only for the
+    folder this window remembered as the one it was showing, which the daemon then cannot show. A
+    folder you never chose in this window gets no note, and neither does a remembered folder the
+    file no longer lists.
   - the daemon logs a warning once at startup when it finds more than one pair configured.
 
 Continue to [Screens](/desktop/screens/) for a tour of each view, or

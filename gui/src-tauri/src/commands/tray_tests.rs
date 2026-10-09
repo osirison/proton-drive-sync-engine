@@ -465,6 +465,100 @@ fn a_pause_that_was_not_saved_is_said_for_a_folders_row() {
     );
 }
 
+/// A pause the daemon applied and could not save reaches the WINDOW, as the event `pause-unsaved`
+/// (#102 phase 5c-1): the panel is dismissed by every row before the reply arrives, so there is nothing
+/// on it to say so, and the window's notice block is the surface that can. The payload names the folder
+/// the reply is about, the verb and the daemon's own reason.
+///
+/// Revert: stop announcing — `announce_unsaved` returns without emitting.
+#[test]
+fn a_pause_that_was_not_saved_is_announced_to_the_window() {
+    use tauri::Listener;
+    for (row, paused, folder) in [
+        (TrayRow::PausePair("photos".to_owned()), true, "photos"),
+        (TrayRow::ResumePair("photos".to_owned()), false, "photos"),
+    ] {
+        let daemon = FakeDaemon::multi_pair(vec![
+            FakePair::new("docs"),
+            FakePair::new("photos").unable_to_save_a_pause("disk full"),
+        ])
+        .start();
+        let h = harness(daemon, Some(TWO_PAIR_FILE));
+        learn_the_folders(&h);
+        let (sender, heard) = std::sync::mpsc::channel::<String>();
+        h.app.handle().listen("pause-unsaved", move |event| {
+            let _ = sender.send(event.payload().to_owned());
+        });
+
+        run!(tray_control_row_noting(h.app.handle().clone(), &row));
+
+        let payload: serde_json::Value = serde_json::from_str(
+            &heard
+                .try_recv()
+                .expect("the window was told, and told once"),
+        )
+        .unwrap();
+        assert_eq!(
+            payload,
+            serde_json::json!({ "pair": folder, "paused": paused, "reason": "disk full" })
+        );
+        assert!(heard.try_recv().is_err(), "once");
+    }
+}
+
+/// …and a pause that WAS saved tells the window nothing: the event is the failure, not the verb.
+#[test]
+fn a_saved_pause_is_not_announced() {
+    use tauri::Listener;
+    let h = harness(
+        FakeDaemon::multi_pair(vec![FakePair::new("docs"), FakePair::new("photos")]).start(),
+        Some(TWO_PAIR_FILE),
+    );
+    learn_the_folders(&h);
+    let (sender, heard) = std::sync::mpsc::channel::<String>();
+    h.app.handle().listen("pause-unsaved", move |event| {
+        let _ = sender.send(event.payload().to_owned());
+    });
+
+    run!(tray_control_row_noting(
+        h.app.handle().clone(),
+        &TrayRow::PausePair("photos".to_owned())
+    ));
+
+    assert!(heard.try_recv().is_err(), "a saved pause said something");
+}
+
+/// The event is built from the reply by a pure function: the folder is the reply's own `pair`, the
+/// verb is the caller's, the reason is the daemon's string verbatim — and a reply with nothing unsaved,
+/// or none at all (a request the app turned back), is no event.
+#[test]
+fn the_pause_unsaved_event_is_the_replys_failure_and_nothing_else() {
+    let h = harness(
+        FakeDaemon::multi_pair(vec![
+            FakePair::new("docs"),
+            FakePair::new("photos").unable_to_save_a_pause("disk full"),
+        ])
+        .start(),
+        Some(TWO_PAIR_FILE),
+    );
+    learn_the_folders(&h);
+    let handle = || h.app.handle().clone();
+
+    let unsaved = run!(pause(handle(), "photos".to_owned()));
+    assert_eq!(
+        pause_unsaved_event(true, &unsaved),
+        Some(PauseUnsaved {
+            pair: Some("photos".to_owned()),
+            paused: true,
+            reason: "disk full".to_owned()
+        })
+    );
+    let saved = run!(pause(handle(), "docs".to_owned()));
+    assert_eq!(pause_unsaved_event(true, &saved), None);
+    let refused = run!(pause(handle(), "nope".to_owned()));
+    assert_eq!(pause_unsaved_event(true, &refused), None);
+}
+
 /// A pause that was saved says nothing.
 #[test]
 fn a_saved_pause_says_nothing() {

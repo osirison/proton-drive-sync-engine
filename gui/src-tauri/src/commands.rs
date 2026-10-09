@@ -1599,10 +1599,10 @@ fn plan_through_daemon(
     let plan_target = match ack.plan {
         Some(PlanOutcome::Scheduled { plan_seq }) => plan_seq,
         Some(PlanOutcome::Paused) => {
-            return Err(DaemonPlanFailure::Reported(
-                "Syncing is paused, so nothing was worked out. Resume syncing and check again."
-                    .to_owned(),
-            ));
+            return Err(DaemonPlanFailure::Reported(paused_plan_refusal(
+                ack.pair.as_deref(),
+                ack.pairs.len(),
+            )));
         }
         // A daemon ANSWERED and did not schedule a plan — an outcome this build does not know, or
         // none at all. Reported, never fallen back from: spawning `proton-syncd --dry-run` beside a
@@ -1682,6 +1682,22 @@ fn plan_through_daemon(
             // Still computing, or an older answer than the one asked for.
             _ => {}
         }
+    }
+}
+
+/// What the Plan screen says when the folder it was asked about is paused (#102 phase 5c-1).
+///
+/// With two folders or more it NAMES the folder, in the words of the button that fixes it: pause is
+/// per folder, so "Syncing is paused" is true of one and says too much about the others, and `Resume
+/// photos` is the label the hero (and the tray row) wear. With one folder, or against a daemon that
+/// lists none (`listed` is the length of the reply's `pairs`), the only folder is the whole app and the
+/// sentence is the one this screen has always said. Pure, so the rule is testable without a socket.
+fn paused_plan_refusal(folder: Option<&str>, listed: usize) -> String {
+    match folder {
+        Some(name) if listed >= 2 => format!(
+            "Syncing is paused for {name}, so nothing was worked out. Resume {name} and check again."
+        ),
+        _ => "Syncing is paused, so nothing was worked out. Resume syncing and check again.".to_owned(),
     }
 }
 
@@ -3739,6 +3755,41 @@ fn unsaved_note(verb: &str, folder: Option<&str>, payload: &StatusPayload) -> Op
     ))
 }
 
+/// What the window is told when a tray row paused or resumed a folder and the daemon could not save it
+/// (`pause_unsaved`, decision D12): the event `pause-unsaved`'s payload.
+///
+/// The panel cannot say it — every row dismisses it before the reply arrives — so the window does, in
+/// the notice block under its hero (#102 phase 5c-1). `pair` is the folder the reply is about (`None` from
+/// a daemon that lists no folders, which the window reads as the folder it shows), `paused` is the verb.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct PauseUnsaved {
+    pair: Option<String>,
+    paused: bool,
+    reason: String,
+}
+
+/// The event a reply to `pause`/`resume` earns, or `None` when it was saved (or never reached the daemon).
+fn pause_unsaved_event(paused: bool, reply: &StatusPayload) -> Option<PauseUnsaved> {
+    let response = reply.response.as_ref()?;
+    Some(PauseUnsaved {
+        pair: response.pair.clone(),
+        paused,
+        reason: response.pause_unsaved.clone()?,
+    })
+}
+
+/// Tell the window. Best effort, as `pair-selected` is: a window that is not listening yet has lost a
+/// sentence about a restart, never a pause — the pause itself took effect either way.
+fn announce_unsaved<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    paused: bool,
+    reply: &StatusPayload,
+) {
+    if let Some(event) = pause_unsaved_event(paused, reply) {
+        let _ = app.emit("pause-unsaved", event);
+    }
+}
+
 /// What a folder row's reply said, as the lines to write. A native menu row has no surface to report
 /// into, and the panel hides itself on every row before the reply arrives, so the stderr line is the
 /// whole report on both paths (the window's own buttons are where a reason can be read).
@@ -3860,7 +3911,9 @@ pub(crate) async fn tray_control_row_noting<R: tauri::Runtime>(
             } else {
                 ("resume", ControlCommand::Resume)
             };
-            let reply = status_round_trip(app, command, Ask::Default).await;
+            let paused = matches!(row, TrayRow::Pause);
+            let reply = status_round_trip(app.clone(), command, Ask::Default).await;
+            announce_unsaved(&app, paused, &reply);
             let notes = unsaved_note(verb, None, &reply).into_iter().collect();
             (reply, notes)
         }
@@ -3870,7 +3923,9 @@ pub(crate) async fn tray_control_row_noting<R: tauri::Runtime>(
             } else {
                 ("resume", ControlCommand::Resume)
             };
+            let paused = matches!(row, TrayRow::PausePair(_));
             let reply = status_round_trip(app.clone(), command, Ask::Explicit(name)).await;
+            announce_unsaved(&app, paused, &reply);
             let notes = folder_reply_notes(verb, name, &reply);
             (unaddressed_status(app).await, notes)
         }
@@ -4437,6 +4492,23 @@ mod tests {
         // The command takes no argument; this pins the constant so a later "improvement" that
         // interpolates an id has to change the test that says why it cannot.
         assert_eq!(super::PROTON_DRIVE_URL, "https://drive.proton.me/");
+    }
+
+    #[test]
+    fn a_paused_plan_refusal_names_the_folder_only_when_there_are_several() {
+        // Two folders or more: the folder, in the words of the button that fixes it.
+        let several = super::paused_plan_refusal(Some("photos"), 2);
+        assert_eq!(
+            several,
+            "Syncing is paused for photos, so nothing was worked out. Resume photos and check again."
+        );
+        // One folder, or a daemon that lists none: the sentence this screen has always said.
+        let always =
+            "Syncing is paused, so nothing was worked out. Resume syncing and check again.";
+        assert_eq!(super::paused_plan_refusal(Some("default"), 1), always);
+        assert_eq!(super::paused_plan_refusal(Some("default"), 0), always);
+        // A daemon that lists several and names none for the request cannot be quoted as a folder.
+        assert_eq!(super::paused_plan_refusal(None, 3), always);
     }
 
     #[test]

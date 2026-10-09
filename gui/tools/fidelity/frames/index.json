@@ -138,6 +138,18 @@
     "nodes": 12
   },
   {
+    "label": "12a Two folders light",
+    "kind": "window",
+    "file": "12a-two-folders-light.json",
+    "nodes": 31
+  },
+  {
+    "label": "12a Two folders open light",
+    "kind": "window",
+    "file": "12a-two-folders-open-light.json",
+    "nodes": 55
+  },
+  {
     "label": "2a Compact needs you",
     "kind": "compact",
     "file": "2a-compact-needs-you.json",
@@ -156,6 +168,12 @@
     "nodes": 36
   },
   {
+    "label": "2a Folder not running",
+    "kind": "window",
+    "file": "2a-folder-not-running.json",
+    "nodes": 39
+  },
+  {
     "label": "2a Needs you",
     "kind": "window",
     "file": "2a-needs-you.json",
@@ -172,6 +190,36 @@
     "kind": "window",
     "file": "2a-syncing.json",
     "nodes": 60
+  },
+  {
+    "label": "2a Two folders",
+    "kind": "window",
+    "file": "2a-two-folders.json",
+    "nodes": 31
+  },
+  {
+    "label": "2a Two folders failed",
+    "kind": "window",
+    "file": "2a-two-folders-failed.json",
+    "nodes": 32
+  },
+  {
+    "label": "2a Two folders open",
+    "kind": "window",
+    "file": "2a-two-folders-open.json",
+    "nodes": 55
+  },
+  {
+    "label": "2a Two folders unsaved",
+    "kind": "window",
+    "file": "2a-two-folders-unsaved.json",
+    "nodes": 39
+  },
+  {
+    "label": "2a Two folders waiting",
+    "kind": "window",
+    "file": "2a-two-folders-waiting.json",
+    "nodes": 32
   },
   {
     "label": "3a Conflict",

@@ -37,7 +37,7 @@ import { renderHexagon, updateHexagon } from "../ui/hexagon.js";
 import { renderSeam, seamMask } from "../ui/seam.js";
 import { button } from "../ui/controls.js";
 import { transferRow, eyebrow, severityOfItem } from "../ui/rows.js";
-import { attentionBand, bandButton } from "../ui/bands.js";
+import { attentionBand, bandButton, noticeBand, warnGlyph } from "../ui/bands.js";
 import { fid } from "../fixtures/frames.js";
 
 /** The hero mark, at the one size this screen draws (`01-foundations.md` §6, `strokeForSize`). */
@@ -148,6 +148,12 @@ export function mainView(props = {}) {
     // How many folder pairs there are. Only ever read to decide whether a never-synced pair may be
     // drawn as one (`heroStateOf`'s `drawsFirstRun`); 0 is every caller written before pairs.
     pairCount = 0,
+    // THE FOLDER THE HERO IS ABOUT, and only at two folders or more (#102 phase 5c-1, decision D11): its
+    // pause button names it (`Pause photos`) because each folder has its own pause. `null` below two —
+    // the only folder is the whole app, and the buttons say what they always said.
+    pair = null,
+    // What the notice block says, or null: `{ kind, name?, reason?, busy?, failure? }` — see `noticeOf`.
+    notice = null,
   } = props;
 
   const activity = response?.activity ?? null;
@@ -206,6 +212,8 @@ export function mainView(props = {}) {
     // #224 and #227 record: pressed, nothing visible, no reason given.
     starting,
     startError,
+    pair,
+    notice,
     // "The count in the hexagon is transfers, not decisions" — the decisions are in the chip and the
     // band. `null` renders no numeral at all rather than a zero.
     numeral: hero === "syncing" ? changes : hero === "decision" ? waiting : null,
@@ -340,7 +348,12 @@ export function subOf(v) {
         v.summary?.downloads ?? null,
       );
     case "paused":
-      return MAIN.pausedSub(v.pending, clock(v.lastSync));
+      // At two folders or more the folder is named, for the tray panel's reason (`TRAY.pausedSubPair`):
+      // `Nothing will move` under one folder's name says more than is true while the others sync. At one
+      // folder the only folder is the whole app, and this is the sentence it always was.
+      return v.pair
+        ? TRAY.pausedSubPair(v.pending, clock(v.lastSync), v.pair)
+        : MAIN.pausedSub(v.pending, clock(v.lastSync));
     case "unreachable":
       // A plain string, where every sibling here is a template. `v.pending` comes from a reply and
       // this is the state with no reply, so the count was never `0` — it was unknown, and
@@ -442,7 +455,13 @@ function sideLabel(side, root) {
  */
 export function heroActionsOf(v) {
   if (v.hero === "paused") {
-    return [{ label: MAIN.resume, kind: "secondaryOutlined", on: "onResume" }];
+    return [
+      {
+        label: v.pair ? TRAY.resumePair(v.pair) : MAIN.resume,
+        kind: "secondaryOutlined",
+        on: "onResume",
+      },
+    ];
   }
   if (v.hero === "unreachable") {
     // THE DAEMON IS NOT RUNNING, and this branch is split out of the three-way one below because
@@ -486,7 +505,7 @@ export function heroActionsOf(v) {
   // own fill is what masks the hairline behind it (`seam.js` rule 3 — pass `surface:null` and keep
   // the button's fill). Both are the same colour role; only the surface differs.
   buttons.push({
-    label: MAIN.pause,
+    label: v.pair ? TRAY.pausePair(v.pair) : MAIN.pause,
     kind: v.hero === "syncing" ? "secondaryFilled" : "quietOutlined",
     on: "onPause",
   });
@@ -616,6 +635,7 @@ export function renderMain(props = {}) {
   const columns = el("div", { class: "main-columns" });
   const spacer = el("div", { class: "main-spacer" });
   const failed = el("div", { class: "main-failed" });
+  const noticeWrap = el("div", { class: "main-notice-wrap" });
   const bandWrap = el("div", { class: "main-band-wrap" });
 
   view = {
@@ -632,10 +652,12 @@ export function renderMain(props = {}) {
     columns,
     spacer,
     failed,
+    noticeWrap,
     bandWrap,
   };
   fillColumns(v);
   fillFailed(v);
+  fillNotice(v, handlers);
   fillBand(v, handlers);
   stampFids(v);
   return blocksOf(v);
@@ -677,9 +699,9 @@ export function updateMain(props = {}) {
     const actions = heroActions(next, handlers);
     view.actions.replaceWith(actions);
     view.actions = actions;
-  } else if (next.hero === "syncing" && bandShowing(next) !== bandShowing(prev)) {
-    // The seam shortens to stop above the band and lengthens again when it goes: two drawn sites,
-    // not one site with a computed height (`seam.js` SEAM_SITES).
+  } else if (next.hero === "syncing" && seamSiteOf(next) !== seamSiteOf(prev)) {
+    // The seam shortens to stop above the band (or the notice) and lengthens again when it goes: two
+    // drawn sites, not one site with a computed height (`seam.js` SEAM_SITES).
     const seam = renderSeam({ site: seamSiteOf(next) });
     view.seam.replaceWith(seam);
     view.seam = seam;
@@ -690,7 +712,11 @@ export function updateMain(props = {}) {
   // set the flag, the ~2s poll called `updateMain`, and the row on screen stayed the row built
   // before the click. A separate `if` rather than a fourth arm of that chain, because it is not an
   // alternative to any of them; when the hero DID change, the rebuild has already covered it.
-  if (next.hero === prev.hero && next.starting !== prev.starting) {
+  //
+  // THE FOLDER'S NAME IS THE SECOND, for the same reason (#102 phase 5c-1, decision D11): two folders in
+  // the same state draw the same hero, so a switch between them changes no hero and the buttons would
+  // go on reading `Pause documents` under a hero about `photos`.
+  if (next.hero === prev.hero && (next.starting !== prev.starting || next.pair !== prev.pair)) {
     const actions = heroActions(next, handlers);
     view.actions.replaceWith(actions);
     view.actions = actions;
@@ -707,6 +733,7 @@ export function updateMain(props = {}) {
   view.handlers = handlers;
   fillColumns(next);
   fillFailed(next);
+  fillNotice(next, handlers);
   fillBand(next, handlers, bandShowing(next) && !bandShowing(prev));
   stampFids(next);
   return blocksOf(next);
@@ -721,7 +748,10 @@ export function unmountMain() {
 // ------------------------------------------------------------------------------ internals ----
 
 const bandShowing = (v) => v.waiting > 0;
-const seamSiteOf = (v) => (bandShowing(v) ? "mainHeroAttention" : "mainHero");
+const noticeShowing = (v) => noticeOf(v.notice) != null;
+// The notice takes room under the columns exactly as the band does, so the seam stops above either: a
+// seam that ran its full length would run into the block below it (`seam.js` rule 2).
+const seamSiteOf = (v) => (bandShowing(v) || noticeShowing(v) ? "mainHeroAttention" : "mainHero");
 
 /**
  * Which block fills the space under the hero — and it is a THREE-way answer, not two.
@@ -735,6 +765,7 @@ const seamSiteOf = (v) => (bandShowing(v) ? "mainHeroAttention" : "mainHero");
 function blocksOf(v) {
   const middle = v.hero === "syncing" ? view.columns : quotingError(v) ? view.failed : view.spacer;
   const blocks = [view.hero, middle];
+  if (noticeShowing(v)) blocks.push(view.noticeWrap);
   if (bandShowing(v)) blocks.push(view.bandWrap);
   return blocks;
 }
@@ -937,6 +968,100 @@ function fillFailed(v) {
 }
 
 /**
+ * What the notice block says, as data — or `null` for no notice. Pure, and exported for the same reason
+ * `heroActionsOf` is: which words and which button are a decision per kind, and the kinds no daemon of
+ * ours produces on demand are exactly the ones a rendering cannot be asked about.
+ *
+ * Three kinds, one block (#102 phase 5c-1), because they are one shape — something is true that the
+ * hero does not say, nothing is at risk, and at most one thing can be done about it:
+ *
+ *   · `pairNotRunning` — the folder this window remembered is in the settings file and not in the
+ *     daemon that is running (the file was edited, or saved, and the daemon has not been restarted onto
+ *     it since). The window shows the default folder meanwhile and says so; the button restarts syncing.
+ *   · `pauseUnsaved` / `resumeUnsaved` — the daemon applied a pause (or a resume) and could not write it
+ *     down (`ControlResponse.pause_unsaved`, decision D12): it took effect, and a restart would bring
+ *     the folder back as the index last had it. The daemon's reason is quoted verbatim in mono (voice
+ *     rule 4), under a sentence of ours and never joined to it.
+ *
+ * `failed` is a restart that did not work: the sentence changes and the daemon's `reason`, when it
+ * gave one, is quoted under it.
+ */
+export function noticeOf(notice) {
+  if (!notice) return null;
+  switch (notice.kind) {
+    case "pairNotRunning":
+      return {
+        title: MAIN.notice.pairNotRunning(notice.name),
+        note: notice.failed ? MAIN.notice.restartFailed : MAIN.notice.pairNotRunningSub,
+        reason: notice.failed ? (notice.reason ?? null) : null,
+        action: {
+          label: notice.busy ? MAIN.notice.restarting : MAIN.notice.restartSyncing,
+          on: "onRestartSyncing",
+          disabled: Boolean(notice.busy),
+        },
+      };
+    case "pauseUnsaved":
+      return {
+        title: MAIN.notice.pauseUnsaved,
+        note: MAIN.notice.pauseUnsavedSub,
+        reason: notice.reason ?? null,
+        action: null,
+      };
+    case "resumeUnsaved":
+      return {
+        title: MAIN.notice.resumeUnsaved,
+        note: MAIN.notice.resumeUnsavedSub,
+        reason: notice.reason ?? null,
+        action: null,
+      };
+    default:
+      // A kind this build does not know says nothing. A trailing arm that drew SOMETHING would be a
+      // block with no sentence in it, which is #247's shape.
+      return null;
+  }
+}
+
+/**
+ * The block between the columns and the footer, rebuilt only when what it says changes — it holds a
+ * button, and a rebuild on the ~2s poll would drop the keyboard from it.
+ */
+function fillNotice(v, handlers) {
+  const spec = noticeOf(v.notice);
+  const sig = signature(
+    spec ? [spec.title, spec.note, spec.reason, spec.action?.label, Boolean(spec.action?.disabled)] : [],
+  );
+  if (view.noticeSig === sig) return;
+  view.noticeSig = sig;
+  if (!spec) {
+    view.noticeWrap.replaceChildren();
+    return;
+  }
+  const noticeAction = spec.action
+    ? button({
+        kind: "secondaryFilled",
+        label: spec.action.label,
+        onClick: spec.action.disabled ? null : calledThrough(spec.action.on, handlers),
+        disabled: spec.action.disabled,
+        padding: "8px 15px",
+        radius: "var(--r-9)",
+        fontSize: "12.5px",
+        class: "band-action",
+      })
+    : null;
+  const reason = spec.reason ? el("div", { class: "band-notice-reason" }, spec.reason) : null;
+  view.noticeWrap.replaceChildren(
+    noticeBand({
+      tone: "warn",
+      wrapped: true,
+      mark: warnGlyph("⊘"),
+      title: spec.title,
+      note: [spec.note, reason],
+      action: noticeAction,
+    }),
+  );
+}
+
+/**
  * The band, and the one animation on this screen that must not exist on a first render.
  *
  * `arriving` is true only when a decision turns up on a screen that was already showing — the
@@ -1032,6 +1157,21 @@ function stampFids(v) {
     // `tailSpacer`: the header's gap owns `spacer` (`chrome.js`), and stamping this one with the
     // same name gave two elements one `data-fid`. #379.
     fid(view.spacer, "tailSpacer");
+  }
+
+  if (noticeShowing(v)) {
+    const outer = view.noticeWrap.firstElementChild;
+    const row = outer?.firstElementChild;
+    fid(view.noticeWrap, "noticeWrap");
+    fid(outer, "notice");
+    fid(row, "noticeRow");
+    fid(row?.querySelector(".band-glyph"), "noticeGlyph");
+    const body = row?.querySelector(".band-notice-body");
+    fid(body, "noticeBody");
+    fid(body?.querySelector(".band-notice-title"), "noticeTitle");
+    fid(body?.querySelector(".band-notice-note"), "noticeNote");
+    fid(body?.querySelector(".band-notice-reason"), "noticeReason");
+    fid(row?.querySelector("button"), "noticeAction");
   }
 
   if (bandShowing(v)) {

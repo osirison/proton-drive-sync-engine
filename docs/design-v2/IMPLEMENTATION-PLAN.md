@@ -21,11 +21,11 @@ tree, in `DECISIONS.md` — which also records the one the build overturned):
 
 ### 1.1 What "all screens" means, exactly
 
-`Drive Sync.dc.html` contains **64** frames carrying a `data-screen-label`. **55 are in scope** (51 when this was written; the four `10a` frames at two folders or more, #102 phase 5d, are the difference).
+`Drive Sync.dc.html` contains **72** frames carrying a `data-screen-label`. **63 are in scope** (51 when this was written; the four `10a` frames at two folders or more, #102 phase 5d, and the eight `2a`/`12a` frames at two folders or more, #102 phase 5c-1, are the difference).
 
 | Group | Frames | Size |
 | --- | --- | --- |
-| **2a Main screen** | Settled · Syncing · Needs you · Compact settled · Compact syncing · Compact needs you | 3×1040×764, 3×360 |
+| **2a Main screen** | Settled · Syncing · Needs you · Compact settled · Compact syncing · Compact needs you · and at two folders or more: Two folders · Two folders open · Two folders waiting · Folder not running · Two folders unsaved | 3×1040×764, 3×360, 5×1040×764 |
 | **3a Conflicts** | Conflict · Conflict diff · Conflicts cleared | 2×1040×764, 520×764 |
 | **4a Deletions** | Deletions · Armed · Empty · Compact | 2×1040×764, 520×420, 360 |
 | **5a Plan a sync** | Plan · Plan safe · Checking | 2×1040×764, 520×764 |
@@ -35,7 +35,7 @@ tree, in `DECISIONS.md` — which also records the one the build overturned):
 | **9a Onboarding** | Folders · Review · First sync · Consent · CLI missing | 2×1040×764, 600×540, 2×600 |
 | **10a Tray** | In situ · Glyph states · Settled · Syncing · Offline · Paused · Two folders · Two folders paused · Two folders failed · Many folders | 1040×520, 560, 8×360 |
 | **11a Notifications** | In situ (4 banners) · Rules · Settings · Outage · Grouped | 1040×560, 600, 3×520 |
-| **12a Light theme** | Settled · Syncing · Deletions · Conflict · Compact settled · Compact syncing · Compact needs | 4×1040×764, 3×360 |
+| **12a Light theme** | Settled · Syncing · Deletions · Conflict · Compact settled · Compact syncing · Compact needs · and at two folders or more: Two folders light · Two folders open light | 6×1040×764, 3×360 |
 | **12a Tray light** | Specimen card, not a product surface — see §1.2 | 360 |
 
 **Out of scope — 9 frames, and why:**
@@ -53,7 +53,7 @@ The harness must treat five different kinds of frame differently:
 
 | Class | Frames | Assert |
 | --- | --- | --- |
-| **Full window** — 1040×764 | 2a×3, 3a×2, 4a×2, 5a×2, 6a passes, 7a×2, 8a×2, 9a×2, 12a×4 | Everything, including the frame's own box. Must fit with no clipping. |
+| **Full window** — 1040×764 | 2a×8, 3a×2, 4a×2, 5a×2, 6a passes, 7a×2, 8a×2, 9a×2, 12a×6 | Everything, including the frame's own box. Must fit with no clipping. |
 | **Standalone dialog** — own chrome + shadow | 3a cleared, 4a Empty, 5a Checking, 6a Details, 7a Never synced/File pending, 8a Save refused, 9a First sync/Consent/CLI missing, 11a Rules/Settings/Outage/Grouped | Everything, including width/height. |
 | **Compact panel** — 360px | 2a×3, 4a Compact, 10a×8, 12a×3 | Everything. Shared component; the tray reuses it. |
 | **Content crop** — drawn at 600px but lives inside a 1040 screen | `8a Deletions tab`, `8a Schedule monthly` | Everything **except** the frame's own width — the parent screen sets that. |

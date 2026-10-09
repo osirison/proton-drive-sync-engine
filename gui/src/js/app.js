@@ -13,6 +13,7 @@
 
 import { api } from "./api.js";
 import * as store from "./store.js";
+import { pairTable, withPair } from "./pairmap.js";
 import {
   ROUTES,
   FOOTER_ORDER,
@@ -32,6 +33,7 @@ import {
   renderActionBar,
   screenPlaceholder,
 } from "./ui/chrome.js";
+import { selectorRows } from "./ui/selector.js";
 import { dialog, dialogHead, focusTrap } from "./ui/dialog.js";
 import { renderCompactPanel, trayMenu, TRAY_FOLDER_CAP } from "./ui/compact.js";
 import { bannerFor, payloadFor, renderBanner } from "./ui/notification.js";
@@ -115,13 +117,19 @@ let dialogOverlay = null; // the floating one, at most one at a time
 let dialogReturn = null; // where to send focus when it closes — see focusKeyOf
 let menuOpen = false;
 /**
+ * Is the folder selector's popover showing (#102 phase 5c-1). Dropped by a switch of folder
+ * (`noticeSelection`): choosing a row closes it, and a selection that moved under an open popover —
+ * the tray's `Review them`, the other webview — leaves it listing a choice that has been made.
+ */
+let pairMenuOpen = false;
+/**
  * What the config file says, ONE `read_config` REPLY PER FOLDER PAIR (#102 phase 5b-1), keyed by the pair
  * the reply says it describes (`reply.pair`). Its per-pair values are that pair's table of the file; its
  * daemon-wide values are the top level, the same in every one. Keyed rather than single so a pair that
  * has been switched to is drawn from ITS settings and never from the previous pair's for a poll, and a
  * reply that lands after a switch is a fact about the pair it was asked for (`viewedConfig`).
  */
-let configByPair = {};
+let configByPair = pairTable();
 /**
  * The file's whole roster (`read_config.pairs`), the same in every reply. Kept apart from the replies
  * because the first-run check and the pair count ask "how many folders are there" and "is any of them
@@ -183,7 +191,7 @@ function pairCountNow() {
  * there was one folder, and for one folder it is the same object.
  */
 function viewedConfig() {
-  return configByPair[store.select.pairName()] ?? null;
+  return configByPair.get(store.select.pairName()) ?? null;
 }
 
 /**
@@ -429,6 +437,14 @@ function onKeydown(e) {
       e.preventDefault();
       return;
     }
+    // The folder selector's popover comes down first and takes its Esc with it: the keypress that
+    // closes a popover must not also leave the screen under it. (`onSelectorKey` handles the key
+    // when focus is inside the control; this is for the popover opened by pointer, with focus elsewhere.)
+    if (pairMenuOpen) {
+      closePairMenu({ refocus: true });
+      e.preventDefault();
+      return;
+    }
     if (menuOpen) {
       menuOpen = false;
       render();
@@ -490,6 +506,9 @@ function onKeydown(e) {
     const t = e.target;
     if (t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)))
       return;
+    // The selector's rows are a list the arrows walk (`onSelectorKey`); they are not a step through
+    // the conflicts behind it.
+    if (t instanceof HTMLElement && t.closest(".pair-select")) return;
     document.dispatchEvent(
       new CustomEvent("shell:step", { detail: { delta: e.key === "ArrowLeft" ? -1 : 1 } }),
     );
@@ -556,6 +575,161 @@ function renderMenu() {
     ),
   );
 }
+
+// ---- the folder selector (#102 phase 5c-1) ----
+//
+// Built by `ui/selector.js`; this is what it is wired to. The control is patched across polls and its
+// handlers are CONSTANT (`SELECTOR_HANDLERS` reads module state when an event arrives), so nothing
+// about the control has to be rebound when the folders or the selection change.
+
+/** The selected folder's `PairSummary`, or null (a daemon that lists none, or nothing heard yet). */
+function selectedSummary() {
+  const name = store.select.pairName();
+  return store.select.pairs().find((summary) => summary.name === name) ?? null;
+}
+
+/**
+ * What is waiting on a person in `pair`: its conflicts plus the withheld deletions not yet answered.
+ *
+ * For the SELECTED folder that is the chip's own sum, from the same two readers, so the popover can
+ * never disagree with the chip beside it. For another folder it is what the store holds for it: the
+ * conflict scan the poll runs for it every 60 s, and its deletion queue, which is fetched only while
+ * its summary says it has some (E6) — so a count of 0 in the summary is believed over a list that is
+ * stale, and a list never fetched falls back to the summary's count rather than to 0 (unknown is never
+ * zero).
+ */
+function waitingIn(pair) {
+  if (pair === store.select.pairName()) {
+    return store.select.unresolvedConflictCount() + visibleDeletions().length;
+  }
+  const summary = store.select.pairs().find((entry) => entry.name === pair);
+  const queued = summary?.pending_deletions ?? 0;
+  let deletions = 0;
+  if (queued > 0) {
+    deletions = store.select.deletionsFiledOf(pair)
+      ? store.select
+          .pendingDeletionsOf(pair)
+          .filter((item) => deletionsDecided.get(itemKey(item)) !== item.fingerprint).length
+      : queued;
+  }
+  return store.select.conflictsOf(pair).length + deletions;
+}
+
+/**
+ * The selector's props — or `null`, which is the whole of decision D2. It is built from the folders the
+ * DAEMON lists and from nothing else: a folder only the settings file knows cannot be chosen (there
+ * would be nothing to show for it), and a daemon that lists none or one gets the header it always had.
+ */
+function selectorProps() {
+  const pairs = store.select.pairs();
+  if (pairs.length < 2) {
+    pairMenuOpen = false;
+    return null;
+  }
+  const name = store.select.pairName();
+  return {
+    name,
+    rows: selectorRows({
+      pairs,
+      pairStates: store.select.pairStates(),
+      selected: name,
+      waiting: waitingIn,
+      // THE STORE KEEPS THE LAST ROSTER AND THE LAST STATES ACROSS A FAILED READ, so a stopped daemon would
+      // leave every row saying `up to date` beside a chip that says `unreachable` (#246). The store knows
+      // whether what it holds is still what the daemon said (`rosterLive`), and the tray panel asks the same.
+      reachable: store.select.rosterLive(),
+    }),
+    // A FRAME NAMES ITS OWN `open`, as it names its own route and dialog: `2a Two folders open` is a
+    // popover, and `pairMenuOpen` is module state no `?frame=` can reach.
+    open: activeFixture()?.ui?.pairMenuOpen ?? pairMenuOpen,
+    handlers: SELECTOR_HANDLERS,
+  };
+}
+
+function openPairMenu() {
+  pairMenuOpen = true;
+  menuOpen = false;
+  render();
+  // Into the list, on the folder that is chosen: a keyboard user who opened it has somewhere to go,
+  // and Enter on it is "keep this one". After the render, which is what builds the rows.
+  focusAfterSwap(".pair-row.is-selected");
+}
+
+/** Close it, and put the keyboard back on the pill when it was standing in the popover. */
+function closePairMenu({ refocus = false } = {}) {
+  if (!pairMenuOpen) return;
+  pairMenuOpen = false;
+  render();
+  if (refocus) document.querySelector(".pair-pill")?.focus();
+}
+
+/**
+ * Choose a folder. The popover closes first so the window never shows a menu over a screen that is
+ * about to change; the choice is Rust's (`select_pair` validates it, stores it and tells the other
+ * webview), and the poll that follows is what moves the window — the store follows the reply.
+ *
+ * A choice of the folder already shown asks Rust for nothing. A refusal (the folder went away since the
+ * list was drawn) leaves the window where it was: the next poll's roster has already lost it.
+ */
+async function pickPair(name) {
+  const was = store.select.pairName();
+  closePairMenu({ refocus: true });
+  if (typeof name !== "string" || name === was) return;
+  try {
+    await api.selectPair(name);
+  } catch (error) {
+    console.error("select_pair failed:", error);
+    return;
+  }
+  clearTimeout(pollTimer);
+  poll();
+}
+
+/**
+ * The keys of the control, wherever focus is in it. Arrows walk the rows (clamped, not wrapped — a
+ * list this short has ends), Home and End jump, Esc closes and gives the keyboard back to the pill, and
+ * Down on the pill opens it. Tab is not handled: rows other than the chosen one are out of the tab
+ * order, and leaving the control closes it (`focusin` in `main`).
+ */
+function onSelectorKey(event) {
+  const rows = [...document.querySelectorAll(".pair-row")];
+  switch (event.key) {
+    case "ArrowDown":
+    case "ArrowUp": {
+      event.preventDefault();
+      if (!pairMenuOpen) {
+        openPairMenu();
+        return;
+      }
+      if (rows.length === 0) return;
+      const at = rows.indexOf(event.target);
+      const down = event.key === "ArrowDown";
+      const next =
+        at < 0 ? (down ? 0 : rows.length - 1) : Math.min(rows.length - 1, Math.max(0, at + (down ? 1 : -1)));
+      rows[next].focus();
+      return;
+    }
+    case "Home":
+    case "End":
+      if (!pairMenuOpen || rows.length === 0) return;
+      event.preventDefault();
+      rows[event.key === "Home" ? 0 : rows.length - 1].focus();
+      return;
+    case "Escape":
+      if (!pairMenuOpen) return;
+      event.preventDefault();
+      event.stopPropagation();
+      closePairMenu({ refocus: true });
+      return;
+    default:
+  }
+}
+
+const SELECTOR_HANDLERS = {
+  onToggle: () => (pairMenuOpen ? closePairMenu({ refocus: true }) : openPairMenu()),
+  onPick: (name) => pickPair(name),
+  onKey: (event) => onSelectorKey(event),
+};
 
 // ---- render ----
 
@@ -726,9 +900,12 @@ function mountTrayPanel(root) {
     response: store.select.response(),
     conflicts: store.select.conflicts(),
     deletions: store.select.pendingDeletions(),
-    // The folders, and the state Rust derived for each (two or more draw a worst-folder panel).
-    pairs: store.select.pairs(),
-    pairStates: store.select.pairStates(),
+    // The folders, and the state Rust derived for each (two or more draw a worst-folder panel). THE LIVE
+    // ROSTER: the store keeps the last one across a failed read, and a panel drawn from it said
+    // `Up to date` with `Sync now` and a pause row per folder over a daemon that was not there (#246).
+    // With none, this is the one-folder panel, which draws a stopped daemon as it always did.
+    pairs: store.select.livePairs(),
+    pairStates: store.select.livePairStates(),
   });
   if (dom.trayPanel && updateTrayPanel(dom.trayPanel, view)) {
     reportTrayHeight();
@@ -772,6 +949,7 @@ function reportTrayHeight() {
 
 function render() {
   noticeSelection();
+  retireStaleNotices();
   const root = document.getElementById("app-root");
   // The preview's own pages — the frame index, and the diagnostic for a `?frame=` label that has no
   // fixture. Both take the window: the shell never renders behind them. (The poll still runs — this
@@ -801,9 +979,14 @@ function render() {
 
   // The folder pair: the running daemon's reported roots are ground truth; the GUI config file is
   // the fallback when no daemon is reachable. Em-dashes only when neither knows.
+  //
+  // At two folders or more the roots are the SELECTED folder's own `PairSummary` — named by its pair, so
+  // there is no question which folder a root belongs to — and then the reply's `config`, which is the
+  // same facts for a daemon that lists no summaries (#102 phase 5c-1).
+  const shown = selectedSummary();
   const live = store.select.response()?.config ?? null;
-  const localRoot = live?.local_root ?? viewedConfig()?.local_root ?? null;
-  const remoteRoot = live?.remote_root ?? viewedConfig()?.remote_root ?? null;
+  const localRoot = shown?.local_root ?? live?.local_root ?? viewedConfig()?.local_root ?? null;
+  const remoteRoot = shown?.remote_root ?? live?.remote_root ?? viewedConfig()?.remote_root ?? null;
   // How many folder pairs there are, from the running daemon's list and from the config file's, taking
   // the larger: either one saying "two" is enough for the takeover to stay shut (E14), and a stopped
   // daemon has no list at all. Both are zero for a legacy daemon with no `[[pair]]` tables, so the
@@ -841,6 +1024,9 @@ function render() {
   // message just as much as the button does, and none of those three passes through `startService`.
   // Without it the next outage would be diagnosed with a superseded reason. Found by review.
   if (serviceStartError && clearsStartError(st)) serviceStartError = null;
+  // A pause the daemon could not save is a fact about its NEXT RESTART. A daemon that stopped answering
+  // has, as far as this window can tell, been through one.
+  if (st === "unreachable") unsavedPauses.clear();
   // AND THE SAME RULE FOR THE SAVE'S RESTART (#335), which is a fact about a DAEMON and so has to be
   // re-validated against one: systemd ships `Restart=on-failure`, so after a start that failed the
   // service can come up on the new settings by itself while the bar still offers to restart it.
@@ -987,14 +1173,15 @@ function render() {
   // attention chip variants mean. S1 draws the band itself; the footer only needs to know it is
   // there, because the band displaces the mono line.
   const banded = chip.variant === "decisions" || chip.variant === "deletions";
+  // Onboarding drops the ⋯ button, not just the chip — both 9a frames have four header slots.
+  // Keyed off the ROUTE and not the latch alone: `9a Review` carries a written folder pair, which
+  // is exactly the state the latch does not re-enter on, so a fixture selecting step 2 renders
+  // with the latch open and would grow a ⋯ the frame does not draw.
+  const hasMenu = !onboardingLatch && active !== "onboarding";
   const headerOpts = {
     chip: chip.variant,
     chipText: chip.text,
-    // Onboarding drops the ⋯ button, not just the chip — both 9a frames have four header slots.
-    // Keyed off the ROUTE and not the latch alone: `9a Review` carries a written folder pair, which
-    // is exactly the state the latch does not re-enter on, so a fixture selecting step 2 renders
-    // with the latch open and would grow a ⋯ the frame does not draw.
-    hasMenu: !onboardingLatch && active !== "onboarding",
+    hasMenu,
     // `&& !onboardingLatch` is NOT redundant, and leaving it off was a regression this file already
     // shipped once. `onMain` used to read `route === "main" && !overlay`, which is TRUE during the
     // takeover on a fresh machine — route is still "main" and no overlay is open — so the mark
@@ -1006,6 +1193,10 @@ function render() {
     // button there is a working door out of a flow that is not supposed to have one, on a machine
     // with no folder pair chosen yet.
     hasHome: !onMain && !onboardingLatch && active !== "onboarding",
+    // THE FOLDER SELECTOR, at two folders or more and on every screen that has a menu: the takeover
+    // has neither, and at two folders it never arms anyway (E14). `null` below two — the header is then
+    // the one the 22 spacer-pinning frames were measured against.
+    pairs: hasMenu ? selectorProps() : null,
   };
   const navOpts = {
     // `active`, NOT the module `route`. S5 is the first screen whose frames draw a LIT door — all
@@ -2270,8 +2461,13 @@ function mainProps(localRoot, remoteRoot) {
   // rather than the one whose hero the person was looking at. The hero's buttons call through the
   // LATEST props (`main.js`), so this is always the pair on screen.
   const pair = store.select.pairName();
+  const notice = mainNotice();
   return {
     pairCount: pairCountNow(),
+    // The folder the hero is about, named on its pause button at two folders or more (decision D11).
+    // The same count the folder selector is drawn at, so the pill and the button appear together.
+    pair: store.select.pairs().length >= 2 ? pair : null,
+    notice,
     daemonState: store.select.daemonState(),
     response: store.select.response(),
     conflicts: store.select.conflicts(),
@@ -2284,8 +2480,10 @@ function mainProps(localRoot, remoteRoot) {
     startError: serviceStartError,
     handlers: {
       onSyncNow: () => command(() => api.syncNow({ pair })),
-      onPause: () => command(() => api.pause({ pair })),
-      onResume: () => command(() => api.resume({ pair })),
+      onPause: () => setPaused(pair, true),
+      onResume: () => setPaused(pair, false),
+      // The folder the notice that holds this button is about: where the outcome of the restart is filed.
+      onRestartSyncing: () => restartSyncing(notice?.kind === "pairNotRunning" ? notice.name : null),
       onStartService: startService,
       onConflicts: () => navigate("conflicts"),
       onDeletions: () => navigate("deletions"),
@@ -2309,6 +2507,150 @@ async function command(run) {
   }
   clearTimeout(pollTimer);
   poll();
+}
+
+/**
+ * A pause or resume the daemon applied and could not save (`ControlResponse.pause_unsaved`, decision
+ * D12), BY FOLDER: `{ kind: "pauseUnsaved" | "resumeUnsaved", reason, issue }`.
+ *
+ * KEPT PER FOLDER, and spoken only while that folder is the one on screen — a notice about `photos` over a
+ * hero about `docs` would be a sentence about the wrong folder. The tray's row can pause a folder that is
+ * not the one this window shows; the event is filed under the folder it names and is there when that folder
+ * is next looked at, which a single slot dropped (review of #447).
+ *
+ * IT ENDS WHEN IT STOPS BEING TRUE, and each of these is a rule of `retireStaleNotices`:
+ *   · the hero's next press of Pause or Resume (it has its own answer — `setPaused`);
+ *   · a status reply, issued after the notice, that shows the folder's pause state is no longer the one the
+ *     notice describes — a pause saved, a resume done from the tray or `proton-sync resume`, none of which
+ *     reach this window as an event;
+ *   · the daemon not answering: "if syncing restarts first" is about a restart that has now happened.
+ * `issue` is the status-request clock (`store.beginStatus`) at the moment it was noted: a reply that left
+ * before that carries evidence from before the pause, and cannot end it.
+ */
+const unsavedPauses = pairTable();
+
+/**
+ * Note a pause or resume reply's `pause_unsaved`, from the hero's own press or from the tray's row
+ * (which the window hears of as an event: the panel is dismissed by the time the reply arrives).
+ */
+function noteUnsavedPause(pair, paused, reason) {
+  if (typeof reason !== "string" || typeof pair !== "string") return;
+  unsavedPauses.set(pair, {
+    kind: paused ? "pauseUnsaved" : "resumeUnsaved",
+    reason,
+    issue: store.select.statusesIssued(),
+  });
+  render();
+}
+
+/**
+ * What the daemon last said about whether `pair` is paused, and which request said it — `{ paused, issue }`,
+ * or null when it has said nothing about that folder. At two folders or more that is the folder's own
+ * summary, whichever folder is on screen; a daemon that lists none has only the reply about the one folder.
+ */
+function pausedAccordingToDaemon(pair) {
+  const summary = store.select.pairs().find((entry) => entry.name === pair);
+  if (summary) return { paused: summary.paused === true, issue: store.select.pairsIssue() };
+  const reply = store.select.response();
+  if (reply && pair === store.select.pairName()) {
+    return { paused: reply.paused === true, issue: store.select.statusIssue() };
+  }
+  return null;
+}
+
+/**
+ * Drop what has stopped being true. Called at the top of every render, beside `noticeSelection`, so a
+ * status reply that settles a question is the render that stops saying it.
+ *
+ *   · An unsaved pause or resume whose folder the daemon now reports in the OTHER pause state, on a reply
+ *     issued after the notice (see `unsavedPauses`); and one for a folder the daemon does not list.
+ *   · A failed restart (`restartOutcomes`) for a folder that is not the one the notice is about any more.
+ */
+function retireStaleNotices() {
+  for (const [pair, note] of unsavedPauses) {
+    const known =
+      pair === store.select.pairName() || store.select.pairs().some((entry) => entry.name === pair);
+    const said = pausedAccordingToDaemon(pair);
+    const stillTrue =
+      !said || said.issue <= note.issue || (note.kind === "pauseUnsaved" ? said.paused : !said.paused);
+    if (!known || !stillTrue) unsavedPauses.delete(pair);
+  }
+  const unknown = store.select.pairUnknown();
+  for (const name of restartOutcomes.keys()) if (name !== unknown) restartOutcomes.delete(name);
+}
+
+/**
+ * The hero's Pause and Resume. Not `command(...)`, which discards the reply: this reads it, because the
+ * reply is where the daemon says a pause did not reach the index. `pair` is the folder the hero was
+ * drawn for, captured by the props (class W).
+ */
+async function setPaused(pair, paused) {
+  unsavedPauses.delete(pair);
+  let reply = null;
+  try {
+    reply = await (paused ? api.pause({ pair }) : api.resume({ pair }));
+  } catch (error) {
+    console.error("control command failed:", error);
+  }
+  noteUnsavedPause(pair, paused, reply?.response?.pause_unsaved);
+  clearTimeout(pollTimer);
+  poll();
+}
+
+/**
+ * `Restart syncing` on the notice for a folder the daemon does not run. A restart is daemon-wide, so the
+ * busy flag is one flag; why the last try did not work is a fact about THE FOLDER THE NOTICE WAS FOR, keyed
+ * by it, and it goes when the notice is about another folder. As one global `{ failed, reason }` it opened
+ * the next folder's notice already saying a restart had failed, in the last folder's words (review of #447).
+ */
+let restartBusy = false;
+const restartOutcomes = pairTable();
+
+async function restartSyncing(name) {
+  if (restartBusy) return;
+  restartBusy = true;
+  restartOutcomes.delete(name);
+  render();
+  try {
+    // Not `onlyIfRunning`: the daemon IS running, on the settings it started with, which is the thing
+    // being fixed.
+    const outcome = await api.restartService();
+    if (restartEndingOf(outcome) !== "restarted") {
+      restartOutcomes.set(name, { reason: String(outcome?.reason ?? outcome?.detail ?? "") || null });
+    }
+  } catch (error) {
+    restartOutcomes.set(name, { reason: String(error?.message ?? error) });
+  }
+  restartBusy = false;
+  clearTimeout(pollTimer);
+  poll();
+}
+
+/**
+ * What the notice block says right now (`screens/main.js` `noticeOf`), or null.
+ *
+ * A folder the app remembered and the daemon does not run is shown ONLY when the settings file does list
+ * it: that is the case a restart fixes. A remembered folder that is in neither is stale preference, and
+ * the window already shows the default folder, which is all there is to say.
+ */
+function mainNotice() {
+  // A FRAME NAMES THE REPLY IT WAS DRAWN FOR, since no frame can press Resume (`ui.unsavedPause`).
+  const named = activeFixture()?.ui?.unsavedPause;
+  if (named) return { kind: named.kind, reason: named.reason };
+  const unknown = store.select.pairUnknown();
+  if (unknown && configRoster.some((entry) => entry.name === unknown)) {
+    const failure = restartOutcomes.get(unknown);
+    return {
+      kind: "pairNotRunning",
+      name: unknown,
+      busy: restartBusy,
+      failed: failure != null,
+      reason: failure?.reason ?? null,
+    };
+  }
+  const unsaved = unsavedPauses.get(store.select.pairName());
+  if (unsaved) return { kind: unsaved.kind, reason: unsaved.reason };
+  return null;
 }
 
 // ---- the activity screen (S5) ----
@@ -2394,12 +2736,12 @@ async function ensureSkipRules() {
   // The pair this walk is for. A switch resets the screen (and `skipRuleAsked` with it), and a walk
   // that was already running must not land on the pair that replaced it.
   const pair = store.select.pairName();
-  const exclude = configByPair[pair]?.exclude ?? [];
+  const exclude = configByPair.get(pair)?.exclude ?? [];
   // Nothing excluded is not a reason to walk the tree: the band counts files a RULE hides, and with
   // no rules the answer is known without asking.
   if (exclude.length === 0) return;
   try {
-    const report = await api.skipRuleUsage(exclude, configByPair[pair]?.include ?? [], { pair });
+    const report = await api.skipRuleUsage(exclude, configByPair.get(pair)?.include ?? [], { pair });
     if (pair === store.select.pairName()) skipRuleReport = report;
   } catch (error) {
     console.error("skip_rule_usage failed:", error);
@@ -2834,7 +3176,7 @@ let settingsTab = "folders";
  *   and said nothing at all; a failed `restart_service` wrote its reason into a variable only the
  *   refusal dialog reads, and nothing opens that dialog from there. Per pair because a sweep is.
  */
-let settingsByPair = {};
+let settingsByPair = pairTable();
 const BLANK_STAGING = Object.freeze({
   edits: {},
   drafts: { exclude: "", include: "" },
@@ -2842,10 +3184,10 @@ const BLANK_STAGING = Object.freeze({
   notice: null,
 });
 /** What is staged for `pair` — the blank slot for one nothing was typed for. Read-only. */
-const stagedFor = (pair) => settingsByPair[pair] ?? BLANK_STAGING;
+const stagedFor = (pair) => settingsByPair.get(pair) ?? BLANK_STAGING;
 /** Replace some of `pair`'s staged state. Never touches another pair's. */
 function patchStaging(pair, patch) {
-  settingsByPair = { ...settingsByPair, [pair]: { ...stagedFor(pair), ...patch } };
+  settingsByPair = withPair(settingsByPair, pair, { ...stagedFor(pair), ...patch });
 }
 let settingsSaving = false;
 /**
@@ -2885,7 +3227,7 @@ function resetSettingsScreen() {
   settingsTab = "folders";
   // EVERY PAIR'S: walking away from the screen discards what was staged on it, for all of them. It is a
   // switch of pair that keeps them (see `settingsByPair`), not a switch of screen.
-  settingsByPair = {};
+  settingsByPair = pairTable();
   // WITH THE REST OF THE STAGED STATE. It is one of the two things a person can stage on this
   // screen and it lives outside the pair slots (it is not a daemon-config key), so leaving it out
   // here made it the one edit that survived walking away: the card stayed chosen and the screen
@@ -2949,7 +3291,7 @@ function settingsProps() {
   const pair = store.select.pairName();
   const slot = stagedFor(pair);
   const ui = activeFixture()?.ui ?? null;
-  const saved = activeFixture()?.config ?? configByPair[pair] ?? {};
+  const saved = activeFixture()?.config ?? configByPair.get(pair) ?? {};
   const tab = ui?.tab ?? settingsTab;
   // Fired and not awaited — see `ensureSkipRules`. Only the tab that draws the counts asks for the
   // walk; the other three would pay for a full metadata pass of the sync folder to draw nothing.
@@ -3036,7 +3378,7 @@ function settingsProps() {
     // pair that has just been switched to has no reply of its own until the next read lands, and the
     // screen may not answer for it with another pair's values or with an empty config. For one pair
     // the two are the same fact: the reply is filed in the same step that sets `configLoaded`.
-    loaded: Boolean(activeFixture()) || (configLoaded && !configError && configByPair[pair] != null),
+    loaded: Boolean(activeFixture()) || (configLoaded && !configError && configByPair.get(pair) != null),
     configError: activeFixture() ? null : configError,
     // The daemon is mid-pass, or one has just been asked for: `Sweep now` would queue behind it
     // with nothing to show for the click. A plan rehearsal counts here on purpose — it holds the
@@ -3136,7 +3478,7 @@ function settingsProps() {
 
 /** The current staged value of a list field for `pair`, saved-or-staged. */
 const stagedList = (key, pair) =>
-  stagedFor(pair).edits[key] ?? (activeFixture()?.config ?? configByPair[pair])?.[key] ?? [];
+  stagedFor(pair).edits[key] ?? (activeFixture()?.config ?? configByPair.get(pair))?.[key] ?? [];
 
 function addPattern(key, pair) {
   const pattern = stagedFor(pair).drafts[key].trim();
@@ -3167,7 +3509,7 @@ function removePattern(key, pattern, pair) {
 async function chooseLocalRoot(pair) {
   try {
     const picked = await api.chooseFolder(
-      stagedFor(pair).edits.local_root ?? configByPair[pair]?.local_root ?? null,
+      stagedFor(pair).edits.local_root ?? configByPair.get(pair)?.local_root ?? null,
     );
     // Staged into the pair the dialog was opened for: it is modal, but it is not instant.
     if (picked) stageSetting("local_root", picked, pair);
@@ -3225,7 +3567,7 @@ async function saveSettings(pair = store.select.pairName()) {
   // drawn for; Ctrl S, which has no screen of its own to ask, passes the pair on screen now. Either
   // way it is fixed here, before anything is awaited: the selection can move while the write is in
   // flight, and the write, the refresh and the restart must all be about the same folder.
-  const saved = activeFixture()?.config ?? configByPair[pair] ?? {};
+  const saved = activeFixture()?.config ?? configByPair.get(pair) ?? {};
   const update = configUpdate(saved, stagedFor(pair).edits);
   const policy = notifyPolicyEdit != null && notifyPolicyEdit !== notifyPolicy ? notifyPolicyEdit : null;
   if (settingsSaving || (Object.keys(update).length === 0 && !policy)) return;
@@ -3676,7 +4018,7 @@ function onboardingProps() {
           // it again leaves a staged `[]` that is identical to the absent key it would write.
           const update = { local_root: chosen.local, remote_root: chosen.remote };
           const staged = configUpdate(
-            { exclude: configByPair[pair]?.exclude ?? [] },
+            { exclude: configByPair.get(pair)?.exclude ?? [] },
             { exclude: onboardingSkipRulesNow() },
           );
           if ("exclude" in staged) update.exclude = staged.exclude;
@@ -3946,7 +4288,7 @@ async function refreshConfig(pair = store.select.settledPair() ?? undefined) {
     const info = await api.readConfig({ pair });
     // Filed by what the reply says, then by what was asked, then by the pair on screen: the browser
     // preview's replies carry no `pair`, and a real one always does.
-    configByPair = { ...configByPair, [info?.pair ?? pair ?? store.select.pairName()]: info };
+    configByPair = withPair(configByPair, info?.pair ?? pair ?? store.select.pairName(), info);
     configRoster = Array.isArray(info?.pairs) ? info.pairs : [];
     configError = null;
     // A missing config file reads back as an empty doc (not an error), so a successful read means we
@@ -4179,6 +4521,7 @@ function noticeSelection() {
   resetConflictScreen();
   resetPlanScreen();
   resetActivityScreen();
+  pairMenuOpen = false;
   deletionArmed = null;
   deletionBusy.clear();
   deletionStatusInFlight.clear();
@@ -4217,6 +4560,10 @@ async function poll() {
     // have (re)written it since boot, and it also drives the no-daemon fallback pair display.
     refreshConfig();
   }
+  // NOT AWAITED. A folder that is not on screen may be on a mount that never answers, and a poll that waits
+  // for its scan never schedules the next one: the shown folder's polls stopped for as long as it hung
+  // (review of #447). The other folders refresh beside the poll, one job each, and the poll goes on.
+  refreshOtherPairs();
   // The withheld deletions ride on the status reply itself — no second IPC round trip per tick — and
   // `store.setStatus` files them with it, under the pair the reply describes.
   //
@@ -4231,6 +4578,63 @@ async function poll() {
   // nothing would stop the banner re-popping every time the panel is opened.
   if (!activeFixture() && !isTraySurface() && notifyPolicyLoaded) evaluateNotifications();
   scheduleNextPoll();
+}
+
+/** How often the folders that are NOT on screen are scanned for conflicts (brief E6): a scan walks a tree. */
+const OTHER_SCAN_MS = 60000;
+/** When each other folder was last scanned, by name — a `Map`, because a folder may be called `constructor`. */
+const lastOtherScan = pairTable();
+
+/**
+ * The folders whose refresh (below) has not finished, by name. A `Set`, which has no `constructor` to answer
+ * for a folder called that. One job per folder at a time: a scan that hangs is still the one scan, and the
+ * next poll — two seconds later — does not stack another on it, nor a second read of the same queue.
+ */
+const otherInFlight = new Set();
+
+/**
+ * Keep the folders that are NOT on screen far enough up to date to say whether they are asking for a
+ * person — the folder selector's marker and counts, and nothing else (#102 phase 5c-1).
+ *
+ * Cheap on purpose, and the cost is stated (E6). A folder's withheld deletions are fetched only while
+ * its summary says it has some, so a quiet folder costs no request at all; its conflicts are a disk scan
+ * of its root, run at most once a minute. Each reply is filed under the folder it describes, so none of
+ * it can reach the screen that is showing another one. The tray panel does none of this: it is a second
+ * webview running this file, and the marker is the window's.
+ *
+ * FIRE AND FORGET, per folder (`poll` does not wait for it): see the comment at the call.
+ */
+function refreshOtherPairs() {
+  if (activeFixture() || isTraySurface()) return;
+  const shown = store.select.pairName();
+  for (const summary of store.select.pairs()) {
+    const pair = summary.name;
+    if (pair === shown || otherInFlight.has(pair)) continue;
+    otherInFlight.add(pair);
+    refreshOtherPair(pair, summary.pending_deletions > 0).finally(() => otherInFlight.delete(pair));
+  }
+}
+
+/** One other folder's refresh. Never rejects: every request is caught, so the guard above is always released. */
+async function refreshOtherPair(pair, hasQueue) {
+  if (hasQueue) {
+    const issue = store.beginStatus();
+    try {
+      // `pair` is passed on so a read that FAILS is filed under it, not under the folder on screen.
+      store.setStatus(await api.getStatus({ pair }), issue, pair);
+    } catch (error) {
+      console.error("get_status failed:", error);
+    }
+  }
+  const now = Date.now();
+  if (now - (lastOtherScan.get(pair) ?? 0) > OTHER_SCAN_MS) {
+    lastOtherScan.set(pair, now);
+    try {
+      store.setConflicts(await api.scanConflicts({ pair }), pair);
+    } catch (error) {
+      console.error("scan_conflicts failed:", error);
+    }
+  }
 }
 
 function scheduleNextPoll() {
@@ -4264,6 +4668,27 @@ function main() {
   api.onPairSelected(() => {
     clearTimeout(pollTimer);
     poll();
+  });
+  // A tray row paused or resumed a folder and the daemon could not save it (decision D12). The panel is
+  // dismissed before its reply arrives, so the window is the surface that can say so. MAIN WINDOW ONLY,
+  // for `onNotificationAction`'s reason: `app.emit` reaches every webview.
+  if (!isTraySurface()) {
+    api.onPauseUnsaved(({ pair, paused, reason } = {}) =>
+      noteUnsavedPause(pair ?? store.select.pairName(), Boolean(paused), reason),
+    );
+  }
+  // The folder selector closes when a press lands outside it or the keyboard leaves it. Plain document
+  // listeners, because the popover is part of the header's patched tree and has no node of its own to
+  // hang a backdrop on (a backdrop would be a sibling of the header — `selector.js` says why not).
+  document.addEventListener("pointerdown", (event) => {
+    if (pairMenuOpen && !(event.target instanceof Element && event.target.closest(".pair-select"))) {
+      closePairMenu();
+    }
+  });
+  document.addEventListener("focusin", (event) => {
+    if (pairMenuOpen && event.target instanceof Element && !event.target.closest(".pair-select")) {
+      closePairMenu();
+    }
   });
 
   api.onTrayNavigate((id) => {

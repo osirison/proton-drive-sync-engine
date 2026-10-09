@@ -50,6 +50,31 @@ export const CHROME = {
     settings: "Settings",
     details: "Details",
   },
+  /**
+   * The folder selector's popover (#102 phase 5c-1, `02-shell.md`): one word for each folder's state.
+   * Keyed by `gui_core::DaemonState`'s serialised names, because that is what `pair_states` carries.
+   *
+   * Four are drawn (`2a Two folders open`). Three are not, and the reason is the same for all of them:
+   * `authExpired` and `unreachable` are PROCESS-wide — the session and the socket are one per user, so
+   * every row would say it at once, and a popover drawn that way would be four identical rows — and
+   * `firstRun` is only ever derived for the one folder a full reply describes, which the window shows
+   * with a hero rather than a row. Their words are the chip's own (`app.js` `chipFor`), spoken once.
+   *
+   * A state this build has no word for (an entry a newer daemon sent, or none at all) gets NO word: the
+   * row names its folder and says nothing about it. `ui/selector.js`'s `stateWordOf` is the arm, and it
+   * claims nothing — a trailing arm that read "fine" would be #246's shape.
+   */
+  pair: {
+    states: {
+      idle: "up to date",
+      running: "syncing",
+      paused: "paused",
+      failed: "sync failed",
+      authExpired: "sign-in expired",
+      unreachable: "unreachable",
+      firstRun: "nothing synced yet",
+    },
+  },
 };
 
 // -------------------------------------------------------------------------- main screen ----
@@ -175,6 +200,33 @@ export const MAIN = {
   syncNow: "Sync now",
   pause: "Pause",
   resume: "Resume syncing",
+  /**
+   * The notice block between the columns and the footer (#102 phase 5c-1). One warm band for three
+   * things that are true and that the hero does not say; nothing in any of them is at risk, so it is the
+   * band `7a Activity quiet` draws for "present, not backed up" and not a crimson one.
+   *
+   * `pairNotRunning`: the folder this window remembered is in the settings file and not in the running
+   * daemon. The reassurance comes first (voice rule 3), and `restartSyncing` is the one thing to do
+   * about it. `restarting` is the button mid-click (`systemctl` blocks for seconds, `MAIN.starting`'s
+   * reason); `restartFailed` replaces the second sentence and the daemon's own reason is quoted under it.
+   *
+   * The `Unsaved` pairs are the daemon's `pause_unsaved` (decision D12), said in the words
+   * `proton-sync` says them in, minus the folder's name: the window is already about one folder. They
+   * state a fact about a RESTART, not an instruction, so there is no button. Their reason is the daemon's
+   * and is quoted verbatim (voice rule 4).
+   */
+  notice: {
+    pairNotRunning: (name) => `${name} isn't being synced yet`,
+    pairNotRunningSub:
+      "Nothing is lost. Syncing started before this folder was added — restart it to pick it up.",
+    restartSyncing: "Restart syncing",
+    restarting: "Restarting…",
+    restartFailed: "Syncing didn't restart.",
+    pauseUnsaved: "Paused, but not saved",
+    pauseUnsavedSub: "If syncing restarts first, this folder will not be paused.",
+    resumeUnsaved: "Resumed, but not saved",
+    resumeUnsavedSub: "If syncing restarts first, this folder may be paused again.",
+  },
   /**
    * The chip on a transfer row that has not started (#211). `2a Syncing` draws the word in the same
    * slot, and at the same 39.61px, as the size chip on the active row above it — measured. Declared

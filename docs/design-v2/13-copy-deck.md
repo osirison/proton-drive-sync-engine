@@ -23,6 +23,12 @@ around deletion.
 Status chips: `idle` · `syncing` · `3 waiting` · `2 waiting` · `rehearsal · nothing has changed` · `step 1 of 2`
 Footer doors: `Activity` · `Plan a sync` · `Settings` · `Details`
 
+Two folders or more (`02-shell.md` "Folder selector", DEVIATIONS §108): the header gains a pill naming the folder
+(`documents`) and its list. One word for a folder's state — `up to date` · `syncing` · `paused` · `sync failed`
+(drawn), and `sign-in expired` · `unreachable` · `nothing synced yet` (daemon-wide, or a hero, so never a row's
+word in a frame; the list does say `unreachable` for every row, with no count, while the daemon is not answering)
+— and the count beside it is the chip's own template, `2 waiting`, drawn as nothing at zero.
+
 ## Main screen
 
 - `Everything is up to date` / `last synced 2 minutes ago · 12,480 files · 41.2 GB`
@@ -35,6 +41,14 @@ Footer doors: `Activity` · `Plan a sync` · `Settings` · `Details`
   `One file changed on both sides` / `notes/todo.txt · both copies kept, nothing lost` / `Compare`
   `Two deletions are waiting on you` / `1 removes from this computer permanently · 1 goes to Proton's Trash` / `Review`
   - Third clause, **drawn by no frame**: a local deletion in trash mode reads `1 goes to this computer's Trash`, between the permanent clause and Proton's. A clause with a count of zero is dropped, never printed — so the drawn sentence above is the queue that has one of each of the other two.
+- Two folders or more (`03-main-screen.md`, DEVIATIONS §108): the pause button names its folder, `Pause documents` ·
+  `Resume documents` (the tray's `TRAY.pausePair`/`resumePair`, not a second pair), and a paused hero's second
+  sentence does too: `7 changes have piled up since 13:20. Nothing in documents will move until you resume.`
+- The notice block (the warm band `7a Activity quiet` draws), at two folders or more and at one:
+  `photos isn't being synced yet` / `Nothing is lost. Syncing started before this folder was added — restart it to pick it up.` / `Restart syncing` (mid-click `Restarting…`; a restart that did not work: `Syncing didn't restart.` and the daemon's reason in mono) ·
+  `Paused, but not saved` / `If syncing restarts first, this folder will not be paused.` ·
+  `Resumed, but not saved` / `If syncing restarts first, this folder may be paused again.` — each followed by the daemon's own reason, quoted.
+  Drawn: the first and the resume; **drawn by no frame:** `Restarting…`, `Syncing didn't restart.` and the pause half (its hero is the paused window, which no frame draws).
 - Compact: `Up to date` / `2 minutes ago` / `12,480 files` · `3 things need you` /
   `One file changed on both sides.` `Two deletions are waiting.` / `Review them` /
   `syncing continues` / `Later` / `Open`

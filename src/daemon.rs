@@ -3081,10 +3081,11 @@ impl<C: ProtonClient> Daemon<C> {
     }
 
     /// Said once at startup, at the process scope, when more than one pair is configured
-    /// (maintainer decision M4): the desktop app's window and the notifications were written for
-    /// one pair and address the default one. (The tray's rows stopped being on this list in #102
-    /// phase 5d: it lists every pair and pauses each one by name.) The control CLI addresses any
-    /// pair by name. `warn!`, not `info!`:
+    /// (maintainer decision M4): the desktop app's notifications were written for one pair and
+    /// address the default one. (The tray's rows stopped being on this list in #102 phase 5d: it
+    /// lists every pair and pauses each one by name. The window followed in phase 5c-1: it is about
+    /// the folder chosen from the pill in its header.) The control CLI addresses any pair by name.
+    /// `warn!`, not `info!`:
     /// it is a limit the operator needs to see under `RUST_LOG=warn`, not a status line. A function
     /// of its own so a test can capture it without running the loop.
     fn note_that_the_desktop_app_addresses_one_pair(&self) {
@@ -3092,9 +3093,10 @@ impl<C: ProtonClient> Daemon<C> {
             warn!(
                 pairs = self.pairs.len(),
                 default_pair = %self.pair_config(0).name,
-                "more than one folder pair is configured: the desktop app's window and the \
-                 notifications act on the default pair only (its tray lists every pair); \
-                 `proton-sync --pair NAME` and `--all-pairs` address the others"
+                "more than one folder pair is configured: the desktop app's notifications \
+                 act on the default pair only (its window follows the folder chosen in its header \
+                 and its tray lists every pair); `proton-sync --pair NAME` and `--all-pairs` \
+                 address the others"
             );
         }
     }

@@ -106,3 +106,34 @@ outline hexagon with the numeral, `3 things need you`, two-line explanation,
   fade out when it ends. The hexagon crossfades between states over 220ms; it never moves or
   rescales.
 - Transfer rows appear in flight order, cap at ~6 visible with `+n more` in mono if exceeded.
+
+## At two folders or more
+
+Everything above describes ONE folder, and at two or more it is still exactly that: the screen is about
+the folder the header's pill names (`02-shell.md`, "Folder selector"), and the chip, the band, the footer's
+folder pair and the seam's side labels are that folder's. Three things say so (DEVIATIONS §108):
+
+- **The pause button names its folder.** `Pause documents`, `Resume documents` (the tray's own templates,
+  `TRAY.pausePair`/`resumePair`): each folder has its own pause, so the verb alone would say less than is
+  true. One folder keeps `Pause` and `Resume syncing`.
+- **A paused hero names it in its sub-line.** `7 changes have piled up since 13:20. Nothing in documents
+  will move until you resume.` — another folder keeps syncing under a paused one, so `Nothing will move`
+  would be untrue of the app. One folder keeps the sentence above.
+- **A notice block** between the columns and the footer, the warm band `7a Activity quiet` draws for
+  "present, not backed up": `padding:0 32px 18px`, a ⊘ glyph, a title, one sentence, an optional
+  daemon-quoted line in mono, and at most one button. Three things use it, and nothing in them is at risk:
+  - the folder this window remembered is in the settings file and not in the running daemon —
+    `photos isn't being synced yet` / `Nothing is lost. Syncing started before this folder was added — restart it to pick it up.` / `Restart syncing`;
+  - a pause the daemon applied and could not write down (`pause_unsaved`) —
+    `Paused, but not saved` / `If syncing restarts first, this folder will not be paused.`;
+  - …and the same for a resume — `Resumed, but not saved` / `If syncing restarts first, this folder may be paused again.`
+    The daemon's own reason is quoted under the sentence, never joined to it (voice rule 4).
+
+  The seam stops above the block as it does above the band. A notice about an unsaved pause or resume
+  belongs to its folder: it is kept while another folder is on screen (the tray can pause a folder this
+  window is not showing) and said when that folder is next looked at, and only then. It comes down with
+  the next press of Pause or Resume on the hero, as soon as a status reply shows the folder in the other
+  pause state (a pause saved, or a resume done from the tray or `proton-sync resume`, neither of which
+  tells this window), and when the daemon stops answering. A reply that left before the notice was noted
+  cannot end it. A failed `Restart syncing` is remembered for the folder it was tried for; the notice for
+  the next folder the daemon does not run starts over.

@@ -8,7 +8,9 @@ sidebar:
 The window is a fixed 1040×764 and does not resize, so every picture below is the whole app.
 
 There is no sidebar. A 52px header carries the app mark, the name, a **status chip** and a `⋯`
-menu whose single item switches the theme. A footer carries five **doors** — **Home**,
+menu whose single item switches the theme. With two or more folder pairs a **folder pill** sits
+beside the name and picks which folder the window is about (see
+[the window is about one folder pair at a time](/desktop/overview/#honest-about-the-engines-limits)). A footer carries five **doors** — **Home**,
 **Activity**, **Plan a sync**, **Settings**, **Details** — and, on Home, a mono line naming the
 folder pair. Conflicts and Deletions have no door: they open over whatever you were looking at,
 from the attention band on Home, or from a notification.

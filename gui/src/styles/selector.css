@@ -1,0 +1,150 @@
+/*
+ * The folder selector (#102 phase 5c-1) — see js/ui/selector.js for what it is and why it is shaped as
+ * it is. Drawn only at two folders or more, so no rule here is reached by a one-folder window.
+ *
+ * Every number is the prototype's (`2a Two folders`, `2a Two folders open`); the pill is the status
+ * chip's height and type on purpose (mono 11px, 5px 12px, a fully rounded box) so the header reads as
+ * one row of pills, and it takes no border and no fill at rest — a selector is not a warning, and the
+ * chip beside it is the one thing in that row allowed a hue.
+ *
+ * Linked from index.html with its own <link>: forgetting one is silent (the popover simply has no
+ * surface), and nothing in lint or CI would say so.
+ */
+
+/* The positioned box the popover hangs from. A child of the header, not a sibling of it: see the note
+   on `setBody` in selector.js. */
+.pair-select {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+/* A transparent 1px border at rest, so the pill is the same size open and closed — the header is a
+   fixed 52px with everything centred, so a border that appeared on open would move nothing, but the
+   pill's own box would jump by 2px under the pointer. */
+.pair-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 12px;
+  border: 1px solid transparent;
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--t-press) var(--ease);
+}
+.pair-pill:hover,
+.pair-pill[aria-expanded="true"] {
+  background: var(--panel-raised);
+  border-color: var(--border-chrome);
+}
+
+/* "Truncated at about 18 characters" (brief 4.2): in mono 11px that is the `ch` unit exactly. The full
+   name is the button's `title`. */
+.pair-pill-name {
+  max-width: 18ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pair-pill-caret {
+  width: 8px;
+  height: 8px;
+  flex: none;
+}
+
+/* ---------------------------------------------------------------------------- the popover ---- */
+
+/* `.menu-popover`'s surface (shell.css), hung under the pill instead of pinned to the right edge. */
+.pair-popover {
+  position: absolute;
+  top: 34px;
+  left: 0;
+  z-index: 20;
+  min-width: 280px;
+  max-width: 420px;
+  padding: 6px;
+  background: var(--panel-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--r-12);
+  box-shadow: var(--shadow-dialog);
+}
+
+/* A LONG LIST SCROLLS INSIDE ITSELF (review of #447). Unbounded, the list is as tall as the folders are many
+   and hangs from a 52px header in a 764px window that cannot be resized: 25 folders ended at 829px, below the
+   window's own edge, with no way to reach the last rows. `.is-scrolling` is set by selector.js from the
+   number of rows (more than eleven), and ONLY then, so the four-row list the frames draw keeps the computed
+   `overflow` the prototype gives it (`visible`, which the style gate compares). Measured: a row is 31px
+   and 11 rows are 355px, so 360px holds eleven rows and 5px of the twelfth, which is what a list of
+   twelve overflows by (386px). Eleven fit and are not given a scroll container with nothing to scroll;
+   the sliver is the only sign of the twelfth, and the wheel and the arrows are how it is reached.
+   Keyboard focus scrolls itself into view (`focus()` does),
+   so an arrow walking down the list is never standing on a row nobody can see. */
+.pair-popover.is-scrolling {
+  max-height: 360px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.pair-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: var(--r-7);
+  background: none;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.pair-row:hover,
+.pair-row.is-selected {
+  background: var(--panel-alt);
+}
+.pair-row.is-selected {
+  color: var(--text);
+}
+
+/* The check's slot is always there, so the names line up whether or not a row is the chosen one. */
+.pair-row-lead {
+  flex: none;
+  width: 10px;
+  height: 10px;
+}
+.pair-row-check {
+  display: block;
+  width: 10px;
+  height: 10px;
+}
+
+.pair-row-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Neutral on purpose: a folder's state and what is waiting in it are facts, not alarms. The ring on the
+   pill is the only thing in the selector that means "a person is needed". */
+.pair-row-state,
+.pair-row-count {
+  flex: none;
+  font-size: 11px;
+  color: var(--text-5);
+}
+/* A FIXED MINIMUM, right-aligned, whether or not the row has a count. The words for a folder's state
+   differ in length (`up to date`, `syncing`), and with the count's width varying with the row they would
+   end at a different place on every one. `9ch` is `1 waiting` in this face; a longer count widens it. */
+.pair-row-count {
+  min-width: 9ch;
+  text-align: right;
+}

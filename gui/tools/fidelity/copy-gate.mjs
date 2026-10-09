@@ -40,6 +40,37 @@ const NOT_DRAWN = new Map([
   // `app.js` hides `firstRun` behind the onboarding takeover, so the window never renders it; the
   // tray has no takeover and would otherwise say `Everything is up to date` about a daemon that has
   // never copied a file. See the note in ui/copy.js and DEVIATIONS §82g.
+  // #102 phase 5c-1, the folder selector and the notice block. Seven strings no frame draws, in three
+  // groups, and each reason is a fact about the state and not about the effort of drawing it.
+  //
+  // THE THREE WORDS OF STATES THE LIST CAN BE IN AND `2a Two folders open` CANNOT SHOW AT ONCE. A folder
+  // that is signed out or unreachable is a fact about the whole daemon (the session and the socket are
+  // one per user), so every row would say it together and the list would be four identical words; a
+  // folder that has never synced is a hero in the window (`TRAY.nothingSyncedYet`), not a row. The three
+  // are the chip's own words (`app.js` `chipFor`: `sign-in expired`, `unreachable`, `first run`) said
+  // once more where a folder's state is named.
+  ["CHROME.pair.states.authExpired", "a daemon-wide state: every row would say it at once"],
+  // The list does say it, for EVERY row, when the daemon stops answering (the store keeps the last states
+  // across a failed read, which used to read `up to date`): `fidelity:pairs` holds that on the real page.
+  // No frame draws it for the reason above — four identical words.
+  ["CHROME.pair.states.unreachable", "a daemon-wide state: every row would say it at once"],
+  [
+    "CHROME.pair.states.firstRun",
+    "only ever derived for the one folder a full reply describes, which the window draws as a hero",
+  ],
+  // THE TWO BUTTON STATES OF `Restart syncing`. Transient by construction: `restarting` is on screen for
+  // the seconds `systemctl` blocks, and `restartFailed` for as long as the reason under it is — neither
+  // is a state a frame can be drawn in without a daemon that is mid-restart or refuses one.
+  ["MAIN.notice.restarting", "the button mid-click: on screen only while `restart_service` is in flight"],
+  [
+    "MAIN.notice.restartFailed",
+    "a restart that did not work: needs a daemon that refuses one, and quotes its reason under it",
+  ],
+  // THE PAUSE HALF OF `pause_unsaved`. `2a Two folders unsaved` draws the resume half, in the same block
+  // with the same reason line. The pause half needs the PAUSED hero under it, and no window frame draws
+  // that hero (`03-main-screen.md` describes it in prose; the tray panel's `10a Paused` is the nearest).
+  ["MAIN.notice.pauseUnsaved", "its hero is the paused window, which no frame draws"],
+  ["MAIN.notice.pauseUnsavedSub", "its hero is the paused window, which no frame draws"],
   ["TRAY.nothingSyncedYet", "no frame draws a tray panel for a daemon that has never synced"],
   ["TRAY.nothingSyncedYetSub", "no frame draws a tray panel for a daemon that has never synced"],
   // The deck's Activity section carries this under "Quiet:", and its only frame is `6a Quiet` —
@@ -611,6 +642,8 @@ const UNGATED_TEMPLATES = new Map([
 const DRAWN = [
   ["CHROME.chips.waiting", [3], "2a Needs you"],
   ["CHROME.chips.step", [1], "9a Folders"],
+  // #102 phase 5c-1: the notice for a folder the daemon does not run, at the folder the frame names.
+  ["MAIN.notice.pairNotRunning", ["photos"], "2a Folder not running"],
   ["MAIN.syncing", [3], "2a Syncing"],
   ["MAIN.otherWaiting", [3], "2a Needs you"],
   // Drawn on a NOTIFICATION rather than on the main screen: `11a Outage` is the only place the

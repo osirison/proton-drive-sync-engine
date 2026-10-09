@@ -107,6 +107,20 @@
   color: var(--text-3);
 }
 
+/* The daemon's own words under a notice's sentence (voice rule 4): mono, quieter than the sentence, and
+   capped — a reason can be any length, and a block that grew with it would push the band over the footer
+   exactly as `.main-failed-error` would. */
+.band-notice-reason {
+  margin-top: 6px;
+  max-height: 66px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-5);
+  overflow-wrap: anywhere;
+}
+
 /* A NOTICE band's button, and only a notice band's. `7a Activity quiet` records `flex-shrink: 0`
    on `Show them` — the sentence beside it gives way first, which is the right way round, since a
    truncated `Show them` is an unusable control and a truncated sentence is still readable.
