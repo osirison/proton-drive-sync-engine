@@ -847,12 +847,7 @@ impl ProtonClient for ProtonDriveClient {
     }
 
     fn ensure_root_directory(&self, remote_root: &Path) -> AppResult<()> {
-        let remote_root = clean_remote_root_path(remote_root).ok_or_else(|| {
-            boxed_error(format!(
-                "unsafe remote root path: {}",
-                remote_root.display()
-            ))
-        })?;
+        let remote_root = require_safe_remote_root(remote_root)?;
         if self.remote_path_exists(&remote_root)? {
             return Ok(());
         }
@@ -1879,19 +1874,63 @@ fn is_node_not_found(output: &Output) -> bool {
         .contains("node not found")
 }
 
-fn clean_remote_root_path(path: &Path) -> Option<PathBuf> {
+/// The remote root as the client will work under it, or the engine's own refusal of it.
+///
+/// **The one place the rule and its words live.** `ensure_root_directory` fails with this when a pass
+/// has to create the root, and a caller that wants to know *before* a folder is written — the desktop
+/// app's add dialog (review of #450, F4) — asks the same function, so what it says is what the daemon
+/// would say. Config resolution does **not** call it, on purpose: a file whose `remote_root` carries a
+/// `..` starts today and goes on starting (measured: the path is handed to the CLI as written, and
+/// only a pass that finds the root missing fails with this sentence). Refusing it at startup would stop
+/// a config that runs.
+///
+/// There are two refusals and the sentence names the one that applies (final fix round of #450): a
+/// caller that explained every refusal as the `..` one told someone who typed `.` about a `..` that
+/// was not there.
+pub fn require_safe_remote_root(remote_root: &Path) -> AppResult<PathBuf> {
+    clean_remote_root_path(remote_root).map_err(|fault| {
+        boxed_error(format!(
+            "unsafe remote root path: {} ({})",
+            remote_root.display(),
+            fault.reason()
+        ))
+    })
+}
+
+/// Which rule a remote root broke. Said by the one function that applies the rules, so the words
+/// cannot name a rule that was not the cause.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemoteRootFault {
+    /// A `..` (or a platform prefix, which a Unix path never has): resolving it is not something to guess at.
+    ParentComponent,
+    /// Nothing is left once the `.` components are dropped (`.`, `./`): no location at all.
+    NamesNoFolder,
+}
+
+impl RemoteRootFault {
+    fn reason(self) -> &'static str {
+        match self {
+            Self::ParentComponent => "a `..` or a drive prefix is not accepted in it",
+            Self::NamesNoFolder => "it names no folder",
+        }
+    }
+}
+
+fn clean_remote_root_path(path: &Path) -> Result<PathBuf, RemoteRootFault> {
     let mut clean_path = PathBuf::new();
     for component in path.components() {
         match component {
             Component::RootDir | Component::Normal(_) => clean_path.push(component.as_os_str()),
             Component::CurDir => {}
-            Component::ParentDir | Component::Prefix(_) => return None,
+            Component::ParentDir | Component::Prefix(_) => {
+                return Err(RemoteRootFault::ParentComponent);
+            }
         }
     }
     if clean_path.as_os_str().is_empty() {
-        None
+        Err(RemoteRootFault::NamesNoFolder)
     } else {
-        Some(clean_path)
+        Ok(clean_path)
     }
 }
 
@@ -4447,6 +4486,47 @@ info:/my-files/demo\n\
 create-folder:/my-files:demo\n\
 info:/my-files/demo/nested\n\
 create-folder:/my-files/demo:nested\n"
+        );
+    }
+
+    /// The one definition of a remote root the client refuses, and the words it refuses with: the pass
+    /// that has to create the root fails with the very sentence the desktop app's add dialog quotes
+    /// before it writes the folder (review of #450, F4), and the sentence names the rule that applied
+    /// (final fix round: `.` was explained as a `..`). A client with no executable at all is enough,
+    /// because the refusal comes before anything is run.
+    #[test]
+    fn a_refused_remote_root_is_refused_with_the_same_words_by_the_check_and_the_pass() {
+        let client = ProtonDriveClient::new("/nonexistent/proton-drive");
+        for (root, reason) in [
+            (
+                "/Drive/../x",
+                "a `..` or a drive prefix is not accepted in it",
+            ),
+            (
+                "Drive/a/../b",
+                "a `..` or a drive prefix is not accepted in it",
+            ),
+            ("/../x", "a `..` or a drive prefix is not accepted in it"),
+            (
+                "/Drive/photos/..",
+                "a `..` or a drive prefix is not accepted in it",
+            ),
+            (".", "it names no folder"),
+            ("./", "it names no folder"),
+            ("././", "it names no folder"),
+        ] {
+            let said = format!("unsafe remote root path: {root} ({reason})");
+            let asked = require_safe_remote_root(Path::new(root)).expect_err(root);
+            let ran = client
+                .ensure_root_directory(Path::new(root))
+                .expect_err(root);
+            assert_eq!(asked.to_string(), said, "{root}");
+            assert_eq!(ran.to_string(), said, "{root}");
+        }
+        // A `.` is cleaned, and the root is handed back as the client will use it.
+        assert_eq!(
+            require_safe_remote_root(Path::new("/Drive/./photos")).expect("cleaned"),
+            PathBuf::from("/Drive/photos")
         );
     }
 

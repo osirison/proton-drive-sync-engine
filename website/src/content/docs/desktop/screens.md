@@ -178,11 +178,11 @@ Edits the daemon's TOML config directly, in five tabs:
 
 | Tab | Holds |
 | --- | --- |
-| **Folders** | The pair (`local_root`, `remote_root`), the `events_driven` toggle, the full-sweep schedule (`full_scan_schedule` — weekly or monthly, a day and a time), and **Sweep now** (a full-tree resync). |
+| **Folders** | The pair (`local_root`, `remote_root`), the `events_driven` toggle, the full-sweep schedule (`full_scan_schedule` — weekly or monthly, a day and a time), and **Sweep now** (a full-tree resync). With two or more folders, a list of them comes first: see [Adding and removing a folder](#adding-and-removing-a-folder). The settings under it are the chosen folder's. |
 | **What to skip** | The `exclude` rules, one per row with a live count of what each currently hides. |
 | **Deletions** | Three radio cards writing `deletion_policy` — ask every time, only permanent, never — applying to **both** directions. |
 | **Notifications** | The notify policy. This one is GUI-local: it is written to the app's own `gui.toml` and the daemon never sees it. |
-| **Advanced** | `include` ("only sync these"), the `proton_cli` path, `conflict_suffix`, `log_level`, and the config file path. |
+| **Advanced** | `include` ("only sync these"), the `proton_cli` path, `conflict_suffix`, `log_level`, and the config file path. With two or more folders, the command, the log level and the socket say **Applies to all folders**: the daemon reads them once for every folder, where `include` and `conflict_suffix` are the chosen folder's. |
 
 Saving writes **only the fields you changed**, preserves your comments and any daemon-only
 keys, and refuses anything the daemon's own parser would reject — so a save cannot leave you
@@ -210,6 +210,51 @@ If a counted sync is running while you have a **daemon-config** change staged, t
 you before **Save**: that save restarts the daemon, which stops the pass, and it starts again on
 the new settings. A staged Notifications change draws no warning, because it writes the app's
 own file and restarts nothing.
+
+With **two or more folders**, a staged daemon-config change says what the save costs all of them:
+*Saving restarts syncing for both folders, briefly. Anything running now stops, and folders you
+paused stay paused.* (At three or more it reads *for all three folders*, and so on.) A folder's pause is kept by the daemon across a restart, so the app does not
+re-pause anything. (One case is not covered: a pause made while a folder was unavailable is kept
+in memory only — see [Controlling the pairs](/daemon/folder-pairs/#controlling-the-pairs).)
+
+## Adding and removing a folder
+
+With two or more folders the **Folders** tab opens with a list: each folder's name over the two
+paths it keeps in step, the word for its state, and **Remove**. The folder the settings below are
+about is marked with a dot, and clicking another folder's name chooses it — the same choice the
+header's pill makes. **Add folder…** is under the list, and in the window's **⋯** menu at every
+count, so the second folder is findable with one.
+
+**Adding** is a dialog, not the first-run screen. Type or **Choose…** the folder on this computer
+and type the Proton Drive folder; the name follows the folder (`~/My Photos` suggests `my-photos`)
+until you type your own, and the engine's own sentence appears under it if it refuses one. You can
+stage skip rules in the same step. **Check folders** asks the engine whether the add would go
+ahead — a relative folder, a folder that overlaps another's, a name already taken — and prices both
+sides (files and size on this computer; a file count on Proton Drive, which reports no size).
+Nothing is written. Editing a field after the check puts **Check folders** back, so **Add folder**
+is only ever offered for exactly what was checked.
+
+If the folder already holds a sync history from an earlier setup (`.sync/sync_index.db`), the
+dialog says so before anything is written: adding it resumes from that history, so anything that
+changed since may show up as deletions to approve, and `proton-sync reset-index --yes --pair NAME`
+starts it fresh after adding. **There is no preview for a new folder** — its first sync starts as
+soon as you add it, and the dialog says that instead of promising what it will do.
+
+**Add folder** writes the config once (a single-pair file becomes `[[pair]]` tables, `default`
+first), restarts the sync service if it was running, waits for the service to list the new folder,
+selects it, and shows the same merge dialog first-run shows, for that folder — with no
+`nothing deleted` line, because no plan was made. A restart that did not work says so in the same
+five sentences a Settings save uses, with **Restart it now**. While the add is in flight the dialog
+cannot be left: Esc, the ✕, shortcuts such as Ctrl+, and a notification's *Review* all do nothing
+until the service has answered. If the add also finished the move of an earlier removal's history,
+the dialog tells you what happened to it and waits for **Done** before the merge dialog.
+
+**Removing** asks first: syncing stops for the folder; nothing is deleted on this computer or in
+Proton Drive; its sync history is moved aside to the app's state folder, so adding the folder back
+later starts fresh; and, when it was the first folder, which folder becomes the default one (the
+one every command that names no folder, and every older client, means). Then the dialog shows the
+command's own account — moved to where, nothing to move, or *not yet*, with the reason. The last
+folder cannot be removed, and its confirmation says so.
 
 ## First run
 

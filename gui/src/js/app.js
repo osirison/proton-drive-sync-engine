@@ -40,7 +40,7 @@ import { bannerFor, payloadFor, renderBanner } from "./ui/notification.js";
 import { decide, emptyState, notifierViews, restoreState } from "./notifier.js";
 import { runBannerAction } from "./banner-actions.js";
 import { trayView, renderTrayPanel, updateTrayPanel } from "./screens/tray.js";
-import { ACTIVITY, CHROME, ONBOARDING, SETTINGS } from "./ui/copy.js";
+import { ACTIVITY, CHROME, FOLDERS, ONBOARDING, SETTINGS } from "./ui/copy.js";
 import { clock, since } from "./ui/format.js";
 import { renderMain, updateMain, unmountMain, clearsStartError } from "./screens/main.js";
 import { renderConflicts, advanceAfter, skipTo } from "./screens/conflicts.js";
@@ -101,6 +101,24 @@ import {
   renderConsent,
   renderCliMissing,
 } from "./screens/onboarding.js";
+import {
+  BUSY_PHASES,
+  WAIT_LIMIT,
+  accountOf,
+  addKeyOf,
+  addRequestOf,
+  addViewOf,
+  blankAdd,
+  blankRemove,
+  listRows,
+  remotePathForProbe,
+  removalOf,
+  replyAbout,
+  settledLinesOf,
+  waitStepOf,
+  withRule,
+} from "./folders.js";
+import { addFolderShape, removeFolderShape, renderAddFolder, renderRemoveFolder } from "./screens/folders.js";
 import { severityOfItem } from "./ui/rows.js";
 import { activeFixture, fid } from "./fixtures/frames.js";
 import { mountPreview, applyPreviewTheme } from "./fixtures/preview.js";
@@ -278,6 +296,11 @@ function chipFor() {
 
 function navigate(id) {
   if (!ROUTES[id]) throw new Error(`app: no route "${id}"`);
+  // A DIALOG WITH SOMETHING IN FLIGHT IS NOT LEFT BY GOING SOMEWHERE ELSE EITHER. Esc and the ✕ were the
+  // only ways out `closeOverlay` guarded, and Ctrl+, Ctrl+F, a banner's `Review` and the tray's navigate
+  // event all arrive here: the keypress is consumed, nothing moves, and the answer lands on the dialog
+  // that asked. Before anything below, so not even `openerError` is touched. See `leaveDialog`.
+  if (dialogVetoed(dialogOverlay)) return;
   // A REFUSED OPEN IS ABOUT THE BUTTON THAT WAS CLICKED, and nothing else. `openerError` is one
   // variable feeding five sites across two screens, so a failure left standing is drawn under a
   // different button on a screen the user has since walked to — as the reason THAT one did nothing.
@@ -310,8 +333,7 @@ function navigate(id) {
   // one. Cleared directly rather than by popping: the door itself keeps focus, so there is no
   // return target to honour.
   screenStack = [];
-  dialogOverlay = null;
-  dialogReturn = null;
+  leaveDialog();
   render();
 }
 
@@ -334,15 +356,21 @@ function focusKeyOf(node) {
 }
 
 function openOverlay(id, opener = null) {
+  // Opening something over a dialog with something in flight is leaving it: a screen overlay drops the
+  // dialog and a second dialog takes its place, and neither may happen to one that is mid-flight. The
+  // caller's open is refused, not queued — see `leaveDialog` for what that costs the one async caller.
+  if (dialogVetoed(dialogOverlay)) return;
   const back = { key: focusKeyOf(opener ?? document.activeElement), node: opener ?? document.activeElement };
   if (isDialog(id)) {
+    // A dialog that is REPLACED lets go of what it held, exactly as one that is closed does. The same id is
+    // not a replacement: the caller has just set the state this one is about to be drawn from.
+    if (dialogOverlay !== id) releaseFolderState(dialogOverlay);
     dialogOverlay = id;
     dialogReturn = back;
   } else {
     // A dialog belonged to the screen it was opened over; moving to a different screen closes it
     // rather than leaving it floating above something it was never about.
-    dialogOverlay = null;
-    dialogReturn = null;
+    leaveDialog();
     screenStack.push({ id, back });
   }
   // Conflicts is entered fresh every time: the queue starts at the top, and the "what you settled"
@@ -377,15 +405,44 @@ function focusAfterSwap(selector) {
   queueMicrotask(() => document.querySelector(selector)?.focus());
 }
 
+/**
+ * THE ONE WAY A DIALOG IS LEFT (review of #450, F1). Every site that used to clear `dialogOverlay` by hand
+ * — a door, a screen overlay opening over it, Esc and the ✕, the first-run takeover, a dialog that ended
+ * itself — goes through here, because a dialog that goes without letting go of what it held leaves that
+ * state running: an add whose dialog had been dropped went on to pop a merge dialog out of nowhere, and a
+ * removal's answer (a set-aside still pending included) was written to a dialog nobody could see.
+ *
+ * TWO HALVES, AND THEY ARE NOT THE SAME QUESTION. Whether a dialog MAY be left is `dialogVetoed`, asked by
+ * the callers that can be refused (`closeOverlay`, `navigate`, `openOverlay`, the folder openers): a dialog
+ * with something in flight stays, the keypress is consumed, and nothing moves. What happens to it WHEN it
+ * is left is this function and has no answer to give back: it drops the dialog, its return target and the
+ * folder state it held. The callers that cannot be refused call it directly — the takeover (it covers
+ * everything, and a dialog from before it was armed has nothing left to be about) and the dialogs that end
+ * themselves (`filePending`, a finished merge, an orphan).
+ *
+ * WHO CAN REACH A VETOED DIALOG: Esc and the ✕ (`closeOverlay`); Ctrl+, Ctrl+F, a banner's `Review` and the
+ * tray's navigate event (`navigate`, and `openOverlay` under it); `openAddFolder`/`openRemoveFolder` and
+ * `saveSettings`' failure dialog (`openOverlay`). A mouse click on a door is stopped by the scrim.
+ * `saveSettings` is the one that loses something by being refused: a save that failed while an add was in
+ * flight draws no `Save refused` over it, and says nothing but its staged edits still being staged.
+ */
+function leaveDialog() {
+  releaseFolderState(dialogOverlay);
+  dialogOverlay = null;
+  dialogReturn = null;
+}
+
 /** Close the topmost layer. The dialog is always above the screen stack, so it goes first. */
 function closeOverlay() {
   // Same rule as `navigate`: leaving the surface the failure was about retires it. A dialog is left
   // through here and not through `navigate`, so the clear has to be in both.
   openerError = null;
   if (dialogOverlay) {
-    dialogOverlay = null;
+    // A dialog with something in flight cannot be left, and the keypress that asked is CONSUMED — the
+    // same `true` a closed dialog answers, so Esc does not fall through to a screen behind it.
+    if (dialogVetoed(dialogOverlay)) return true;
     const back = dialogReturn;
-    dialogReturn = null;
+    leaveDialog();
     render();
     restoreFocus(back);
     return true;
@@ -477,6 +534,9 @@ function onKeydown(e) {
 
   if (ctrl && e.key.toLowerCase() === "f") {
     e.preventDefault();
+    // Consumed whole under a dialog that may not be left: refusing the navigation below is not enough on
+    // the Activity screen itself, where the event would move focus into the lookup behind the scrim.
+    if (dialogVetoed(dialogOverlay)) return;
     if (route !== "activity") navigate("activity");
     document.dispatchEvent(new CustomEvent("shell:focus-lookup"));
     return;
@@ -569,6 +629,10 @@ function renderMenu() {
   return el(
     "div",
     { class: "menu-popover", role: "menu" },
+    // AT EVERY COUNT (decision D7): below two folders there is no list to put the button in, and the
+    // menu is where a person with one folder finds the second. Nothing about it is drawn — this menu is
+    // undrawn (DEVIATIONS §45) — so it costs no frame.
+    el("button", { class: "menu-item", role: "menuitem", onClick: openAddFolder }, FOLDERS.addFolder),
     el(
       "button",
       { class: "menu-item", role: "menuitem", onClick: toggleTheme },
@@ -1076,8 +1140,9 @@ function render() {
   // render right after `onDetour` sets it.
   if (entersOnboardingTakeover(wasOnboarding, onboardingLatch)) {
     screenStack = [];
-    dialogOverlay = null;
-    dialogReturn = null;
+    // Not refusable: the takeover covers everything. Through `leaveDialog` all the same, so a folder
+    // dialog from before it was armed takes its state with it instead of surfacing under the takeover.
+    leaveDialog();
     // resetOnboardingFlow(), NOT an enumerated subset — #360. Its own comment says a (re-)armed
     // takeover opens at step 1 with no plan and an unticked box, and `onboardingStep`/`onboardingDryRun`/
     // `onboardingAgreed`/`onboardingSkipRules`/`onboardingRoots` were left to carry whatever a PRIOR
@@ -1128,6 +1193,11 @@ function render() {
   // (and once per app run). The merge's own progress is what advances the flow past it.
   if (onboardingLatch || activeRoute() === "onboarding") ensureCliCheck();
   advanceOnboardingStage();
+  // The folders flows (#102 phase 5c-2): a dialog whose state is gone goes with it, the add dialog's wait
+  // for the restarted daemon moves on, and a just-added folder's merge ends with its first pass.
+  dropOrphanedFolderDialog();
+  advanceAddFolder();
+  advanceFolderMerge();
 
   // The two layers, read back out. A dialog floats over whatever body is showing — which may be a
   // screen overlay and not `route`, and getting that wrong is what loses the user's place. See
@@ -1148,8 +1218,7 @@ function render() {
   // (`countersUnknown`, `dash()`), one layer up: an absent answer is not an answer.
   const reply = store.select.response();
   if (dialogOverlay === "filePending" && !activeFixture() && reply && !reply.activity?.transfer) {
-    dialogOverlay = null;
-    dialogReturn = null;
+    leaveDialog();
     activityPendingTransfer = null;
   }
   // ONBOARDING'S OWN DIALOGS OUTRANK BOTH. `9a CLI missing` floats over the takeover — the takeover
@@ -1533,6 +1602,11 @@ function render() {
       // Attached after append: the trap focuses on attach, and focus() on a detached node is a
       // silent no-op that leaves the keyboard on whatever opened the dialog.
       dom.dialogDetach = focusTrap(built);
+      // A dialog may name the control the keyboard starts in (`content.focus`, a selector): the add
+      // dialog opens in its name field and not on the ✕ the title row would give it.
+      // Not under `?frame=`: a field that takes focus on mount draws the focus ring in every render of
+      // the frame, and the fidelity gate renders cold (see `focusAfterSwap`).
+      if (content?.focus && !activeFixture()) built.querySelector(content.focus)?.focus();
       dom.dialogSignature = content?.signature ?? null;
     }
     dom.dialogRoute = dialogRoute;
@@ -1555,12 +1629,33 @@ function render() {
       const surface = dom.dialog.querySelector(".dialog");
       const focusables = [...surface.querySelectorAll("button, input, [tabindex]")];
       const at = focusables.indexOf(document.activeElement);
+      // A FIELD IS FOUND AGAIN BY NAME AND KEEPS ITS CARET. Position is the wrong key for the folder
+      // dialogs: a button comes or goes with the phase (`Cancel` while busy, `Restart it now`), so the
+      // Nth control is a different one afterwards; and a field rebuilt under a keystroke that moved the
+      // dialog's shape (the engine's answer arriving) must not put the caret back at the start.
+      const typing = document.activeElement instanceof HTMLInputElement ? document.activeElement : null;
+      const typingField = typing && surface.contains(typing) ? (typing.dataset.field ?? null) : null;
+      const typingRange = typing
+        ? [typing.selectionStart, typing.selectionEnd, typing.selectionDirection]
+        : null;
       // THE HEAD IS REBUILT TOO, and leaving it out was a bug rather than an economy: `7a Never
       // synced`'s title COUNTS the rules (`4 files are never synced`), so a head that survives the
       // update keeps whatever number was known when the dialog opened — which, on the render that
       // mounts it, is none. The surface itself stays, so the appear animation does not restart.
       surface.replaceChildren(...dialogChildren(dspec, content, title, content.head === false, w));
-      if (at >= 0) {
+      const refocus = typingField
+        ? [...surface.querySelectorAll("input")].find((input) => input.dataset.field === typingField)
+        : null;
+      if (refocus) {
+        refocus.focus();
+        if (typingRange?.[0] != null) {
+          refocus.setSelectionRange(
+            typingRange[0],
+            typingRange[1] ?? typingRange[0],
+            typingRange[2] ?? "none",
+          );
+        }
+      } else if (at >= 0) {
         const next = [...surface.querySelectorAll("button, input, [tabindex]")];
         (next[at] ?? surface).focus();
       }
@@ -1570,8 +1665,8 @@ function render() {
 
   // The merge dialog's two moving numbers, patched rather than rebuilt: its mark is the syncing
   // hexagon, and a rebuild restarts both travelling segments from 0% twice a second.
-  if (dialogRoute === "firstSync" && dom.dialog) {
-    const merging = store.select.response();
+  if ((dialogRoute === "firstSync" || dialogRoute === "folderMerge") && dom.dialog) {
+    const merging = mergeReplyOf(dialogRoute);
     updateFirstSync(dom.dialog.querySelector(".dialog"), {
       pending: remainingOf(merging?.activity ?? null, merging),
       activity: merging?.activity ?? null,
@@ -3048,6 +3143,9 @@ const activityInputRef = { node: null };
  */
 function dialogContentFor(id) {
   if (id === "firstSync" || id === "consent" || id === "cliMissing") return onboardingDialogContent(id);
+  if (id === "addFolder") return addFolderDialog();
+  if (id === "removeFolder") return removeFolderDialog();
+  if (id === "folderMerge") return folderMergeDialog();
   return id === "saveRefused" ? settingsDialog(id) : activityDialog(id);
 }
 
@@ -3293,6 +3391,24 @@ function stageSetting(key, value, pair = store.select.pairName()) {
 }
 
 /**
+ * The Folders tab's list (#102 phase 5c-2): one row per folder in the settings file's order, with the word
+ * for each one's state, and the three things a row can do. Choosing a folder is `pickPair`, the same call
+ * the header's popover makes, so the two ways to choose one are one way.
+ */
+function foldersProps() {
+  return {
+    rows: listRows({
+      roster: folderRoster(),
+      pairs: store.select.pairs(),
+      pairStates: store.select.pairStates(),
+      selected: store.select.pairName(),
+      reachable: store.select.rosterLive(),
+    }),
+    handlers: { onPick: pickPair, onRemove: openRemoveFolder, onAdd: openAddFolder },
+  };
+}
+
+/**
  * Everything the settings screen reads, plus the actions it can take.
  *
  * `saved` and `config` are BOTH here and they are different things: `saved` is the config on disk
@@ -3396,6 +3512,11 @@ function settingsProps() {
     // the two are the same fact: the reply is filed in the same step that sets `configLoaded`.
     loaded: Boolean(activeFixture()) || (configLoaded && !configError && configByPair.get(pair) != null),
     configError: activeFixture() ? null : configError,
+    // HOW MANY FOLDERS THERE ARE, and the list that is drawn only when there are two or more (#102
+    // phase 5c-2). `pairCountNow()` is the larger of the daemon's list and the file's, so a folder only one
+    // of them knows still counts: a save restarts the one daemon under all of them.
+    folderCount: pairCountNow(),
+    folders: pairCountNow() >= 2 ? foldersProps() : null,
     // The daemon is mid-pass, or one has just been asked for: `Sweep now` would queue behind it
     // with nothing to show for the click. A plan rehearsal counts here on purpose — it holds the
     // same main loop, so a sweep asked for during one queues behind it just the same.
@@ -4088,6 +4209,64 @@ function onboardingProps() {
   };
 }
 
+/**
+ * The merge dialog (`9a First sync`), for whichever flow is showing it: the first-ever setup's, or a
+ * folder that was just added (decision D6). One body, so the two cannot come to draw a different merge.
+ *
+ * `summary` is the REHEARSED plan's, and the added folder's is `null` because none was made: with no
+ * plan there is no footer sentence, and so nothing is claimed about what the merge will or did do to a
+ * file (`mergeFooterText`). That is the point of passing it rather than reading it here.
+ */
+function mergeDialogContent(reply, summary, handlers) {
+  const activity = reply?.activity ?? null;
+  return {
+    head: false,
+    label: ONBOARDING.progressTitle,
+    // SHAPE ONLY — see `firstSyncShape`. The numbers move every poll and are patched in place.
+    signature: firstSyncShape({ activity, summary }),
+    children: renderFirstSync({
+      // NOT `pending_changes`, which S1 already documents as the trap it is: it is the local
+      // filesystem-watch queue, and a pass driven by Proton — which the first merge always is —
+      // carries an EMPTY one while downloading, so the mark would read 0 for the whole merge.
+      // `action_total - action_index` is the files still to move, which is what the frame draws.
+      pending: remainingOf(activity, reply),
+      activity,
+      summary,
+      handlers,
+    }),
+  };
+}
+
+/**
+ * The reply a merge dialog draws its two numbers from. An added folder's is the status reply only while
+ * it says it is ABOUT that folder: the window may still be describing the one selected before, and that
+ * folder's pass is not this merge.
+ */
+function mergeReplyOf(id) {
+  const reply = store.select.response();
+  if (id !== "folderMerge") return reply;
+  return folderMerge ? replyAbout(reply, folderMerge.pair) : null;
+}
+
+/** `9a First sync` for a folder that was just added: no plan, so no footer — and `Pause` pauses THAT folder. */
+function folderMergeDialog() {
+  const merge = folderMerge;
+  if (!merge) return null;
+  return mergeDialogContent(mergeReplyOf("folderMerge"), null, {
+    // CAPTURED, class W: the folder the dialog was opened for. Pausing ends the watch, as it does in the
+    // first-run merge — a paused folder completes no pass, and the dialog would wait for ever.
+    onPause: async () => {
+      const pair = merge.pair;
+      await command(() => api.pause({ pair }));
+      if (folderMerge === merge) {
+        folderMerge = null;
+        if (dialogOverlay === "folderMerge") leaveDialog();
+      }
+      render();
+    },
+  });
+}
+
 /** What each of the flow's three dialogs draws. */
 function onboardingDialogContent(id) {
   if (id === "cliMissing") {
@@ -4103,41 +4282,25 @@ function onboardingDialogContent(id) {
   }
   if (id === "firstSync") {
     const reply = store.select.response();
-    const activity = reply?.activity ?? null;
     // THE FIXTURE'S PLAN FIRST, the same fallback the other two branches take (`?? cliPresence`,
     // `?? onboardingAgreed`): the footer sentence comes from the step-2 rehearsal, which is module
     // state no `?frame=` can reach, so without this the one in-flight claim this flow makes about
     // someone's files is never compared against the frame that draws it.
     const summary = (activeFixture()?.dryRun ?? onboardingDryRun)?.report?.summary ?? null;
-    return {
-      head: false,
-      label: ONBOARDING.progressTitle,
-      // SHAPE ONLY — see `firstSyncShape`. The numbers move every poll and are patched in place.
-      signature: firstSyncShape({ activity, summary }),
-      children: renderFirstSync({
-        // NOT `pending_changes`, which S1 already documents as the trap it is: it is the local
-        // filesystem-watch queue, and a pass driven by Proton — which the first merge always is —
-        // carries an EMPTY one while downloading, so the mark would read 0 for the whole merge.
-        // `action_total - action_index` is the files still to move, which is what the frame draws.
-        pending: remainingOf(activity, reply),
-        activity,
-        summary,
-        handlers: {
-          // PAUSING ENDS THE FLOW. A paused daemon completes no pass, so `mergeOutcomeOf` would
-          // wait forever behind a dialog with no ✕ and no Esc. Handing off to the main screen —
-          // which draws `Paused` and a `Resume` — is the same call routes.js makes for a state
-          // onboarding cannot resolve. The consent is not obtained on this path; the daemon's own
-          // delete guard is on by default, so every deletion still goes through the Deletions
-          // screen. §79k.
-          onPause: async () => {
-            const pair = onboardingPair();
-            await command(() => api.pause({ pair }));
-            resetOnboardingFlow();
-            render();
-          },
-        },
-      }),
-    };
+    return mergeDialogContent(reply, summary, {
+      // PAUSING ENDS THE FLOW. A paused daemon completes no pass, so `mergeOutcomeOf` would
+      // wait forever behind a dialog with no ✕ and no Esc. Handing off to the main screen —
+      // which draws `Paused` and a `Resume` — is the same call routes.js makes for a state
+      // onboarding cannot resolve. The consent is not obtained on this path; the daemon's own
+      // delete guard is on by default, so every deletion still goes through the Deletions
+      // screen. §79k.
+      onPause: async () => {
+        const pair = onboardingPair();
+        await command(() => api.pause({ pair }));
+        resetOnboardingFlow();
+        render();
+      },
+    });
   }
   if (id === "consent") {
     const summary = onboardingDryRun?.report?.summary ?? null;
@@ -4288,6 +4451,571 @@ function advanceOnboardingStage() {
   }
   onboardingStage = "consent";
   onboardingPauseTries = 0;
+}
+
+// ---- adding and removing folders (#102 phase 5c-2) ----
+//
+// Adding is a DIALOG, opened from Settings and from the ⋯ menu at any count, and removing is a
+// confirmation opened from a row of the Settings list. The first-run takeover is not reused: it writes the
+// implicit single pair and at two folders it is shut (E14). What IS reused is the merge dialog, which the
+// add shows for the NEW folder once the daemon runs it (decision D6).
+//
+// THE ORDER IS THE DESIGN, and each step waits for the one before it:
+//
+//   1. `Check folders`: the engine is asked whether the add would go ahead (`check_add_pair`), and both
+//      sides are priced (`probe_folder`). Nothing is written. A change to a field makes the check stale,
+//      and the button is `Check folders` again (`addViewOf`).
+//   2. `Add folder`: ONE `add_pair`, which promotes an implicit file to `[[pair]]` form if it has to and
+//      carries the staged skip rules in the same write.
+//   3. `restart_service(only_if_running)`: the daemon only reads its file at start. An ending that leaves
+//      something wrong is said in the dialog AND latched for the Settings bar's `Restart it now`.
+//   4. Wait for the daemon's `pairs[]` to list the name. The FILE lists it from step 2; only the daemon's
+//      list says it is running.
+//   5. `showFolder(name)`: select it, and have the store describe it — the only step that moves the
+//      selection without a click, so everything before it carries the name it captured at step 1.
+//   6. The merge dialog, watching THE NEW FOLDER'S `reconcile_seq` — read from its own summary the moment
+//      it was first listed, and compared only against a reply that says it is about that folder.
+
+/** The add dialog's state — `folders.js` `blankAdd()` — or null. */
+let addFolder = null;
+/** The removal dialog's state — `blankRemove(name)` — or null. */
+let removeFolder = null;
+/** The merge of a folder that was just added: `{ pair, seq, waits }`, or null. */
+let folderMerge = null;
+/** The debounce between a keystroke and the engine's answer about it. */
+let addFolderTimer = null;
+/** How long the engine is given to answer about what was typed, after the last keystroke. */
+const ADD_CHECK_MS = 150;
+
+/** The roster the dialogs speak from: the frame's, else the settings file's — which is in FILE order. */
+const folderRoster = () => activeFixture()?.config?.pairs ?? configRoster;
+
+function openAddFolder() {
+  menuOpen = false;
+  // Before the state below is touched: it would replace the flow of a dialog that may not be left.
+  if (dialogVetoed(dialogOverlay)) {
+    render();
+    return;
+  }
+  removeFolder = null;
+  folderMerge = null;
+  clearTimeout(addFolderTimer);
+  addFolder = blankAdd();
+  openOverlay("addFolder");
+}
+
+function openRemoveFolder(name) {
+  if (dialogVetoed(dialogOverlay)) return;
+  clearTimeout(addFolderTimer);
+  addFolder = null;
+  folderMerge = null;
+  removeFolder = blankRemove(name);
+  openOverlay("removeFolder");
+}
+
+/** The state the open dialog belongs to is gone (or was never there): a dialog cannot outlive it. */
+function dropOrphanedFolderDialog() {
+  if (activeFixture()) return;
+  const orphaned =
+    (dialogOverlay === "addFolder" && !addFolder) ||
+    (dialogOverlay === "removeFolder" && !removeFolder) ||
+    (dialogOverlay === "folderMerge" && !folderMerge);
+  if (!orphaned) return;
+  leaveDialog();
+}
+
+/** Something is in flight in this dialog and it may not be left: see `routes.js`'s note on `addFolder`. */
+function dialogVetoed(id) {
+  if (id === "addFolder") return Boolean(addFolder && BUSY_PHASES.includes(addFolder.phase));
+  if (id === "removeFolder") return removeFolder?.phase === "removing";
+  return false;
+}
+
+/** A dialog was left: what it held goes with it. The merge's watch ends; the daemon's pass does not. */
+function releaseFolderState(id) {
+  if (id === "addFolder") {
+    clearTimeout(addFolderTimer);
+    addFolder = null;
+  } else if (id === "removeFolder") {
+    removeFolder = null;
+  } else if (id === "folderMerge") {
+    folderMerge = null;
+  }
+}
+
+// ---- the add dialog: typing ----
+
+/** The flow, if it is the one being asked about and is not mid-flight (a late event from a closed dialog is nothing). */
+function liveAdd(flow) {
+  return (
+    addFolder === flow &&
+    !BUSY_PHASES.includes(flow.phase) &&
+    flow.phase !== "added" &&
+    flow.phase !== "listed"
+  );
+}
+
+function editAddFolder(field, value) {
+  const flow = addFolder;
+  if (!flow || !liveAdd(flow)) return;
+  flow.error = null;
+  if (field === "draft") {
+    flow.draft = value;
+    return;
+  }
+  if (field === "name") flow.nameTouched = true;
+  flow[field] = value;
+  // NO PRICE IS DROPPED HERE. The prices belong to `checkedKey` — they are stored with it, at the end of the
+  // check — and are drawn only while the text on screen is the text that was checked (`view.checked`), so an
+  // edit hides them without losing them and a return to the same text brings back what the check found.
+  // Nulling the edited side's price made the dialog arm `Add folder` again with that side's price missing.
+  // Anything in flight is about text that has moved on.
+  flow.seq += 1;
+  if (flow.phase === "checking") flow.phase = "form";
+  clearTimeout(addFolderTimer);
+  addFolderTimer = setTimeout(() => askEngineAboutAdd(flow), ADD_CHECK_MS);
+  render();
+}
+
+/**
+ * Ask the engine whether this add would go ahead, and file the answer under the text it was asked about.
+ * Returns the reply, or `null` when it was overtaken (typed on, or the dialog was left). A failure of the
+ * command itself is a refusal in its own words, never a silent pass — the add would then be the first
+ * thing to find out.
+ *
+ * When the name field has not been touched it FOLLOWS the folder's own name (`suggested_name`); the answer
+ * for the old name is then stale, so it asks again, once: the second time the field already says it.
+ */
+async function askEngineAboutAdd(flow) {
+  if (addFolder !== flow) return null;
+  const key = addKeyOf(flow);
+  const seq = (flow.seq += 1);
+  let reply;
+  try {
+    reply = await api.checkAddPair(flow.name.trim(), addRequestOf(flow));
+  } catch (error) {
+    reply = {
+      suggested_name: "",
+      name_error: null,
+      refusal: String(error?.message ?? error),
+      surviving_index: null,
+      warnings: [],
+    };
+  }
+  if (addFolder !== flow || flow.seq !== seq) return null;
+  flow.pre = reply;
+  flow.preKey = key;
+  const suggestion = reply?.suggested_name;
+  if (!flow.nameTouched && flow.local.trim() && suggestion && flow.name !== suggestion) {
+    flow.name = suggestion;
+    render();
+    return askEngineAboutAdd(flow);
+  }
+  render();
+  return reply;
+}
+
+async function chooseAddFolder() {
+  const flow = addFolder;
+  if (!flow || !liveAdd(flow)) return;
+  let picked;
+  try {
+    picked = await api.chooseFolder(flow.local.trim() || null);
+  } catch (error) {
+    flow.error = SETTINGS.chooseFailed(String(error?.message ?? error));
+    render();
+    return;
+  }
+  if (!picked || !liveAdd(flow)) return;
+  editAddFolder("local", picked);
+  clearTimeout(addFolderTimer);
+  askEngineAboutAdd(flow);
+}
+
+function addFolderRule() {
+  const flow = addFolder;
+  if (!flow || !liveAdd(flow)) return;
+  flow.rules = withRule(flow.rules, flow.draft);
+  flow.draft = "";
+  render();
+}
+
+function removeAddFolderRule(rule) {
+  const flow = addFolder;
+  if (!flow || !liveAdd(flow)) return;
+  flow.rules = flow.rules.filter((existing) => existing !== rule);
+  render();
+}
+
+// ---- the add dialog: the button ----
+
+async function pressAddFolder() {
+  const flow = addFolder;
+  if (!flow) return;
+  const view = addViewOf(flow);
+  if (view.primary === "done") {
+    // `Done` on a listed folder carries on to the merge the folder's first pass is watched by; on any other
+    // settled dialog there is nothing to carry on to.
+    if (flow.phase === "listed" && flow.merge) showFolderMerge(flow.merge);
+    else closeOverlay();
+    return;
+  }
+  if (!view.primaryEnabled) return;
+  if (view.primary === "check") await checkAddFolder(flow);
+  else if (view.primary === "add") await commitAddFolder(flow);
+}
+
+/** `Check folders`: the engine's answer first, then the price of both sides — only if the add could go ahead. */
+async function checkAddFolder(flow) {
+  if (flow.phase !== "form") return;
+  flow.phase = "checking";
+  flow.error = null;
+  clearTimeout(addFolderTimer);
+  render();
+  const key = addKeyOf(flow);
+  const pre = await askEngineAboutAdd(flow);
+  // Overtaken: the text moved on while it was being asked, or the dialog was left.
+  if (addFolder !== flow) return;
+  if (!pre || addKeyOf(flow) !== key || pre.name_error || pre.refusal) {
+    flow.phase = "form";
+    render();
+    return;
+  }
+  const measure = (side) =>
+    api
+      .probeFolder(side, side === "remote" ? remotePathForProbe(flow.remote) : flow.local.trim())
+      .catch((error) => ({ error: String(error?.message ?? error) }));
+  const [local, remote] = await Promise.all([measure("local"), measure("remote")]);
+  if (addFolder !== flow) return;
+  flow.phase = "form";
+  if (addKeyOf(flow) === key) {
+    flow.probes = { local, remote };
+    flow.checkedKey = key;
+  }
+  render();
+}
+
+/**
+ * `Add folder`: the write, the restart, then the wait. **`name` is captured here, before anything is
+ * awaited** (class W): the dialog's field cannot change under a busy dialog, but the name is the one thing
+ * every later step is addressed by, and a step that read the field would be one edit away from adding one
+ * folder and merging another.
+ */
+async function commitAddFolder(flow) {
+  if (flow.phase !== "form" || addViewOf(flow).primary !== "add") return;
+  const name = flow.name.trim();
+  flow.phase = "adding";
+  flow.error = null;
+  render();
+  try {
+    // The reply is kept: the add settles what an earlier removal could not finish before it looks at the
+    // request, and the accounts of that are the person's to read (review of #450, F9).
+    flow.settled = settledLinesOf(await api.addPair(addRequestOf(flow), { pair: name }));
+  } catch (error) {
+    // The engine's refusal, in its words — and the check that passed is no longer a fact about the file.
+    flow.phase = "form";
+    flow.error = String(error?.message ?? error);
+    flow.checkedKey = null;
+    render();
+    return;
+  }
+  await refreshConfig();
+  flow.phase = "restarting";
+  render();
+  let ending;
+  let reason;
+  try {
+    const outcome = await api.restartService(true);
+    ending = restartEndingOf(outcome);
+    reason = String(outcome?.reason ?? outcome?.detail ?? "");
+  } catch (error) {
+    ending = "undetermined";
+    reason = String(error?.message ?? error);
+  }
+  // LATCHED WHETHER OR NOT THE DIALOG IS STILL THERE: an ending that left the file ahead of the service
+  // is a standing fact the Settings bar offers a way out of, and a dialog closed under it must not lose it.
+  if (restartUnresolved(ending)) latchRestart(ending, reason);
+  if (addFolder !== flow) return;
+  flow.ending = ending;
+  flow.reason = reason;
+  if (restartUnresolved(ending)) {
+    flow.phase = "unresolved";
+  } else if (ending === "not_running") {
+    flow.phase = "added";
+  } else {
+    flow.phase = "waiting";
+    flow.waits = 0;
+    flow.seenIssue = store.select.statusesIssued();
+  }
+  render();
+  clearTimeout(pollTimer);
+  poll();
+}
+
+/**
+ * The merge dialog of the folder that was just added, in place of the add dialog: the dialog layer swaps the
+ * surface in place, and the add flow is over (the watch of the new folder's first pass is the merge's).
+ */
+function showFolderMerge(merge) {
+  folderMerge = merge;
+  addFolder = null;
+  dialogOverlay = "folderMerge";
+  render();
+}
+
+/** `Restart it now`, in the add dialog after a restart that did not work: the Settings bar's own retry. */
+async function retryAddFolderRestart() {
+  const flow = addFolder;
+  if (!flow || flow.phase !== "unresolved") return;
+  flow.phase = "restarting";
+  render();
+  let ending;
+  let reason;
+  try {
+    const outcome = await api.restartService();
+    ending = restartEndingOf(outcome);
+    reason = String(outcome?.reason ?? outcome?.detail ?? "");
+  } catch (error) {
+    ending = "undetermined";
+    reason = String(error?.message ?? error);
+  }
+  if (restartUnresolved(ending)) latchRestart(ending, reason);
+  else if (settingsSaveOutcome && restartUnresolved(settingsSaveOutcome.ending)) settingsSaveOutcome = null;
+  if (addFolder !== flow) return;
+  flow.ending = ending;
+  flow.reason = reason;
+  if (restartUnresolved(ending)) flow.phase = "unresolved";
+  else if (ending === "not_running") flow.phase = "added";
+  else {
+    flow.phase = "waiting";
+    flow.waits = 0;
+    flow.seenIssue = store.select.statusesIssued();
+  }
+  render();
+  clearTimeout(pollTimer);
+  poll();
+}
+
+/**
+ * Called by every render: while the add dialog waits for the restarted daemon to list the new folder, count
+ * the polls that have come and gone, and when the folder is there, select it and start watching its merge.
+ */
+let addFolderSelecting = false;
+function advanceAddFolder() {
+  const flow = addFolder;
+  if (activeFixture() || !flow || flow.phase !== "waiting" || addFolderSelecting) return;
+  // ONE POLL, ONE TICK — not one per render, which also happens on every keystroke elsewhere.
+  const issued = store.select.statusesIssued();
+  if (issued !== flow.seenIssue) {
+    flow.seenIssue = issued;
+    flow.waits += 1;
+  }
+  const name = flow.name.trim();
+  const listed = store.select.pairs();
+  const step = waitStepOf({
+    name,
+    listed: listed.map((entry) => entry.name),
+    waits: flow.waits,
+    limit: WAIT_LIMIT,
+  });
+  if (step === "wait") return;
+  if (step === "timeout") {
+    flow.phase = "unresolved";
+    flow.ending = "not_listed";
+    render();
+    return;
+  }
+  // Read from the NEW folder's own summary, at the moment the daemon first listed it: a pass that
+  // finishes after this is the merge, and one that finished before it is not.
+  const seq = listed.find((entry) => entry.name === name)?.reconcile_seq ?? 0;
+  addFolderSelecting = true;
+  showFolder(name)
+    .then((selected) => {
+      addFolderSelecting = false;
+      if (addFolder !== flow) return;
+      if (!selected) {
+        flow.phase = "unresolved";
+        flow.ending = "not_listed";
+        render();
+        return;
+      }
+      const merge = { pair: name, seq, waits: 0 };
+      // An earlier removal this add finished has an account to read, and the merge dialog has no room for it
+      // and ends by itself: the dialog rests on the listed folder until the person has read it (F9).
+      if (flow.settled.length > 0) {
+        flow.phase = "listed";
+        flow.merge = merge;
+        render();
+        return;
+      }
+      showFolderMerge(merge);
+    })
+    .catch(() => {
+      addFolderSelecting = false;
+    });
+}
+
+/**
+ * Called by every render: the merge dialog of a folder that was just added ends when ITS first pass has
+ * completed. The reply must say it is about that folder — the window may still be describing the one that
+ * was selected before, for a poll, and that folder's pass counter is not this one's.
+ */
+function advanceFolderMerge() {
+  const merge = folderMerge;
+  if (activeFixture() || !merge || dialogOverlay !== "folderMerge") return;
+  const reply = replyAbout(store.select.response(), merge.pair);
+  if (!reply) return;
+  if (mergeOutcomeOf(reply, merge.seq) === "waiting") return;
+  // Done, or failed — and either way the dialog has nothing left to say that the folder's own hero does
+  // not: it names the failure, in the daemon's words, beside the Pause that is still there.
+  folderMerge = null;
+  leaveDialog();
+}
+
+// ---- the add dialog: what it draws ----
+
+/** The line said in place of the notices while something is in flight, or after the add — `SETTINGS`' words where they are the same. */
+function addFolderSentence(flow) {
+  switch (flow.phase) {
+    case "adding":
+      return SETTINGS.saving;
+    case "restarting":
+      return SETTINGS.restarting;
+    case "waiting":
+      return FOLDERS.add.waiting(flow.name.trim());
+    case "added":
+      return saveNoteFor("not_running");
+    case "listed":
+      return FOLDERS.add.listed(flow.name.trim());
+    case "unresolved":
+      return flow.ending === "not_listed"
+        ? FOLDERS.add.notListed(flow.name.trim())
+        : saveNoteFor(flow.ending, flow.reason);
+    default:
+      return null;
+  }
+}
+
+function addFolderDialog() {
+  const flow = activeFixture()?.addFolder ?? addFolder;
+  if (!flow) return null;
+  const view = addViewOf(flow);
+  const sentence = addFolderSentence(flow);
+  return {
+    title: FOLDERS.add.title,
+    subtitle: FOLDERS.add.sub,
+    signature: addFolderShape({ flow, view }) + String(sentence),
+    // The keyboard starts in the name field, not on the ✕ the title row would otherwise give it.
+    focus: '[data-field="folder-name"]',
+    children: renderAddFolder({
+      flow,
+      view,
+      sentence,
+      handlers: {
+        onField: editAddFolder,
+        onChoose: chooseAddFolder,
+        onPrimary: pressAddFolder,
+        onCancel: () => closeOverlay(),
+        onAddRule: addFolderRule,
+        onRemoveRule: removeAddFolderRule,
+        onRestart: retryAddFolderRestart,
+      },
+    }),
+  };
+}
+
+// ---- the removal dialog ----
+
+function removeFolderDialog() {
+  const flow = activeFixture()?.removeFolder ?? removeFolder;
+  if (!flow) return null;
+  const removal = removalOf({
+    name: flow.pair,
+    roster: folderRoster(),
+    setAsideDir: (activeFixture()?.config ?? viewedConfig())?.set_aside_dir ?? null,
+  });
+  const account = flow.reply ? removalAccount(flow) : null;
+  return {
+    title: removal.title,
+    signature: removeFolderShape({ flow, removal, account }),
+    children: renderRemoveFolder({
+      flow,
+      removal,
+      account,
+      handlers: {
+        onCancel: () => closeOverlay(),
+        onConfirm: confirmRemoveFolder,
+        onDone: () => closeOverlay(),
+      },
+    }),
+  };
+}
+
+/** The answer's sentences: the command's own account, and a restart that did not work in the Settings save's words. */
+function removalAccount(flow) {
+  const ending = restartEndingOf(flow.reply.restart);
+  const restartNote = restartUnresolved(ending)
+    ? saveNoteFor(ending, String(flow.reply.restart?.reason ?? flow.reply.restart?.detail ?? ""))
+    : null;
+  return accountOf(flow.reply, { name: flow.pair, restartNote });
+}
+
+async function confirmRemoveFolder() {
+  const flow = removeFolder;
+  if (!flow || flow.phase !== "confirm") return;
+  // CAPTURED, class W: the folder the confirmation was drawn for, whatever is selected when the daemon answers.
+  const pair = flow.pair;
+  flow.phase = "removing";
+  flow.error = null;
+  render();
+  let reply;
+  try {
+    reply = await api.removePair({ pair });
+  } catch (error) {
+    flow.phase = "confirm";
+    flow.error = String(error?.message ?? error);
+    render();
+    return;
+  }
+  const ending = restartEndingOf(reply?.restart);
+  if (restartUnresolved(ending)) {
+    latchRestart(ending, String(reply?.restart?.reason ?? reply?.restart?.detail ?? ""));
+  }
+  // What was typed for a folder that no longer exists must not wait for one of the same name to be added.
+  patchStaging(pair, { edits: {}, drafts: BLANK_STAGING.drafts, scheduleMonthly: null, notice: null });
+  if (removeFolder === flow) {
+    flow.reply = reply;
+    flow.phase = "done";
+  }
+  // THE SELECTION LEAVES A FOLDER THAT IS GONE BEFORE ANYTHING ASKS ABOUT IT BY NAME (review of #450). Rust
+  // does not move it: it holds the choice and falls back to the default folder only when it reads one, and the
+  // window's own record is the last reply, which still says the removed folder. `refreshConfig` below asks for
+  // the folder the store settled on, so a removal of the selected folder asked for the removed name, was
+  // refused (`no folder pair named …`), and left the Settings screen drawing that refusal until the next read.
+  // A folder that was not selected moves nothing. `undefined` below is "the folder on screen"; `null` is "name
+  // none", which Rust answers for the selection it holds and falls back to the default folder for.
+  let readFor;
+  if (!activeFixture() && store.select.pairName() === pair) readFor = await leaveRemovedFolder(pair);
+  await refreshConfig(readFor);
+  clearTimeout(pollTimer);
+  poll();
+}
+
+/**
+ * Move the selection off `pair`, a folder that has just been removed, onto one that can be selected, and say
+ * which. That is the first folder the settings file still holds that the daemon also lists: the file's first
+ * remaining folder is not enough, because `select_pair` is refused for a folder the daemon does not run (one
+ * added and not restarted onto yet) and a refusal leaves the selection on the removed name, which the config
+ * read that follows then asked for and was refused. `null` when none can be selected; the caller then names no
+ * folder and Rust answers for the default one, so the removed name is never asked for.
+ */
+async function leaveRemovedFolder(pair) {
+  const listed = new Set(store.select.pairs().map((entry) => entry?.name));
+  for (const { name } of folderRoster()) {
+    if (name === pair || !listed.has(name)) continue;
+    if (await showFolder(name)) return name;
+  }
+  return null;
 }
 
 // ---- data ----

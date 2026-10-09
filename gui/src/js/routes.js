@@ -103,6 +103,43 @@ export const ROUTES = {
     issue: 185,
   },
 
+  // The folder dialogs (#102 phase 5c-2). `addFolder` is opened from Settings and from the ⋯ menu at any
+  // count; `removeFolder` from a row of the Settings list. Both have a title row and a ✕ and both are left
+  // with Esc — EXCEPT while something is in flight (`app.js`'s `dialogVetoed`, asked by every way out: Esc and
+  // the ✕, `navigate` for Ctrl+, Ctrl+F and a banner's `Review`, and `openOverlay` for a second dialog): the
+  // add writes the file before it restarts the service, and a dialog closed between the two would leave a
+  // folder added and nothing watching for it to appear. `addFolder` is wider than the others because it holds the two sides
+  // of the pair side by side, as the Settings tab and the first-run step do.
+  addFolder: {
+    kind: "overlay",
+    presentation: "dialog",
+    closable: true,
+    size: [720, null],
+    task: "5c-2",
+    issue: 102,
+  },
+  removeFolder: {
+    kind: "overlay",
+    presentation: "dialog",
+    closable: true,
+    size: [600, null],
+    task: "5c-2",
+    issue: 102,
+  },
+  // `9a First sync`, addressed to a folder that was just added (decision D6): the same surface, the same
+  // two numbers, no plan footer — nothing rehearsed this merge, so it claims nothing about it. Opened by
+  // the add flow and left with Esc (the merge carries on in the daemon whether or not it is watched), and
+  // with no ✕ for the reason `firstSync` has none.
+  folderMerge: {
+    kind: "overlay",
+    presentation: "dialog",
+    closable: false,
+    tone: "quiet",
+    size: [602, 542],
+    task: "5c-2",
+    issue: 102,
+  },
+
   // The onboarding takeover is an overlay in the routing sense — it covers everything — but it is
   // not opened by the user and cannot be dismissed with Esc. It is entered by the latch below.
   onboarding: { kind: "overlay", takeover: true, footer: "actionBar", task: "S7", issue: 186 },

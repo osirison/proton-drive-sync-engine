@@ -90,9 +90,22 @@ export const api = {
   // yet: the NEW pair's, which the engine refuses if it is taken, malformed or reserved. `init` is
   // `{ local_root, remote_root, exclude }`. Resolves with `{ pair, path, restart_needed,
   // surviving_index, settled_earlier, warnings }` and starts nothing; the caller restarts the daemon.
-  // A refusal still names any earlier removal the call finished first (in the error text). Nothing
-  // calls it until the Settings folder list (5c-2) draws the dialog.
+  // A refusal still names any earlier removal the call finished first (in the error text). The add
+  // dialog's `Add folder` is its caller (#102 phase 5c-2), after `checkAddPair` and `probeFolder`.
   addPair: (init, { pair } = {}) => write("add_pair", { init }, pair),
+  // ADDING A FOLDER, the question first (#102 phase 5c-2). Would `addPair` go ahead for this name and
+  // these folders? Reads the config file and nothing else: it writes nothing, settles nothing and
+  // creates nothing, so it is asked as often as the person types. `name` is the NEW folder's — not a
+  // `pair` argument, because no pair of that name exists — and `init` is `addPair`'s. Resolves with
+  // `{ suggested_name, name_error, refusal, surviving_index, warnings }`: the engine's refusal of the
+  // name on its own, then everything else `addPair` would refuse with (the very same function), the
+  // index from an earlier run the new folder would resume, and a name from the folder's own.
+  checkAddPair: (name, init) => invoke("check_add_pair", { name, init }),
+  // What a CANDIDATE folder holds, before any is configured: `{ files, bytes, truncated,
+  // unreadable_directories }`, and `bytes` is `null` for `"remote"` always (a remote listing exposes no
+  // size) — unknown, never `0 bytes`. A local `~` is expanded the way the engine expands it. Rejects with
+  // the reason when the folder cannot be measured; the remote side asks the daemon behind its one gate.
+  probeFolder: (side, path) => invoke("probe_folder", { side, path }),
   // REMOVING ONE, and setting its sync history aside outside every sync folder, so that adding the same
   // folder back starts fresh (D8). This restarts the daemon itself, because the history can only move
   // once the daemon has let go of it. Resolves with `{ pair, new_default, restart, restart_needed,
@@ -271,6 +284,9 @@ export const EMPTY_CONFIG = {
   // what `get_local_delete_mode` reports. A `null` here would make the empty-config case — the one
   // every existing install is in — the one shape the real command never sends.
   local_delete_mode: "trash",
+  // Where a removed folder's sync history is moved (`ConfigPayload.set_aside_dir`): `null` is a machine
+  // with no app state directory, which is a real state the removal confirmation has a sentence for.
+  set_aside_dir: null,
 };
 
 // ---- browser-preview mock (never runs inside Tauri) ----
@@ -526,6 +542,30 @@ function mockInvoke(cmd, args) {
         surviving_index: null,
         settled_earlier: [],
         warnings: [],
+      });
+    case "check_add_pair":
+      // A clean answer, with a suggestion made the way the command makes it, close enough for a preview:
+      // the real one is the engine's, and a mock that refused things would be a design surface nobody
+      // could look at on purpose.
+      return Promise.resolve({
+        suggested_name:
+          String(args?.init?.local_root ?? "")
+            .split("/")
+            .filter(Boolean)
+            .pop()
+            ?.toLowerCase()
+            .replace(/[^a-z0-9._]+/g, "-") || "folder",
+        name_error: null,
+        refusal: null,
+        surviving_index: null,
+        warnings: [],
+      });
+    case "probe_folder":
+      return Promise.resolve({
+        files: 0,
+        bytes: args?.side === "local" ? 0 : null,
+        truncated: false,
+        unreadable_directories: 0,
       });
     case "remove_pair":
       // Accepts, with the history moved: the ending the ordinary removal has.

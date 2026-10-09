@@ -1576,6 +1576,10 @@ enum Class {
     /// Addressed by the ROW that was pressed: its id carries the pair (`pause@photos`), so the pair
     /// is whatever the row was drawn for and never the selection (#102 phase 5d).
     Row,
+    /// Asks about a pair that does not exist yet (#102 phase 5c-2): the add dialog's check names the
+    /// candidate as `name`, reads the config file as a whole, and writes nothing. Not addressed to a
+    /// pair, so it takes no `pair` argument.
+    NewPair,
     /// Always the default pair, by design and not by omission: the tray panel's poll, whose rows
     /// were built around that pair's full reply. Takes no `pair` argument because it has no choice
     /// to make — and a read that named none would mean the SELECTED pair (`Ask::Selected`).
@@ -1587,7 +1591,7 @@ enum Class {
 /// Every `#[tauri::command]` and what it is. Adding a command without adding it here fails
 /// `every_pair_slot_command_names_its_class`, which is the point: a command that reads a pair slot
 /// must say how it takes the pair.
-const COMMAND_CLASSES: [(&str, Class); 42] = [
+const COMMAND_CLASSES: [(&str, Class); 43] = [
     ("get_status", Class::R),
     ("list_pending_deletions", Class::R),
     ("scan_conflicts", Class::R),
@@ -1614,6 +1618,9 @@ const COMMAND_CLASSES: [(&str, Class); 42] = [
     // Class W with one difference, stated at the command: `pair` is the NEW pair's name, so the engine
     // refuses one that already exists where every other W command refuses one that does not.
     ("add_pair", Class::W),
+    // Asks whether `add_pair` would go ahead, for a pair that does not exist yet: it names it as `name`,
+    // reads the file, and changes nothing.
+    ("check_add_pair", Class::NewPair),
     ("remove_pair", Class::W),
     ("tray_action", Class::Row),
     ("tray_status", Class::DefaultPair),
@@ -1697,6 +1704,7 @@ fn every_pair_slot_command_names_its_class() {
                 "`{name}` is class W and must take `pair: String`"
             ),
             Class::Selection
+            | Class::NewPair
             | Class::Row
             | Class::DefaultPair
             | Class::Independent => assert!(

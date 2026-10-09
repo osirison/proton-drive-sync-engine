@@ -1,4 +1,4 @@
-// The fixtures' clock convention (F9), in one place because it has to be one rule for all 64 frames
+// The fixtures' clock convention (F9), in one place because it has to be one rule for all 68 frames
 // rather than a judgement per frame.
 //
 // A fixture may not compute a displayed string — that is the rule the whole set is built on, and
@@ -31,7 +31,7 @@
 // 151.81/672.17 are exactly the numbers CI reported.
 //
 // Freezing removes the class rather than widening the margin: every frame now renders the same
-// string on a fast machine and a slow one, which is what a 64-frame pixel gate needs from its clock.
+// string on a fast machine and a slow one, which is what a 68-frame pixel gate needs from its clock.
 //
 // SCOPED TO `?frame=`, so the shipped app is untouched — the attribute-stamping in `frames.js` is
 // gated the same way and for the same reason. Two things in the app read the clock for something

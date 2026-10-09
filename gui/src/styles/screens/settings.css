@@ -428,6 +428,11 @@
   max-width: 430px;
   line-height: 18px;
 }
+/* The sentence a save costs at two folders or more (#102 phase 5c-2) is two sentences long, and the bar
+   has the room: it is the window's width less the two buttons. */
+.settings-bar-note.is-wide {
+  max-width: 600px;
+}
 
 /* ------------------------------------------------------------------------ the save refusal ---- */
 

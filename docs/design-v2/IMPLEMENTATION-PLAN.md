@@ -21,7 +21,7 @@ tree, in `DECISIONS.md` — which also records the one the build overturned):
 
 ### 1.1 What "all screens" means, exactly
 
-`Drive Sync.dc.html` contains **73** frames carrying a `data-screen-label`. **64 are in scope** (51 when this was written; the four `10a` frames at two folders or more, #102 phase 5d, the eight `2a`/`12a` frames at two folders or more, #102 phase 5c-1, and the banner at two folders or more, `11a Two folders`, #102 phase 5e, are the difference).
+`Drive Sync.dc.html` contains **77** frames carrying a `data-screen-label`. **68 are in scope** (51 when this was written; the four `10a` frames at two folders or more, #102 phase 5d, the eight `2a`/`12a` frames at two folders or more, #102 phase 5c-1, the banner at two folders or more, `11a Two folders`, #102 phase 5e, and the four `8a` frames for the folder list, the add and remove dialogs and the save at two folders, #102 phase 5c-2, are the difference).
 
 | Group | Frames | Size |
 | --- | --- | --- |
@@ -31,7 +31,7 @@ tree, in `DECISIONS.md` — which also records the one the build overturned):
 | **5a Plan a sync** | Plan · Plan safe · Checking | 2×1040×764, 520×764 |
 | **6a (partial)** | Activity passes · Details | 1040×764, 520×460 |
 | **7a Activity** | Activity quiet · File lookup · Never synced · File pending | 2×1040×764, 600×600, 600 |
-| **8a Settings** | Settings · Skip rules · Deletions tab · Schedule monthly · Save refused | 2×1040×764, 600×520, 2×600 |
+| **8a Settings** | Settings · Skip rules · Deletions tab · Schedule monthly · Save refused · and at two folders or more: Folders list · Save two folders · Add folder · Remove folder | 2×1040×764, 600×520, 4×600, 720, 600 |
 | **9a Onboarding** | Folders · Review · First sync · Consent · CLI missing | 2×1040×764, 600×540, 2×600 |
 | **10a Tray** | In situ · Glyph states · Settled · Syncing · Offline · Paused · Two folders · Two folders paused · Two folders failed · Many folders | 1040×520, 560, 8×360 |
 | **11a Notifications** | In situ (4 banners) · Rules · Settings · Outage · Grouped · and at two folders or more: Two folders | 1040×560, 600, 4×520 |
@@ -54,9 +54,9 @@ The harness must treat five different kinds of frame differently:
 | Class | Frames | Assert |
 | --- | --- | --- |
 | **Full window** — 1040×764 | 2a×8, 3a×2, 4a×2, 5a×2, 6a passes, 7a×2, 8a×2, 9a×2, 12a×6 | Everything, including the frame's own box. Must fit with no clipping. |
-| **Standalone dialog** — own chrome + shadow | 3a cleared, 4a Empty, 5a Checking, 6a Details, 7a Never synced/File pending, 8a Save refused, 9a First sync/Consent/CLI missing, 11a Rules/Settings/Outage/Grouped | Everything, including width/height. |
+| **Standalone dialog** — own chrome + shadow | 3a cleared, 4a Empty, 5a Checking, 6a Details, 7a Never synced/File pending, 8a Save refused/Add folder/Remove folder, 9a First sync/Consent/CLI missing, 11a Rules/Settings/Outage/Grouped | Everything, including width/height. |
 | **Compact panel** — 360px | 2a×3, 4a Compact, 10a×8, 12a×3 | Everything. Shared component; the tray reuses it. |
-| **Content crop** — drawn at 600px but lives inside a 1040 screen | `8a Deletions tab`, `8a Schedule monthly` | Everything **except** the frame's own width — the parent screen sets that. |
+| **Content crop** — drawn at 600px but lives inside a 1040 screen | `8a Deletions tab`, `8a Schedule monthly`, `8a Folders list`, `8a Save two folders` | Everything **except** the frame's own width — the parent screen sets that. |
 | **In-situ / specimen** — desktop mock or swatch card around a real artefact | `10a In situ`, `11a In situ`, `10a Glyph states`, `12a Tray light` | Only the inner artefact (tray panel, the four 372px banners, the glyph SVGs). The GNOME top bar and the specimen card's own chrome are drawing furniture, not product. |
 
 **`12a Tray light` is a specimen, not a light compact panel.** Its outer card is *dark*

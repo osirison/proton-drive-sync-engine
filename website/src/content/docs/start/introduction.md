@@ -63,7 +63,8 @@ Read [How sync works](/concepts/how-sync-works/) for the full model.
   (`[[pair]]` tables in its config; see [Multiple folder pairs](/daemon/folder-pairs/)), and the
   control CLI addresses any of them by name with `--pair`. With two or more, a pill in the window's
   header picks which folder the window shows and acts on; a notification names the folder it is
-  about and acts on it, and the app cannot add a pair. Its [tray](/desktop/tray/#two-or-more-folders)
+  about and acts on it. The app [adds and removes folders](/desktop/screens/#adding-and-removing-a-folder)
+  itself, from Settings or the window's ⋯ menu. Its [tray](/desktop/tray/#two-or-more-folders)
   lists every pair with a pause row for each.
 - **No symlink sync.** Symlinks under the local root are skipped in both directions — along
   with sockets, named pipes and device nodes. All of them are *reported* by name under

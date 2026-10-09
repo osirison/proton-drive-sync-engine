@@ -1,6 +1,6 @@
 # The fidelity harness (F8, F9)
 
-What makes "100% fidelity" checkable rather than a claim. Twelve gates over the 64 in-scope frames of
+What makes "100% fidelity" checkable rather than a claim. Twelve gates over the 68 in-scope frames of
 `docs/design-v2/Drive Sync.dc.html`.
 
 ```
@@ -14,20 +14,20 @@ npm run fidelity:pairs      # the pair-routing gate on its own
 
 ## The twelve gates
 
-| Gate                               | Compares                                                                        | Runs today?                               |
-| ---------------------------------- | ------------------------------------------------------------------------------- | ----------------------------------------- |
-| **style** `assert.mjs`             | every mapped app node's computed styles against the drawn node                  | on whatever carries a `data-fid`          |
-| **unstamped** `assert.mjs`         | a frame's declared fid slots against the ones the app stamped                   | yes, every declared slot                  |
-| **unclaimed** `assert.mjs`         | every drawn node against the slots that name it — the mirror of the row above   | yes, 268 declared in 29 entries           |
-| **collision** `assert.mjs`         | two elements carrying one `data-fid` — a duplication no per-node gate counts    | yes, every stamped node                   |
-| **fit** `assert.mjs`               | every full window renders at exactly 1040×764, nothing painting over the footer | yes                                       |
-| **hue** `assert.mjs`               | a settled surface contains no saturated colour anywhere                         | yes, all 8 settled frames                 |
-| **squeeze** `assert.mjs`           | a compact panel keeps its drawn height in a window too short for it             | yes, all 15 compact frames                |
-| **copy** `copy-gate.mjs`           | every fixed string in `ui/copy.js` appears verbatim in the frames               | yes, every string and 103 templates       |
-| **contrast** `check-contrast.mjs`  | every text node is legible against what is actually behind it, in both themes   | yes, 1423 nodes across 64 frames          |
-| **fixtures** `check-fixtures.mjs`  | every in-scope frame has a dataset, of the shape its class implies              | yes, all 64                               |
-| **n1** `check-n1-identity.mjs`     | every frame renders the same bytes when the daemon lists one folder pair        | yes, 55 of 64 — see its reach below       |
-| **pairs** `check-pair-routing.mjs` | a write acts on the pair it was drawn for, not the one selected when it runs    | yes, 74 scenarios (#102 phase 5a-2 to 5e) |
+| Gate                               | Compares                                                                        | Runs today?                          |
+| ---------------------------------- | ------------------------------------------------------------------------------- | ------------------------------------ |
+| **style** `assert.mjs`             | every mapped app node's computed styles against the drawn node                  | on whatever carries a `data-fid`     |
+| **unstamped** `assert.mjs`         | a frame's declared fid slots against the ones the app stamped                   | yes, every declared slot             |
+| **unclaimed** `assert.mjs`         | every drawn node against the slots that name it — the mirror of the row above   | yes, 268 declared in 29 entries      |
+| **collision** `assert.mjs`         | two elements carrying one `data-fid` — a duplication no per-node gate counts    | yes, every stamped node              |
+| **fit** `assert.mjs`               | every full window renders at exactly 1040×764, nothing painting over the footer | yes                                  |
+| **hue** `assert.mjs`               | a settled surface contains no saturated colour anywhere                         | yes, all 8 settled frames            |
+| **squeeze** `assert.mjs`           | a compact panel keeps its drawn height in a window too short for it             | yes, all 15 compact frames           |
+| **copy** `copy-gate.mjs`           | every fixed string in `ui/copy.js` appears verbatim in the frames               | yes, every string and 103 templates  |
+| **contrast** `check-contrast.mjs`  | every text node is legible against what is actually behind it, in both themes   | yes, 1,696 nodes across 68 frames    |
+| **fixtures** `check-fixtures.mjs`  | every in-scope frame has a dataset, of the shape its class implies              | yes, all 68                          |
+| **n1** `check-n1-identity.mjs`     | every frame renders the same bytes when the daemon lists one folder pair        | yes, 55 of 68 — see its reach below  |
+| **pairs** `check-pair-routing.mjs` | a write acts on the pair it was drawn for, not the one selected when it runs    | yes, 101 scenarios (#102 5a-2 to 5e) |
 
 Seven of the twelve are `assert.mjs` and need a browser. **contrast**, **n1** and **pairs** need one
 too. **copy** does
@@ -42,8 +42,8 @@ with one folder sees nothing new** (D2) — and a rule the app must keep — **a
 was drawn for** — are claims about _two renderings_ and about _time_, which a gate that looks at one
 rendering of one drawing at one instant cannot make.
 
-- **n1.** 56 of the 64 fixtures are replies from a daemon that predates folder pairs (no `pair`, no
-  `pairs`); the other eight (`2a Two folders` and its seven siblings, #102 phase 5c-1) list two folders on purpose,
+- **n1.** 56 of the 68 fixtures are replies from a daemon that predates folder pairs (no `pair`, no
+  `pairs`); the other twelve (`2a Two folders` and its seven siblings, #102 phase 5c-1, and the four `8a` frames of #102 phase 5c-2) list two folders on purpose,
   have no one-folder rendering to equal, and are rendered twice from one URL and compared with themselves
   alone — the line under the result names them. Of the 56, **55** are frames a listing can change. The 56th,
   `11a Two folders` (#102 phase 5e), is a banner drawn at two folders on purpose and mounted from its own
@@ -92,7 +92,8 @@ rendering of one drawing at one instant cannot make.
 - **pairs.** `app.js` cannot be imported, so this runs the real page against a scripted stand-in for the
   Tauri bridge that answers each command and can hold a reply open — for a named pair, so two reads of one
   command for two folders can be released in either order — which is what makes the gap between a press and
-  the daemon's answer something a test can stand in. Seventy-four scenarios — the first sixteen (#102 phases 5a-2, 5d, 5b-1), the forty-three of phase 5c-1 and the fifteen of phase 5e (six that came with it: a banner names its folder and `Keep them` keeps that folder's deletions, `Review` selects the folder before it navigates, `Try again now` syncs that folder alone, a stopped daemon's stale roster raises nothing, another folder's queue is fetched only while its summary counts one, and a one-folder banner is unchanged; and nine from its review, on what is known about a folder that is not on screen: a banner never names a file `Keep them` already kept, a list older than its count is neither counted nor kept, a standing banner is not said again by the next launch in five places, a relaunch does not go quiet, and removing the default folder does not silence the next one's conflict), listed in the gate's own header (twenty-one that came with the selector: its keyboard and its late replies, the ring, the notice block, the Settings handlers' captured folder, a folder called `constructor`; and nineteen from its review: the marker's problem form, the list with a stopped daemon, the lifetime of the unsaved-pause notice, the remaining Settings handlers, the roving tab stop, a long list, a hung scan; and three from its second review: the tray panel over a stopped daemon, a failed read of a folder that is not on screen, and where the long list starts to scroll): the follow-up to an approval; the press
+  the daemon's answer something a test can stand in. A hundred and one scenarios in six groups: the first sixteen (#102 phases 5a-2, 5d, 5b-1), the forty-three of phase 5c-1, the fifteen of phase 5e, the fifteen of phase 5c-2, the ten its review added and the two of that review's final round.
+  **The first sixteen:** the follow-up to an approval; the press
   of `Run this sync` (pair and token are committed at the press); a switch between two folders that draw
   identical cards; the hero's buttons after a switch that patches the hero in place; a never-synced pair at
   two folders and at one; a **late conflict read** for the folder that was left (two folders in conflict at
@@ -103,7 +104,13 @@ rendering of one drawing at one instant cannot make.
   folder, and pressing a folder's row sends that folder's id); and the **tray panel's `Review them`** (a
   deletion in the other folder is not hidden behind `Up to date`, the button sends the id of the folder that
   holds it, and when the decision moves to the other folder while the panel is only patched, the button it
-  keeps sends the new folder's id). Its waits are conditions: a reply
+  keeps sends the new folder's id).
+  **The forty-three of phase 5c-1**, listed in the gate's own header: twenty-one that came with the selector: its keyboard and its late replies, the ring, the notice block, the Settings handlers' captured folder, a folder called `constructor`; and nineteen from its review: the marker's problem form, the list with a stopped daemon, the lifetime of the unsaved-pause notice, the remaining Settings handlers, the roving tab stop, a long list, a hung scan; and three from its second review: the tray panel over a stopped daemon, a failed read of a folder that is not on screen, and where the long list starts to scroll.
+  **The fifteen of phase 5e**: six that came with it: a banner names its folder and `Keep them` keeps that folder's deletions, `Review` selects the folder before it navigates, `Try again now` syncs that folder alone, a stopped daemon's stale roster raises nothing, another folder's queue is fetched only while its summary counts one, and a one-folder banner is unchanged; and nine from its review, on what is known about a folder that is not on screen: a banner never names a file `Keep them` already kept, a list older than its count is neither counted nor kept, a standing banner is not said again by the next launch in five places, a relaunch does not go quiet, and removing the default folder does not silence the next one's conflict.
+  **The fifteen of phase 5c-2**, adding and removing a folder: the add dialog's check is about the text it was made for, a name the engine refuses is quoted and not rewritten, a refused add restarts nothing, the merge dialog watches the new folder's own counter, a dialog with something in flight cannot be left, the index a new folder would resume is named, removing the first folder names the new default, a save at two folders names every folder, and what is staged for one folder is never shown on or saved for another.
+  **The ten its review added**: a dialog with something in flight is left by no shortcut, banner or second dialog, and one that is left lets go of what it held; the last folder says why it cannot be removed; an add that finished an earlier removal says so before the merge; removing the selected folder moves the selection first; an add keeps its prices for the text they were measured for, and a late answer for old text replaces nothing.
+  **The two of its final round**: removing the selected folder moves the selection to a folder the service lists, not to the first one the settings file holds (and names no folder when none can be selected), and a failed save that replaces the add dialog takes the check a keystroke had queued with it.
+  Its waits are conditions: a reply
   is "landed" when a later call to the bridge has come back, because replies reach the page in the order
   they were sent. It proves the facade and the screens agree; Rust's half is `selection_tests.rs`.
 
@@ -482,7 +489,7 @@ That last frame count is the one number in this file that should be read with it
 colour comparisons are declined on the ten light frames** (628 on the first eight) — printed per
 frame, every run — because the prototype never set them. A light frame is compared on everything it
 declares and on nothing it inherits, which is less than a dark frame is compared on, and the gate
-says so rather than letting 64/64 imply otherwise.
+says so rather than letting 68/68 imply otherwise.
 
 **S1 moved the assertion count by 5,296 and the frame count by zero**, which is the honest shape of
 what it did: `2a Settled`, `2a Syncing` and `2a Needs you` were already "mapped" on the strength of a
@@ -495,7 +502,7 @@ those a Phase-1 capability the daemon does not have, recorded with the issue tha
 than left to fail. Two thirds of them are one fact: `5a Checking` is a 522px window and the shell's is
 a fixed 1040.
 
-**All 64 have a dataset** (F9), which is a different claim and deliberately kept separate: a fixture
+**All 68 have a dataset** (F9), which is a different claim and deliberately kept separate: a fixture
 is what the app is fed, a `data-fid` is what gets compared. `check-fixtures.mjs` proves the first,
 `assert.mjs` counts the second, and neither number can inflate the other. Adding the 40 datasets
 moved 11/51 not at all. The two counts only met at S10, and by inheritance rather than by writing:

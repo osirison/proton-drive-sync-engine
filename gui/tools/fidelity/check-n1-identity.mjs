@@ -6,7 +6,7 @@
 // in the style gate can make it, because that gate compares one rendering against one drawing:
 //
 //   · the frame as authored — a fixture shaped like a daemon that predates folder pairs (no `pair`,
-//     no `pairs`); that is 56 of the 64 (the other eight draw two folders on purpose — see below), 55 of
+//     no `pairs`); that is 56 of the 68 (the other twelve draw two folders on purpose — see below), 55 of
 //     which a listing can change (the 56th is `11a Two folders`, a banner mounted from its own arguments,
 //     which no listing reaches and which is counted apart — see `STATIC_BANNERS`), and
 //   · the same frame answered as a CURRENT daemon running one pair would answer it — `pair: "default"`

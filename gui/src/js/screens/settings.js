@@ -43,7 +43,7 @@
 // exception and not the rule.
 
 import { el } from "../ui/el.js";
-import { MAIN, NOTIFY, SETTINGS } from "../ui/copy.js";
+import { FOLDERS, MAIN, NOTIFY, SETTINGS } from "../ui/copy.js";
 import {
   button,
   dayChips,
@@ -788,8 +788,91 @@ function sectionLabel(text, cls) {
   return node;
 }
 
-function foldersTab(props) {
+/**
+ * The list of folders (#102 phase 5c-2, brief 3.4) — drawn at TWO FOLDERS OR MORE and never below, so a
+ * person with one folder sees the tab they had (decision D2; `fidelity:n1` holds it).
+ *
+ * It sits ABOVE the settings it chooses between, because it is what says which folder they are about:
+ * Settings edits the SELECTED folder (decision D7), and a row is the other way — beside the header's
+ * pill — to select another. Each row is the folder's name over the two paths it keeps in step, the word
+ * for its state, and `Remove`. The folder on screen is marked by a filled dot, not by a colour alone.
+ *
+ * A row's name is a button and the whole of it: choosing a folder is `select_pair`, which Rust owns, and
+ * the rows do not hold a selection of their own. `Remove` asks first (the confirmation is a dialog) and
+ * is offered on every row, the first included — the engine refuses only the last, and there is no last
+ * at two folders or more.
+ */
+function folderList(folders) {
+  const { rows, handlers } = folders;
+  const label = fid(eyebrow({ text: FOLDERS.list.title }), "listLabel");
+  const list = fid(el("div", { class: "folders-list", role: "list" }), "list");
+  for (const [i, row] of rows.entries()) {
+    const pick = fid(
+      el(
+        "button",
+        {
+          class: "folders-row-main",
+          type: "button",
+          "aria-pressed": row.selected ? "true" : "false",
+          onClick: () => handlers.onPick?.(row.name),
+        },
+        fid(el("span", { class: "folders-row-dot" }), "listDot", i),
+        fid(
+          el(
+            "span",
+            { class: "folders-row-text" },
+            fid(el("span", { class: "folders-row-name" }, row.name), "listName", i),
+            fid(el("span", { class: "folders-row-paths" }, `${row.local} ⇄ ${row.remote}`), "listPaths", i),
+          ),
+          "listText",
+          i,
+        ),
+      ),
+      "listMain",
+      i,
+    );
+    focusable(pick, `folder:${row.name}`);
+    const remove = fid(
+      rowButton(SETTINGS.remove, () => handlers.onRemove?.(row.name)),
+      "listRemove",
+      i,
+    );
+    remove.setAttribute("aria-label", `${SETTINGS.remove} ${row.name}`);
+    focusable(remove, `remove-folder:${row.name}`);
+    list.append(
+      fid(
+        el(
+          "div",
+          {
+            class: `folders-row${row.selected ? " is-selected" : ""}`,
+            role: "listitem",
+            "data-folder": row.name,
+          },
+          pick,
+          fid(el("span", { class: "folders-row-state" }, row.word), "listState", i),
+          remove,
+        ),
+        "listRow",
+        i,
+      ),
+    );
+  }
+  const shown = rows.find((row) => row.selected);
+  const add = fid(
+    inputButton(FOLDERS.addFolder, () => handlers.onAdd?.(), "11px 15px"),
+    "listAdd",
+  );
+  focusable(add, "add-folder");
   return [
+    label,
+    list,
+    shown ? fid(el("div", { class: "folders-note" }, FOLDERS.list.editing(shown.name)), "listNote") : null,
+    fid(el("div", { class: "folders-add" }, add), "listAddWrap"),
+  ].filter(Boolean);
+}
+
+function foldersTab(props) {
+  const editor = [
     // The seam spans the two inputs and nothing else — `settingsPair` is 44px down and 86px tall,
     // sized explicitly rather than pinned to a block, because a full-width rule sits below it.
     fid(renderSeam({ site: "settingsPair" }), "seam"),
@@ -801,6 +884,12 @@ function foldersTab(props) {
     fid(sectionLabel(SETTINGS.runOne, "settings-label-run"), "runLabel"),
     sweepPanel(props),
   ];
+  // BELOW TWO FOLDERS THE TAB IS WHAT IT WAS, node for node (the identity check compares the markup).
+  // At two or more the list comes first and the settings it chooses between are wrapped, because the
+  // seam is positioned against whatever contains it: inside the wrapper it keeps its distance from the
+  // label it was measured under, and the list above cannot move it.
+  if (!props.folders) return editor;
+  return [...folderList(props.folders), el("div", { class: "settings-folder-editor" }, editor)];
 }
 
 // ------------------------------------------------------------------------ tab 2 · what to skip ----
@@ -1314,10 +1403,18 @@ function notificationsTab(props) {
  * `value ?? ""` and not `value || ""`: an empty string staged by clearing the field must draw as
  * cleared, not fall back to the saved value.
  */
-function advancedField(key, title, sub, placeholder, { config, handlers }) {
+function advancedField(
+  key,
+  title,
+  sub,
+  placeholder,
+  { config, handlers, folderCount = 1 },
+  allFolders = false,
+) {
   return panel("settings-panel-block", [
     panelText(title, sub),
     keyLine(key),
+    allFolders ? scopeNote(folderCount) : null,
     el(
       "div",
       { class: "settings-panel-control" },
@@ -1334,6 +1431,14 @@ function advancedField(key, title, sub, placeholder, { config, handlers }) {
     ),
   ]);
 }
+
+/**
+ * "Applies to all folders." under a setting the daemon reads ONCE for every folder (decision D7): the
+ * command, the socket, the log level. At two folders or more a person who has just chosen a folder in the
+ * list above would otherwise read every field on this tab as that folder's. Nothing below two.
+ */
+const scopeNote = (folderCount) =>
+  folderCount >= 2 ? el("div", { class: "settings-scope-note" }, FOLDERS.list.scopeAll) : null;
 
 function advancedTab(props) {
   const { config, handlers, drafts } = props;
@@ -1384,6 +1489,7 @@ function advancedTab(props) {
     panel("settings-panel-block", [
       panelText(SETTINGS.cliTitle, SETTINGS.cliSub),
       keyLine("proton_cli"),
+      scopeNote(props.folderCount ?? 1),
       el(
         "div",
         { class: "settings-panel-control" },
@@ -1411,8 +1517,15 @@ function advancedTab(props) {
     // THE DAEMON'S DEFAULTS, AS PLACEHOLDERS, and inline rather than in `copy.js` for the same
     // reason the `proton-drive` placeholder above is: they are config values, like the mono key
     // lines §68 keeps out of the deck. The socket's placeholder IS a sentence, so it stays copy.
-    advancedField("log_level", SETTINGS.logTitle, SETTINGS.logSub, "info", props),
-    advancedField("socket_path", SETTINGS.socketTitle, SETTINGS.socketSub, SETTINGS.socketPlaceholder, props),
+    advancedField("log_level", SETTINGS.logTitle, SETTINGS.logSub, "info", props, true),
+    advancedField(
+      "socket_path",
+      SETTINGS.socketTitle,
+      SETTINGS.socketSub,
+      SETTINGS.socketPlaceholder,
+      props,
+      true,
+    ),
     advancedField("conflict_suffix", SETTINGS.suffixTitle, SETTINGS.suffixSub, "proton-cloud", props),
     panel("settings-panel-block", [
       panelText(SETTINGS.configFileTitle, null),
@@ -1503,9 +1616,17 @@ export function renderSettingsBar(props = {}) {
   // AMBER FOR EITHER WARNING. The cost line is one; so is "saving stops the sync that is running",
   // and so is a restart that left something unresolved — all three are a consequence rather than a
   // promise.
-  const warned = Boolean(cost) || Boolean(restartEnding) || interrupts(props);
+  const restartsAll = restartsEveryFolder(props);
+  const warned = Boolean(cost) || Boolean(restartEnding) || interrupts(props) || restartsAll;
   const note = fid(
-    el("span", { class: `bar-consequence settings-bar-note${warned ? " tone-cost" : ""}` }, barNoteOf(props)),
+    el(
+      "span",
+      // `is-wide` only for the sentence that does not fit 430px in two lines (see settings.css).
+      {
+        class: `bar-consequence settings-bar-note${warned ? " tone-cost" : ""}${restartsAll ? " is-wide" : ""}`,
+      },
+      barNoteOf(props),
+    ),
     "barNote",
   );
   const retry = barActionOf(props) === "restart";
@@ -1693,6 +1814,7 @@ export function saveNoteFor(ending, reason = "") {
  */
 export function barNoteOf(props = {}) {
   const { notice = null, cost = null, note = null } = props;
+  const restartsAll = restartsEveryFolder(props) ? FOLDERS.saveRestartsAll(props.folderCount) : null;
   // `notice` FIRST. It is the only one of these that is about something that just happened — a
   // sweep that did not start, a restart that failed — and everything below it is standing
   // information about a change that has not been made yet. Reporting the cost over the failure
@@ -1703,8 +1825,25 @@ export function barNoteOf(props = {}) {
   // saved, while this describes what pressing `Save` does to a transfer that is happening now —
   // and the decision that made the restart automatic accepts the interruption only on condition
   // that it is never a surprise. A note it can hide would not satisfy that.
+  //
+  // AT TWO FOLDERS OR MORE, WHAT A SAVE COSTS IS ONE SENTENCE ABOUT ALL OF THEM (#102 phase 5c-2, A11 and
+  // decision D12). It stands in for the interruption line, which it contains — "anything running now
+  // stops" — and it follows the cost line when a rule removal is also staged, because the two say different
+  // things: what starts syncing, and what the save does to every folder. Only while a daemon-config change
+  // is staged: a policy-only save restarts nothing, and the sentence would then be false.
+  if (restartsAll) {
+    return notice ?? (cost ? `${cost} ${restartsAll}` : restartsAll);
+  }
   return notice ?? (interrupts(props) ? SETTINGS.saveInterrupts : null) ?? cost ?? note ?? SETTINGS.saveNote;
 }
+
+/**
+ * Does a save restart the one daemon under more than one folder? The sentence about it is drawn only for
+ * a change the daemon reads (`configStaged`, the same predicate [`interrupts`] and the restart itself use)
+ * and only at two folders or more — below that the bar is the one it always was.
+ */
+export const restartsEveryFolder = ({ configStaged = false, folderCount = 1 } = {}) =>
+  Boolean(configStaged) && Number(folderCount) >= 2;
 
 /**
  * Everything the bar draws, as one string — so app.js can leave an unchanged bar alone without

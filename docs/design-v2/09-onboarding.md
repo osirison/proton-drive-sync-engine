@@ -124,3 +124,18 @@ ships — `Detected …` stays, but the body it shipped with is the manual path 
 
 ~~Detect the distribution and show the right command. If detection fails, show the tarball
 instructions rather than guessing a package manager.~~
+
+## Adding a folder later is not this flow (#102 phase 5c-2, DEVIATIONS §110)
+
+Everything above is the FIRST folder: a machine with none, the implicit single pair, a rehearsed plan, one
+consent. **It never arms at two folders or more** — its `Next` writes top-level roots, which a `[[pair]]` file
+refuses — and it is not reused to add a second.
+
+A second folder is a dialog (`08-settings.md` "Add a folder"), opened from Settings or the ⋯ menu. It keeps what
+step 1 is for — both sides named, both sides priced, skip rules staged, nothing written until the person says —
+and gives up what cannot be had before a folder exists: **there is no rehearsal**, because the child
+`--dry-run` is forbidden beside a live daemon and the daemon cannot plan a folder it does not know. So the dialog
+says there is no preview, and its merge dialog (`First sync`, above) has no `nothing deleted · …` footer — that
+sentence is about a plan someone approved. There is **no consent step** either: consent to deletions travelling
+both ways was given once, at first-run, and delete approval stays per folder. The merge ends when the NEW
+folder's first pass completes.

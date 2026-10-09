@@ -174,6 +174,9 @@ local = true
   // directions, so a label the prototype does not draw is a build failure. It is covered by
   // `disposalOf` in test/settings.test.js instead.
   local_delete_mode: "trash",
+  // Where a removed folder's history is moved (`ConfigPayload.set_aside_dir`). Read by the removal
+  // confirmation only; no `8a` frame in this file draws it, but the reply always carries it.
+  set_aside_dir: "~/.local/state/proton-sync/removed-pairs",
 };
 
 /**

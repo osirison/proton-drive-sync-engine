@@ -1252,6 +1252,129 @@ export const SETTINGS = {
     "Resetting the index isn't something the app can do yet — it discards everything the service has learned and rebuilds it, and only the proton-sync reset-index command can. Your files aren't touched either way.",
 };
 
+// ----------------------------------------------------------------------------- folders ----
+
+/**
+ * Adding, listing and removing folders (#102 phase 5c-2, maintainer decisions D6 to D9 and D12).
+ *
+ * "FOLDER", NEVER "PAIR", in every sentence (voice rule 1): a person has a folder here and one on
+ * Proton Drive, and the thing the app keeps in step is called a folder throughout, as the selector
+ * already does. The word `pair` appears only inside a command someone would type (`--pair photos`).
+ *
+ * WHAT IS NOT HERE, ON PURPOSE. The engine's own sentences are never copy and never pass through this
+ * file (voice rule 4): the refusal of a name, a relative folder, an overlap, and the account of where a
+ * removed folder's history went are all quoted exactly, in mono, from the command that made them.
+ *
+ * Nothing in this block says that a first sync deletes nothing. A new folder has no preview — no plan is
+ * made before it starts, and the daemon cannot make one for a folder it does not know yet — so any
+ * sentence about what it will or will not do to a file would be a claim nothing computed. The one
+ * sentence that is about the first sync says exactly that, and says there is no preview.
+ */
+export const FOLDERS = {
+  /** The ⋯ menu's entry, the list's button and the dialog's title row all start from this one verb. */
+  addFolder: "Add folder…",
+
+  // ----------------------------------------------------------------- Settings › Folders, two or more ----
+  list: {
+    title: "Your folders",
+    /**
+     * WHICH FOLDER THE SETTINGS BELOW ARE FOR. Settings edits the selected folder (decision D7), and a
+     * list that did not say so would leave a person typing a new sync folder into the wrong one.
+     */
+    editing: (name) =>
+      `The settings below are for ${name}. Click another folder to change its settings instead.`,
+    /**
+     * A folder the settings file lists and the running daemon does not (the file was edited, or the
+     * daemon has not restarted since it was). The state word the list shows in place of a daemon's.
+     */
+    notRunning: "not running yet",
+    /** On the Advanced tab, under each setting the daemon reads once for every folder (decision D7). */
+    scopeAll: "Applies to all folders.",
+  },
+
+  // ------------------------------------------------------------------------------------ the add dialog ----
+  add: {
+    title: "Add a folder",
+    sub: "A folder on this computer and a folder on Proton Drive, kept identical.",
+    nameLabel: "Name",
+    /**
+     * What a name is for, with the command it appears in — drawn with the name the dialog is showing,
+     * because `proton-sync --pair photos` is the thing someone will copy.
+     */
+    nameHint: (name) =>
+      `How this folder is named in the app and in commands, such as proton-sync --pair ${name}. It can't be changed afterwards.`,
+    /** What the check found on each side, before anything is added: a folder's files and, where it can, its size. */
+    priceLocal: (files, size) => `${count(files)} files, ${bytes(size)}`,
+    /** The Proton side reports a file count and no size (`totalStorageSize` is not one), and a bounded walk may be a floor. */
+    priceRemote: (files, atLeast) => `${atLeast ? "at least " : ""}${count(files)} files`,
+    /** A side the check could not measure, with the reason exactly as it came (voice rule 4). */
+    notMeasured: (reason) => `Couldn't be measured — ${reason}`,
+    skipLabel: "Skip rules",
+    skipSub: "Optional. Anything matching a rule stays on this computer and is never copied to Proton Drive.",
+    /**
+     * THE D6 SENTENCE. Before a new folder is added nothing can plan it, so its first sync is not
+     * rehearsed the way the first-ever one is. It says what is lost (the preview) and claims nothing
+     * about what the sync will do.
+     */
+    noPreview:
+      "There is no preview for a new folder. Its first sync starts as soon as you add it, so what differs between the two sides is only known once it runs.",
+    cancel: "Cancel",
+    check: "Check folders",
+    checking: "Checking both folders…",
+    add: "Add folder",
+    /** While the folder is written, the service restarts and the folder appears (the first two reuse `SETTINGS`' words). */
+    waiting: (name) => `Waiting for the sync service to list ${name}…`,
+    /** The folder is in the settings and the restarted service has not listed it within the time allowed. */
+    notListed: (name) =>
+      `${name} was added to the settings, but the sync service has not listed it yet. It may still be starting: check again in a moment, or restart it from Settings.`,
+    /**
+     * The add finished an earlier removal first, and the dialog rests here instead of going on to the merge
+     * (review of #450, F9): the sentence says the one thing that is true of the moment — the service lists the
+     * folder — and the account of what the earlier removal did is the command's own, quoted beneath it.
+     */
+    listed: (name) => `${name} was added, and the sync service now lists it.`,
+  },
+
+  // --------------------------------------------------------------------------------- the remove confirm ----
+  remove: {
+    title: (name) => `Remove ${name}?`,
+    /** Decision D8, four things in this order. The first and second are always true. */
+    stops: (name) => `Syncing stops for ${name}.`,
+    keeps: "Nothing is deleted on this computer or in Proton Drive.",
+    /** `where` is the folder the app keeps removed folders' histories in, named so it can be found. */
+    history: (where) =>
+      `Its sync history is moved aside to ${where}, so adding the folder back later starts fresh.`,
+    /** The third is said only when the removed folder is the first: it is what a command naming no folder means. */
+    becomesDefault: (name) =>
+      `${name} becomes the default folder: commands that name no folder, and older versions of this app, will mean it.`,
+    confirm: "Remove folder",
+    /**
+     * The only folder: its confirmation says why `Remove folder` is disabled, in place of the four sentences,
+     * none of which is true of a removal that cannot happen (review of #450, F5). The engine refuses an empty
+     * list — a daemon with no folder has nothing to do — and the dialog does not wait to be told.
+     */
+    last: (name) =>
+      `${name} is the only folder, and syncing needs at least one, so it can't be removed. Add another folder first.`,
+    removing: (name) => `Removing ${name}…`,
+    /** The first line of the answer: it is out of the settings. What happened to its history follows, in the app's own words. */
+    removed: (name) => `${name} was removed from the settings.`,
+    done: "Done",
+  },
+
+  // ------------------------------------------------------------------------ the save, with two folders or more ----
+  /**
+   * What a save costs when there is more than one folder (A11, decision D12). Saving restarts the one
+   * daemon, which stops every folder's syncing for the length of the restart; a folder that was paused
+   * stays paused, because the daemon itself keeps each folder's pause across restarts (#441). It says
+   * both and nothing more — in particular not that a pause set while a folder was unavailable survives
+   * (#442), which it does not.
+   */
+  saveRestartsAll: (n) =>
+    // TWO ARE `both` (review of #450, F6): "all two folders" is not a sentence anyone says, and the frame
+    // (`8a Save two folders`) was redrawn to match. From three it is `all three`, `all ten`, `all 11`.
+    `Saving restarts syncing for ${n === 2 ? "both" : `all ${cardinal(n, "mid")}`} folders, briefly. Anything running now stops, and folders you paused stay paused.`,
+};
+
 // --------------------------------------------------------------------------- onboarding ----
 
 export const ONBOARDING = {

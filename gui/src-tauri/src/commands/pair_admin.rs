@@ -470,6 +470,24 @@ fn check_local_root(local_root: &str) -> Result<(), String> {
     }
 }
 
+/// The refusal the engine's client would make of this Proton Drive folder, said first (review of #450,
+/// F4). The engine accepts a `remote_root` with a `..` in it and the daemon starts on it, but a pass
+/// that finds the root missing then fails with `unsafe remote root path` for ever — measured, not
+/// inferred — so an add that writes one is an add that never syncs. The words are the engine's own
+/// (`require_safe_remote_root`), which names the rule that applied; the app adds only what holds for
+/// every such refusal. It used to explain each one as a `..` problem, which told someone whose path
+/// cleans to nothing (`.`) about a `..` that was not there.
+pub(super) fn check_drive_folder(remote_root: &str) -> Result<(), String> {
+    config_io::require_safe_remote_root(Path::new(remote_root))
+        .map(|_| ())
+        .map_err(|engine| {
+            format!(
+                "{engine}. The sync service cannot use that Proton Drive path, so this folder \
+                 would never sync: write the path another way."
+            )
+        })
+}
+
 /// The app's set-aside histories live in `<state dir>/removed-pairs`. A sync folder that contains
 /// them would upload them as ordinary files, so the add says so. Not a refusal: a folder that holds
 /// the whole home directory is a legitimate choice, and the state directory is under it.
@@ -489,13 +507,39 @@ fn state_dir_warnings(state_dir: Option<&Path>, new_root: &Path) -> Vec<String> 
     )]
 }
 
+/// Everything an add is refused for, on a copy of the file: the engine's rules (the name, the roots, a
+/// lexical overlap, `dry_run = true` beside a second pair), then the Drive path the client would refuse
+/// (`..`, in the client's own words — the daemon starts on it and fails every pass), then the two
+/// local-root checks the engine does not make, then the real-path overlap, which follows symlinks and
+/// so touches the disk. Nothing is
+/// written. **The one body of "would this add go ahead"**, read by the add itself and by the check the
+/// dialog makes before it (`check_add_pair_file`) — two copies of a refusal are how a dialog comes to
+/// say "fine" about an add the command then refuses.
+///
+/// The order of the refusals is part of the contract, and a test holds it: a file that is simply invalid
+/// is told so before anything is asked of the filesystem.
+fn prepare_add(
+    mut doc: ConfigDoc,
+    name: &str,
+    request: &AddPairRequest,
+) -> Result<ConfigDoc, String> {
+    let (local_root, remote_root) = (request.local_root.trim(), request.remote_root.trim());
+    doc.add_pair(PairInit {
+        name: name.to_owned(),
+        local_root: local_root.to_owned(),
+        remote_root: remote_root.to_owned(),
+        exclude: request.exclude.clone(),
+    })
+    .map_err(text)?;
+    check_drive_folder(remote_root)?;
+    check_local_root(local_root)?;
+    config_io::real_path_conflicts(&doc.to_toml_string()).map_err(text)?;
+    Ok(doc)
+}
+
 /// The blocking half of `add_pair`: load, settle what an earlier removal left, add, check, save.
 ///
-/// **The order of the refusals is part of the contract**, and a test holds it: the engine's own
-/// validation (the name, the roots, a lexical overlap, `dry_run = true` beside a second pair) speaks
-/// first, in its words; then the two local-root checks the engine does not make; then the real-path
-/// overlap, which follows symlinks and so touches the disk. A file that is simply invalid is told so
-/// before anything is asked of the filesystem. Any refusal leaves the file byte-identical.
+/// Any refusal leaves the file byte-identical (see [`prepare_add`] for which, and in what order).
 ///
 /// **The earlier removals are settled first, before the request is looked at**, because a pending move
 /// has to run against a config that does not yet hold the folder being added: settled afterwards it
@@ -509,7 +553,7 @@ pub(super) fn add_pair_file(
     request: &AddPairRequest,
     now: SystemTime,
 ) -> Result<AddPairReply, AddPairFailure> {
-    let mut doc = ConfigDoc::load(path).map_err(AddPairFailure::plain)?;
+    let doc = ConfigDoc::load(path).map_err(AddPairFailure::plain)?;
     // Only against a config that can be read: what is configured NOW is what keeps an earlier removal
     // from moving a folder's history out from under a pair that has since been added back, and a file
     // that cannot be read says nothing about that.
@@ -522,16 +566,8 @@ pub(super) fn add_pair_file(
         settled_earlier: settled_earlier.clone(),
     };
 
-    let (local_root, remote_root) = (request.local_root.trim(), request.remote_root.trim());
-    doc.add_pair(PairInit {
-        name: name.to_owned(),
-        local_root: local_root.to_owned(),
-        remote_root: remote_root.to_owned(),
-        exclude: request.exclude.clone(),
-    })
-    .map_err(|error| refuse(text(error)))?;
-    check_local_root(local_root).map_err(refuse)?;
-    config_io::real_path_conflicts(&doc.to_toml_string()).map_err(|error| refuse(text(error)))?;
+    let local_root = request.local_root.trim();
+    let doc = prepare_add(doc, name, request).map_err(refuse)?;
     doc.save(path).map_err(|error| refuse(text(error)))?;
 
     let saved = doc.to_toml_string();
@@ -554,6 +590,84 @@ pub(super) fn add_pair_file(
     })
 }
 
+/// What the add dialog is told before anything is written (#102 phase 5c-2, brief 3.5): every refusal
+/// the add itself would make, and the two things it would only report afterwards.
+#[derive(Debug, serde::Serialize)]
+pub struct AddPairCheck {
+    /// A name for the folder, from its own name (`suggest_pair_name`), distinct from the pairs the file
+    /// has. Offered when the person has typed none; never a validation.
+    pub suggested_name: String,
+    /// The engine's refusal of the NAME, in its own words (voice rule 4), or null. Asked on its own and
+    /// first so a dialog can draw it under the name field while the rest is still being typed.
+    pub name_error: Option<String>,
+    /// What the add would refuse with once the name passed — the words `add_pair` itself uses — or null
+    /// when it would go ahead. Null as well while a root is still empty: nothing is asked of a half-typed
+    /// form beyond its name.
+    pub refusal: Option<String>,
+    /// An index from an earlier run that the new pair would resume, named BEFORE the save so the
+    /// confirmation can say so (brief A9). Null when there is none, and null when the add would be
+    /// refused anyway.
+    pub surviving_index: Option<SurvivingIndex>,
+    /// Things worth the person's attention that would not stop the add.
+    pub warnings: Vec<String>,
+}
+
+/// The blocking half of `check_add_pair`: [`add_pair_file`] without the part that changes anything — no
+/// earlier removal is settled, nothing is saved — answering what it would have said.
+pub(super) fn check_add_pair_file(
+    path: &Path,
+    state_dir: Option<&Path>,
+    name: &str,
+    request: &AddPairRequest,
+) -> AddPairCheck {
+    let nothing = |suggested_name: String| AddPairCheck {
+        suggested_name,
+        name_error: None,
+        refusal: None,
+        surviving_index: None,
+        warnings: Vec::new(),
+    };
+    let doc = match ConfigDoc::load(path) {
+        Ok(doc) => doc,
+        Err(error) => {
+            return AddPairCheck {
+                refusal: Some(text(error)),
+                ..nothing(config_io::suggest_pair_name(&request.local_root, &[]))
+            };
+        }
+    };
+    let existing = doc.pair_names();
+    let others: Vec<&str> = existing.iter().map(String::as_str).collect();
+    let mut check = nothing(config_io::suggest_pair_name(&request.local_root, &others));
+    // The engine's verdict on the name, and only on the name: the same call `add_pair` makes first.
+    if let Err(sentence) = config_io::validate_pair_name_among(name, &others, others.len()) {
+        check.name_error = Some(sentence);
+        return check;
+    }
+    let (local_root, remote_root) = (request.local_root.trim(), request.remote_root.trim());
+    if local_root.is_empty() || remote_root.is_empty() {
+        return check;
+    }
+    match prepare_add(doc, name, request) {
+        Err(refusal) => check.refusal = Some(refusal),
+        Ok(prepared) => {
+            check.surviving_index = config_io::pair_views(&prepared.to_toml_string())
+                .ok()
+                .and_then(|views| {
+                    views
+                        .iter()
+                        .find(|view| view.name == name)
+                        .and_then(|view| surviving_index_of(view, state_dir))
+                });
+            check.warnings = state_dir_warnings(
+                state_dir,
+                &config_io::expand_config_path(local_root, "local_root"),
+            );
+        }
+    }
+    check
+}
+
 fn surviving_index_of(view: &PairView, state_dir: Option<&Path>) -> Option<SurvivingIndex> {
     let index = set_aside::surviving_index(view)?;
     let root = view.local_root.as_deref()?;
@@ -562,11 +676,16 @@ fn surviving_index_of(view: &PairView, state_dir: Option<&Path>) -> Option<Survi
             set_aside::real_path(&record.plan.local_root) == set_aside::real_path(root)
         })
     });
+    // The words are the maintainer's (decision D8), and the command names the pair: `--pair` is a
+    // global flag of `proton-sync`, and `reset-index --yes` alone resets the DEFAULT pair, which with
+    // two folders is usually not the one that was just added.
     let mut message = format!(
-        "{} is a sync index from an earlier run in this folder. The new pair resumes it, and anything \
-         that changed on either side since is read as a deletion to approve. This app cannot reset an \
-         index; `proton-sync reset-index --yes` can.",
-        lossy(&index)
+        "This folder already holds sync history from an earlier setup ({}); adding it resumes from \
+         that history, so anything changed since may show up as deletions to approve. To start fresh \
+         instead, run proton-sync reset-index --yes --pair {} after adding. This app cannot reset \
+         an index.",
+        lossy(&index),
+        view.name
     );
     if pending {
         message.push_str(

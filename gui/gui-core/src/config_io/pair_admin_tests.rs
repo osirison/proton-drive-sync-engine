@@ -456,6 +456,105 @@ fn a_pair_name_the_engine_refuses_is_the_engines_sentence() {
     }
 }
 
+// ---- the suggested name (decision D9) --------------------------------------------------------------
+
+/// Folders whose names are nothing like a pair name, and the existing sets they meet.
+const AWKWARD_FOLDERS: [&str; 22] = [
+    "~/Photos",
+    "/home/u/My Photos 2024/",
+    "/home/u/Bob's Files (2024) #1",
+    "C:\\Users\\u\\Música",
+    "/home/u/写真",
+    "/home/u/Café",
+    "/home/u/.hidden",
+    "/home/u/-rf",
+    "/home/u/--help",
+    "/home/u/..",
+    "/home/u/.",
+    "/",
+    "~",
+    "",
+    "   ",
+    "/home/u/default",
+    "/home/u/DEFAULT",
+    "/home/u/a--b__c..d",
+    "/home/u/----",
+    "/home/u/....",
+    "/home/u/____________________________________________________________________________",
+    "relative/but/fine",
+];
+
+#[test]
+fn a_suggested_name_always_passes_the_engines_own_check() {
+    // The property, not a list of expected answers: whatever the folder is called and whatever is taken
+    // already, the proposal is a name the engine accepts for the next table.
+    let taken_sets: [&[&str]; 5] = [
+        &[],
+        &["default"],
+        &["default", "photos"],
+        &[
+            "default",
+            "folder",
+            "folder-2",
+            "photos",
+            "photos-2",
+            "default-2",
+        ],
+        &["DEFAULT", "Photos", "FOLDER", "Folder-2"],
+    ];
+    for folder in AWKWARD_FOLDERS {
+        for taken in taken_sets {
+            let suggestion = suggest_pair_name(folder, taken);
+            assert_eq!(
+                validate_pair_name_among(&suggestion, taken, taken.len()),
+                Ok(()),
+                "{folder:?} beside {taken:?} suggested {suggestion:?}, which the engine refuses"
+            );
+            assert!(suggestion.len() <= 64, "{suggestion:?}");
+        }
+    }
+}
+
+#[test]
+fn a_suggested_name_is_the_folders_own_name_in_the_engines_charset() {
+    for (folder, expected) in [
+        ("~/Photos", "photos"),
+        ("/home/u/Photos/", "photos"),
+        ("/home/u/My Photos 2024", "my-photos-2024"),
+        ("/home/u/Bob's Files (2024) #1", "bob-s-files-2024-1"),
+        ("/home/u/.hidden", "hidden"),
+        ("/home/u/--help", "help"),
+        ("/home/u/a--b__c..d", "a-b__c..d"),
+        // Nothing in the name survives: it is called what it is.
+        ("/home/u/写真", "folder"),
+        ("~", "folder"),
+        ("/", "folder"),
+        ("", "folder"),
+        // `.` and `..` are path components, not folder names: the last real one is used.
+        ("/home/u/music/..", "music"),
+    ] {
+        assert_eq!(suggest_pair_name(folder, &[]), expected, "{folder:?}");
+    }
+}
+
+#[test]
+fn a_taken_or_reserved_suggestion_gets_the_next_free_number() {
+    assert_eq!(suggest_pair_name("/home/u/Photos", &["default"]), "photos");
+    assert_eq!(
+        suggest_pair_name("/home/u/Photos", &["default", "photos"]),
+        "photos-2"
+    );
+    // Taken in another case: names are compared without regard to it.
+    assert_eq!(
+        suggest_pair_name("/home/u/Photos", &["default", "PHOTOS", "Photos-2"]),
+        "photos-3"
+    );
+    // `default` belongs to the first table, and this is never the first.
+    assert_eq!(suggest_pair_name("/home/u/Default", &["docs"]), "default-2");
+    // Beside nothing at all it would BE the first table, where the engine allows it.
+    assert_eq!(suggest_pair_name("/home/u/Default", &[]), "default");
+}
+
 #[test]
 fn a_single_pair_file_that_says_dry_run_true_is_refused_when_a_second_pair_is_added() {
     let text = "dry_run = true\nlocal_root = \"/home/u/A\"\nremote_root = \"/Drive/A\"\n";

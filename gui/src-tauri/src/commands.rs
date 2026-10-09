@@ -746,6 +746,11 @@ pub struct ConfigPayload {
     /// decides only whether a deletion waits for a person — this one decides what happens once one
     /// goes ahead, and is what the Deletions tab's second section is bound to.
     local_delete_mode: config_io::LocalDeleteMode,
+    /// The folder the app moves a REMOVED pair's sync history into (#102 phase 5c-2, decision D8): the
+    /// removal confirmation names it, so a person can find the history afterwards. `None` when the
+    /// app has no state directory on this machine — in which case a removal cannot move anything and
+    /// says so. Not a setting: nothing in the file produces it, and no save writes it.
+    set_aside_dir: Option<String>,
 }
 
 /// Class R (#102 phase 5b-1). The config file as the Settings screen reads it, for one pair.
@@ -761,14 +766,27 @@ pub struct ConfigPayload {
 /// filesystem (`commands.rs` header).
 #[tauri::command]
 pub async fn read_config(state: Paths<'_>, pair: Option<String>) -> Result<ConfigPayload, String> {
-    let (path, pair) = {
+    let (path, pair, state_dir) = {
         let paths = state.lock().unwrap();
         let pair = paths.resolve_ask(Ask::read(pair.as_deref()))?;
-        (paths.config_path.clone(), pair.name)
+        (
+            paths.config_path.clone(),
+            pair.name,
+            paths.state_dir.clone(),
+        )
     };
-    tauri::async_runtime::spawn_blocking(move || config_payload(&path, &pair))
-        .await
-        .map_err(|error| format!("config read task failed: {error}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        config_payload(&path, &pair).map(|payload| ConfigPayload {
+            set_aside_dir: state_dir.map(|dir| {
+                dir.join(gui_core::set_aside::REMOVED_PAIRS_DIR)
+                    .display()
+                    .to_string()
+            }),
+            ..payload
+        })
+    })
+    .await
+    .map_err(|error| format!("config read task failed: {error}"))?
 }
 
 /// [`read_config`]'s body, over a path and a pair name.
@@ -815,6 +833,7 @@ fn config_payload(path: &std::path::Path, pair: &str) -> Result<ConfigPayload, S
         delete_approval_local: table.get_delete_approval("local"),
         deletion_policy: table.get_deletion_policy(),
         local_delete_mode: table.get_local_delete_mode(),
+        set_aside_dir: None,
     })
 }
 
@@ -1088,6 +1107,35 @@ pub async fn add_pair(
     Ok(reply)
 }
 
+/// What the add dialog asks before it adds anything (#102 phase 5c-2): would `add_pair` go ahead for
+/// this name and these folders, and what would it say afterwards that the confirmation should say first.
+///
+/// **Reads, writes nothing and settles nothing** — the file is not saved, no earlier removal is
+/// finished, no folder is created — so it can be asked as often as the person types. It answers the
+/// engine's refusal of the name on its own (`name_error`, in the engine's words) and, once both folders
+/// are written, everything `add_pair` would refuse with (`refusal`, from the very same function), the
+/// index from an earlier run the new folder would resume, and a suggested name for the folder.
+///
+/// Advisory by construction: a path can change between this and the add, and the add refuses again for
+/// itself. The name of the argument is `name` and not `pair` because the folder it names is not a pair
+/// yet: this is addressed to no pair, and asks about the file as a whole.
+#[tauri::command]
+pub async fn check_add_pair(
+    state: Paths<'_>,
+    name: String,
+    init: pair_admin::AddPairRequest,
+) -> Result<pair_admin::AddPairCheck, String> {
+    let (path, state_dir) = {
+        let paths = state.lock().unwrap();
+        (paths.config_path.clone(), paths.state_dir.clone())
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        pair_admin::check_add_pair_file(&path, state_dir.as_deref(), &name, &init)
+    })
+    .await
+    .map_err(|error| format!("add-pair check failed: {error}"))
+}
+
 /// Class W (#102 phase 5b-2, maintainer decision D8): remove a folder pair, and set its sync history
 /// aside so that adding the same folder back starts fresh.
 ///
@@ -1096,21 +1144,29 @@ pub async fn add_pair(
 /// and only then is the history moved — outside every sync folder, with the pair's own lockfile taken
 /// first. A move that cannot happen yet is recorded as pending and the reply says why. **Never
 /// touches a file of the person's**, and refuses to remove the last pair.
+///
+/// **The name is the FILE's to resolve, byte-exactly, and nothing else's** (review of #450, F2). It used
+/// to go through `resolve_ask(Ask::Named)`, which checks a name against the daemon's list once the daemon
+/// has answered — and the folder this command most needs to be able to remove is one the daemon does NOT
+/// list: an add whose restart failed leaves it in the file, the Settings list draws it as `not running
+/// yet` with a `Remove`, and the daemon's list is exactly what could not place it. The file is what this
+/// edits, so [`pair_admin::remove_pair_file`] looks the name up there (`ConfigDoc::remove_pair`) and a
+/// name the file does not have is refused, with the file's own folders, before anything is written. A
+/// name only the daemon knows therefore removes nothing.
 #[tauri::command]
 pub async fn remove_pair(
     state: Paths<'_>,
     pair: String,
 ) -> Result<pair_admin::RemovePairReply, String> {
-    let (path, socket_path, state_dir, name) = {
+    let (path, socket_path, state_dir) = {
         let paths = state.lock().unwrap();
-        let name = paths.resolve_ask(Ask::Named(&pair))?.name;
         (
             paths.config_path.clone(),
             paths.socket_path.clone(),
             paths.state_dir.clone(),
-            name,
         )
     };
+    let name = pair;
     let removed = {
         let (path, name) = (path.clone(), name.clone());
         tauri::async_runtime::spawn_blocking(move || pair_admin::remove_pair_file(&path, &name))
@@ -3487,7 +3543,12 @@ pub async fn probe_folder(
         (paths.proton_cli.clone(), paths.socket_path.clone())
     };
     tauri::async_runtime::spawn_blocking(move || match side.as_str() {
-        "local" => gui_core::folder_probe::probe_local(std::path::Path::new(&path)),
+        // `~` EXPANDED, by the engine's own rule (#135): the add dialog prices the folder the person
+        // typed, and `~/Photos` is a folder named `~` under the working directory to anything that does
+        // not. The remote side is a Drive path and has no `~`.
+        "local" => {
+            gui_core::folder_probe::probe_local(&config_io::expand_config_path(&path, "local_root"))
+        }
         "remote" => probe_remote_folder(socket, std::path::Path::new(&path), &proton_cli),
         other => Err(format!("unknown side: {other}")),
     })
