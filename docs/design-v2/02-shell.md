@@ -73,8 +73,8 @@ chip, the attention band, Deletions, Conflicts, Plan, Activity and Settings all 
 - **Keyboard.** The pill is a button; Down (or a press) opens the list on the chosen folder, the arrows,
   Home and End walk it, Enter chooses, Esc closes and gives the keyboard back to the pill, and a press
   or focus anywhere else closes it. The control is patched on the 2-second poll and never rebuilt, so
-  the keyboard stays where it is. Only the chosen row is in the tab order. A list of more than ten folders
-  is `360px` tall (ten and a half rows) and scrolls inside itself, by the wheel and by the arrows alike:
+  the keyboard stays where it is. Only the chosen row is in the tab order. A list of more than eleven folders
+  is `360px` tall (eleven rows of 31px and 5px of the next) and scrolls inside itself, by the wheel and by the arrows alike:
   unbounded it would hang below the window's edge.
 
 ## Footer navigation — the four doors

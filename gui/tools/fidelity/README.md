@@ -27,7 +27,7 @@ npm run fidelity:pairs      # the pair-routing gate on its own
 | **contrast** `check-contrast.mjs`  | every text node is legible against what is actually behind it, in both themes   | yes, 1417 nodes across 63 frames            |
 | **fixtures** `check-fixtures.mjs`  | every in-scope frame has a dataset, of the shape its class implies              | yes, all 63                                 |
 | **n1** `check-n1-identity.mjs`     | every frame renders the same bytes when the daemon lists one folder pair        | yes, 55 of 63 — see its reach below         |
-| **pairs** `check-pair-routing.mjs` | a write acts on the pair it was drawn for, not the one selected when it runs    | yes, 56 scenarios (#102 phase 5a-2 to 5c-1) |
+| **pairs** `check-pair-routing.mjs` | a write acts on the pair it was drawn for, not the one selected when it runs    | yes, 59 scenarios (#102 phase 5a-2 to 5c-1) |
 
 Seven of the twelve are `assert.mjs` and need a browser. **contrast**, **n1** and **pairs** need one
 too. **copy** does
@@ -86,7 +86,7 @@ rendering of one drawing at one instant cannot make.
 - **pairs.** `app.js` cannot be imported, so this runs the real page against a scripted stand-in for the
   Tauri bridge that answers each command and can hold a reply open — for a named pair, so two reads of one
   command for two folders can be released in either order — which is what makes the gap between a press and
-  the daemon's answer something a test can stand in. Fifty-six scenarios — the first sixteen (#102 phases 5a-2, 5d, 5b-1), and the forty of phase 5c-1 listed in the gate's own header (twenty-one that came with the selector: its keyboard and its late replies, the ring, the notice block, the Settings handlers' captured folder, a folder called `constructor`; and nineteen from its review: the marker's problem form, the list with a stopped daemon, the lifetime of the unsaved-pause notice, the remaining Settings handlers, the roving tab stop, a long list, a hung scan): the follow-up to an approval; the press
+  the daemon's answer something a test can stand in. Fifty-nine scenarios — the first sixteen (#102 phases 5a-2, 5d, 5b-1), and the forty-three of phase 5c-1 listed in the gate's own header (twenty-one that came with the selector: its keyboard and its late replies, the ring, the notice block, the Settings handlers' captured folder, a folder called `constructor`; and nineteen from its review: the marker's problem form, the list with a stopped daemon, the lifetime of the unsaved-pause notice, the remaining Settings handlers, the roving tab stop, a long list, a hung scan; and three from its second review: the tray panel over a stopped daemon, a failed read of a folder that is not on screen, and where the long list starts to scroll): the follow-up to an approval; the press
   of `Run this sync` (pair and token are committed at the press); a switch between two folders that draw
   identical cards; the hero's buttons after a switch that patches the hero in place; a never-synced pair at
   two folders and at one; a **late conflict read** for the folder that was left (two folders in conflict at

@@ -1738,7 +1738,7 @@ Closes: the feature for users.
 > notice cannot (`store.pairsIssue` is the request clock for the roster). (43) **The poll does not wait on the
 > folders that are not on screen**: their refresh is one fire-and-forget job per folder with an in-flight
 > guard, so a scan on a mount that never answers neither stops the shown folder's polls nor stacks. (44) **A
-> failed `Restart syncing` is remembered for the folder the notice was for.** (45) **A list of more than ten
+> failed `Restart syncing` is remembered for the folder the notice was for.** (45) **A list of more than eleven
 > folders scrolls inside itself.** DEVIATIONS §108g.
 
 **Phase 6 — Shared-volume event scope (its own ADR).** §8a. Independent of everything above and

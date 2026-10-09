@@ -6107,8 +6107,8 @@ not done.
 
 55 in-scope frames became 63 (62 with the selector, 63 with the problem form of the marker, §108g); window frames
 20 became 28 (the eight are all windows); `assert.mjs` 63/63 mapped (120,969 assertions); `fidelity:n1` 55/55
-compared and eight rendered against themselves; `fidelity:pairs` 16 scenarios became 56 (21 with the selector, 19
-from its review); the contrast gate reads 1,417 nodes across 63 frames; the copy gate's exemptions 88 became 95
+compared and eight rendered against themselves; `fidelity:pairs` 16 scenarios became 59 (21 with the selector, 19
+from its review, 3 from the second); the contrast gate reads 1,417 nodes across 63 frames; the copy gate's exemptions 88 became 95
 (seven, each with its reason, §108e; the review did not move them). The `55` is quoted in `extract.mjs`,
 `frame-classes.mjs`, `check-fixtures.mjs`, `fidelity/README.md`, `IMPLEMENTATION-PLAN.md` and the notes of the places
 it was a current-state count; measurements dated to a past run are left as they were measured.
@@ -6149,7 +6149,7 @@ and the rest are fixed with a test that fails without each fix.
   of the one on screen. The refresh is one fire-and-forget job per folder with an in-flight guard (a hung scan
   is one scan, not one per poll). The shown folder's own conflict scan is still awaited in `poll()`; that is
   older than this PR and not changed here.
-- **A long list scrolls.** More than ten folders: `.pair-popover.is-scrolling`, `360px` (ten and a half rows),
+- **A long list scrolls.** More than eleven folders: `.pair-popover.is-scrolling`, `360px` (eleven 31px rows and 5px of the next; 11 rows are 355px and fit),
   `overflow-y:auto`. A class, and only for the long list, because the style gate compares `overflow` and the
   four-row list the frames draw is `visible`. 25 folders used to end at 829px in a 764px window.
 - **Test gaps closed**, each with a poison that now fails: the Settings handlers `onPolicy`, `onDisposal`,
@@ -6161,3 +6161,13 @@ and the rest are fixed with a test that fails without each fix.
   produced (the gate's header said sixteen where the README said twelve); the website said any folder in the
   config but not in the daemon gets the note, where it shows only for the folder this window remembered
   (`pair_unknown`).
+- **The second review of #447** (one root: the store kept the last folder list across a failed status read and
+  kept no clock on it). `select.rosterLive` / `livePairs` are the one answer to "is this list what the daemon said
+  last", and the surfaces that DRAW a folder's state read it: the tray panel over a stopped daemon at two folders
+  drew `Up to date`, `Sync now` and a pause row per folder (#246; pre-existing from #443) and is now the
+  one-folder stopped-daemon panel; the window's list and pill read the same answer. A roster from a request older
+  than the one that produced the held roster is ignored (the pill rang again until the next poll). A failed read
+  that NAMED a folder is filed under that folder, not under the one on screen (the chip, the list's rows and the
+  unsaved notice flipped to `unreachable` for a read that was never about them). Measured: rows are 31px, so 360px
+  holds eleven rows and 5px of the twelfth, not "ten and a half"; the scroll class is set from twelve folders,
+  where eleven (355px) overflow nothing.
