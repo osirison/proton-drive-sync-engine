@@ -1,20 +1,22 @@
 use crate::ancestor::{LineSummary, MAX_SUMMARY_BYTES};
+use crate::config::remote_root_comparison_key;
 use crate::dirconfig::{DirectoryConfigResolver, EffectiveSettings};
 use crate::due_queue::{Cause, DueQueue, Job, JobKind};
 use crate::events::{EventSource, EventsClient, RemoteChange, node_uid, volume_id_from_proton_id};
 use crate::index::{
     EntityKind, EventCursor, FileEvent, FileRecord, HistoryRetention, IndexTotals,
     LocalEntityState, LocalFileState, LocalScan, PassKind, PassOutcomeKind, ScanOptions,
-    SyncStatus, UnsyncableEntry, WithheldDeletion, begin_pass, byte_totals_since,
-    delete_delete_approval, file_events, finish_pass, get_record, index_totals, insert_file_events,
-    last_full_sweep, load_event_cursor, load_existing_index, load_forced_delete_approval,
-    load_index, load_pair_paused, load_sole_event_cursor, load_unsyncable_items,
+    SyncStatus, UnsyncableEntry, WithheldDeletion, baseline_has_rows, begin_pass,
+    byte_totals_since, delete_delete_approval, file_events, finish_pass, get_record, index_totals,
+    insert_file_events, last_full_sweep, load_event_cursor, load_existing_index,
+    load_existing_recorded_remote_root, load_forced_delete_approval, load_index, load_pair_paused,
+    load_recorded_remote_root, load_sole_event_cursor, load_unsyncable_items,
     load_warm_start_count, load_withheld_deletions, local_directory_state, local_file_state,
     local_tree_holds_syncable_entry, mark_modified, matching_delete_approval, open_database,
     path_for_proton_id, prune_agreed_summaries, prune_history, purge_record, purge_subtree_records,
-    recent_passes, replace_unsyncable_items, replace_withheld_deletions, reset_index_state,
-    scan_local_tree, sha1_hex, store_agreed_summary, store_event_cursor,
-    store_forced_delete_approval, store_pair_paused, store_warm_start_count,
+    recent_passes, record_remote_root_if_unrecorded, replace_unsyncable_items,
+    replace_withheld_deletions, reset_index_state, scan_local_tree, sha1_hex, store_agreed_summary,
+    store_event_cursor, store_forced_delete_approval, store_pair_paused, store_warm_start_count,
     upsert_delete_approval, upsert_record,
 };
 use crate::ipc::{
@@ -705,7 +707,7 @@ impl CarriedCount {
 
 /// A cause an unavailable pair stays unavailable for until a **condition** holds, rather than until
 /// its folder merely exists.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum StandingCause {
     /// The folder was replaced by an empty one while `recorded` items are recorded as synced for it
     /// (ADR 0005, the 4b note, item 9). Planned as it stands, that is the deletion of everything recorded — held by
@@ -717,14 +719,66 @@ enum StandingCause {
     /// an empty folder over an unknown number of recorded items is held exactly as over a known one,
     /// and it is released the same two ways. Nothing here is worded as a number it does not have.
     ReplacedByEmptyFolderUncounted,
+    /// The pair's index records another Proton folder than the one it is configured with (#453).
+    /// The baseline is the last agreed state of one local folder against **one** Proton folder;
+    /// compared with a different one, every path the old folder had and the new one lacks reads as
+    /// deleted on Proton and is planned as a local delete — and a root that does not exist yet is
+    /// created and uploaded into. So the pair does not run: nothing is listed, created or
+    /// downloaded on either side.
+    ///
+    /// Both are comparison keys (`config::remote_root_comparison_key`), not the roots as written.
+    /// Released by `reset-index` (which empties the baseline and the record together) or by the
+    /// index no longer disagreeing; **putting `remote_root` back needs a restart**, because the
+    /// daemon reads its config once. Unlike the empty-folder causes, a restart is safe here: the
+    /// record is in the index, so a restart over the same disagreement is held again.
+    RemoteRootChanged {
+        /// The pair's name, for the `--pair` in the command the reason offers.
+        pair: String,
+        recorded: PathBuf,
+        configured: PathBuf,
+    },
 }
 
 impl StandingCause {
+    /// How a lifted cause promotes the pair. An empty-folder hold is an accepted replacement when
+    /// it lifts (its first pass withholds every deletion); a changed remote root has no
+    /// replacement to be wary of, the index simply no longer disagrees.
+    fn promotion_when_cleared(&self) -> Promotion {
+        match self {
+            Self::ReplacedByEmptyFolder { .. } | Self::ReplacedByEmptyFolderUncounted => {
+                Promotion::Lifted
+            }
+            Self::RemoteRootChanged { .. } => Promotion::Plain,
+        }
+    }
+
     /// The reason a pair standing on this cause publishes. One definition: the demotion writes it
     /// and every retry that finds the cause still standing restates it, and the two must not differ
-    /// by a character or the repeat reads as a new cause.
+    /// by a character or the repeat reads as a new cause. The one-shot `--dry-run` refuses with
+    /// the same sentence.
     fn reason(&self, root: &Path) -> String {
         match self {
+            Self::RemoteRootChanged {
+                pair,
+                recorded,
+                configured,
+            } => {
+                let (recorded, configured) =
+                    (shown_remote_root(recorded), shown_remote_root(configured));
+                // Restart is offered here, unlike the empty-folder causes below: the record lives
+                // in the index, so a restart with the wrong folder is held again and a restart
+                // with the right one resumes.
+                format!(
+                    "the folder {} was last synced with the Proton folder {recorded}, but this \
+                     pair is now set to {configured}. Nothing is listed, uploaded, downloaded or \
+                     deleted until you choose. To keep the old Proton folder, put `remote_root` \
+                     back to {recorded} and restart the daemon. To use {configured} instead, run \
+                     `proton-sync reset-index --yes --pair {pair}`: it forgets what was recorded \
+                     about {recorded}, compares this folder with {configured} again from \
+                     scratch, and deletes nothing",
+                    root.display()
+                )
+            }
             Self::ReplacedByEmptyFolder { recorded } => {
                 let (noun, verb) = if *recorded == 1 {
                     ("item", "is")
@@ -2614,6 +2668,10 @@ pub fn preview_plan_with_client(
     // — the one the caller hands over: the default pair, or the one `proton-syncd --pair NAME`
     // named (`config::RunMode::Preview`).
     let (_, pair_config) = config.clone().into_parts();
+    // Before the scan and before anything is listed: a plan built from an index that describes
+    // another Proton folder is the one the daemon refuses to run (#453), and presenting it as
+    // an ordinary preview would show the deletions the refusal exists to prevent.
+    refuse_a_preview_over_a_changed_remote_root(&pair_config)?;
     let scan_options = scan_options_from_config(&pair_config)?;
     let base_records = load_existing_index(&pair_config.db_path)?;
     // No identity to compare: the child has no pair runtime, so it asks only whether a directory
@@ -2851,7 +2909,7 @@ impl<C: ProtonClient> Daemon<C> {
                 }
                 Err(failure) => {
                     let folder_error = failure.folder_error();
-                    prepared.push((config, Err((failure.reason(), folder_error))));
+                    prepared.push((config, Err((failure.reason(), folder_error, None))));
                 }
             }
         }
@@ -2886,14 +2944,22 @@ impl<C: ProtonClient> Daemon<C> {
                     db_path: config.db_path.clone(),
                 },
             ));
+            // The index is asked which Proton folder it describes before the pair is ready, so a
+            // pair configured with another one is held with nothing listed, created or downloaded
+            // on either side (#453).
             let outcome = match lock_guard {
-                Ok(lock_guard) => PairRuntime::open(config.clone(), lock_guard)
-                    .map_err(|error| (format!("its state could not be opened: {error}"), None)),
+                Ok(lock_guard) => PairRuntime::open_checked(config.clone(), lock_guard, true)
+                    .map_err(|refusal| match refusal {
+                        OpenRefusal::Held(cause) => {
+                            (cause.reason(&config.local_root), None, Some(cause))
+                        }
+                        OpenRefusal::Failed(reason) => (reason, None, None),
+                    }),
                 Err(unprepared) => Err(unprepared),
             };
             slots.push(match outcome {
                 Ok(runtime) => PairSlot::Ready(Box::new(runtime)),
-                Err((reason, folder_error)) => {
+                Err((reason, folder_error, standing)) => {
                     warn!(
                         %reason,
                         "folder pair unavailable; the daemon keeps running and tries it again"
@@ -2905,6 +2971,7 @@ impl<C: ProtonClient> Daemon<C> {
                         .unwrap_or_default();
                     let mut unavailable = UnavailablePair::with_history(config, reason, history);
                     unavailable.folder_error = folder_error;
+                    unavailable.standing = standing;
                     PairSlot::Unavailable(Box::new(unavailable))
                 }
             });
@@ -3318,7 +3385,7 @@ impl<C: ProtonClient> Daemon<C> {
         let carried_root = unavailable.known_root;
         let carried_force = unavailable.force_delete_approval;
         let carried_recorded = unavailable.recorded_items;
-        let standing_cause = unavailable.standing;
+        let standing_cause = unavailable.standing.clone();
         // First, and before anything is prepared: a pair whose folder or state now overlaps
         // another pair's (a symlink that came back, a mount that landed inside a sibling) stays
         // unavailable, exactly as boot refuses the start for the same pair. The same function
@@ -3348,7 +3415,7 @@ impl<C: ProtonClient> Daemon<C> {
                 );
                 StandingStatus::Reset
             } else {
-                standing_cause_status(&config, standing)
+                standing_cause_status(&config, &standing)
             };
             match status {
                 StandingStatus::Holds => {
@@ -3374,7 +3441,7 @@ impl<C: ProtonClient> Daemon<C> {
                     promotion = if status == StandingStatus::Reset {
                         Promotion::Reset
                     } else {
-                        Promotion::Lifted
+                        standing.promotion_when_cleared()
                     };
                     if let Some(unavailable) = self.unavailable_mut(pair) {
                         unavailable.standing = None;
@@ -3438,13 +3505,27 @@ impl<C: ProtonClient> Daemon<C> {
                 return;
             }
         };
-        let mut runtime = match PairRuntime::open(config, lock_guard) {
+        // The index is asked which Proton folder it describes, as at boot (#453) — except for a
+        // retry the user released with `reset-index`, whose pass empties the baseline and the
+        // record before it lists anything.
+        let mut runtime = match PairRuntime::open_checked(
+            config.clone(),
+            lock_guard,
+            promotion != Promotion::Reset,
+        ) {
             Ok(runtime) => runtime,
-            Err(error) => {
-                self.note_unavailable_failure(
-                    pair,
-                    PrepareFailure::Unavailable(format!("its state could not be opened: {error}")),
-                );
+            Err(OpenRefusal::Held(cause)) => {
+                let reason = cause.reason(&config.local_root);
+                if let Some(unavailable) = self.unavailable_mut(pair) {
+                    unavailable.standing = Some(cause);
+                    unavailable.folder_error = None;
+                    clear_unreadable(&mut unavailable.unreadable);
+                }
+                self.note_unavailable_cause(pair, reason);
+                return;
+            }
+            Err(OpenRefusal::Failed(reason)) => {
+                self.note_unavailable_failure(pair, PrepareFailure::Unavailable(reason));
                 return;
             }
         };
@@ -4577,8 +4658,26 @@ enum Promotion {
 ///
 /// **Fails closed**: a folder that cannot be read, or rules that cannot be built, leave the cause
 /// holding — a pair is never made ready by a check that could not be made.
-fn standing_cause_status(config: &PairConfig, standing: StandingCause) -> StandingStatus {
+fn standing_cause_status(config: &PairConfig, standing: &StandingCause) -> StandingStatus {
     match standing {
+        // Asked of the index on disk, read-only and without its lock: this cause stands while the
+        // index records another folder. The config cannot change under a running daemon, so what
+        // can lift it is the index changing (a reset, a removed `.sync`), never the config.
+        StandingCause::RemoteRootChanged { .. } => {
+            match load_existing_recorded_remote_root(&config.db_path) {
+                Ok(recorded) => {
+                    if changed_remote_root(recorded.as_deref(), config).is_some() {
+                        StandingStatus::Holds
+                    } else {
+                        StandingStatus::Cleared
+                    }
+                }
+                Err(error) => StandingStatus::Unreadable(format!(
+                    "the index {}: {error}",
+                    config.db_path.display()
+                )),
+            }
+        }
         StandingCause::ReplacedByEmptyFolder { .. }
         | StandingCause::ReplacedByEmptyFolderUncounted => {
             match look_at_root(&config.local_root) {
@@ -4599,6 +4698,84 @@ fn standing_cause_status(config: &PairConfig, standing: StandingCause) -> Standi
                 Ok(false) | Err(_) => StandingStatus::Holds,
             }
         }
+    }
+}
+
+/// A recorded or configured remote-root key as a person reads a Proton path: with the leading `/`
+/// the key drops (`config::remote_root_comparison_key`), so the reason says `/Drive/Photos` whichever
+/// way the config spelled it.
+fn shown_remote_root(key: &Path) -> String {
+    format!("/{}", key.display())
+}
+
+/// Whether the Proton folder the index records is **not** the one the pair is configured with —
+/// the one comparison (#453), read by the runtime's open (boot and every retry), by a held pair's
+/// retry and by the one-shot `--dry-run`, so they cannot disagree about what "the same folder"
+/// means. The comparison is `config::remote_root_comparison_key`'s: `/Drive/X`, `Drive/X`,
+/// `Drive/X/` and `./Drive/X` are one folder. `None` for nothing recorded as well as for equal:
+/// what nothing recorded means is the caller's ([`settle_remote_root_identity`]).
+fn changed_remote_root(recorded: Option<&Path>, config: &PairConfig) -> Option<StandingCause> {
+    let recorded = recorded?;
+    let configured = remote_root_comparison_key(&config.remote_root);
+    (recorded != configured).then(|| StandingCause::RemoteRootChanged {
+        pair: config.name.clone(),
+        recorded: recorded.to_path_buf(),
+        configured,
+    })
+}
+
+/// Settles which Proton folder this pair's index describes, at open (#453).
+///
+/// - **Recorded and different**: the cause is returned and nothing else happens. The caller does
+///   not run the pair.
+/// - **Recorded and equal**: nothing changes.
+/// - **Nothing recorded, baseline has rows** (every index written before the record existed, or a
+///   first pass that never reached a commit that records): the configured folder is recorded now.
+///   The engine cannot know which folder such a baseline came from, so this is a choice, and it is
+///   the one that keeps every existing pair running after an upgrade.
+/// - **Nothing recorded, baseline empty**: nothing is recorded. An empty baseline describes no
+///   folder; the commit of the first pass that lands anything records it, in the transaction that
+///   writes the rows (`commit_checkpoint`, `execute_plan_and_commit`).
+///
+/// A read or write that fails is an error and the pair does not open: an index that cannot say
+/// which folder it describes is not one to plan a deletion from.
+fn settle_remote_root_identity(
+    connection: &Connection,
+    config: &PairConfig,
+) -> AppResult<Option<StandingCause>> {
+    let recorded = load_recorded_remote_root(connection)?;
+    if recorded.is_some() {
+        return Ok(changed_remote_root(recorded.as_deref(), config));
+    }
+    if baseline_has_rows(connection)? {
+        let configured = remote_root_comparison_key(&config.remote_root);
+        record_remote_root_if_unrecorded(connection, &configured)?;
+        info!(
+            remote_root = %shown_remote_root(&configured),
+            "this index records no Proton folder (it was written before that was recorded); \
+             taking the configured one as the folder its baseline describes"
+        );
+    }
+    Ok(None)
+}
+
+/// Why [`PairRuntime::open_checked`] did not produce a runtime.
+enum OpenRefusal {
+    /// The index describes another Proton folder than the one configured ([`StandingCause`]).
+    Held(StandingCause),
+    /// Anything else, as the reason a status reply carries.
+    Failed(String),
+}
+
+/// What the one-shot `--dry-run` says when the index it would plan against describes another
+/// Proton folder: the same sentence the daemon publishes for the held pair, as an error. A
+/// preview opens the index read-only and records nothing, so an index with no record previews as
+/// it always did.
+fn refuse_a_preview_over_a_changed_remote_root(config: &PairConfig) -> AppResult<()> {
+    let recorded = load_existing_recorded_remote_root(&config.db_path)?;
+    match changed_remote_root(recorded.as_deref(), config) {
+        Some(cause) => Err(boxed_error(cause.reason(&config.local_root))),
+        None => Ok(()),
     }
 }
 
@@ -4982,6 +5159,34 @@ fn prepare_pair_state_after(
 }
 
 impl PairRuntime {
+    /// [`Self::open`], then the question about the index that decides whether the pair may run at
+    /// all: which Proton folder does its baseline describe ([`settle_remote_root_identity`], #453)?
+    /// **The one door boot and every retry go through**, so there is no preparation that skips it.
+    ///
+    /// `check_remote_root` is `false` for exactly one caller: a retry released by `reset-index`,
+    /// whose first pass empties the baseline (and the record with it) before it loads anything or
+    /// lists anything, so the disagreement it would find is the one the user asked to discard. The
+    /// runtime is dropped on a refusal, which releases its per-root lock.
+    fn open_checked(
+        config: PairConfig,
+        lock_guard: LockGuard,
+        check_remote_root: bool,
+    ) -> Result<Self, OpenRefusal> {
+        let runtime = Self::open(config, lock_guard).map_err(|error| {
+            OpenRefusal::Failed(format!("its state could not be opened: {error}"))
+        })?;
+        if !check_remote_root {
+            return Ok(runtime);
+        }
+        match settle_remote_root_identity(&runtime.connection, &runtime.config) {
+            Ok(None) => Ok(runtime),
+            Ok(Some(cause)) => Err(OpenRefusal::Held(cause)),
+            Err(error) => Err(OpenRefusal::Failed(format!(
+                "its index could not be asked which Proton folder it describes: {error}"
+            ))),
+        }
+    }
+
     /// A ready pair over a prepared root: its index, filters, history and persisted counters.
     fn open(config: PairConfig, lock_guard: LockGuard) -> AppResult<Self> {
         #[cfg(test)]
@@ -5705,6 +5910,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
             &mut self.pair.pass_log,
             self.pair_shared,
             &self.pair.config.local_root,
+            &remote_root_comparison_key(&self.pair.config.remote_root),
         ) {
             warn!(
                 %error,
@@ -7875,6 +8081,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
                     &mut self.pair.pass_log,
                     self.pair_shared,
                     &self.pair.config.local_root,
+                    &remote_root_comparison_key(&self.pair.config.remote_root),
                 )?;
             }
             action_number += 1;
@@ -7948,6 +8155,13 @@ impl<C: ProtonClient> PairPass<'_, C> {
         for mutation in &index_mutations {
             mutation.apply(&transaction)?;
         }
+        // A pass that reached its final commit completed against this Proton folder, whether or not
+        // it moved anything, so the folder is recorded here when no checkpoint has (#453). Never
+        // before the pass's work: this is the commit that follows it.
+        record_remote_root_if_unrecorded(
+            &transaction,
+            &remote_root_comparison_key(&self.pair.config.remote_root),
+        )?;
         for (path, digest, summary) in &summaries {
             store_agreed_summary(&transaction, path, digest, summary, current_epoch_secs())?;
         }
@@ -8345,6 +8559,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
             &mut self.pair.pass_log,
             self.pair_shared,
             &self.pair.config.local_root,
+            &remote_root_comparison_key(&self.pair.config.remote_root),
         )?;
         // A chunk is many actions; one landed file in it clears the breaker's consecutive run
         // exactly as a successful single action would. A vanished node landed nothing.
@@ -10134,6 +10349,7 @@ fn commit_checkpoint(
     pass_log: &mut PassLog,
     pair_shared: &PairShared,
     local_root: &Path,
+    remote_root_key: &Path,
 ) -> AppResult<()> {
     if index_mutations.is_empty()
         && pending_approval_consumptions.is_empty()
@@ -10156,6 +10372,13 @@ fn commit_checkpoint(
     let transaction = connection.transaction()?;
     for mutation in index_mutations.iter() {
         mutation.apply(&transaction)?;
+    }
+    // The Proton folder the baseline describes is recorded in the transaction that first writes
+    // baseline rows, never ahead of it (#453): a first pass that lands files and is then cut short
+    // would otherwise leave rows with no record beside them, which the next open reads as an index
+    // from before the record existed and files under whatever folder is configured THEN.
+    if !index_mutations.is_empty() {
+        record_remote_root_if_unrecorded(&transaction, remote_root_key)?;
     }
     // In the SAME transaction as the record it describes: a summary that outlived a rolled-back
     // upsert would answer for a version the index never agreed on.
@@ -24707,6 +24930,11 @@ mod tests {
         downloads: Arc<Mutex<Vec<PathBuf>>>,
         /// Every remote path a pass asked to delete.
         deletes: Arc<Mutex<Vec<PathBuf>>>,
+        /// Every remote root a pass asked to create (`ensure_root_directory`).
+        root_creations: Arc<Mutex<Vec<PathBuf>>>,
+        /// Roots that do not exist remotely: a full walk of one answers `RootMissing`. Any other
+        /// root answers what its tree holds, which is nothing for one never registered.
+        missing_roots: Arc<Mutex<BTreeSet<PathBuf>>>,
         /// Each of these roots' next walk fails, once.
         fail_walk_once: Arc<Mutex<BTreeSet<PathBuf>>>,
         /// An upload under this root sets the installed cancel flag: a shutdown landing mid-pass.
@@ -24762,6 +24990,13 @@ mod tests {
             self.deletes.lock().expect("deletes lock").clone()
         }
 
+        fn root_creations(&self) -> Vec<PathBuf> {
+            self.root_creations
+                .lock()
+                .expect("root creations lock")
+                .clone()
+        }
+
         fn downloads(&self) -> Vec<PathBuf> {
             self.downloads.lock().expect("downloads lock").clone()
         }
@@ -24811,6 +25046,14 @@ mod tests {
             {
                 return Err(boxed_error("list failed"));
             }
+            if self
+                .missing_roots
+                .lock()
+                .expect("missing roots lock")
+                .contains(remote_root)
+            {
+                return Ok(RemoteListingStatus::RootMissing);
+            }
             Ok(RemoteListingStatus::Found(self.tree(remote_root)))
         }
 
@@ -24829,7 +25072,11 @@ mod tests {
                 .collect())
         }
 
-        fn ensure_root_directory(&self, _remote_root: &Path) -> AppResult<()> {
+        fn ensure_root_directory(&self, remote_root: &Path) -> AppResult<()> {
+            self.root_creations
+                .lock()
+                .expect("root creations lock")
+                .push(remote_root.to_path_buf());
             Ok(())
         }
 
@@ -35320,9 +35567,9 @@ mod tests {
             "the remote was downloaded into the empty replacement: {} files",
             client.downloads().len()
         );
-        let standing = daemon.unavailable(0).map(|pair| pair.standing);
+        let standing = daemon.unavailable(0).map(|pair| pair.standing.clone());
         assert!(
-            standing.is_some_and(|standing| standing.is_some()),
+            standing.as_ref().is_some_and(|standing| standing.is_some()),
             "held: {standing:?} {:?}",
             published_error(daemon, 0)
         );
@@ -35388,5 +35635,749 @@ mod tests {
             .expect("baseline")
             .len();
         assert!((40..100).contains(&adopted), "{adopted}");
+    }
+
+    // --- #453: an index records which Proton folder its baseline describes -------------------
+    //
+    // The tests below run a pair once against `/Drive/a`, drop its daemon, and start another over
+    // the SAME local folder and index with a different `remote_root` — the situation a hand edit, a
+    // Settings edit or an added folder over a surviving index all produce. The fixture's delete
+    // guard is OFF and its local deletions are permanent, so what the old code did (plan a
+    // `LocalDelete` for every path the other folder lacks, and execute it) is what these tests see
+    // if the refusal is missing.
+
+    /// Everything under `root`, relative path and bytes, sorted: what "nothing was written or
+    /// removed in the folder" compares.
+    fn folder_contents(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+        fn walk(base: &Path, directory: &Path, found: &mut Vec<(PathBuf, Vec<u8>)>) {
+            for entry in fs::read_dir(directory).expect("read directory") {
+                let path = entry.expect("entry").path();
+                if path.is_dir() {
+                    walk(base, &path, found);
+                } else {
+                    found.push((
+                        path.strip_prefix(base).expect("under base").to_path_buf(),
+                        fs::read(&path).expect("read file"),
+                    ));
+                }
+            }
+        }
+        let mut found = Vec::new();
+        walk(root, root, &mut found);
+        found.sort();
+        found
+    }
+
+    fn drive_a_tree() -> Vec<RemoteEntity> {
+        vec![
+            remote_file_entity("a.txt", "vola~na", &sha1_bytes(b"a")),
+            remote_file_entity("b.txt", "vola~nb", &sha1_bytes(b"b")),
+        ]
+    }
+
+    /// Pair `a` run once against `/Drive/a` — `a.txt` and `b.txt` in step on both sides, its index
+    /// outside the folder — and its daemon dropped, so the per-root and user-global locks are free
+    /// for the next one. Returns the config the first run used.
+    fn synced_once_against_drive_a(directory: &Path) -> DaemonConfig {
+        let mut configs = pair_configs(directory, &["a"]);
+        let root = configs[0].local_root.clone();
+        fs::write(root.join("a.txt"), b"a").expect("a file");
+        fs::write(root.join("b.txt"), b"b").expect("b file");
+        let client = MultiRootClient::default().with_tree(&configs[0].remote_root, drive_a_tree());
+        let mut daemon = multi_pair_daemon(configs.clone(), client, None);
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(
+            stepper.step(&mut daemon),
+            Step::Idle,
+            "the first run's pass"
+        );
+        let connection = &daemon.runtime(0).expect("ready").connection;
+        for name in ["a.txt", "b.txt"] {
+            assert!(
+                get_record(connection, Path::new(name))
+                    .expect("index read")
+                    .is_some(),
+                "precondition: {name} is in the baseline"
+            );
+        }
+        assert_eq!(
+            load_recorded_remote_root(connection).expect("recorded root"),
+            Some(PathBuf::from("Drive/a")),
+            "precondition: the completed pass recorded the folder it synced"
+        );
+        drop(stepper);
+        drop(daemon);
+        configs.remove(0)
+    }
+
+    fn with_remote_root(config: &DaemonConfig, remote_root: &str) -> DaemonConfig {
+        DaemonConfig {
+            remote_root: PathBuf::from(remote_root),
+            ..config.clone()
+        }
+    }
+
+    /// The same pair, started again over its surviving state with `config` — not yet stepped.
+    fn restarted(
+        config: DaemonConfig,
+        client: &MultiRootClient,
+    ) -> (Daemon<MultiRootClient>, Stepper) {
+        let mut daemon = multi_pair_daemon(vec![config], client.clone(), None);
+        let stepper = Stepper::new(&mut daemon);
+        (daemon, stepper)
+    }
+
+    /// The pair is held on `RemoteRootChanged`, naming `recorded` and `configured` as comparison
+    /// keys — the standing cause, not merely an unavailable reason: it is what makes a retry ask
+    /// the index instead of preparing the pair, and what a `reset-index` is answered by.
+    fn assert_held_on_the_remote_root(
+        daemon: &Daemon<MultiRootClient>,
+        recorded: &str,
+        configured: &str,
+    ) {
+        let standing = daemon.unavailable(0).expect("unavailable").standing.clone();
+        assert_eq!(
+            standing,
+            Some(StandingCause::RemoteRootChanged {
+                pair: "a".to_owned(),
+                recorded: PathBuf::from(recorded),
+                configured: PathBuf::from(configured),
+            })
+        );
+    }
+
+    /// Nothing reached the remote side: no walk, no directory, no upload, no download, no delete,
+    /// no root created.
+    fn assert_the_remote_was_not_touched(client: &MultiRootClient, label: &str) {
+        assert!(
+            client.walks().is_empty(),
+            "{label}: listed {:?}",
+            client.walks()
+        );
+        assert!(client.directories().is_empty(), "{label}: made a directory");
+        assert!(
+            client.uploads().is_empty(),
+            "{label}: uploaded {:?}",
+            client.uploads()
+        );
+        assert!(client.downloads().is_empty(), "{label}: downloaded");
+        assert!(
+            client.deletes().is_empty(),
+            "{label}: deleted {:?}",
+            client.deletes()
+        );
+        assert!(client.moves().is_empty(), "{label}: moved");
+        assert!(
+            client.root_creations().is_empty(),
+            "{label}: created {:?}",
+            client.root_creations()
+        );
+    }
+
+    #[test]
+    fn a_changed_remote_root_refuses_the_pair_and_plans_nothing() {
+        // The hole: the other Proton folder lacks `b.txt`, the baseline has it and the local copy is
+        // unchanged, so the planner reads "deleted on Proton" and, guard off, executes a LocalDelete.
+        let directory = tempdir().expect("tempdir");
+        let config = synced_once_against_drive_a(directory.path());
+        let root = config.local_root.clone();
+        let db_path = config.db_path.clone();
+        let before = folder_contents(&root);
+        let client = MultiRootClient::default().with_tree(
+            "/Drive/other",
+            vec![remote_file_entity("a.txt", "volo~na", &sha1_bytes(b"a"))],
+        );
+
+        let (mut daemon, mut stepper) =
+            restarted(with_remote_root(&config, "/Drive/other"), &client);
+        // Held by boot itself, before any job has run: the cause is standing from the start, so
+        // the first retry asks the index instead of preparing the pair.
+        assert_held_on_the_remote_root(&daemon, "Drive/a", "Drive/other");
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        let reason = published_error(&daemon, 0).expect("it says why");
+        assert!(daemon.unavailable(0).is_some(), "still ready; {reason}");
+        assert!(
+            reason.contains("/Drive/a") && reason.contains("/Drive/other"),
+            "the reason names both folders: {reason}"
+        );
+        assert!(
+            reason.contains("proton-sync reset-index --yes --pair a"),
+            "and the way to start over: {reason}"
+        );
+        assert!(
+            reason.contains("remote_root"),
+            "and the way to keep the old baseline: {reason}"
+        );
+        assert_held_on_the_remote_root(&daemon, "Drive/a", "Drive/other");
+        assert_the_remote_was_not_touched(&client, "changed root");
+        assert_eq!(
+            folder_contents(&root),
+            before,
+            "the local folder is as it was"
+        );
+        let index = open_database(&db_path).expect("the index outlives the held pair");
+        for name in ["a.txt", "b.txt"] {
+            assert!(
+                get_record(&index, Path::new(name))
+                    .expect("index read")
+                    .is_some(),
+                "{name} is still in the baseline"
+            );
+        }
+        assert_eq!(
+            load_recorded_remote_root(&index).expect("recorded root"),
+            Some(PathBuf::from("Drive/a")),
+            "the recorded folder is still the old one: the new one was not adopted"
+        );
+        assert!(!daemon.shared.pairs[0].has_runtime());
+    }
+
+    #[test]
+    fn a_changed_remote_root_that_does_not_exist_is_neither_created_nor_uploaded_into() {
+        // A typo'd root: the old code saw the root missing, cleared the baseline in memory, created
+        // the folder in Proton Drive and uploaded the whole local tree into it.
+        let directory = tempdir().expect("tempdir");
+        let config = synced_once_against_drive_a(directory.path());
+        let client = MultiRootClient::default();
+        client
+            .missing_roots
+            .lock()
+            .expect("missing roots lock")
+            .insert(PathBuf::from("/Drive/typo"));
+
+        let (mut daemon, mut stepper) =
+            restarted(with_remote_root(&config, "/Drive/typo"), &client);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(
+            daemon.unavailable(0).is_some(),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        assert_the_remote_was_not_touched(&client, "typo'd root");
+    }
+
+    #[test]
+    fn the_same_remote_root_spelled_four_ways_does_not_refuse() {
+        // `/Drive/X`, `Drive/X`, `Drive/X/` and `./Drive/X` are one folder (the config reader's own
+        // rule): editing the spelling is not a different Proton folder.
+        for spelling in ["/Drive/a", "Drive/a", "/Drive/a/", "./Drive/a"] {
+            let directory = tempdir().expect("tempdir");
+            let config = synced_once_against_drive_a(directory.path());
+            let root = config.local_root.clone();
+            let before = folder_contents(&root);
+            let client = MultiRootClient::default().with_tree(spelling, drive_a_tree());
+
+            let (mut daemon, mut stepper) = restarted(with_remote_root(&config, spelling), &client);
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+            assert!(
+                daemon.runtime(0).is_some(),
+                "{spelling}: refused: {:?}",
+                published_error(&daemon, 0)
+            );
+            assert_eq!(published_error(&daemon, 0), None, "{spelling}");
+            assert_eq!(
+                client.walks(),
+                [PathBuf::from(spelling)],
+                "{spelling}: it ran"
+            );
+            assert!(client.deletes().is_empty(), "{spelling}");
+            assert_eq!(folder_contents(&root), before, "{spelling}");
+            assert_eq!(
+                load_recorded_remote_root(&daemon.runtime(0).expect("ready").connection)
+                    .expect("recorded root"),
+                Some(PathBuf::from("Drive/a")),
+                "{spelling}: still recorded under the one key"
+            );
+        }
+    }
+
+    #[test]
+    fn a_legacy_index_with_a_baseline_opens_records_the_configured_root_and_carries_on() {
+        // An index written before the record existed: the engine cannot know which folder it
+        // describes, so it takes the configured one — at open, before any pass — and the pass that
+        // follows is the one it always was.
+        let directory = tempdir().expect("tempdir");
+        let config = synced_once_against_drive_a(directory.path());
+        let root = config.local_root.clone();
+        let before = folder_contents(&root);
+        open_database(&config.db_path)
+            .expect("index")
+            .execute("DELETE FROM remote_root_identity", [])
+            .expect("make it a legacy index");
+        assert_eq!(
+            load_existing_recorded_remote_root(&config.db_path).expect("read"),
+            None,
+            "precondition: nothing is recorded"
+        );
+        let client = MultiRootClient::default().with_tree("/Drive/a", drive_a_tree());
+
+        let (mut daemon, mut stepper) = restarted(config, &client);
+        assert_eq!(
+            load_recorded_remote_root(&daemon.runtime(0).expect("opens").connection)
+                .expect("recorded root"),
+            Some(PathBuf::from("Drive/a")),
+            "recorded at open, before the first pass"
+        );
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert_eq!(published_error(&daemon, 0), None);
+        assert_eq!(client.walks(), [PathBuf::from("/Drive/a")]);
+        assert!(client.deletes().is_empty());
+        assert_eq!(folder_contents(&root), before);
+    }
+
+    #[test]
+    fn a_legacy_index_cannot_say_which_folder_it_describes_so_it_takes_the_configured_one() {
+        // The residual, pinned so it is a recorded choice and not a rediscovery: with nothing
+        // recorded the engine has no old folder to compare, and refusing every index written before
+        // this change would stop every pair on upgrade. The configured folder is recorded and the
+        // pair runs. (The tree matches, so nothing here depends on what that pass would plan.)
+        let directory = tempdir().expect("tempdir");
+        let config = synced_once_against_drive_a(directory.path());
+        open_database(&config.db_path)
+            .expect("index")
+            .execute("DELETE FROM remote_root_identity", [])
+            .expect("make it a legacy index");
+        let client = MultiRootClient::default().with_tree("/Drive/other", drive_a_tree());
+
+        let (mut daemon, mut stepper) =
+            restarted(with_remote_root(&config, "/Drive/other"), &client);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(
+            daemon.runtime(0).is_some(),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        assert_eq!(
+            load_recorded_remote_root(&daemon.runtime(0).expect("ready").connection)
+                .expect("recorded root"),
+            Some(PathBuf::from("Drive/other"))
+        );
+    }
+
+    #[test]
+    fn an_empty_baseline_records_the_remote_root_only_when_a_pass_completes() {
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a"]);
+        let client = MultiRootClient::default();
+        client
+            .fail_walk_once
+            .lock()
+            .expect("fail lock")
+            .insert(remote_root_of("a"));
+        let mut daemon = multi_pair_daemon(configs, client.clone(), None);
+        let mut stepper = Stepper::new(&mut daemon);
+        let recorded = |daemon: &Daemon<MultiRootClient>| {
+            load_recorded_remote_root(&daemon.runtime(0).expect("ready").connection)
+                .expect("recorded root")
+        };
+        assert_eq!(
+            recorded(&daemon),
+            None,
+            "an empty baseline records nothing at open"
+        );
+
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(
+            published_error(&daemon, 0).is_some_and(|error| error.contains("list failed")),
+            "precondition: the first pass failed: {:?}",
+            published_error(&daemon, 0)
+        );
+        assert_eq!(recorded(&daemon), None, "a failed pass records nothing");
+
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(
+            published_error(&daemon, 0),
+            None,
+            "the second pass completed"
+        );
+        assert_eq!(
+            recorded(&daemon),
+            Some(PathBuf::from("Drive/a")),
+            "a completed pass records the folder it synced, even with nothing to move"
+        );
+    }
+
+    #[test]
+    fn a_first_pass_that_lands_files_and_then_fails_records_the_root_with_them() {
+        // The checkpoint half of the record. A first sync that lands some files and is then cut
+        // short leaves a baseline; with no record beside it the next open would call it a legacy
+        // index and record whichever folder is configured THEN. The row therefore goes in the same
+        // transaction as the first baseline rows, never ahead of them.
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a"]);
+        fs::write(configs[0].local_root.join("one.txt"), b"1").expect("file");
+        fs::write(configs[0].local_root.join("two.txt"), b"2").expect("file");
+        let client = MultiRootClient::default();
+        *client.cancel_on_upload_under.lock().expect("lock") = Some(remote_root_of("a"));
+        let mut daemon = multi_pair_daemon(configs, client.clone(), None);
+        daemon.install_client_hooks(); // the cancel flag reaches the client, as in `run`
+        let mut stepper = Stepper::new(&mut daemon);
+
+        assert_eq!(stepper.step(&mut daemon), Step::Stop);
+
+        let connection = &daemon.runtime(0).expect("ready").connection;
+        let landed = load_index(connection).expect("baseline").len();
+        assert!(
+            landed >= 1,
+            "precondition: a checkpoint landed ({landed} rows)"
+        );
+        assert_eq!(
+            load_recorded_remote_root(connection).expect("recorded root"),
+            Some(PathBuf::from("Drive/a")),
+            "the baseline that landed names the folder it describes"
+        );
+    }
+
+    #[tokio::test]
+    async fn reset_index_releases_a_changed_remote_root_and_the_pass_after_it_deletes_nothing() {
+        let directory = tempdir().expect("tempdir");
+        let config = synced_once_against_drive_a(directory.path());
+        let root = config.local_root.clone();
+        let client = MultiRootClient::default().with_tree(
+            "/Drive/other",
+            vec![
+                remote_file_entity("a.txt", "volo~na", &sha1_bytes(b"a")),
+                remote_file_entity("c.txt", "volo~nc", &sha1_bytes(b"downloaded")),
+            ],
+        );
+        let (mut daemon, mut stepper) =
+            restarted(with_remote_root(&config, "/Drive/other"), &client);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(daemon.unavailable(0).is_some(), "precondition: held");
+        assert_the_remote_was_not_touched(&client, "held");
+        let plane = plane_for(&daemon, &stepper);
+
+        let mut request = ControlRequest::new(ControlCommand::ResetIndex);
+        request.pair = Some("a".to_owned());
+        let reply = roundtrip(&plane, request).await;
+        assert!(
+            reply.message.contains("index reset scheduled"),
+            "{}",
+            reply.message
+        );
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(
+            daemon.runtime(0).is_some(),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        assert_eq!(published_error(&daemon, 0), None);
+        assert!(client.deletes().is_empty(), "{:?}", client.deletes());
+        assert!(root.join("b.txt").exists(), "nothing local was deleted");
+        assert_eq!(
+            fs::read(root.join("c.txt")).expect("downloaded from the new folder"),
+            b"downloaded"
+        );
+        assert_eq!(
+            uploads_of(&client, "b.txt"),
+            1,
+            "starting over compares both sides: the file only the disk has is uploaded"
+        );
+        let connection = &daemon.runtime(0).expect("ready").connection;
+        assert_eq!(
+            load_recorded_remote_root(connection).expect("recorded root"),
+            Some(PathBuf::from("Drive/other")),
+            "the pass after the reset records the folder it synced"
+        );
+        assert!(
+            get_record(connection, Path::new("c.txt"))
+                .expect("index read")
+                .is_some(),
+            "and its baseline is the new folder's"
+        );
+    }
+
+    #[test]
+    fn putting_the_remote_root_back_resumes_with_the_old_baseline() {
+        let directory = tempdir().expect("tempdir");
+        let config = synced_once_against_drive_a(directory.path());
+        let root = config.local_root.clone();
+        let before = folder_contents(&root);
+        {
+            let client = MultiRootClient::default().with_tree("/Drive/other", Vec::new());
+            let (mut daemon, mut stepper) =
+                restarted(with_remote_root(&config, "/Drive/other"), &client);
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+            assert!(daemon.unavailable(0).is_some(), "precondition: held");
+        }
+
+        let client = MultiRootClient::default().with_tree("/Drive/a", drive_a_tree());
+        let (mut daemon, mut stepper) = restarted(config, &client);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(
+            daemon.runtime(0).is_some(),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        assert_eq!(published_error(&daemon, 0), None);
+        assert_eq!(client.walks(), [PathBuf::from("/Drive/a")]);
+        assert!(client.deletes().is_empty());
+        assert!(
+            client.uploads().is_empty(),
+            "the old baseline made it a quiet pass"
+        );
+        assert_eq!(folder_contents(&root), before);
+        let connection = &daemon.runtime(0).expect("ready").connection;
+        assert_eq!(
+            get_record(connection, Path::new("b.txt"))
+                .expect("index read")
+                .and_then(|record| record.proton_id),
+            Some("vola~nb".to_owned()),
+            "the old baseline, not a rebuilt one"
+        );
+    }
+
+    #[test]
+    fn a_plan_on_a_pair_with_a_changed_remote_root_is_refused_with_the_same_sentence() {
+        let directory = tempdir().expect("tempdir");
+        let config = synced_once_against_drive_a(directory.path());
+        let client = MultiRootClient::default().with_tree("/Drive/other", Vec::new());
+        let (mut daemon, mut stepper) =
+            restarted(with_remote_root(&config, "/Drive/other"), &client);
+        let reason = published_error(&daemon, 0).expect("held at boot, with its reason");
+
+        daemon.shared.pairs[0].book_plan_request();
+        stepper.send(LoopCommand::PlanNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        match daemon.shared.pairs[0].plan_outcome(None) {
+            PlanOutcome::Failed { error, .. } => {
+                assert!(error.contains(&reason), "{error}\n  vs {reason}");
+            }
+            other => panic!("the plan is refused and publishes no rows, got {other:?}"),
+        }
+        assert_the_remote_was_not_touched(&client, "plan");
+    }
+
+    #[test]
+    fn a_dry_run_over_an_index_for_another_remote_root_is_refused_with_the_same_sentence() {
+        let directory = tempdir().expect("tempdir");
+        let config = synced_once_against_drive_a(directory.path());
+        let changed = with_remote_root(&config, "/Drive/other");
+        let client = MultiRootClient::default();
+        let reason = {
+            let (daemon, _stepper) = restarted(changed.clone(), &client);
+            published_error(&daemon, 0).expect("held at boot, with its reason")
+        };
+
+        let Err(error) = preview_plan_with_client(&changed, &client) else {
+            panic!("a preview is not a plan for the folder the baseline describes");
+        };
+
+        assert_eq!(error.to_string(), reason, "one definition of the sentence");
+        assert_the_remote_was_not_touched(&client, "dry run");
+
+        // The same folder still previews.
+        let client = MultiRootClient::default().with_tree("/Drive/a", drive_a_tree());
+        let report =
+            preview_plan_with_client(&config, &client).expect("the recorded folder previews");
+        assert!(report.plan.is_empty(), "nothing differs: {:?}", report.plan);
+        assert_eq!(client.walks(), [PathBuf::from("/Drive/a")]);
+    }
+
+    #[test]
+    fn a_dry_run_over_an_index_with_no_recorded_root_previews_as_it_always_did() {
+        // A preview opens the index read-only, so it cannot add the table to an old one: a database
+        // without it must preview, not fail on a query against a table that is not there.
+        let directory = tempdir().expect("tempdir");
+        let config = synced_once_against_drive_a(directory.path());
+        open_database(&config.db_path)
+            .expect("index")
+            .execute_batch("DROP TABLE remote_root_identity")
+            .expect("make it an index from before the table");
+        let client = MultiRootClient::default().with_tree("/Drive/other", drive_a_tree());
+
+        preview_plan_with_client(&with_remote_root(&config, "/Drive/other"), &client)
+            .expect("nothing recorded, nothing to compare");
+        assert_eq!(client.walks(), [PathBuf::from("/Drive/other")]);
+    }
+
+    #[test]
+    fn a_pair_whose_remote_root_changed_does_not_stop_the_daemons_other_pair() {
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a", "b"]);
+        for config in &configs {
+            fs::write(config.local_root.join("a.txt"), b"a").expect("file");
+        }
+        let tree = |name: &str| {
+            vec![remote_file_entity(
+                "a.txt",
+                &format!("vol{name}~na"),
+                &sha1_bytes(b"a"),
+            )]
+        };
+        let client = MultiRootClient::default()
+            .with_tree("/Drive/a", tree("a"))
+            .with_tree("/Drive/b", tree("b"));
+        {
+            let mut daemon = multi_pair_daemon(configs.clone(), client, None);
+            let mut stepper = Stepper::new(&mut daemon);
+            assert_eq!(stepper.step(&mut daemon), Step::Idle, "the first run");
+            assert!(daemon.runtime(0).is_some() && daemon.runtime(1).is_some());
+        }
+        fs::write(configs[1].local_root.join("new.txt"), b"new").expect("a new file in b");
+        let client = MultiRootClient::default()
+            .with_tree("/Drive/other", Vec::new())
+            .with_tree("/Drive/b", tree("b"));
+        let mut changed = configs.clone();
+        changed[0].remote_root = PathBuf::from("/Drive/other");
+        let mut daemon = multi_pair_daemon(changed, client.clone(), None);
+        let mut stepper = Stepper::new(&mut daemon);
+
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(daemon.unavailable(0).is_some(), "a is held");
+        assert!(
+            daemon.runtime(1).is_some(),
+            "b is not: {:?}",
+            published_error(&daemon, 1)
+        );
+        assert_eq!(published_error(&daemon, 1), None);
+        assert_eq!(
+            client.walks(),
+            [PathBuf::from("/Drive/b")],
+            "only b was listed"
+        );
+        assert_eq!(uploads_of(&client, "new.txt"), 1, "and b synced");
+        assert!(client.deletes().is_empty());
+    }
+
+    #[test]
+    fn a_pair_promoted_over_an_index_for_another_remote_root_is_refused_too() {
+        // Boot is not the only way a pair becomes ready: a retry prepares it again, and it must ask
+        // the same question. Here the pair is demoted (its folder gone), its configured folder is
+        // not the one the surviving index recorded, and the folder comes back.
+        let directory = tempdir().expect("tempdir");
+        let config = synced_once_against_drive_a(directory.path());
+        let root = config.local_root.clone();
+        let client = MultiRootClient::default().with_tree("/Drive/a", drive_a_tree());
+        let (mut daemon, mut stepper) = restarted(config, &client);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "a normal first pass");
+        client.clear_walks();
+        make_unavailable(&mut daemon, 0);
+        daemon
+            .unavailable_mut(0)
+            .expect("unavailable")
+            .config
+            .remote_root = PathBuf::from("/Drive/other");
+        fs::create_dir_all(&root).expect("the folder comes back");
+        fs::write(root.join("a.txt"), b"a").expect("a file");
+        fs::write(root.join("b.txt"), b"b").expect("b file");
+
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        let reason = published_error(&daemon, 0).expect("it says why");
+        assert!(daemon.unavailable(0).is_some(), "promoted: {reason}");
+        assert!(
+            reason.contains("/Drive/a") && reason.contains("/Drive/other"),
+            "{reason}"
+        );
+        assert_held_on_the_remote_root(&daemon, "Drive/a", "Drive/other");
+        assert_the_remote_was_not_touched(&client, "promotion");
+        assert!(root.join("b.txt").exists());
+    }
+
+    #[test]
+    fn a_held_pair_is_released_when_its_index_is_gone() {
+        // The cause stands while the index records another folder and for nothing else. An index
+        // that is not there records none: the pair is prepared with a fresh one, and its first pass
+        // is a bootstrap over an empty baseline, which cannot plan a deletion.
+        let directory = tempdir().expect("tempdir");
+        let config = synced_once_against_drive_a(directory.path());
+        let root = config.local_root.clone();
+        let before = folder_contents(&root);
+        let client = MultiRootClient::default().with_tree("/Drive/other", drive_a_tree());
+        let (mut daemon, mut stepper) =
+            restarted(with_remote_root(&config, "/Drive/other"), &client);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(daemon.unavailable(0).is_some(), "precondition: held");
+        fs::remove_file(&config.db_path).expect("the index goes");
+
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(
+            daemon.runtime(0).is_some(),
+            "{:?}",
+            published_error(&daemon, 0)
+        );
+        assert_eq!(published_error(&daemon, 0), None);
+        assert!(client.deletes().is_empty());
+        assert_eq!(folder_contents(&root), before);
+        assert_eq!(
+            load_recorded_remote_root(&daemon.runtime(0).expect("ready").connection)
+                .expect("recorded root"),
+            Some(PathBuf::from("Drive/other")),
+            "the first pass of the fresh index records the folder it synced"
+        );
+        assert!(
+            !daemon.runtime(0).expect("ready").force_delete_approval,
+            "a lifted hold on the folder is not a replaced folder: no forced approval"
+        );
+    }
+
+    #[test]
+    fn a_changed_remote_root_is_said_once_not_once_per_attempt() {
+        let directory = tempdir().expect("tempdir");
+        let config = synced_once_against_drive_a(directory.path());
+        let client = MultiRootClient::default().with_tree("/Drive/other", Vec::new());
+        let mut held = None;
+        let log = capture_log("warn", || {
+            let (mut daemon, mut stepper) =
+                restarted(with_remote_root(&config, "/Drive/other"), &client);
+            for _ in 0..3 {
+                stepper.send(LoopCommand::SyncNow(0));
+                assert_eq!(stepper.step(&mut daemon), Step::Idle);
+            }
+            held = Some(daemon);
+        });
+        assert!(held.is_some_and(|daemon| daemon.unavailable(0).is_some()));
+        assert_eq!(
+            log.matches("was last synced with the Proton folder")
+                .count(),
+            1,
+            "{log}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_status_reply_of_a_pair_with_a_changed_remote_root_carries_the_reason() {
+        // What gui-core draws: an unavailable pair's `last_error` (the unaddressed reply and the
+        // pair's summary both) is the reason, and `derive` turns any `last_error` into `Failed`.
+        let directory = tempdir().expect("tempdir");
+        let config = synced_once_against_drive_a(directory.path());
+        let client = MultiRootClient::default().with_tree("/Drive/other", Vec::new());
+        let (mut daemon, mut stepper) =
+            restarted(with_remote_root(&config, "/Drive/other"), &client);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        let reason = published_error(&daemon, 0).expect("it says why");
+        let plane = plane_for(&daemon, &stepper);
+
+        let unaddressed = roundtrip(&plane, ControlRequest::new(ControlCommand::Status)).await;
+        let mut addressed_request = ControlRequest::new(ControlCommand::Status);
+        addressed_request.pair = Some("a".to_owned());
+        let addressed = roundtrip(&plane, addressed_request).await;
+
+        for (label, reply) in [("unaddressed", &unaddressed), ("addressed", &addressed)] {
+            assert_eq!(
+                reply.last_error.as_deref(),
+                Some(reason.as_str()),
+                "{label}"
+            );
+            assert_eq!(
+                reply.pairs[0].last_error.as_deref(),
+                Some(reason.as_str()),
+                "{label}: the summary"
+            );
+        }
     }
 }

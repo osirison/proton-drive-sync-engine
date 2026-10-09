@@ -37,7 +37,7 @@ would resolve against each process's own working directory.
 | `resume` | Resume sync work for the selected folder pair, and forget its remembered pause. |
 | `syncnow` | Trigger a sync and watch it finish (`--no-wait` to just schedule it). |
 | `resync` | Force a full remote re-scan on the next pass instead of the fast warm start. |
-| `reset-index --yes` | Discard the baseline, the event cursors and the standing delete approvals, and rebuild them from a full scan of both sides. Your files are not touched; the rebuild adopts what already agrees, downloads what is missing and deletes nothing. It is also how you start a folder over from Proton when the daemon [holds it as replaced by an empty folder](/reference/troubleshooting/#a-folder-pair-shows-an-error-and-isnt-syncing). |
+| `reset-index --yes` | Discard the baseline, the event cursors and the standing delete approvals, and rebuild them from a full scan of both sides. Your files are not touched; the rebuild adopts what already agrees, downloads what is missing and deletes nothing. It is also how you start a folder over from Proton when the daemon [holds it as replaced by an empty folder](/reference/troubleshooting/#a-folder-pair-shows-an-error-and-isnt-syncing), and how you accept a changed `remote_root` (add `--pair NAME` beside several folders): the daemon holds a pair set to another Proton folder than its index was last synced with, until you put `remote_root` back or reset. |
 | `stop` | Ask the running daemon to exit gracefully. |
 | `pending` | List deletions currently withheld by the [delete-approval guard](/safety/delete-approval/). |
 | `approve <path>` \| `approve --all` | Approve a withheld deletion (or all) so it applies next sync. |
