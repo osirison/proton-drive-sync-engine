@@ -981,6 +981,14 @@ fn detach_header(root: &mut Table, first: &str) -> Option<String> {
     let mut key = root.key_mut(first)?;
     let decor = key.leaf_decor_mut();
     let prefix = decor.prefix().and_then(RawString::as_str)?.to_owned();
+    let cut = header_end(&prefix)?;
+    decor.set_prefix(prefix[cut..].to_owned());
+    Some(prefix[..cut].to_owned())
+}
+
+/// Where the file's own header ends inside a decor prefix: just after its LAST blank line. `None`
+/// when there is no blank line, because a comment sitting directly on a key is that key's.
+fn header_end(prefix: &str) -> Option<usize> {
     let mut cut = None;
     let mut offset = 0;
     for line in prefix.split_inclusive('\n') {
@@ -989,9 +997,36 @@ fn detach_header(root: &mut Table, first: &str) -> Option<String> {
             cut = Some(offset);
         }
     }
-    let cut = cut?;
-    decor.set_prefix(prefix[cut..].to_owned());
-    Some(prefix[..cut].to_owned())
+    cut
+}
+
+/// A header put back above what it was cut from: the header already ends in a blank line, and the
+/// blank line the thing below had above it would make two.
+fn title_over(header: &str, kept: &str) -> String {
+    format!("{header}{}", kept.strip_prefix('\n').unwrap_or(kept))
+}
+
+/// Whether `table` is the very first thing in the file `text`: nothing but its own prefix precedes
+/// its `[[` line.
+fn leads_the_file(text: &str, table: &Table) -> bool {
+    let prefix = table
+        .decor()
+        .prefix()
+        .and_then(RawString::as_str)
+        .unwrap_or_default();
+    text.strip_prefix(prefix)
+        .is_some_and(|rest| rest.starts_with("[["))
+}
+
+/// The file's title, when it sits in the header of `table` and that table is the first thing in the
+/// file (`text` begins with the table's own prefix): a comment block a blank line separates from the
+/// table. A promotion parks it there when no key stayed at the top, and a file written that way by
+/// hand has the same shape. `None` for a comment sitting directly on the table, and for a table that
+/// something precedes — its prefix is then only its own comments.
+fn first_table_title(text: &str, table: &Table) -> Option<String> {
+    let prefix = table.decor().prefix().and_then(RawString::as_str)?;
+    let header = &prefix[..header_end(prefix)?];
+    (header.contains('#') && text.starts_with(prefix)).then(|| header.to_owned())
 }
 
 impl ConfigDoc {
@@ -1078,10 +1113,7 @@ impl ConfigDoc {
                         .and_then(RawString::as_str)
                         .unwrap_or_default()
                         .to_owned();
-                    // The header already ends in a blank line; the blank line the key had above it
-                    // would make two.
-                    let kept = kept.strip_prefix('\n').unwrap_or(&kept);
-                    decor.set_prefix(format!("{header}{kept}"));
+                    decor.set_prefix(title_over(&header, &kept));
                 }
                 None => pair.decor_mut().set_prefix(header),
             }
@@ -1226,6 +1258,7 @@ impl ConfigDoc {
             PairLayout::Tables => {}
         }
         let mut next = self.cloned();
+        let text = self.to_toml_string();
         let tables = next.pair_tables_mut();
         let index = tables
             .iter()
@@ -1236,7 +1269,32 @@ impl ConfigDoc {
                 name: name.to_owned(),
             });
         }
+        // The table goes with the comments written above it — but not the file's own title, which a
+        // promotion parks in the first table's header and which is not that table's to take away. The
+        // table after it becomes the top of the file: it gets the title, and no blank line above it.
+        let at_top = index == 0
+            && tables
+                .get(0)
+                .is_some_and(|first| leads_the_file(&text, first));
+        let title = at_top
+            .then(|| {
+                tables
+                    .get(0)
+                    .and_then(|first| first_table_title(&text, first))
+            })
+            .flatten();
         tables.remove(index);
+        if let (true, Some(next_first)) = (at_top, tables.get_mut(0)) {
+            let kept = next_first
+                .decor()
+                .prefix()
+                .and_then(RawString::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            next_first
+                .decor_mut()
+                .set_prefix(title_over(title.as_deref().unwrap_or_default(), &kept));
+        }
 
         next.validate()?;
         let (before, after) = (self.to_toml_string(), next.to_toml_string());

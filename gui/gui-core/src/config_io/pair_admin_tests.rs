@@ -528,6 +528,55 @@ fn removing_the_first_pair_makes_the_next_one_the_default_and_a_two_pair_file_st
 }
 
 #[test]
+fn removing_the_first_table_keeps_the_files_title_at_the_top() {
+    // Nothing but the pair's own keys follows the title, so a promotion parks it in the header of the
+    // first table. That table's removal takes its comments with it, and the title is not its own.
+    const TITLE: &str = "# Proton Drive sync config, edited by hand.\n# Last touched: never.\n\n";
+    let mut document = doc(&format!(
+        "{TITLE}local_root = \"/home/u/Header\"\nremote_root = \"/Drive/Header\"\n"
+    ));
+    document
+        .add_pair(init("second", "/home/u/Second", "/Drive/Second"))
+        .unwrap();
+    assert!(document.to_toml_string().starts_with(TITLE));
+    document.remove_pair(DEFAULT_PAIR_NAME).unwrap();
+    let text = document.to_toml_string();
+    assert!(
+        text.starts_with(&format!("{TITLE}[[pair]]\nname = \"second\"\n")),
+        "the title stays on top, once: {text:?}"
+    );
+    assert_eq!(
+        text.matches("Proton Drive sync config").count(),
+        1,
+        "{text:?}"
+    );
+    resolved_pair_names(&text).expect("the daemon starts on it");
+
+    // A comment directly on the table, with no blank line between, is the table's and goes with it.
+    let mut attached = doc(
+        "# the first folder\n[[pair]]\nname = \"a\"\nlocal_root = \"/a\"\n\
+         remote_root = \"/Drive/a\"\n\n[[pair]]\nname = \"b\"\nlocal_root = \"/b\"\n\
+         remote_root = \"/Drive/b\"\n",
+    );
+    attached.remove_pair("a").unwrap();
+    assert_eq!(
+        attached.to_toml_string(),
+        "[[pair]]\nname = \"b\"\nlocal_root = \"/b\"\nremote_root = \"/Drive/b\"\n"
+    );
+
+    // Anything that precedes the table leaves nothing of the title in its header to keep: removing
+    // the first table of THREE_PAIRS keeps the file's `# hand-written` comment where it was.
+    let mut preceded = doc(THREE_PAIRS);
+    preceded.remove_pair("documents").unwrap();
+    assert!(
+        preceded
+            .to_toml_string()
+            .starts_with("# hand-written\nlog_level")
+    );
+    assert!(!preceded.to_toml_string().contains("# first"));
+}
+
+#[test]
 fn removing_the_last_pair_is_refused_in_every_layout() {
     let one_table = "[[pair]]\nname = \"a\"\nlocal_root = \"/a\"\nremote_root = \"/Drive/a\"\n";
     let implicit = "local_root = \"/a\"\nremote_root = \"/Drive/a\"\n";
