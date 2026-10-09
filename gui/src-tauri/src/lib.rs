@@ -105,6 +105,7 @@ pub fn run() {
             // Adding and removing a folder pair (#102 phase 5b-2). Commands only: no screen calls them
             // until the Settings folder list (phase 5c-2).
             commands::add_pair,
+            commands::check_add_pair,
             commands::remove_pair,
             commands::choose_folder,
             commands::run_dry_run,

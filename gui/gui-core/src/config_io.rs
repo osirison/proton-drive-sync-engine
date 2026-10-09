@@ -254,6 +254,58 @@ pub struct PairInit {
     pub exclude: Vec<String>,
 }
 
+/// A name for a folder pair, offered when the person has not typed one (#102 phase 5c-2, decision D9):
+/// the folder's own name, cut down to what the engine accepts, and made distinct from `existing`.
+///
+/// **A proposal, never a validation.** What a name MAY be is the engine's rule
+/// ([`validate_pair_name_among`]) and is not restated here; this only builds something that rule will
+/// pass, and the test beside it holds that to the engine's own function over folders whose names are
+/// nothing like a name. The dialog still shows the engine's sentence for whatever ends up in the field.
+///
+/// `folder` is whatever the person wrote or picked (a trailing `/`, a `~`, a Windows-style `\` are all
+/// tolerated); only its last real component is used, lower-cased because a name is something a person
+/// types after `--pair`. Anything the charset cannot hold becomes a `-`, runs of them collapse, and a
+/// leading or trailing `-`/`.` is trimmed (a leading `-` is option syntax; `.`/`..` are path
+/// components). A folder with nothing usable in its name (`写真`, `~`, `/`) is called `folder`. A name
+/// already taken — in any ASCII case — or one the engine reserves for the first pair (`default`) gets
+/// `-2`, `-3`, … until the engine accepts it.
+pub fn suggest_pair_name(folder: &str, existing: &[&str]) -> String {
+    let component = folder
+        .split(['/', '\\'])
+        .rev()
+        .find(|part| !part.is_empty() && *part != "." && *part != "..")
+        .unwrap_or_default();
+    let mut base = String::new();
+    for c in component.chars() {
+        if c.is_ascii_alphanumeric() || matches!(c, '.' | '_') {
+            base.push(c.to_ascii_lowercase());
+        } else if !base.ends_with('-') {
+            base.push('-');
+        }
+    }
+    let base = base.trim_matches(['-', '.']);
+    let base = if base.is_empty() { "folder" } else { base };
+    let base = &base[..base.len().min(PAIR_NAME_SUGGESTION_ROOM)];
+    let base = base.trim_end_matches(['-', '.']);
+    let base = if base.is_empty() { "folder" } else { base };
+
+    let mut candidate = base.to_owned();
+    let mut suffix = 2_u32;
+    while validate_pair_name_among(&candidate, existing, existing.len()).is_err() {
+        candidate = format!("{base}-{suffix}");
+        suffix += 1;
+        // The engine's own rules are finite for any finite `existing`; this only keeps a rule that
+        // grew a new refusal from becoming a spin.
+        if suffix > existing.len() as u32 + 1000 {
+            break;
+        }
+    }
+    candidate
+}
+
+/// Room left in the engine's 64 characters for a `-NNNN` suffix on a suggestion.
+const PAIR_NAME_SUGGESTION_ROOM: usize = 56;
+
 /// An in-memory, edit-in-place view of a config file. Getters read known keys; setters mutate only
 /// the targeted key, leaving comments and every other key untouched.
 ///

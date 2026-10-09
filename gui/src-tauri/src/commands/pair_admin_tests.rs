@@ -425,13 +425,24 @@ fn a_surviving_index_is_reported() {
         with_history.join(".sync/sync_index.db").to_str().unwrap()
     );
     assert!(!survivor.set_aside_pending);
+    // The maintainer's sentence (decision D8), naming the pair: `--pair` is a global flag of
+    // `proton-sync`, and `reset-index --yes` alone resets the DEFAULT pair, which is not the one added.
     assert!(
-        survivor.message.contains("reset-index"),
+        survivor
+            .message
+            .contains("already holds sync history from an earlier setup"),
         "{}",
         survivor.message
     );
     assert!(
-        survivor.message.contains("read as a deletion"),
+        survivor.message.contains("deletions to approve"),
+        "{}",
+        survivor.message
+    );
+    assert!(
+        survivor
+            .message
+            .contains("run proton-sync reset-index --yes --pair photos after adding"),
         "{}",
         survivor.message
     );
@@ -442,6 +453,296 @@ fn a_surviving_index_is_reported() {
         .unwrap()
         .surviving_index
         .is_none());
+}
+
+// ---- check_add_pair -------------------------------------------------------------------------------
+
+fn check(
+    session: &Session,
+    name: &str,
+    local_root: &str,
+    remote_root: &str,
+) -> pair_admin::AddPairCheck {
+    run!(check_add_pair(
+        session.state(),
+        name.to_owned(),
+        AddPairRequest {
+            local_root: local_root.to_owned(),
+            remote_root: remote_root.to_owned(),
+            exclude: Vec::new(),
+        }
+    ))
+    .expect("a check does not fail, it reports")
+}
+
+#[test]
+fn a_check_says_what_add_pair_would_say_and_writes_nothing() {
+    // The dialog asks first and the command asks again; the two must never disagree, so the check is
+    // held to the command, case by case: the refusal it reports IS the error the add returns.
+    let session = one_pair();
+    let before = session.config();
+    let real = session.folder("music", false);
+    let real = real.to_str().unwrap();
+    let missing = session.dir.path().join("folders/not-there");
+    let missing = missing.to_str().unwrap();
+    for (name, local, remote) in [
+        ("music", real, "/Drive/music"),
+        ("music", "Music", "/Drive/music"),
+        ("music", "./Music", "/Drive/music"),
+        ("music", missing, "/Drive/music"),
+        ("music", real, ""),
+        ("music", real, "/Drive/../escape"),
+    ] {
+        let reported = check(&session, name, local, remote);
+        let added = add_with(&session, name, local, remote, &[]);
+        match (reported.refusal, reported.name_error, added) {
+            (None, None, Ok(_)) => {}
+            (Some(refusal), None, Err(error)) => assert_eq!(
+                refusal, error,
+                "{name} {local:?} {remote:?}: the check and the add must say the same thing"
+            ),
+            // A half-typed form (a root still empty) is asked about its name and nothing else, so the
+            // add may refuse where the check stays quiet.
+            (None, None, Err(_)) if remote.is_empty() => {}
+            other => {
+                panic!("{name} {local:?} {remote:?}: the check and the add disagree: {other:?}")
+            }
+        }
+        // Whatever the add did, undo it so every case starts from the same file.
+        std::fs::write(session.config_path(), &before).unwrap();
+    }
+}
+
+#[test]
+fn a_check_alone_writes_nothing_and_settles_nothing() {
+    let session = one_pair();
+    let before = session.config();
+    let music = session.folder("music", true);
+    for name in ["music", "a b", ""] {
+        check(&session, name, music.to_str().unwrap(), "/Drive/music");
+        check(&session, name, "", "");
+    }
+    assert_eq!(session.config(), before, "a check writes nothing");
+    assert!(
+        !session.state_dir().exists(),
+        "and settles nothing: it must not create the app's state directory"
+    );
+    assert!(
+        music.join(".sync/sync_index.db").exists(),
+        "and moves nothing of the folder it looked at"
+    );
+}
+
+#[test]
+fn a_check_gives_the_engines_sentence_for_a_bad_name_on_its_own_while_the_rest_is_unwritten() {
+    let session = one_pair();
+    for (name, existing) in [
+        ("a b", vec!["default"]),
+        ("-x", vec!["default"]),
+        ("DEFAULT", vec!["default"]),
+        ("", vec!["default"]),
+    ] {
+        // Both roots empty: the form is half-typed, and only the name is asked about.
+        let reported = check(&session, name, "", "");
+        let engine = gui_core::config_io::validate_pair_name_among(name, &existing, existing.len())
+            .unwrap_err();
+        assert_eq!(
+            reported.name_error.as_deref(),
+            Some(engine.as_str()),
+            "{name:?}"
+        );
+        assert!(
+            reported.refusal.is_none(),
+            "{name:?}: the name speaks alone"
+        );
+    }
+    // A good name with the roots still empty is quiet.
+    let quiet = check(&session, "photos", "", "");
+    assert!(quiet.name_error.is_none() && quiet.refusal.is_none());
+}
+
+#[test]
+fn a_check_suggests_a_name_from_the_folder_that_the_engine_accepts() {
+    let session = one_pair();
+    let reported = check(&session, "", "~/My Photos", "");
+    assert_eq!(reported.suggested_name, "my-photos");
+    // The folder `docs` is the file's own pair `default`; a folder called "default" is not offered
+    // that name, which already belongs to the first table.
+    let reported = check(&session, "", "~/Default", "");
+    assert_eq!(reported.suggested_name, "default-2");
+    gui_core::config_io::validate_pair_name_among(&reported.suggested_name, &["default"], 1)
+        .expect("a suggestion is a name the engine takes");
+}
+
+#[test]
+fn a_check_names_a_surviving_index_before_anything_is_saved() {
+    let session = one_pair();
+    let with_history = session.folder("photos", true);
+    let before = session.config();
+    let reported = check(
+        &session,
+        "photos",
+        with_history.to_str().unwrap(),
+        "/Drive/photos",
+    );
+    assert!(reported.refusal.is_none(), "{:?}", reported.refusal);
+    let survivor = reported
+        .surviving_index
+        .expect("the old index is named in the check, not only after the add");
+    assert!(!survivor.set_aside_pending);
+    assert!(
+        survivor
+            .message
+            .contains("run proton-sync reset-index --yes --pair photos after adding"),
+        "{}",
+        survivor.message
+    );
+    assert_eq!(session.config(), before, "naming it saved nothing");
+
+    // A clean folder names nothing, and so does a refused add (there is nothing to resume yet).
+    let clean = session.folder("music", false);
+    assert!(
+        check(&session, "music", clean.to_str().unwrap(), "/Drive/music")
+            .surviving_index
+            .is_none()
+    );
+    assert!(
+        check(&session, "photos", "relative/Photos", "/Drive/photos")
+            .surviving_index
+            .is_none()
+    );
+}
+
+#[test]
+fn a_check_reports_a_real_path_overlap_in_the_words_the_add_uses() {
+    // Not lexical: only a symlink makes the second folder the first's, and the check must see it.
+    let session = one_pair();
+    let docs = session.dir.path().join("folders/docs");
+    let alias = session.dir.path().join("folders/alias-of-docs");
+    std::os::unix::fs::symlink(&docs, &alias).unwrap();
+    let reported = check(&session, "alias", alias.to_str().unwrap(), "/Drive/alias");
+    let refused = add_with(
+        &session,
+        "alias",
+        alias.to_str().unwrap(),
+        "/Drive/alias",
+        &[],
+    )
+    .expect_err("the add refuses an alias of another pair's folder");
+    assert_eq!(reported.refusal.as_deref(), Some(refused.as_str()));
+}
+
+// ---- add, restart, list, remove -------------------------------------------------------------------
+
+/// A session whose control socket is a LIVE fake daemon. **Nothing here may restart anything**: a
+/// `restart_service_impl` against a socket that answers goes on to `systemctl`, so the restart is a
+/// closure these tests supply (`finish_removal`) and `add_pair` — which starts nothing — is the only
+/// command run.
+fn session_with_daemon(
+    daemon: &gui_core::testing::FakeDaemon,
+    config: impl FnOnce(&Path) -> String,
+) -> Session {
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = dir.path().join("proton-sync.toml");
+    std::fs::write(&config_path, config(dir.path())).unwrap();
+    let mut paths = RuntimePaths::resolve_at(&config_path);
+    paths.socket_path = Ok(daemon.socket_path().to_owned());
+    paths.state_dir = Some(dir.path().join("app-state"));
+    let app = tauri::test::mock_builder()
+        .manage(Mutex::new(paths))
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app should build");
+    Session { app, dir }
+}
+
+#[test]
+fn a_folder_is_added_to_an_implicit_file_listed_by_the_restarted_daemon_and_removed_again() {
+    use gui_core::testing::{FakeDaemon, FakePair};
+    // The daemon runs the file's one implicit pair, `default`.
+    let daemon = FakeDaemon::multi_pair(vec![FakePair::new("default")]).start();
+    let session = session_with_daemon(&daemon, |dir| {
+        let docs = make_folder(dir, "docs", false);
+        format!(
+            "# my config\nlocal_root = \"{}\"\nremote_root = \"/Drive/docs\"\n",
+            docs.display()
+        )
+    });
+    let photos = session.folder("photos", true);
+    let socket = daemon.socket_path().to_owned();
+    assert_eq!(
+        pairs_the_daemon_runs(&Ok(socket.clone())),
+        Some(vec!["default".to_owned()])
+    );
+
+    // 1. The check, then the one add.
+    let reported = check(
+        &session,
+        "photos",
+        photos.to_str().unwrap(),
+        "/Drive/photos",
+    );
+    assert!(reported.refusal.is_none() && reported.name_error.is_none());
+    assert_eq!(reported.suggested_name, "photos");
+    let reply = add(&session, "photos", &photos, "/Drive/photos").expect("adds");
+    assert!(reply.restart_needed);
+
+    // 2. The file is now two `[[pair]]` tables, `default` first.
+    let text = session.config();
+    let names: Vec<&str> = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("name = \""))
+        .map(|rest| rest.trim_end_matches('"'))
+        .collect();
+    assert_eq!(names, ["default", "photos"], "{text}");
+    assert_eq!(text.matches("[[pair]]").count(), 2, "{text}");
+
+    // 3. The daemon has not picked it up until it restarts; the restarted one lists both.
+    assert_eq!(
+        pairs_the_daemon_runs(&Ok(socket.clone())),
+        Some(vec!["default".to_owned()]),
+        "a daemon that has not restarted still runs one"
+    );
+    daemon.set_pairs(vec![FakePair::new("default"), FakePair::new("photos")]);
+    assert_eq!(
+        pairs_the_daemon_runs(&Ok(socket.clone())),
+        Some(vec!["default".to_owned(), "photos".to_owned()])
+    );
+
+    // 4. Removing it: the pair leaves the file, the daemon restarts without it, and only then does its
+    //    history move (it had some, because the folder was added with a `.sync` in it).
+    let removed = pair_admin::remove_pair_file(&session.config_path(), "photos").expect("removes");
+    assert_eq!(removed.new_default, None, "photos was not the first");
+    let reply = finish_removal(
+        &removed,
+        &session.config_path(),
+        Some(&session.state_dir()),
+        || {
+            daemon.set_pairs(vec![FakePair::new("default")]);
+            Ok(RestartOutcome::Restarted {
+                detail: "restarted".to_owned(),
+            })
+        },
+        || pairs_the_daemon_runs(&Ok(socket.clone())),
+        |_| {},
+        SystemTime::UNIX_EPOCH + Duration::from_secs(1_791_555_930),
+    );
+    assert!(
+        matches!(reply.set_aside, SetAsideReport::Moved { .. }),
+        "{:?}",
+        reply.set_aside
+    );
+    assert!(
+        !photos.join(".sync").exists(),
+        "the history is out of the folder"
+    );
+    assert!(
+        photos.join("mine.txt").exists(),
+        "and the person's file is where it was"
+    );
+    assert!(!reply.restart_needed);
+    let after = session.config();
+    assert_eq!(after.matches("[[pair]]").count(), 1, "{after}");
+    assert!(after.contains("name = \"default\""), "{after}");
 }
 
 #[test]
