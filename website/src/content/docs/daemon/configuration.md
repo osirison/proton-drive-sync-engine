@@ -58,6 +58,12 @@ Local filesystem paths (`local_root`, `db_path`, `socket_path`, `lockfile_path`,
 error. `remote_root` is a Drive-side path, so `~` has no meaning there and is not
 expanded.
 
+The folder's index remembers which `remote_root` it was last synced with. Pointing a folder at
+a **different** Proton folder over that index does not run: the daemon holds the pair, naming
+both folders, until you put `remote_root` back (and restart) or run
+`proton-sync reset-index --yes --pair NAME`. See
+[the Proton folder changed](/reference/troubleshooting/#a-folder-pair-shows-an-error-and-isnt-syncing).
+
 :::note[Config-path convention]
 The daemon itself has no default config path — you always pass `--config`. The **desktop
 app** and the packaged systemd unit adopt the convention
