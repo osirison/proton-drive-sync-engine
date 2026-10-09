@@ -1650,7 +1650,8 @@ Closes: the feature for users.
 > there, and what `pair_views` reads to be unchanged, the one requested change aside; a disagreement is
 > `ConfigError::ChangedMeaning` with the document as it was. Promotion is driven by `ConfigKey::scope`,
 > moves each key with its comment (the file's own title, a comment separated from the first key by a blank
-> line, stays on top), and leaves a daemon-wide key where it is. (29) **What the app writes is what the
+> line, stays on top, and stays there when the first table is later removed), and leaves a daemon-wide key
+> where it is. (29) **What the app writes is what the
 > install scripts can read.** `uninstall.sh` finds each pair's folder with a line grep, so a new table is
 > one scalar per line, no inline table, no dotted key, and a root holding a control character, `"` or `\`
 > is refused (`ConfigError::Unwritable`) rather than written in a form the grep misreads. The grep reads
@@ -1665,7 +1666,24 @@ Closes: the feature for users.
 > `rename` or, across a filesystem, a copy that is compared byte for byte before the original is removed.
 > The destination is `<state dir>/removed-pairs/<name>-<UTC time>/`, checked against the real path of every
 > configured folder, with a manifest. A move that cannot happen yet is a recorded **pending** move, retried
-> on the next add or remove and dropped, untouched, if its folder has been added back. (31) **`remove_pair`
+> on the next add or remove and dropped, untouched, if its folder has been added back (compared by real
+> path). **A reply says only what was found out.** "Nothing to move" is said of a folder that could be
+> read and held no state; an unreadable folder, a missing one (the drive may be unplugged) and any error
+> looking at a state path are *pending*, with the reason, and a relative `local_root`, `db_path` or
+> `lockfile_path` is never planned at all, because the daemon resolves it against its own working
+> directory and not the app's (the removal from the config still goes ahead). A `.sync` that is a plain
+> file is not the engine's state and is left alone with a note; one that is a link moves as the link, and
+> the reply (outcome `link_moved` when that is all that moved) says the history is still where the link
+> points. A move that stops part-way names what moved, where to, and what is still in place. A pending
+> record keeps the pair's *identity* (its folder and the paths its `PairView` named) and is re-planned
+> from the disk each time it is retried; a record naming anything that is not that pair's state is
+> refused and left pending. Paths in records and manifests are written byte-exactly, so a folder that is
+> not UTF-8 can still be recorded and acted on. A cross-filesystem copy is `fsync`ed, file by file and
+> directory by directory, before it is compared and the original removed. `add_pair` settles earlier
+> removals *before* it looks at the request (settling after would find the folder configured again and
+> drop the move, leaving the old index to be resumed), so a refused add reports what it settled, and it
+> warns when the new folder contains the app's state directory, since the set-aside histories would then
+> be uploaded. (31) **`remove_pair`
 > performs the restart itself**, departing from "returns restart needed", because the move depends on it;
 > its reply carries the restart's ending and `restart_needed` for the endings that leave the daemon on the
 > old file. `add_pair` starts nothing and says a restart is needed. `add_pair`'s `pair` is the NEW name

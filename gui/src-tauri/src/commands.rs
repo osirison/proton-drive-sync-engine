@@ -1056,7 +1056,8 @@ fn re_resolve_after_a_write(state: &Mutex<RuntimePaths>, path: &std::path::Path)
 /// daemon would refuse to start on, a relative or missing local folder (#431), and a folder that
 /// really overlaps another pair's through a symlink (`real_path_conflicts`, which canonicalizes: file
 /// I/O, so on a blocking thread). It starts nothing: the reply says a restart is needed, and names an
-/// index from an earlier run that the new pair would resume.
+/// index from an earlier run that the new pair would resume, and warns when the folder contains the
+/// app's own set-aside histories. A refusal still reports an earlier removal the call finished first.
 #[tauri::command]
 pub async fn add_pair(
     state: Paths<'_>,
@@ -1079,7 +1080,9 @@ pub async fn add_pair(
             )
         })
         .await
-        .map_err(|error| format!("add-pair task failed: {error}"))??
+        .map_err(|error| format!("add-pair task failed: {error}"))?
+        // A refusal still says what the call settled before it looked at the request.
+        .map_err(pair_admin::AddPairFailure::into_message)?
     };
     re_resolve_after_a_write(&state, &path);
     Ok(reply)

@@ -19,10 +19,16 @@
 //! **pending**, the reply says so and why, and it is retried the next time a folder is added or
 //! removed. Every step is a function of its inputs — the restart and the question to the daemon are
 //! passed in — so the sequence is tested without a daemon, a socket or `systemctl`.
+//!
+//! **A reply never says more than was found out.** "Nothing to move" is said only of a folder that
+//! could be read and held no state; a folder that could not be looked at (an unplugged drive, no
+//! permission, a path that is relative and so means something different to the daemon) is pending
+//! with that reason. "Moved" is said only of what was moved: a link moves as the link, and the reply
+//! says where what it pointed at still is; a move that stopped part-way names both halves.
 
 use super::RestartOutcome;
 use gui_core::config_io::{self, ConfigDoc, PairInit, PairView};
-use gui_core::set_aside::{self, Context, Done, Plan, Settled};
+use gui_core::set_aside::{self, Context, Done, MovedItem, Plan, Planned, Settled};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -41,20 +47,43 @@ fn lossy(path: &Path) -> String {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum SetAsideReport {
-    /// It was moved. `to` is the directory it is in now.
+    /// It was moved. `to` is the directory it is in now. `left_behind` lists any item that was a
+    /// link: the link moved and what it pointed at did not.
     Moved {
         pair: String,
         to: String,
         items: Vec<MovedReport>,
+        left_behind: Vec<LeftBehind>,
+        notes: Vec<String>,
         message: String,
     },
-    /// There was no history on disk for this pair.
-    NothingToMove { pair: String, message: String },
-    /// It could not be moved now, and has been recorded so that it still can be. `record` is where.
+    /// **Only links** were moved: the history itself is where each link pointed, untouched. Not
+    /// `moved`, because a screen reading that would tell the person their history is out of the folder.
+    LinkMoved {
+        pair: String,
+        to: String,
+        items: Vec<MovedReport>,
+        left_behind: Vec<LeftBehind>,
+        notes: Vec<String>,
+        message: String,
+    },
+    /// There was no history on disk for this pair, in a folder that could be read. `notes` lists what
+    /// was found and left alone (a `.sync` that is a file).
+    NothingToMove {
+        pair: String,
+        notes: Vec<String>,
+        message: String,
+    },
+    /// It could not be moved now (or not all of it), and has been recorded so that it still can be.
+    /// `record` is where. `moved` is what **did** move before it stopped, into `moved_to`; `still_at`
+    /// is what is still where it was — empty when the app could not look, and the reason says so.
     Pending {
         pair: String,
         reason: String,
         record: Option<String>,
+        moved: Vec<MovedReport>,
+        moved_to: Option<String>,
+        still_at: Vec<String>,
         message: String,
     },
     /// An earlier pending move whose folder has been added back since: nothing was moved, and the
@@ -68,70 +97,206 @@ pub struct MovedReport {
     pub to: String,
     /// `rename` or `copy`.
     pub how: String,
+    /// Set when `from` was a link: only the link moved, and this is what it pointed at.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link_target: Option<String>,
+}
+
+/// A link that moved, and where the thing it pointed at still is.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct LeftBehind {
+    pub link: String,
+    pub target: String,
+}
+
+fn moved_item_report(item: &MovedItem) -> MovedReport {
+    MovedReport {
+        from: lossy(&item.from),
+        to: lossy(&item.to),
+        how: match item.how {
+            set_aside::How::Rename => "rename",
+            set_aside::How::Copy => "copy",
+        }
+        .to_owned(),
+        link_target: item.link_target.as_deref().map(lossy),
+    }
+}
+
+fn notes_sentence(notes: &[String]) -> String {
+    notes
+        .iter()
+        .map(|note| format!(" Note: {note}."))
+        .collect::<String>()
+}
+
+/// `looked_in` is the folder that was read and held none: the reply names it, because "nothing" is a
+/// claim about where the app looked (a drive that is not mounted can leave an empty folder that reads
+/// the same).
+fn nothing_report(pair: &str, looked_in: Option<&Path>, notes: &[String]) -> SetAsideReport {
+    let said = match looked_in {
+        Some(folder) => format!(
+            "'{pair}' had no sync history to move: its folder {} could be read and held none.",
+            lossy(folder)
+        ),
+        None => format!("'{pair}' had no sync history on disk to move."),
+    };
+    SetAsideReport::NothingToMove {
+        pair: pair.to_owned(),
+        notes: notes.to_vec(),
+        message: format!("{said}{}", notes_sentence(notes)),
+    }
 }
 
 fn moved_report(pair: &str, done: &Done) -> SetAsideReport {
     if done.moved.is_empty() {
-        return SetAsideReport::NothingToMove {
+        return nothing_report(pair, None, &done.notes);
+    }
+    let items: Vec<MovedReport> = done.moved.iter().map(moved_item_report).collect();
+    let left_behind: Vec<LeftBehind> = done
+        .moved
+        .iter()
+        .filter_map(|item| {
+            item.link_target.as_deref().map(|target| LeftBehind {
+                link: lossy(&item.from),
+                target: lossy(target),
+            })
+        })
+        .collect();
+    let links = left_behind
+        .iter()
+        .map(|left| format!("{} was a link to {}", left.link, left.target))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let to = lossy(&done.to);
+    if left_behind.len() == done.moved.len() {
+        return SetAsideReport::LinkMoved {
             pair: pair.to_owned(),
-            message: format!("'{pair}' had no sync history on disk to move."),
+            message: format!(
+                "Only a LINK was moved for '{pair}', not its sync history. {links}. The link is now \
+                 in {to}; what it pointed at, which is where the history actually is, was left \
+                 exactly as it was and was not touched. Adding the folder again starts a new index \
+                 in the folder, and the old one stays where it is.{}",
+                notes_sentence(&done.notes)
+            ),
+            to,
+            items,
+            left_behind,
+            notes: done.notes.clone(),
         };
     }
+    let mut message = format!(
+        "The sync history of '{pair}' was moved to {to}, outside every sync folder. Your files \
+         were not touched. Adding the folder again starts fresh: it matches and downloads, and \
+         deletes nothing."
+    );
+    if !left_behind.is_empty() {
+        message.push_str(&format!(
+            " Part of it was a link, though: {links}. Only the link moved; what it points at was \
+             not touched and is still where it was."
+        ));
+    }
+    message.push_str(&notes_sentence(&done.notes));
     SetAsideReport::Moved {
         pair: pair.to_owned(),
-        to: lossy(&done.to),
-        items: done
-            .moved
-            .iter()
-            .map(|item| MovedReport {
-                from: lossy(&item.from),
-                to: lossy(&item.to),
-                how: match item.how {
-                    set_aside::How::Rename => "rename",
-                    set_aside::How::Copy => "copy",
-                }
-                .to_owned(),
-            })
-            .collect(),
-        message: format!(
-            "The sync history of '{pair}' was moved to {}, outside every sync folder. Your files \
-             were not touched. Adding the folder again starts fresh: it matches and downloads, and \
-             deletes nothing.",
-            lossy(&done.to)
-        ),
+        to,
+        items,
+        left_behind,
+        notes: done.notes.clone(),
+        message,
     }
 }
 
-fn pending_report(
-    pair: &str,
-    reason: &str,
-    record: Option<&Path>,
-    items: &[PathBuf],
-) -> SetAsideReport {
-    let where_it_is = items
+/// What a pending report is built from.
+struct PendingFacts<'a> {
+    pair: &'a str,
+    reason: &'a str,
+    /// The note kept so the move can still happen, when one could be written.
+    record: Option<&'a Path>,
+    /// What is still where it was.
+    still_at: &'a [PathBuf],
+    /// What moved before it stopped, and where to.
+    moved: &'a [MovedItem],
+    moved_to: Option<&'a Path>,
+    /// The app could not look at the disk: `still_at` is not "none", it is unknown.
+    unlooked: bool,
+}
+
+fn pending_report(facts: &PendingFacts<'_>) -> SetAsideReport {
+    let PendingFacts {
+        pair,
+        reason,
+        record,
+        still_at,
+        moved,
+        moved_to,
+        unlooked,
+    } = *facts;
+    let where_it_is = still_at
         .iter()
         .map(|item| lossy(item))
         .collect::<Vec<_>>()
         .join(", ");
-    let message = match record {
-        Some(record) => format!(
-            "The sync history of '{pair}' was NOT moved yet: {reason}. It is still at {where_it_is}, \
-             and a note of it is kept at {}; it moves the next time a folder is added or removed \
-             here. Until then, adding the same folder again would resume that history and read what \
-             changed since as deletions to approve.",
-            lossy(record)
-        ),
-        None => format!(
-            "The sync history of '{pair}' was NOT moved: {reason}. It is still at {where_it_is}, \
-             and the app could not keep a note of it. Move it out of the folder yourself before \
-             adding the same folder again, or that history is resumed and what changed since is read \
-             as deletions to approve."
-        ),
+    let message = if unlooked {
+        let kept = match record {
+            Some(record) => format!(
+                "A note of it is kept at {}; it is tried again the next time a folder is added or \
+                 removed here, and it can be deleted if the folder is gone for good. Until it has \
+                 been looked at, adding the same folder again could resume an old history and read \
+                 what changed since as deletions to approve.",
+                lossy(record)
+            ),
+            None => "Look in that folder yourself: a `.sync` folder, or the index file the config \
+                     names, left there would be resumed if the same folder is added again, and \
+                     what changed since read as deletions to approve. Move it out of the folder \
+                     before adding it."
+                .to_owned(),
+        };
+        format!(
+            "The app could not look at the sync history of '{pair}': {reason}. It moved nothing, \
+             and cannot say whether there is any to move. {kept}"
+        )
+    } else {
+        // "yet" only where a note promises it will be tried again.
+        let not_moved = if record.is_some() {
+            "NOT moved yet"
+        } else {
+            "NOT moved"
+        };
+        let head = match (moved.is_empty(), moved_to) {
+            (false, Some(to)) => format!(
+                "Part of the sync history of '{pair}' WAS moved to {}: {}. The rest was \
+                 {not_moved}: {reason}. ",
+                lossy(to),
+                moved
+                    .iter()
+                    .map(|item| format!("{} to {}", lossy(&item.from), lossy(&item.to)))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+            _ => format!("The sync history of '{pair}' was {not_moved}: {reason}. "),
+        };
+        match record {
+            Some(record) => format!(
+                "{head}It is still at {where_it_is}, and a note of it is kept at {}; it moves the \
+                 next time a folder is added or removed here. Until then, adding the same folder \
+                 again would resume that history and read what changed since as deletions to \
+                 approve.",
+                lossy(record)
+            ),
+            None => format!(
+                "{head}It is still at {where_it_is}, and the app could not keep a note of it. Move \
+                 it out of the folder yourself before adding the same folder again, or that \
+                 history is resumed and what changed since is read as deletions to approve."
+            ),
+        }
     };
     SetAsideReport::Pending {
         pair: pair.to_owned(),
         reason: reason.to_owned(),
         record: record.map(lossy),
+        moved: moved.iter().map(moved_item_report).collect(),
+        moved_to: moved_to.map(lossy),
+        still_at: still_at.iter().map(|item| lossy(item)).collect(),
         message,
     }
 }
@@ -147,6 +312,15 @@ fn settled_report(settled: Settled) -> SetAsideReport {
             ),
             pair,
         },
+        Settled::NothingLeft { pair, notes } => SetAsideReport::NothingToMove {
+            message: format!(
+                "An earlier removal of '{pair}' had history to move, and none is left on disk now \
+                 (it was moved or deleted by hand), so the note of it was dropped.{}",
+                notes_sentence(&notes)
+            ),
+            pair,
+            notes,
+        },
         Settled::StillPending { pair, reason } => SetAsideReport::Pending {
             message: format!(
                 "The earlier removal of '{pair}' still could not move its history: {reason}."
@@ -154,6 +328,9 @@ fn settled_report(settled: Settled) -> SetAsideReport {
             pair,
             reason,
             record: None,
+            moved: Vec::new(),
+            moved_to: None,
+            still_at: Vec::new(),
         },
     }
 }
@@ -210,6 +387,48 @@ pub struct AddPairReply {
     pub surviving_index: Option<SurvivingIndex>,
     /// Earlier removals whose history moved (or was dropped) as a side effect of this call.
     pub settled_earlier: Vec<SetAsideReport>,
+    /// Things worth the person's attention that did not stop the add.
+    pub warnings: Vec<String>,
+}
+
+/// An add that was refused. The earlier removals this call settled before it looked at the request are
+/// kept: that happened, and the person is told even though the add did not.
+#[derive(Debug)]
+pub struct AddPairFailure {
+    pub error: String,
+    pub settled_earlier: Vec<SetAsideReport>,
+}
+
+impl AddPairFailure {
+    fn plain(error: impl ToString) -> Self {
+        Self {
+            error: error.to_string(),
+            settled_earlier: Vec::new(),
+        }
+    }
+
+    /// The error as the command returns it: the refusal, then what the call did regardless.
+    pub fn into_message(self) -> String {
+        if self.settled_earlier.is_empty() {
+            return self.error;
+        }
+        let settled = self
+            .settled_earlier
+            .iter()
+            .map(|report| match report {
+                SetAsideReport::Moved { message, .. }
+                | SetAsideReport::LinkMoved { message, .. }
+                | SetAsideReport::NothingToMove { message, .. }
+                | SetAsideReport::Pending { message, .. }
+                | SetAsideReport::Superseded { message, .. } => message.as_str(),
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!(
+            "{} (This did not stop the app finishing an earlier removal first: {settled})",
+            self.error
+        )
+    }
 }
 
 /// The two refusals about the local root that the engine does not make (#431): a relative path, which
@@ -239,6 +458,25 @@ fn check_local_root(local_root: &str) -> Result<(), String> {
     }
 }
 
+/// The app's set-aside histories live in `<state dir>/removed-pairs`. A sync folder that contains
+/// them would upload them as ordinary files, so the add says so. Not a refusal: a folder that holds
+/// the whole home directory is a legitimate choice, and the state directory is under it.
+fn state_dir_warnings(state_dir: Option<&Path>, new_root: &Path) -> Vec<String> {
+    let Some(state_dir) = state_dir else {
+        return Vec::new();
+    };
+    let removed_pairs = state_dir.join(set_aside::REMOVED_PAIRS_DIR);
+    if !set_aside::real_path(&removed_pairs).starts_with(set_aside::real_path(new_root)) {
+        return Vec::new();
+    }
+    vec![format!(
+        "{} is inside this folder. The sync history of folders removed in this app is set aside \
+         there, and this folder would upload it as ordinary files. Move the app's state directory \
+         (XDG_STATE_HOME) out of the folder, or choose a folder that does not contain it.",
+        lossy(&removed_pairs)
+    )]
+}
+
 /// The blocking half of `add_pair`: load, settle what an earlier removal left, add, check, save.
 ///
 /// **The order of the refusals is part of the contract**, and a test holds it: the engine's own
@@ -246,20 +484,30 @@ fn check_local_root(local_root: &str) -> Result<(), String> {
 /// first, in its words; then the two local-root checks the engine does not make; then the real-path
 /// overlap, which follows symlinks and so touches the disk. A file that is simply invalid is told so
 /// before anything is asked of the filesystem. Any refusal leaves the file byte-identical.
+///
+/// **The earlier removals are settled first, before the request is looked at**, because a pending move
+/// has to run against a config that does not yet hold the folder being added: settled afterwards it
+/// would find the folder configured again and be dropped, leaving the old index to be resumed. That
+/// ordering means a refused add can still have moved an earlier history, so a refusal carries what was
+/// settled ([`AddPairFailure`]).
 pub(super) fn add_pair_file(
     path: &Path,
     state_dir: Option<&Path>,
     name: &str,
     request: &AddPairRequest,
     now: SystemTime,
-) -> Result<AddPairReply, String> {
-    let mut doc = ConfigDoc::load(path).map_err(text)?;
+) -> Result<AddPairReply, AddPairFailure> {
+    let mut doc = ConfigDoc::load(path).map_err(AddPairFailure::plain)?;
     // Only against a config that can be read: what is configured NOW is what keeps an earlier removal
     // from moving a folder's history out from under a pair that has since been added back, and a file
     // that cannot be read says nothing about that.
     let settled_earlier = match config_io::pair_views(&doc.to_toml_string()) {
         Ok(configured) => settle_earlier(state_dir, &configured, now),
         Err(_) => Vec::new(),
+    };
+    let refuse = |error: String| AddPairFailure {
+        error,
+        settled_earlier: settled_earlier.clone(),
     };
 
     let (local_root, remote_root) = (request.local_root.trim(), request.remote_root.trim());
@@ -269,23 +517,28 @@ pub(super) fn add_pair_file(
         remote_root: remote_root.to_owned(),
         exclude: request.exclude.clone(),
     })
-    .map_err(text)?;
-    check_local_root(local_root)?;
-    config_io::real_path_conflicts(&doc.to_toml_string()).map_err(text)?;
-    doc.save(path).map_err(text)?;
+    .map_err(|error| refuse(text(error)))?;
+    check_local_root(local_root).map_err(refuse)?;
+    config_io::real_path_conflicts(&doc.to_toml_string()).map_err(|error| refuse(text(error)))?;
+    doc.save(path).map_err(|error| refuse(text(error)))?;
 
     let saved = doc.to_toml_string();
-    let views = config_io::pair_views(&saved).map_err(text)?;
+    let views = config_io::pair_views(&saved).map_err(|error| refuse(text(error)))?;
     let surviving_index = views
         .iter()
         .find(|view| view.name == name)
         .and_then(|view| surviving_index_of(view, state_dir));
+    let warnings = state_dir_warnings(
+        state_dir,
+        &config_io::expand_config_path(local_root, "local_root"),
+    );
     Ok(AddPairReply {
         pair: name.to_owned(),
         path: lossy(path),
         restart_needed: true,
         surviving_index,
         settled_earlier,
+        warnings,
     })
 }
 
@@ -450,14 +703,35 @@ pub(super) fn finish_removal(
     let restart = restart();
     let release = release_of(&removed.name, &restart, ask_pairs, sleep);
 
-    let plan = set_aside::plan(&removed.view);
-    let set_aside = if plan.items.is_empty() {
-        SetAsideReport::NothingToMove {
-            pair: removed.name.clone(),
-            message: format!("'{}' had no sync history on disk to move.", removed.name),
+    let set_aside = match set_aside::plan(&removed.view) {
+        Planned::Nothing { notes } => nothing_report(
+            &removed.name,
+            removed.view.local_root.as_deref(),
+            &notes,
+        ),
+        Planned::Undetermined(undetermined) => {
+            // Only a reason a later look could clear is worth a note; a path the app can never
+            // locate safely is not.
+            let record = undetermined
+                .retry
+                .then(|| {
+                    let plan = Plan::of_view(&removed.view, Vec::new(), Vec::new());
+                    state_dir.and_then(|dir| {
+                        set_aside::record_pending(dir, &plan, &undetermined.reason, now).ok()
+                    })
+                })
+                .flatten();
+            pending_report(&PendingFacts {
+                pair: &removed.name,
+                reason: &undetermined.reason,
+                record: record.as_deref(),
+                still_at: &[],
+                moved: &[],
+                moved_to: None,
+                unlooked: true,
+            })
         }
-    } else {
-        match (&release, state_dir) {
+        Planned::Move(plan) => match (&release, state_dir) {
             (Release::Held(reason), _) => record_pending(&plan, reason, state_dir, now),
             (Release::Free, None) => record_pending(
                 &plan,
@@ -475,16 +749,27 @@ pub(super) fn finish_removal(
                 match set_aside::execute(&plan, &context) {
                     Ok(done) => moved_report(&removed.name, &done),
                     Err(failed) => {
-                        // What did move stays moved; what is left is what is pending.
+                        // What did move stays moved; what is left is what is pending, and the reply
+                        // names both.
                         let left = Plan {
                             items: failed.remaining.clone(),
                             ..plan.clone()
                         };
-                        record_pending(&left, &failed.reason, Some(state_dir), now)
+                        let record = set_aside::record_pending(state_dir, &left, &failed.reason, now)
+                            .ok();
+                        pending_report(&PendingFacts {
+                            pair: &plan.pair,
+                            reason: &failed.reason,
+                            record: record.as_deref(),
+                            still_at: &failed.remaining,
+                            moved: &failed.moved,
+                            moved_to: failed.to.as_deref(),
+                            unlooked: false,
+                        })
                     }
                 }
             }
-        }
+        },
     };
     let restart_needed = !matches!(
         restart,
@@ -508,5 +793,13 @@ fn record_pending(
     now: SystemTime,
 ) -> SetAsideReport {
     let record = state_dir.and_then(|dir| set_aside::record_pending(dir, plan, reason, now).ok());
-    pending_report(&plan.pair, reason, record.as_deref(), &plan.items)
+    pending_report(&PendingFacts {
+        pair: &plan.pair,
+        reason,
+        record: record.as_deref(),
+        still_at: &plan.items,
+        moved: &[],
+        moved_to: None,
+        unlooked: false,
+    })
 }

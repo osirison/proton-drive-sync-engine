@@ -937,6 +937,558 @@ fn a_pair_with_no_history_on_disk_has_nothing_to_move_and_asks_the_daemon_nothin
     );
 }
 
+// ---- the review round: what a reply may say ----------------------------------------------------------
+
+/// Whether this user is stopped by file permissions at all. Root reads everything, so a permission
+/// test run as root proves nothing: it says so and stops instead of passing.
+fn permissions_are_enforced(base: &Path) -> bool {
+    let probe = base.join("permission-probe");
+    std::fs::create_dir_all(&probe).unwrap();
+    set_mode(&probe, 0o000);
+    let enforced = std::fs::read_dir(&probe).is_err();
+    set_mode(&probe, 0o755);
+    std::fs::remove_dir(&probe).unwrap();
+    if !enforced {
+        eprintln!("SKIPPED: this user is not stopped by file permissions (root?)");
+    }
+    enforced
+}
+
+fn set_mode(path: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+}
+
+/// The notes of moves that have not happened yet, in the session's state directory.
+fn pending_records(session: &Session) -> usize {
+    std::fs::read_dir(session.state_dir().join("pending-set-asides"))
+        .map_or(0, |entries| entries.filter_map(Result::ok).count())
+}
+
+#[test]
+fn a_folder_that_cannot_be_read_is_pending_and_never_nothing_to_move() {
+    let session = two_pairs();
+    if !permissions_are_enforced(session.dir.path()) {
+        return;
+    }
+    let photos = session.dir.path().join("folders/photos");
+    set_mode(&photos, 0o000);
+    let reply = remove(&session, "photos").expect("the removal itself succeeds");
+    set_mode(&photos, 0o755);
+
+    let SetAsideReport::Pending {
+        reason,
+        record,
+        still_at,
+        message,
+        ..
+    } = &reply.set_aside
+    else {
+        panic!(
+            "the history is still there and the reply said otherwise: {:?}",
+            reply.set_aside
+        )
+    };
+    assert!(reason.contains("cannot be read"), "{reason}");
+    assert!(record.is_some(), "a note is kept so it can be tried again");
+    assert!(still_at.is_empty(), "the app does not know what is there");
+    assert!(message.contains("could not look"), "{message}");
+    assert!(photos.join(".sync/sync_index.db").exists());
+    assert!(!session.config().contains("name = \"photos\""));
+
+    // Readable again: the next add or remove finishes it.
+    let music = session.folder("music", false);
+    let reply = add(&session, "music", &music, "/Drive/music").unwrap();
+    assert!(
+        matches!(&reply.settled_earlier[..], [SetAsideReport::Moved { .. }]),
+        "{:?}",
+        reply.settled_earlier
+    );
+    assert!(!photos.join(".sync").exists());
+    assert_eq!(pending_records(&session), 0);
+}
+
+#[test]
+fn a_folder_that_is_not_there_is_pending_not_nothing_to_move() {
+    // An unplugged drive. Its history is on it, and the app cannot see that.
+    let session = two_pairs();
+    let photos = session.dir.path().join("folders/photos");
+    let unplugged = session.dir.path().join("unplugged");
+    std::fs::rename(&photos, &unplugged).unwrap();
+    let reply = remove(&session, "photos").expect("the removal itself succeeds");
+    let SetAsideReport::Pending { reason, record, .. } = &reply.set_aside else {
+        panic!("{:?}", reply.set_aside)
+    };
+    assert!(
+        reason.contains(photos.to_str().unwrap()) && reason.contains("cannot be read"),
+        "{reason}"
+    );
+    assert!(record.is_some());
+
+    // The drive comes back; adding another folder finishes the move.
+    std::fs::rename(&unplugged, &photos).unwrap();
+    let music = session.folder("music", false);
+    let reply = add(&session, "music", &music, "/Drive/music").unwrap();
+    assert!(
+        matches!(&reply.settled_earlier[..], [SetAsideReport::Moved { .. }]),
+        "{:?}",
+        reply.settled_earlier
+    );
+    assert!(!photos.join(".sync").exists());
+}
+
+#[test]
+fn a_relative_local_root_is_never_planned_and_the_removal_still_goes_ahead() {
+    // Hand-written; `remove` has no #431 refusal. The daemon resolves it against its own directory and
+    // this app against another, so the app cannot say which folder is meant.
+    let session = session(|dir| {
+        let docs = make_folder(dir, "docs", true);
+        format!(
+            "{}[[pair]]\nname = \"rel\"\nlocal_root = \"relative-sync-folder\"\n\
+             remote_root = \"/Drive/rel\"\n",
+            pair_text("docs", &docs)
+        )
+    });
+    let reply = remove(&session, "rel").expect("the config removal goes ahead");
+    assert!(!session.config().contains("relative-sync-folder"));
+    let SetAsideReport::Pending {
+        reason,
+        record,
+        message,
+        ..
+    } = &reply.set_aside
+    else {
+        panic!("{:?}", reply.set_aside)
+    };
+    assert!(reason.contains("relative path"), "{reason}");
+    assert!(reason.contains("local_root"), "{reason}");
+    assert!(record.is_none(), "waiting does not make it absolute");
+    assert!(
+        message.contains("Look in that folder yourself"),
+        "{message}"
+    );
+    assert_eq!(pending_records(&session), 0);
+    assert!(
+        !session.state_dir().join("removed-pairs").exists(),
+        "nothing was moved"
+    );
+}
+
+/// `docs` and `photos`, `photos` with its index in `ro-state/idx.db` — a directory the test can make
+/// read-only to stop the second item of the move.
+fn photos_with_its_index_elsewhere() -> (Session, PathBuf) {
+    let mut ro_state = PathBuf::new();
+    let session = session(|dir| {
+        let docs = make_folder(dir, "docs", true);
+        let photos = make_folder(dir, "photos", true);
+        ro_state = dir.join("ro-state");
+        std::fs::create_dir_all(&ro_state).unwrap();
+        std::fs::write(ro_state.join("idx.db"), "the index").unwrap();
+        format!(
+            "{}[[pair]]\nname = \"photos\"\nlocal_root = \"{}\"\nremote_root = \"/Drive/photos\"\n\
+             db_path = \"{}\"\n",
+            pair_text("docs", &docs),
+            photos.display(),
+            ro_state.join("idx.db").display()
+        )
+    });
+    (session, ro_state)
+}
+
+#[test]
+fn a_move_that_stops_part_way_names_what_moved_and_what_is_left() {
+    let (session, ro_state) = photos_with_its_index_elsewhere();
+    if !permissions_are_enforced(session.dir.path()) {
+        return;
+    }
+    let photos = session.dir.path().join("folders/photos");
+    set_mode(&ro_state, 0o555);
+    let reply = remove(&session, "photos").expect("the removal itself succeeds");
+    set_mode(&ro_state, 0o755);
+
+    let SetAsideReport::Pending {
+        moved,
+        moved_to,
+        still_at,
+        record,
+        message,
+        ..
+    } = &reply.set_aside
+    else {
+        panic!("{:?}", reply.set_aside)
+    };
+    // `.sync` did move, and the reply says where.
+    assert!(!photos.join(".sync").exists());
+    let moved_to = moved_to.as_ref().expect("where the first item went");
+    assert_eq!(moved.len(), 1, "{moved:?}");
+    assert_eq!(moved[0].from, photos.join(".sync").to_str().unwrap());
+    assert!(moved[0].to.starts_with(moved_to.as_str()), "{moved:?}");
+    assert!(
+        std::path::Path::new(&moved[0].to)
+            .join("sync_index.db")
+            .exists(),
+        "what the reply names is there"
+    );
+    // The index is what is left, and the reply says so.
+    assert_eq!(still_at, &[ro_state.join("idx.db").to_str().unwrap()]);
+    assert!(ro_state.join("idx.db").exists());
+    assert!(record.is_some());
+    assert!(message.contains("WAS moved"), "{message}");
+    assert!(message.contains(moved_to.as_str()), "{message}");
+    assert!(message.contains("idx.db"), "{message}");
+
+    // Later, the rest goes the same way.
+    let music = session.folder("music", false);
+    let reply = add(&session, "music", &music, "/Drive/music").unwrap();
+    assert!(
+        matches!(&reply.settled_earlier[..], [SetAsideReport::Moved { .. }]),
+        "{:?}",
+        reply.settled_earlier
+    );
+    assert!(!ro_state.join("idx.db").exists());
+}
+
+#[test]
+fn a_state_directory_that_is_a_link_is_reported_as_a_link_that_moved() {
+    let session = two_pairs();
+    let photos = session.dir.path().join("folders/photos");
+    let real_state = session.dir.path().join("fast-disk/photos-state");
+    std::fs::create_dir_all(real_state.parent().unwrap()).unwrap();
+    std::fs::rename(photos.join(".sync"), &real_state).unwrap();
+    std::os::unix::fs::symlink(&real_state, photos.join(".sync")).unwrap();
+
+    let reply = remove(&session, "photos").expect("removes");
+    let SetAsideReport::LinkMoved {
+        left_behind,
+        message,
+        to,
+        ..
+    } = &reply.set_aside
+    else {
+        panic!(
+            "only a link moved, and the reply said otherwise: {:?}",
+            reply.set_aside
+        )
+    };
+    assert_eq!(left_behind.len(), 1);
+    assert_eq!(left_behind[0].target, real_state.to_str().unwrap());
+    assert!(message.contains("LINK"), "{message}");
+    assert!(message.contains(real_state.to_str().unwrap()), "{message}");
+    assert!(message.contains(to.as_str()), "{message}");
+    assert!(
+        !message.contains("history of 'photos' was moved"),
+        "{message}"
+    );
+    // The history is exactly where it was.
+    assert_eq!(
+        std::fs::read_to_string(real_state.join("sync_index.db")).unwrap(),
+        "the index"
+    );
+    // On the wire it is its own outcome, so a screen cannot read it as `moved`.
+    let wire = serde_json::to_value(&reply.set_aside).unwrap();
+    assert_eq!(wire["outcome"], "link_moved");
+}
+
+#[test]
+fn a_link_among_real_state_is_moved_as_a_link_and_the_reply_says_so() {
+    // `.sync` is a real directory and moves whole; the pair's index is reached through a link, and
+    // only the link moves. The outcome is `moved` (something real did), with the link named.
+    let (mut link, mut real_db) = (PathBuf::new(), PathBuf::new());
+    let session = session(|dir| {
+        let (docs, photos) = (
+            make_folder(dir, "docs", true),
+            make_folder(dir, "photos", true),
+        );
+        real_db = dir.join("real-db/idx.db");
+        std::fs::create_dir_all(real_db.parent().unwrap()).unwrap();
+        std::fs::write(&real_db, "the real index").unwrap();
+        link = dir.join("db-links/idx.db");
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&real_db, &link).unwrap();
+        format!(
+            "{}[[pair]]\nname = \"photos\"\nlocal_root = \"{}\"\nremote_root = \"/Drive/photos\"\n\
+             db_path = \"{}\"\n",
+            pair_text("docs", &docs),
+            photos.display(),
+            link.display()
+        )
+    });
+    let reply = remove(&session, "photos").expect("removes");
+    let SetAsideReport::Moved {
+        items,
+        left_behind,
+        message,
+        ..
+    } = &reply.set_aside
+    else {
+        panic!("{:?}", reply.set_aside)
+    };
+    assert_eq!(items.len(), 2, "{items:?}");
+    assert_eq!(left_behind.len(), 1, "{left_behind:?}");
+    assert_eq!(left_behind[0].link, link.to_str().unwrap());
+    assert_eq!(left_behind[0].target, real_db.to_str().unwrap());
+    assert!(message.contains("Part of it was a link"), "{message}");
+    assert_eq!(
+        std::fs::read_to_string(&real_db).unwrap(),
+        "the real index",
+        "what the link pointed at was not touched"
+    );
+    assert!(!session.dir.path().join("folders/photos/.sync").exists());
+}
+
+#[test]
+fn a_note_whose_history_has_gone_is_dropped_and_said_so() {
+    let session = two_pairs();
+    let photos = session.dir.path().join("folders/photos");
+    let unplugged = session.dir.path().join("unplugged");
+    std::fs::rename(&photos, &unplugged).unwrap();
+    assert!(matches!(
+        remove(&session, "photos").unwrap().set_aside,
+        SetAsideReport::Pending { .. }
+    ));
+    assert_eq!(pending_records(&session), 1);
+
+    // The drive comes back with the history gone (deleted by hand).
+    std::fs::rename(&unplugged, &photos).unwrap();
+    std::fs::remove_dir_all(photos.join(".sync")).unwrap();
+    let music = session.folder("music", false);
+    let reply = add(&session, "music", &music, "/Drive/music").unwrap();
+    let [SetAsideReport::NothingToMove { message, .. }] = &reply.settled_earlier[..] else {
+        panic!("{:?}", reply.settled_earlier)
+    };
+    assert!(message.contains("none is left"), "{message}");
+    assert_eq!(pending_records(&session), 0);
+}
+
+#[test]
+fn a_file_named_dot_sync_is_nothing_to_move_with_a_note_and_is_left_alone() {
+    let session = two_pairs();
+    let photos = session.dir.path().join("folders/photos");
+    std::fs::remove_dir_all(photos.join(".sync")).unwrap();
+    std::fs::write(photos.join(".sync"), "MY NOTES").unwrap();
+
+    let reply = remove(&session, "photos").expect("removes");
+    let SetAsideReport::NothingToMove { notes, message, .. } = &reply.set_aside else {
+        panic!("{:?}", reply.set_aside)
+    };
+    assert!(
+        notes.iter().any(|note| note.contains("is a file")),
+        "{notes:?}"
+    );
+    assert!(message.contains("is a file"), "{message}");
+    assert!(
+        message.contains(photos.to_str().unwrap()) && message.contains("could be read"),
+        "\"nothing\" names the folder it was said of: {message}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(photos.join(".sync")).unwrap(),
+        "MY NOTES"
+    );
+    assert_eq!(
+        pending_records(&session),
+        0,
+        "nothing to wait for: it would never move"
+    );
+}
+
+#[test]
+fn a_note_that_names_a_file_of_the_persons_is_refused_when_it_is_retried() {
+    let session = two_pairs();
+    let thesis = session.dir.path().join("Documents/thesis.txt");
+    std::fs::create_dir_all(thesis.parent().unwrap()).unwrap();
+    std::fs::write(&thesis, "the thesis").unwrap();
+    // A note for a pair whose identity is real and whose item list names the thesis.
+    let ghost = session.folder("ghost", true);
+    let view = gui_core::config_io::PairView {
+        name: "ghost".to_owned(),
+        local_root: Some(ghost.clone()),
+        remote_root: None,
+        db_path: Some(ghost.join(".sync/sync_index.db")),
+        lockfile_path: Some(ghost.join(".sync/proton-sync.lock")),
+        conflict_suffix: None,
+    };
+    let planted = gui_core::set_aside::Plan::of_view(&view, vec![thesis.clone()], Vec::new());
+    gui_core::set_aside::record_pending(
+        &session.state_dir(),
+        &planted,
+        "planted",
+        SystemTime::now(),
+    )
+    .unwrap();
+
+    let music = session.folder("music", false);
+    let reply = add(&session, "music", &music, "/Drive/music").unwrap();
+    let [SetAsideReport::Pending { reason, .. }] = &reply.settled_earlier[..] else {
+        panic!("{:?}", reply.settled_earlier)
+    };
+    assert!(reason.contains("not part of the sync state"), "{reason}");
+    assert_eq!(std::fs::read_to_string(&thesis).unwrap(), "the thesis");
+    assert!(
+        ghost.join(".sync/sync_index.db").exists(),
+        "nothing moved at all"
+    );
+    assert_eq!(pending_records(&session), 1, "the note stays");
+}
+
+#[test]
+fn a_refused_add_still_reports_the_earlier_removal_it_settled_first() {
+    // The earlier removal has to be settled BEFORE the add is looked at (see the next test), so a
+    // refused add can have moved a history. The refusal says so.
+    let session = two_pairs();
+    let lock = session
+        .dir
+        .path()
+        .join("folders/photos/.sync/proton-sync.lock");
+    let held = gui_core::testing::hold_lockfile(&lock);
+    assert!(matches!(
+        remove(&session, "photos").unwrap().set_aside,
+        SetAsideReport::Pending { .. }
+    ));
+    drop(held);
+
+    let music = session.folder("music", false);
+    let failure = pair_admin::add_pair_file(
+        &session.config_path(),
+        Some(&session.state_dir()),
+        "-h",
+        &AddPairRequest {
+            local_root: music.display().to_string(),
+            remote_root: "/Drive/music".to_owned(),
+            exclude: Vec::new(),
+        },
+        SystemTime::now(),
+    )
+    .expect_err("a name that starts with `-` is refused");
+    assert!(
+        matches!(&failure.settled_earlier[..], [SetAsideReport::Moved { .. }]),
+        "{:?}",
+        failure.settled_earlier
+    );
+    assert!(!session.dir.path().join("folders/photos/.sync").exists());
+
+    // Through the command, the person is told in the one string they get.
+    let session = two_pairs();
+    let lock = session
+        .dir
+        .path()
+        .join("folders/photos/.sync/proton-sync.lock");
+    let held = gui_core::testing::hold_lockfile(&lock);
+    remove(&session, "photos").unwrap();
+    drop(held);
+    let music = session.folder("music", false);
+    let error = add(&session, "-h", &music, "/Drive/music").unwrap_err();
+    assert!(error.contains("moved to"), "{error}");
+    assert!(error.contains("earlier removal"), "{error}");
+}
+
+#[test]
+fn a_folder_removed_while_held_and_added_back_starts_fresh_once_the_daemon_lets_go() {
+    // THE D8 FLOW THAT IS EASY TO GET WRONG: the removal could not move the history (the daemon had
+    // it), the daemon lets go, and the SAME folder is added back. The pending move must run before the
+    // add — against a config that does not hold the folder — or it would find the folder configured
+    // again and be dropped, and the new pair would resume the old index.
+    let session = two_pairs();
+    let photos = session.dir.path().join("folders/photos");
+    let lock = photos.join(".sync/proton-sync.lock");
+    let held = gui_core::testing::hold_lockfile(&lock);
+    let SetAsideReport::Pending { .. } = remove(&session, "photos").unwrap().set_aside else {
+        panic!("held")
+    };
+    assert!(photos.join(".sync/sync_index.db").exists());
+    drop(held);
+
+    let reply = add(&session, "photos", &photos, "/Drive/photos").expect("adds it back");
+    assert!(
+        matches!(&reply.settled_earlier[..], [SetAsideReport::Moved { .. }]),
+        "the earlier removal finished first: {:?}",
+        reply.settled_earlier
+    );
+    assert!(
+        reply.surviving_index.is_none(),
+        "nothing is left for the new pair to resume: {:?}",
+        reply.surviving_index
+    );
+    assert!(!photos.join(".sync/sync_index.db").exists());
+    assert_eq!(pending_records(&session), 0);
+    assert_eq!(
+        std::fs::read_to_string(photos.join("mine.txt")).unwrap(),
+        "photos's file"
+    );
+}
+
+#[test]
+fn a_folder_removed_while_held_and_added_back_while_still_held_is_told_it_will_resume_and_the_move_dropped(
+) {
+    let session = two_pairs();
+    let photos = session.dir.path().join("folders/photos");
+    let lock = photos.join(".sync/proton-sync.lock");
+    let held = gui_core::testing::hold_lockfile(&lock);
+    remove(&session, "photos").unwrap();
+
+    // Still held at the add: the earlier move cannot run, and the add says what the new pair will do.
+    let reply = add(&session, "photos", &photos, "/Drive/photos").expect("adds it back");
+    assert!(
+        matches!(&reply.settled_earlier[..], [SetAsideReport::Pending { .. }]),
+        "{:?}",
+        reply.settled_earlier
+    );
+    let survivor = reply.surviving_index.expect("the old index is named");
+    assert!(
+        survivor.set_aside_pending,
+        "it is there because a removal has not finished: {survivor:?}"
+    );
+    assert!(
+        survivor.message.contains("dropped rather than run"),
+        "{}",
+        survivor.message
+    );
+    assert_eq!(pending_records(&session), 1);
+
+    // The next call finds the folder configured and drops the note without moving anything.
+    drop(held);
+    let music = session.folder("music", false);
+    let reply = add(&session, "music", &music, "/Drive/music").unwrap();
+    assert!(
+        matches!(
+            &reply.settled_earlier[..],
+            [SetAsideReport::Superseded { .. }]
+        ),
+        "{:?}",
+        reply.settled_earlier
+    );
+    assert_eq!(pending_records(&session), 0);
+    assert!(photos.join(".sync/sync_index.db").exists());
+}
+
+#[test]
+fn an_add_whose_folder_holds_the_state_directory_warns_and_still_adds() {
+    // The app's set-aside histories live under its state directory. A sync folder that contains that
+    // directory would upload them, so the add says so; it is not refused, because a folder that holds
+    // the whole home directory is a legitimate choice.
+    let session = one_pair();
+    let broad = session.folder("broad", false);
+    session.state().lock().unwrap().state_dir = Some(broad.join("state-inside"));
+    let reply = add(&session, "broad", &broad, "/Drive/broad").expect("added");
+    assert_eq!(reply.warnings.len(), 1, "{:?}", reply.warnings);
+    assert!(
+        reply.warnings[0].contains("removed-pairs"),
+        "{}",
+        reply.warnings[0]
+    );
+    assert!(
+        reply.warnings[0].contains("upload"),
+        "{}",
+        reply.warnings[0]
+    );
+    assert!(session.config().contains("name = \"broad\""));
+
+    // A folder that does not contain it says nothing.
+    let session = one_pair();
+    let other = session.folder("other", false);
+    let reply = add(&session, "other", &other, "/Drive/other").unwrap();
+    assert!(reply.warnings.is_empty(), "{:?}", reply.warnings);
+}
+
 // ---- carried from PR 4's review ----------------------------------------------------------------------
 
 #[test]

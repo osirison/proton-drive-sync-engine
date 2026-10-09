@@ -54,6 +54,39 @@ fn context<'a>(state_dir: &'a Path, configured: &'a [PairView]) -> Context<'a> {
     }
 }
 
+/// The plan for a pair that has state to move; anything else is a failed test.
+fn plan(view: &PairView) -> Plan {
+    match super::plan(view) {
+        Planned::Move(plan) => plan,
+        other => panic!("expected something to move: {other:?}"),
+    }
+}
+
+fn exists(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok()
+}
+
+/// Whether this user is stopped by file permissions at all. Root reads everything, so a permission
+/// test run as root proves nothing: it says so and stops instead of passing.
+fn permissions_are_enforced(base: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    let probe = base.join("permission-probe");
+    fs::create_dir_all(&probe).unwrap();
+    fs::set_permissions(&probe, fs::Permissions::from_mode(0o000)).unwrap();
+    let enforced = fs::read_dir(&probe).is_err();
+    fs::set_permissions(&probe, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::remove_dir(&probe).unwrap();
+    if !enforced {
+        eprintln!("SKIPPED: this user is not stopped by file permissions (root?)");
+    }
+    enforced
+}
+
+fn set_mode(path: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+}
+
 #[test]
 fn the_stamp_is_the_utc_time_it_names() {
     assert_eq!(utc_stamp(UNIX_EPOCH), "19700101T000000Z");
@@ -88,7 +121,7 @@ fn the_plan_is_the_state_directory_and_never_a_file_of_the_persons() {
         lockfile_path: Some(empty.join(".sync/proton-sync.lock")),
         ..view_for(&empty)
     });
-    assert!(nothing.items.is_empty(), "{nothing:?}");
+    assert_eq!(nothing, Planned::Nothing { notes: Vec::new() });
 }
 
 fn view_for(root: &Path) -> PairView {
@@ -158,7 +191,7 @@ fn a_state_directory_that_is_a_link_is_set_aside_as_the_link_and_never_followed(
     assert_eq!(plan.items, [root.join(".sync")]);
     let state = tempfile::tempdir().unwrap();
     let done = execute(&plan, &context(state.path(), &[])).expect("the link moves");
-    assert!(!exists_without_following(&root.join(".sync")));
+    assert!(!exists(&root.join(".sync")));
     assert!(
         real_state.join("sync_index.db").exists(),
         "the link's target was not touched"
@@ -274,6 +307,7 @@ fn across_a_filesystem_boundary_it_copies_compares_and_only_then_removes() {
         &Mover {
             rename: &exdev,
             same: &compare,
+            sync: &sync_path,
         },
     )
     .expect("copies");
@@ -318,6 +352,7 @@ fn a_copy_that_does_not_match_leaves_the_original_exactly_as_it_was() {
             &Mover {
                 rename: &exdev,
                 same: &compare,
+                sync: &sync_path,
             },
         )
         .expect_err(name);
@@ -495,6 +530,7 @@ fn a_failure_part_way_says_what_moved_and_what_is_left() {
         &Mover {
             rename: &second_fails,
             same: &|a, b| same_tree(a, b),
+            sync: &sync_path,
         },
     )
     .expect_err("the second fails");
@@ -611,4 +647,633 @@ fn a_pending_set_aside_for_a_folder_that_was_added_back_is_dropped_without_movin
         base.path().join("docs/.sync/sync_index.db").exists(),
         "and the re-added pair keeps the history it is running on"
     );
+}
+
+#[test]
+fn a_folder_added_back_by_another_spelling_is_still_added_back() {
+    // The re-add check is by real path: the folder named through a link, or with a `..` in it, is the
+    // same folder. Compared as written, the record would not be dropped and the move would be left
+    // to a second refusal further down, which reports the folder as merely "still pending".
+    let base = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    let view = default_layout(base.path(), "docs");
+    let alias = base.path().join("alias-to-docs");
+    std::os::unix::fs::symlink(base.path().join("docs"), &alias).unwrap();
+    let dotted = base.path().join("elsewhere/../docs");
+    fs::create_dir_all(base.path().join("elsewhere")).unwrap();
+    for (label, root) in [("a link", alias), ("a `..`", dotted)] {
+        record_pending(state_dir.path(), &plan(&view), "held", now()).unwrap();
+        let readded = PairView {
+            local_root: Some(root.clone()),
+            db_path: Some(root.join(".sync/sync_index.db")),
+            lockfile_path: Some(root.join(".sync/proton-sync.lock")),
+            ..view.clone()
+        };
+        let results = settle_pending(&context(state_dir.path(), std::slice::from_ref(&readded)));
+        assert!(
+            matches!(&results[..], [Settled::Superseded { pair }] if pair == "docs"),
+            "{label}: {results:?}"
+        );
+        assert!(
+            pending(state_dir.path()).is_empty(),
+            "{label}: the record is dropped"
+        );
+        assert!(
+            base.path().join("docs/.sync/sync_index.db").exists(),
+            "{label}: the history stays"
+        );
+    }
+}
+
+// ---- looking is not the same as finding nothing (U1) ----------------------------------------------
+
+#[test]
+fn a_folder_that_cannot_be_read_is_not_reported_as_having_no_history() {
+    let base = tempfile::tempdir().unwrap();
+    if !permissions_are_enforced(base.path()) {
+        return;
+    }
+    let view = default_layout(base.path(), "docs");
+    let root = base.path().join("docs");
+    // No permission at all: nothing under it can be looked at.
+    set_mode(&root, 0o000);
+    let planned = super::plan(&view);
+    set_mode(&root, 0o755);
+    let Planned::Undetermined(undetermined) = planned else {
+        panic!("the history is right there, and the app was told there is none: {planned:?}")
+    };
+    assert!(undetermined.retry, "a permission can be fixed");
+    assert!(
+        undetermined.reason.contains("cannot be read"),
+        "{}",
+        undetermined.reason
+    );
+    assert!(root.join(".sync/sync_index.db").exists());
+
+    // Searchable but not listable (`--x`): a path under it can be stat'ed, but the folder cannot be
+    // read, and "no `.sync`" under a folder that cannot be read is not an answer.
+    let bare = base.path().join("bare");
+    fs::create_dir_all(&bare).unwrap();
+    set_mode(&bare, 0o100);
+    let planned = super::plan(&view_for(&bare));
+    set_mode(&bare, 0o755);
+    assert!(
+        matches!(planned, Planned::Undetermined(_)),
+        "an unlistable folder with no `.sync` is not a folder without history: {planned:?}"
+    );
+
+    // Listable but not searchable (`r--`): the folder reads, the stat of `.sync` fails with something
+    // that is not "not found" — also not an absence.
+    let listable = base.path().join("listable");
+    write(&listable.join(".sync/sync_index.db"), "index");
+    set_mode(&listable, 0o400);
+    let planned = super::plan(&view_for(&listable));
+    set_mode(&listable, 0o755);
+    let Planned::Undetermined(undetermined) = planned else {
+        panic!("{planned:?}")
+    };
+    assert!(
+        undetermined.reason.contains("could not look at"),
+        "{}",
+        undetermined.reason
+    );
+}
+
+#[test]
+fn a_missing_folder_is_not_reported_as_having_no_history() {
+    // An unplugged or unmounted drive looks exactly like this.
+    let base = tempfile::tempdir().unwrap();
+    let gone = base.path().join("drive-that-is-not-plugged-in/docs");
+    let Planned::Undetermined(undetermined) = super::plan(&view_for(&gone)) else {
+        panic!("a folder that is not there cannot be said to hold no history")
+    };
+    assert!(undetermined.retry, "the drive may come back");
+    assert!(
+        undetermined.reason.contains(gone.to_str().unwrap()),
+        "{}",
+        undetermined.reason
+    );
+    // A file where the folder should be is no better.
+    let file = base.path().join("a-file");
+    write(&file, "x");
+    assert!(matches!(
+        super::plan(&view_for(&file)),
+        Planned::Undetermined(_)
+    ));
+}
+
+#[test]
+fn a_state_file_elsewhere_that_cannot_be_looked_at_is_not_absent() {
+    let base = tempfile::tempdir().unwrap();
+    if !permissions_are_enforced(base.path()) {
+        return;
+    }
+    let root = base.path().join("docs");
+    write(&root.join("a.txt"), "mine");
+    let elsewhere = base.path().join("elsewhere");
+    write(&elsewhere.join("idx.db"), "index");
+    let view = view(
+        "docs",
+        &root,
+        elsewhere.join("idx.db"),
+        elsewhere.join("pair.lock"),
+    );
+    set_mode(&elsewhere, 0o000);
+    let planned = super::plan(&view);
+    set_mode(&elsewhere, 0o755);
+    let Planned::Undetermined(undetermined) = planned else {
+        panic!("{planned:?}")
+    };
+    assert!(
+        undetermined.reason.contains("idx.db"),
+        "{}",
+        undetermined.reason
+    );
+}
+
+#[test]
+fn a_move_that_could_not_look_is_recorded_and_happens_when_the_drive_is_back() {
+    // The whole flow of an unplugged drive: removal finds nothing it can look at, a record of the pair
+    // is kept (no list of items: there was none to make), and when the folder is readable again the
+    // record plans from the disk as it is and the history moves.
+    let base = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    let root = base.path().join("usb/docs");
+    let view = view_for(&root);
+    let Planned::Undetermined(undetermined) = super::plan(&view) else {
+        panic!("not mounted")
+    };
+    assert!(undetermined.retry);
+    let identity = Plan::of_view(&view, Vec::new(), Vec::new());
+    record_pending(state_dir.path(), &identity, &undetermined.reason, now()).unwrap();
+
+    let results = settle_pending(&context(state_dir.path(), &[]));
+    assert!(
+        matches!(&results[..], [Settled::StillPending { reason, .. }] if reason.contains("cannot be read")),
+        "{results:?}"
+    );
+    assert_eq!(pending(state_dir.path()).len(), 1);
+
+    // The drive comes back, with the history on it.
+    write(&root.join(".sync/sync_index.db"), "index");
+    let results = settle_pending(&context(state_dir.path(), &[]));
+    assert!(
+        matches!(&results[..], [Settled::Moved { .. }]),
+        "{results:?}"
+    );
+    assert!(!root.join(".sync").exists());
+    assert!(pending(state_dir.path()).is_empty());
+
+    // And a record whose folder reads fine and holds nothing any more is dropped, not kept for ever.
+    record_pending(state_dir.path(), &identity, "again", now()).unwrap();
+    let results = settle_pending(&context(state_dir.path(), &[]));
+    assert!(
+        matches!(&results[..], [Settled::NothingLeft { pair, .. }] if pair == "x"),
+        "{results:?}"
+    );
+    assert!(pending(state_dir.path()).is_empty());
+}
+
+// ---- a relative path is never planned (U2) --------------------------------------------------------
+
+#[test]
+fn a_relative_path_is_never_planned_whatever_is_at_it_from_here() {
+    let base = tempfile::tempdir().unwrap();
+    let absolute = default_layout(base.path(), "docs");
+    for (key, view) in [
+        (
+            "local_root",
+            PairView {
+                local_root: Some(PathBuf::from("Sync")),
+                ..view_for(Path::new("Sync"))
+            },
+        ),
+        (
+            "db_path",
+            PairView {
+                db_path: Some(PathBuf::from("sync_index.db")),
+                ..absolute.clone()
+            },
+        ),
+        (
+            "lockfile_path",
+            PairView {
+                lockfile_path: Some(PathBuf::from("proton-sync.lock")),
+                ..absolute.clone()
+            },
+        ),
+    ] {
+        let Planned::Undetermined(undetermined) = super::plan(&view) else {
+            panic!("{key}: a relative path was planned")
+        };
+        assert!(
+            !undetermined.retry,
+            "{key}: waiting does not make it absolute"
+        );
+        assert!(
+            undetermined.reason.contains(key) && undetermined.reason.contains("relative path"),
+            "{key}: {}",
+            undetermined.reason
+        );
+    }
+    // A pair whose folder the config does not place at all is not guessed at either.
+    let no_root = PairView {
+        local_root: None,
+        ..absolute
+    };
+    assert!(matches!(
+        super::plan(&no_root),
+        Planned::Undetermined(Undetermined { retry: false, .. })
+    ));
+    assert!(base.path().join("docs/.sync/sync_index.db").exists());
+}
+
+// ---- a record is not the plan (U4) ---------------------------------------------------------------
+
+#[test]
+fn a_record_that_names_anything_but_the_pairs_state_is_refused_and_moves_nothing() {
+    let base = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    let view = default_layout(base.path(), "docs");
+    let thesis = base.path().join("Documents/thesis.txt");
+    write(&thesis, "the thesis");
+    let photo = base.path().join("docs/photo.jpg");
+    for (label, stranger) in [
+        ("a file elsewhere", thesis.clone()),
+        ("a file in the pair's own folder", photo.clone()),
+        (
+            "a path that only looks like its state",
+            base.path().join("docs/.sync/../photo.jpg"),
+        ),
+    ] {
+        // The pair's identity is real; the item list is where a planted record lies.
+        let mut planted = plan(&view);
+        planted.items.push(stranger);
+        record_pending(state_dir.path(), &planted, "planted", now()).unwrap();
+
+        let results = settle_pending(&context(state_dir.path(), &[]));
+        let [Settled::StillPending { reason, .. }] = &results[..] else {
+            panic!("{label}: {results:?}")
+        };
+        assert!(
+            reason.contains("not part of the sync state"),
+            "{label}: {reason}"
+        );
+        assert_eq!(
+            fs::read_to_string(&thesis).unwrap(),
+            "the thesis",
+            "{label}"
+        );
+        assert!(photo.exists(), "{label}");
+        assert!(
+            base.path().join("docs/.sync/sync_index.db").exists(),
+            "{label}: a refused record moves nothing at all, not even the real state"
+        );
+        assert_eq!(pending(state_dir.path()).len(), 1, "{label}: it stays");
+        for (record, _) in pending(state_dir.path()) {
+            fs::remove_file(record).unwrap();
+        }
+    }
+}
+
+#[test]
+fn a_record_is_re_planned_from_the_disk_as_it_is_now() {
+    // Recorded while one file existed; by the time it is retried, there is more (and the `.sync`
+    // that was named has gone). What moves is what the pair's identity finds now.
+    let base = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    let root = base.path().join("docs");
+    write(&root.join("a.txt"), "mine");
+    let elsewhere = base.path().join("elsewhere");
+    let view = view(
+        "docs",
+        &root,
+        elsewhere.join("idx.db"),
+        elsewhere.join("pair.lock"),
+    );
+    write(&elsewhere.join("idx.db"), "index");
+    let recorded = plan(&view);
+    assert_eq!(recorded.items, [elsewhere.join("idx.db")]);
+    record_pending(state_dir.path(), &recorded, "held", now()).unwrap();
+    // It grows: a WAL appears beside the index.
+    write(&elsewhere.join("idx.db-wal"), "wal");
+    let results = settle_pending(&context(state_dir.path(), &[]));
+    let [Settled::Moved { done, .. }] = &results[..] else {
+        panic!("{results:?}")
+    };
+    assert_eq!(done.moved.len(), 2, "the new file went too");
+    assert!(!elsewhere.join("idx.db-wal").exists());
+}
+
+// ---- a path that is not UTF-8 (U5) --------------------------------------------------------------
+
+#[test]
+fn a_folder_whose_name_is_not_utf8_is_recorded_moved_and_written_to_the_manifest_exactly() {
+    use std::os::unix::ffi::OsStringExt;
+    let base = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    let root = base
+        .path()
+        .join(OsString::from_vec(b"Sync-\xff\xfe".to_vec()));
+    write(&root.join(".sync/sync_index.db"), "index");
+    let view = view_for(&root);
+    let planned = plan(&view);
+
+    // The record is written, and reads back as the very same paths.
+    let record = record_pending(state_dir.path(), &planned, "held", now())
+        .expect("a non-UTF-8 folder can be recorded");
+    let listed = pending(state_dir.path());
+    assert_eq!(listed.len(), 1, "the record reads back");
+    assert_eq!(listed[0].1.plan, planned);
+    assert_eq!(listed[0].1.plan.local_root, root);
+    assert_eq!(listed[0].1.plan.items, [root.join(".sync")]);
+    let raw = fs::read_to_string(&record).unwrap();
+    assert!(raw.contains("\"hex\""), "{raw}");
+    assert!(
+        raw.contains("Sync-\u{fffd}"),
+        "a readable rendering sits beside the exact one: {raw}"
+    );
+
+    // Acting on the record moves the folder that is on disk, and the manifest says where from.
+    let results = settle_pending(&context(state_dir.path(), &[]));
+    let [Settled::Moved { done, .. }] = &results[..] else {
+        panic!("{results:?}")
+    };
+    assert!(!root.join(".sync").exists());
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(done.to.join(MANIFEST_NAME)).expect("manifest written"))
+            .unwrap();
+    let items: Vec<MovedItem> = serde_json::from_value(manifest["items"].clone()).unwrap();
+    assert_eq!(items, done.moved, "the manifest names exactly what moved");
+    assert_eq!(items[0].from, root.join(".sync"));
+}
+
+#[test]
+fn a_utf8_path_stays_a_plain_string_in_the_manifest_and_the_record() {
+    let base = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    let view = default_layout(base.path(), "docs");
+    let record = record_pending(state_dir.path(), &plan(&view), "held", now()).unwrap();
+    let raw: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(record).unwrap()).unwrap();
+    assert_eq!(
+        raw["plan"]["local_root"],
+        base.path().join("docs").to_str().unwrap()
+    );
+    assert_eq!(
+        raw["plan"]["items"][0],
+        base.path().join("docs/.sync").to_str().unwrap()
+    );
+}
+
+// ---- reporting what actually happened (U6) -----------------------------------------------------------
+
+#[test]
+fn a_state_directory_that_is_a_link_says_the_history_stayed_where_the_link_points() {
+    let base = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    let root = base.path().join("docs");
+    let real_state = base.path().join("fast-disk/state-of-docs");
+    write(&real_state.join("sync_index.db"), "HISTORY");
+    fs::create_dir_all(&root).unwrap();
+    std::os::unix::fs::symlink(&real_state, root.join(".sync")).unwrap();
+    let done = execute(&plan(&view_for(&root)), &context(state_dir.path(), &[])).unwrap();
+    assert_eq!(
+        done.moved[0].link_target.as_deref(),
+        Some(real_state.as_path())
+    );
+    assert_eq!(
+        fs::read_to_string(real_state.join("sync_index.db")).unwrap(),
+        "HISTORY",
+        "what the link pointed at was not touched"
+    );
+    // The manifest says so too.
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(done.to.join(MANIFEST_NAME)).unwrap()).unwrap();
+    assert_eq!(
+        manifest["items"][0]["link_target"],
+        real_state.to_str().unwrap()
+    );
+    // A real directory has no link target.
+    let other = default_layout(base.path(), "photos");
+    let done = execute(&plan(&other), &context(state_dir.path(), &[])).unwrap();
+    assert_eq!(done.moved[0].link_target, None);
+}
+
+#[test]
+fn a_file_named_dot_sync_is_not_the_engines_state_and_is_left_alone_with_a_note() {
+    let base = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    let root = base.path().join("docs");
+    write(&root.join(".sync"), "MY NOTES");
+    // Nothing else of the pair's: nothing to move, and the note says why.
+    let Planned::Nothing { notes } = super::plan(&view_for(&root)) else {
+        panic!("a file is not the engine's state directory")
+    };
+    assert!(
+        notes
+            .iter()
+            .any(|note| note.contains(".sync") && note.contains("is a file")),
+        "{notes:?}"
+    );
+    assert_eq!(fs::read_to_string(root.join(".sync")).unwrap(), "MY NOTES");
+
+    // With state elsewhere that does exist, that moves — and the lock probe does not trip over the
+    // file where its directory should be (the lockfile cannot exist there, so nobody holds it).
+    let elsewhere = base.path().join("elsewhere");
+    write(&elsewhere.join("idx.db"), "index");
+    let view = PairView {
+        db_path: Some(elsewhere.join("idx.db")),
+        ..view_for(&root)
+    };
+    let planned = plan(&view);
+    assert_eq!(planned.items, [elsewhere.join("idx.db")]);
+    assert_eq!(planned.lockfile, None);
+    let done = execute(&planned, &context(state_dir.path(), &[])).expect("moves what is state");
+    assert_eq!(done.moved.len(), 1);
+    assert_eq!(fs::read_to_string(root.join(".sync")).unwrap(), "MY NOTES");
+    assert!(done.notes.iter().any(|note| note.contains("is a file")));
+}
+
+#[test]
+fn a_state_file_that_names_a_folder_is_never_moved() {
+    // The engine accepts a `db_path` that names an existing directory. It is the person's folder, not
+    // an index, and it is not this module's to move.
+    let base = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    let documents = base.path().join("Documents");
+    write(&documents.join("thesis.txt"), "the thesis");
+    let root = base.path().join("docs");
+    write(&root.join(".sync/sync_index.db"), "index");
+    let view = PairView {
+        db_path: Some(documents.clone()),
+        ..view_for(&root)
+    };
+    let planned = plan(&view);
+    assert_eq!(
+        planned.items,
+        [root.join(".sync")],
+        "only the state directory"
+    );
+    assert!(
+        planned
+            .notes
+            .iter()
+            .any(|note| note.contains("is a folder")),
+        "{:?}",
+        planned.notes
+    );
+    execute(&planned, &context(state_dir.path(), &[])).expect("moves");
+    assert_eq!(
+        fs::read_to_string(documents.join("thesis.txt")).unwrap(),
+        "the thesis"
+    );
+
+    // With nothing else to move, the folder is the whole finding.
+    let bare = base.path().join("bare");
+    fs::create_dir_all(&bare).unwrap();
+    let Planned::Nothing { notes } = super::plan(&PairView {
+        db_path: Some(documents.clone()),
+        ..view_for(&bare)
+    }) else {
+        panic!("a folder is not state")
+    };
+    assert!(
+        notes.iter().any(|note| note.contains("is a folder")),
+        "{notes:?}"
+    );
+    assert!(documents.join("thesis.txt").exists());
+}
+
+#[test]
+fn a_copy_is_made_durable_before_it_is_compared_and_the_original_removed() {
+    use std::cell::RefCell;
+    let base = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    let view = default_layout(base.path(), "docs");
+    let original = base.path().join("docs/.sync");
+    write(&original.join("nested/inner.bin"), "inner");
+
+    let exdev = |_: &Path, _: &Path| Err(io::Error::from_raw_os_error(18));
+    let synced = RefCell::new(Vec::<PathBuf>::new());
+    let sync = |path: &Path| {
+        synced.borrow_mut().push(path.to_owned());
+        Ok(())
+    };
+    let synced_by_compare = RefCell::new(Vec::<PathBuf>::new());
+    let compare = |from: &Path, to: &Path| {
+        // THE ORDER IS THE SAFETY: what had been made durable by the time the copy is compared, with
+        // the original still whole.
+        assert!(from.join("sync_index.db").exists());
+        *synced_by_compare.borrow_mut() = synced.borrow().clone();
+        same_tree(from, to)
+    };
+    let done = execute_with(
+        &plan(&view),
+        &context(state_dir.path(), &[]),
+        &Mover {
+            rename: &exdev,
+            same: &compare,
+            sync: &sync,
+        },
+    )
+    .expect("copies");
+    assert!(!original.exists());
+
+    let stored = &done.moved[0].to;
+    let mut expected = vec![done.to.clone(), stored.clone(), stored.join("nested")];
+    for file in [
+        "sync_index.db",
+        "sync_index.db-wal",
+        "sync_index.status.json",
+        "sync_index.metrics.json",
+        "proton-sync.lock",
+        "nested/inner.bin",
+    ] {
+        expected.push(stored.join(file));
+    }
+    let synced = synced_by_compare.into_inner();
+    for path in &expected {
+        assert!(
+            synced.contains(path),
+            "{} was not made durable before the original was removed; synced: {synced:?}",
+            path.display()
+        );
+    }
+}
+
+#[test]
+fn a_copy_that_cannot_be_made_durable_leaves_the_original_exactly_as_it_was() {
+    let base = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    let view = default_layout(base.path(), "docs");
+    let original = base.path().join("docs/.sync");
+    let exdev = |_: &Path, _: &Path| Err(io::Error::from_raw_os_error(18));
+    let broken_disk = |_: &Path| Err(io::Error::other("input/output error"));
+    let failed = execute_with(
+        &plan(&view),
+        &context(state_dir.path(), &[]),
+        &Mover {
+            rename: &exdev,
+            same: &|a, b| same_tree(a, b),
+            sync: &broken_disk,
+        },
+    )
+    .expect_err("an fsync that fails is a copy that is not safe");
+    assert!(failed.moved.is_empty());
+    assert_eq!(
+        fs::read_to_string(original.join("sync_index.db")).unwrap(),
+        "index"
+    );
+    assert!(
+        fs::read_dir(state_dir.path().join(REMOVED_PAIRS_DIR))
+            .unwrap()
+            .next()
+            .is_none(),
+        "no partial copy is left behind"
+    );
+}
+
+#[test]
+fn a_failure_part_way_names_the_directory_what_did_move_went_to() {
+    let base = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    let root = base.path().join("docs");
+    write(&root.join(".sync/sync_index.db"), "index");
+    let elsewhere = base.path().join("elsewhere");
+    write(&elsewhere.join("idx.db"), "index");
+    let view = PairView {
+        db_path: Some(elsewhere.join("idx.db")),
+        ..view_for(&root)
+    };
+    let calls = Cell::new(0);
+    let second_fails = |from: &Path, to: &Path| {
+        calls.set(calls.get() + 1);
+        if calls.get() == 2 {
+            Err(io::Error::from(io::ErrorKind::PermissionDenied))
+        } else {
+            fs::rename(from, to)
+        }
+    };
+    let failed = execute_with(
+        &plan(&view),
+        &context(state_dir.path(), &[]),
+        &Mover {
+            rename: &second_fails,
+            same: &|a, b| same_tree(a, b),
+            sync: &sync_path,
+        },
+    )
+    .expect_err("the second fails");
+    assert_eq!(failed.moved.len(), 1);
+    let to = failed.to.as_ref().expect("where the first one went");
+    assert!(failed.moved[0].to.starts_with(to));
+    assert!(to.starts_with(state_dir.path().join(REMOVED_PAIRS_DIR)));
+    // Nothing moved, nothing to name.
+    let nothing = execute(
+        &plan(&default_layout(base.path(), "photos")),
+        &context(&base.path().join("photos/app-state"), &[]),
+    )
+    .expect_err("refused");
+    assert_eq!(nothing.to, None);
 }

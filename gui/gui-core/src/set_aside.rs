@@ -13,6 +13,13 @@
 //! the engine's own (`index::should_ignore_path` ignores it everywhere), and the rest are named by the
 //! config, not found by looking.
 //!
+//! **The three answers of looking, and why the third exists.** [`plan`] answers [`Planned::Move`],
+//! [`Planned::Nothing`] or [`Planned::Undetermined`]. "Nothing" is a claim that every place the pair's
+//! state could be was looked at and held none, so it needs a folder that can be read: an unplugged
+//! drive, an unreadable folder and a path that is relative (which the daemon resolves against *its*
+//! working directory, not this app's) are all "could not look", and none of them is "no history". A
+//! pair that could not be looked at is reported pending with the reason, never as having nothing.
+//!
 //! **Where it goes.** Outside every sync root — the destination is checked against the real path of
 //! every folder the config names, because history inside a sync folder is history that gets uploaded.
 //!
@@ -21,9 +28,17 @@
 //! has this open" that does not depend on a socket answering. A move that cannot happen now is a
 //! [`Pending`] record that says why, retried by [`settle_pending`].
 //!
-//! **How it moves.** `rename`; on `EXDEV` a copy that is compared byte for byte with its source
-//! before the source is touched. Nothing is deleted until the copy is verified, and a copy that fails
-//! verification is removed and the original left exactly as it was.
+//! **How it moves.** `rename`; on `EXDEV` a copy that is made durable and then compared byte for byte
+//! with its source before the source is touched. Nothing is deleted until the copy is verified, and a
+//! copy that fails verification is removed and the original left exactly as it was.
+//!
+//! **What a record is trusted for.** A [`Pending`] record names the pair's *identity* — its folder and
+//! the paths its [`PairView`] gave — and [`settle_pending`] re-plans from that identity on the disk as
+//! it is then; the items listed in the record are only checked against it, and a record that names
+//! anything that is not that pair's state is refused. That bounds what a hand-edited or planted record
+//! can move to the state of a pair it describes. It cannot do more: the identity itself is the record's
+//! word, and the record lives in the app's own owner-only state directory, so writing one takes the
+//! access that already reaches every file the app could move.
 
 use crate::config_io::PairView;
 use proton_drive_sync_engine::index::canonicalize_best_effort;
@@ -44,15 +59,188 @@ pub const PENDING_DIR: &str = "pending-set-asides";
 /// piece came from.
 pub const MANIFEST_NAME: &str = "MANIFEST.json";
 
-/// What would be moved for one pair, found by looking at the disk now.
+// ---- paths in the bookkeeping --------------------------------------------------------------------
+
+/// A path as JSON that reads back as **the same path**.
+///
+/// `serde_json` refuses a `PathBuf` that is not UTF-8, and a lossy rendering is no use here: a pending
+/// record is acted on later, so it must name the folder that is on disk and not one that looks like
+/// it. A UTF-8 path is the plain string it always was (so a manifest or a record stays readable); one
+/// that is not is `{"hex": <its bytes>, "lossy": <how to display it>}`, and only `hex` is read back.
+mod exact_path {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::ffi::OsString;
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+    use std::path::{Path, PathBuf};
+
+    #[derive(Serialize, Deserialize)]
+    #[serde(untagged)]
+    enum Wire {
+        Text(String),
+        Bytes {
+            hex: String,
+            #[serde(default)]
+            lossy: String,
+        },
+    }
+
+    fn to_wire(path: &Path) -> Wire {
+        match path.to_str() {
+            Some(text) => Wire::Text(text.to_owned()),
+            None => Wire::Bytes {
+                hex: path
+                    .as_os_str()
+                    .as_bytes()
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect(),
+                lossy: path.to_string_lossy().into_owned(),
+            },
+        }
+    }
+
+    fn from_wire(wire: Wire) -> Result<PathBuf, String> {
+        match wire {
+            Wire::Text(text) => Ok(PathBuf::from(text)),
+            Wire::Bytes { hex, .. } => {
+                let mut bytes = Vec::with_capacity(hex.len() / 2);
+                for pair in hex.as_bytes().chunks(2) {
+                    let digits = std::str::from_utf8(pair)
+                        .ok()
+                        .filter(|digits| digits.len() == 2)
+                        .and_then(|digits| u8::from_str_radix(digits, 16).ok());
+                    bytes.push(digits.ok_or_else(|| format!("`{hex}` is not a hex string"))?);
+                }
+                Ok(PathBuf::from(OsString::from_vec(bytes)))
+            }
+        }
+    }
+
+    pub fn serialize<S: Serializer>(path: &Path, serializer: S) -> Result<S::Ok, S::Error> {
+        to_wire(path).serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<PathBuf, D::Error> {
+        from_wire(Wire::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+
+    /// `Option<PathBuf>`.
+    pub mod option {
+        use super::{Wire, from_wire, to_wire};
+        use serde::{Deserialize, Deserializer, Serialize, Serializer};
+        use std::path::PathBuf;
+
+        pub fn serialize<S: Serializer>(
+            path: &Option<PathBuf>,
+            serializer: S,
+        ) -> Result<S::Ok, S::Error> {
+            path.as_deref().map(to_wire).serialize(serializer)
+        }
+
+        pub fn deserialize<'de, D: Deserializer<'de>>(
+            deserializer: D,
+        ) -> Result<Option<PathBuf>, D::Error> {
+            Option::<Wire>::deserialize(deserializer)?
+                .map(from_wire)
+                .transpose()
+                .map_err(serde::de::Error::custom)
+        }
+    }
+
+    /// `Vec<PathBuf>`.
+    pub mod list {
+        use super::{Wire, from_wire, to_wire};
+        use serde::{Deserialize, Deserializer, Serializer};
+        use std::path::PathBuf;
+
+        pub fn serialize<S: Serializer>(
+            paths: &[PathBuf],
+            serializer: S,
+        ) -> Result<S::Ok, S::Error> {
+            serializer.collect_seq(paths.iter().map(|path| to_wire(path)))
+        }
+
+        pub fn deserialize<'de, D: Deserializer<'de>>(
+            deserializer: D,
+        ) -> Result<Vec<PathBuf>, D::Error> {
+            Vec::<Wire>::deserialize(deserializer)?
+                .into_iter()
+                .map(from_wire)
+                .collect::<Result<_, _>>()
+                .map_err(serde::de::Error::custom)
+        }
+    }
+}
+
+// ---- what would be moved -------------------------------------------------------------------------
+
+/// What would be moved for one pair, found by looking at the disk now — and who the pair is, which is
+/// what a record of it keeps (see the module doc: [`settle_pending`] re-plans from the identity).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Plan {
     pub pair: String,
+    /// The pair's folder as the config gave it (empty when it gave none).
+    #[serde(with = "exact_path")]
     pub local_root: PathBuf,
-    /// The `.sync` directory when there is one, and every named state file outside it that exists.
-    pub items: Vec<PathBuf>,
+    /// The index the config places, when it places one.
+    #[serde(default, with = "exact_path::option")]
+    pub db_path: Option<PathBuf>,
     /// The pair's own lockfile: what proves nobody holds the state.
+    #[serde(default, with = "exact_path::option")]
     pub lockfile: Option<PathBuf>,
+    /// The `.sync` directory when there is one, and every named state file outside it that exists.
+    #[serde(default, with = "exact_path::list")]
+    pub items: Vec<PathBuf>,
+    /// What planning saw and left alone (a `.sync` that is a file, a state file that is a folder).
+    #[serde(default)]
+    pub notes: Vec<String>,
+}
+
+impl Plan {
+    /// A plan carrying `view`'s identity and the given findings.
+    pub fn of_view(view: &PairView, items: Vec<PathBuf>, notes: Vec<String>) -> Self {
+        Self {
+            pair: view.name.clone(),
+            local_root: view.local_root.clone().unwrap_or_default(),
+            db_path: view.db_path.clone(),
+            lockfile: view.lockfile_path.clone(),
+            items,
+            notes,
+        }
+    }
+
+    /// The pair this plan is about, as the config described it.
+    fn view(&self) -> PairView {
+        PairView {
+            name: self.pair.clone(),
+            local_root: (!self.local_root.as_os_str().is_empty()).then(|| self.local_root.clone()),
+            remote_root: None,
+            db_path: self.db_path.clone(),
+            lockfile_path: self.lockfile.clone(),
+            conflict_suffix: None,
+        }
+    }
+}
+
+/// The disk could not say whether there is history to move.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Undetermined {
+    /// Why, in a sentence a person can act on.
+    pub reason: String,
+    /// Whether looking again later could answer it (a drive that comes back), and so whether a record
+    /// of the move is worth keeping. A path the app can never locate safely is not.
+    pub retry: bool,
+}
+
+/// What looking at a pair's state found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Planned {
+    /// There is state to move.
+    Move(Plan),
+    /// Every place the pair's state could be was readable and held none.
+    Nothing { notes: Vec<String> },
+    /// The disk could not say. **Not** "nothing": the history may be right there.
+    Undetermined(Undetermined),
 }
 
 /// Append `suffix` to a path's file name (`sync_index.db` → `sync_index.db-wal`).
@@ -79,45 +267,135 @@ fn named_state_files(view: &PairView) -> Vec<PathBuf> {
     files
 }
 
-fn exists_without_following(path: &Path) -> bool {
-    fs::symlink_metadata(path).is_ok()
+/// Every path that is this pair's state if it exists: its `.sync` and the files its view names. The
+/// whole of what a move, or a record asking for one, may touch.
+fn state_candidates(view: &PairView) -> Vec<PathBuf> {
+    let mut all = Vec::new();
+    if let Some(root) = &view.local_root {
+        all.push(sync_state_dir(root));
+    }
+    all.extend(named_state_files(view));
+    all
+}
+
+fn undetermined(reason: String, retry: bool) -> Planned {
+    Planned::Undetermined(Undetermined { reason, retry })
 }
 
 /// What setting this pair's history aside would move. Pure reading of the disk; moves nothing.
 ///
+/// **"Nothing" needs a folder that can be read.** `NotFound` for a path under a folder that was
+/// opened is an absence; every other answer — the folder itself missing (its drive may be unplugged),
+/// unreadable, not a folder, or any error looking at a state path — is [`Planned::Undetermined`].
+/// A relative path is refused before the disk is touched at all: the daemon resolves one against its
+/// own working directory, which is not this app's, and looking relative to ours would find (and move)
+/// some other folder's state.
+///
+/// **The limit of "nothing".** A drive that is not mounted but whose mount point is still an empty
+/// folder reads exactly like a folder with no history: both can be listed and neither holds a `.sync`.
+/// Nothing in the folder tells them apart, so this does not try; the reply says what was looked at.
+///
 /// The `.sync` directory is taken **whole** (a symlink there is moved as the link and never
-/// followed). A named state file inside it is covered by that; one outside it is listed on its own,
-/// and only when it is a file — a directory named as a state file is a config the engine refuses, and
-/// is not this module's to move.
-pub fn plan(view: &PairView) -> Plan {
-    let mut items = Vec::new();
-    if let Some(root) = &view.local_root {
-        let state = sync_state_dir(root);
-        if exists_without_following(&state) {
-            items.push(state.clone());
+/// followed). A `.sync` that is a plain file is not the engine's state and is left alone, with a note.
+/// A named state file inside `.sync` is covered by that; one outside it is listed on its own, and
+/// only when it is a file — a directory named as a state file is a config the engine accepts, and is
+/// not this module's to move.
+pub fn plan(view: &PairView) -> Planned {
+    let Some(root) = view.local_root.as_deref() else {
+        return undetermined(
+            "the config gives this pair no local_root, so the app cannot tell where its history is"
+                .to_owned(),
+            false,
+        );
+    };
+    for (key, path) in [
+        ("local_root", Some(root)),
+        ("db_path", view.db_path.as_deref()),
+        ("lockfile_path", view.lockfile_path.as_deref()),
+    ] {
+        if let Some(path) = path.filter(|path| !path.is_absolute()) {
+            return undetermined(
+                format!(
+                    "the config's {key} `{}` is a relative path. The daemon resolves a relative path \
+                     against its own working directory, which this app cannot know, so it cannot \
+                     locate the history safely and moved nothing",
+                    path.display()
+                ),
+                false,
+            );
         }
-        for file in named_state_files(view) {
-            let covered = file.starts_with(&state);
-            let is_file = fs::symlink_metadata(&file).is_ok_and(|meta| !meta.is_dir());
-            // Never the folder itself, or something it sits inside: a state file cannot be the root.
-            let encloses_root = root.starts_with(&file);
-            if !covered && is_file && !encloses_root && !items.contains(&file) {
-                items.push(file);
+    }
+    // The root has to be a folder that can be listed before anything under it can be called absent.
+    if let Err(error) = fs::read_dir(root) {
+        return undetermined(
+            format!(
+                "the folder {} cannot be read ({error}); a drive that is unplugged or not mounted \
+                 looks the same, so the app cannot tell whether its history is there and moved \
+                 nothing",
+                root.display()
+            ),
+            true,
+        );
+    }
+
+    let mut items = Vec::new();
+    let mut notes = Vec::new();
+    let state = sync_state_dir(root);
+    let mut state_is_not_a_directory = false;
+    match fs::symlink_metadata(&state) {
+        Ok(meta) if meta.is_dir() || meta.file_type().is_symlink() => items.push(state.clone()),
+        Ok(_) => {
+            state_is_not_a_directory = true;
+            notes.push(format!(
+                "{} is a file, not a directory, so it is not the sync engine's state and was left \
+                 where it is",
+                state.display()
+            ));
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return undetermined(
+                format!("could not look at {}: {error}", state.display()),
+                true,
+            );
+        }
+    }
+    for file in named_state_files(view) {
+        // Inside the state directory it is covered by moving that — or cannot exist, when `.sync` is
+        // not a directory. And never the folder itself, or something it sits inside.
+        if file.starts_with(&state) || root.starts_with(&file) || items.contains(&file) {
+            continue;
+        }
+        match fs::symlink_metadata(&file) {
+            Ok(meta) if meta.is_dir() => notes.push(format!(
+                "{} is a folder, not a state file, so it was left where it is",
+                file.display()
+            )),
+            Ok(_) => items.push(file),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return undetermined(
+                    format!("could not look at {}: {error}", file.display()),
+                    true,
+                );
             }
         }
     }
-    Plan {
-        pair: view.name.clone(),
-        local_root: view.local_root.clone().unwrap_or_default(),
-        items,
-        lockfile: view.lockfile_path.clone(),
+    if items.is_empty() {
+        return Planned::Nothing { notes };
     }
+    let mut plan = Plan::of_view(view, items, notes);
+    // A lockfile under a `.sync` that is a file cannot exist, so there is nothing to ask.
+    plan.lockfile = plan
+        .lockfile
+        .filter(|lock| !(state_is_not_a_directory && lock.starts_with(&state)));
+    Planned::Move(plan)
 }
 
 /// The index file this pair would resume if it were added back, when one is on disk. The add flow
 /// names it (brief A9, E18): **not** a thing the app can reset — only `proton-sync reset-index` can.
 pub fn surviving_index(view: &PairView) -> Option<PathBuf> {
-    let db = view.db_path.as_ref()?;
+    let db = view.db_path.as_ref().filter(|db| db.is_absolute())?;
     fs::symlink_metadata(db)
         .is_ok_and(|meta| meta.is_file())
         .then(|| db.clone())
@@ -244,11 +522,7 @@ pub fn real_path(path: &Path) -> PathBuf {
 /// is configured — so not history, and not this module's to move.
 fn belongs_to(item: &Path, view: &PairView) -> bool {
     let item = canonicalize_best_effort(item);
-    let mut owned: Vec<PathBuf> = named_state_files(view);
-    if let Some(root) = &view.local_root {
-        owned.push(sync_state_dir(root));
-    }
-    owned.iter().any(|file| {
+    state_candidates(view).iter().any(|file| {
         let file = canonicalize_best_effort(file);
         file.starts_with(&item) || item.starts_with(&file)
     })
@@ -262,22 +536,41 @@ fn belongs_to(item: &Path, view: &PairView) -> bool {
 pub enum How {
     /// One `rename` (the same filesystem).
     Rename,
-    /// Copied, compared with its source, and only then removed from where it was.
+    /// Copied, made durable, compared with its source, and only then removed from where it was.
     Copy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MovedItem {
+    #[serde(with = "exact_path")]
     pub from: PathBuf,
+    #[serde(with = "exact_path")]
     pub to: PathBuf,
     pub how: How,
+    /// Set when the item was a symbolic link: **only the link moved**. What it points at is where it
+    /// always was, untouched — this app never follows a link.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "exact_path::option"
+    )]
+    pub link_target: Option<PathBuf>,
 }
 
-/// The two operations that touch the disk, as values, so a test can make the filesystem boundary
-/// appear (`EXDEV`) and a copy go wrong without needing two filesystems or a broken disk.
+/// The operations that touch the disk, as values, so a test can make the filesystem boundary appear
+/// (`EXDEV`), a copy go wrong, and the order of the steps be seen, without two filesystems or a
+/// broken disk.
 pub struct Mover<'a> {
     pub rename: &'a dyn Fn(&Path, &Path) -> io::Result<()>,
     pub same: &'a dyn Fn(&Path, &Path) -> io::Result<bool>,
+    /// Make a file or a directory durable (`fsync`). Called for everything a copy wrote, before the
+    /// copy is compared and before the original is removed.
+    pub sync: &'a dyn Fn(&Path) -> io::Result<()>,
+}
+
+/// `fsync` a file or a directory: opened read-only, which is how a directory is synced.
+pub fn sync_path(path: &Path) -> io::Result<()> {
+    File::open(path)?.sync_all()
 }
 
 fn crosses_devices(error: &io::Error) -> bool {
@@ -286,7 +579,9 @@ fn crosses_devices(error: &io::Error) -> bool {
     error.kind() == io::ErrorKind::CrossesDevices || error.raw_os_error() == Some(18)
 }
 
-fn copy_entry(from: &Path, to: &Path) -> io::Result<()> {
+/// Copy `from` to `to`, calling `sync` on every file and directory written once its contents are in
+/// place. A link is recreated as a link (it has no contents to make durable; its directory is synced).
+fn copy_entry(from: &Path, to: &Path, sync: &dyn Fn(&Path) -> io::Result<()>) -> io::Result<()> {
     let meta = fs::symlink_metadata(from)?;
     let kind = meta.file_type();
     if kind.is_symlink() {
@@ -295,12 +590,14 @@ fn copy_entry(from: &Path, to: &Path) -> io::Result<()> {
         fs::create_dir(to)?;
         for entry in fs::read_dir(from)? {
             let entry = entry?;
-            copy_entry(&entry.path(), &to.join(entry.file_name()))?;
+            copy_entry(&entry.path(), &to.join(entry.file_name()), sync)?;
         }
         // After the contents: a read-only directory would refuse them.
-        fs::set_permissions(to, meta.permissions())
+        fs::set_permissions(to, meta.permissions())?;
+        sync(to)
     } else if kind.is_file() {
-        fs::copy(from, to).map(|_| ())
+        fs::copy(from, to)?;
+        sync(to)
     } else {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -378,18 +675,25 @@ fn remove_entry(path: &Path) -> io::Result<()> {
     }
 }
 
-/// Move one item. Rename if the filesystem allows; otherwise copy, compare, and only then remove.
+/// Move one item. Rename if the filesystem allows; otherwise copy, make the copy durable, compare, and
+/// only then remove.
 ///
-/// **The order is the safety.** The original is removed after — and only after — `same` has said the
-/// copy is it. A copy that cannot be made or does not compare equal is removed (it is ours: it is
-/// under a directory this move just created) and the original is left untouched.
+/// **The order is the safety.** The original is removed after — and only after — `sync` has put the
+/// copy on the disk and `same` has said the copy is it: a power cut between the copy and the removal
+/// must leave the original, never an original gone and a copy that was only in memory. A copy that
+/// cannot be made, made durable or does not compare equal is removed (it is ours: it is under a
+/// directory this move just created) and the original is left untouched.
 fn move_one(from: &Path, to: &Path, mover: &Mover<'_>) -> Result<How, String> {
     match (mover.rename)(from, to) {
         Ok(()) => return Ok(How::Rename),
         Err(error) if crosses_devices(&error) => {}
         Err(error) => return Err(format!("could not move {}: {error}", from.display())),
     }
-    if let Err(error) = copy_entry(from, to) {
+    let copied = copy_entry(from, to, mover.sync).and_then(|()| {
+        // The new name, too: the directory entry that makes the copy findable.
+        to.parent().map_or(Ok(()), |parent| (mover.sync)(parent))
+    });
+    if let Err(error) = copied {
         let _ = remove_entry(to);
         return Err(format!("could not copy {}: {error}", from.display()));
     }
@@ -426,8 +730,12 @@ fn move_one(from: &Path, to: &Path, mover: &Mover<'_>) -> Result<How, String> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Done {
     /// The directory the history went to.
+    #[serde(with = "exact_path")]
     pub to: PathBuf,
     pub moved: Vec<MovedItem>,
+    /// What planning saw and left alone.
+    #[serde(default)]
+    pub notes: Vec<String>,
 }
 
 /// Why a set-aside did not (finish) happen, and what is left to do.
@@ -436,6 +744,8 @@ pub struct Failed {
     pub reason: String,
     /// What did get moved before the failure (already in its place; never moved back).
     pub moved: Vec<MovedItem>,
+    /// The directory `moved` went to, when anything did.
+    pub to: Option<PathBuf>,
     /// What is still where it was.
     pub remaining: Vec<PathBuf>,
 }
@@ -445,6 +755,7 @@ impl Failed {
         Self {
             reason,
             moved: Vec::new(),
+            to: None,
             remaining: plan.items.clone(),
         }
     }
@@ -473,6 +784,7 @@ pub fn execute(plan: &Plan, context: &Context<'_>) -> Result<Done, Failed> {
         &Mover {
             rename: &rename,
             same: &same,
+            sync: &sync_path,
         },
     )
 }
@@ -482,6 +794,7 @@ pub fn execute_with(plan: &Plan, context: &Context<'_>, mover: &Mover<'_>) -> Re
         return Ok(Done {
             to: PathBuf::new(),
             moved: Vec::new(),
+            notes: plan.notes.clone(),
         });
     }
     let fail = |reason: String| Failed::nothing_moved(reason, plan);
@@ -539,12 +852,18 @@ pub fn execute_with(plan: &Plan, context: &Context<'_>, mover: &Mover<'_>) -> Re
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default();
         let stored = destination.join(format!("{number:02}-{name}"));
+        // Before the move, while the link is still where it was.
+        let link_target = fs::symlink_metadata(item)
+            .ok()
+            .filter(|meta| meta.file_type().is_symlink())
+            .and_then(|_| fs::read_link(item).ok());
         match move_one(item, &stored, mover) {
             Ok(how) => {
                 moved.push(MovedItem {
                     from: item.clone(),
                     to: stored,
                     how,
+                    link_target,
                 });
                 remaining.retain(|left| left != item);
             }
@@ -563,15 +882,18 @@ pub fn execute_with(plan: &Plan, context: &Context<'_>, mover: &Mover<'_>) -> Re
         None => Ok(Done {
             to: destination,
             moved,
+            notes: plan.notes.clone(),
         }),
         Some(reason) => {
             if moved.is_empty() {
                 // An empty directory of ours: nothing was put in it, so nothing is lost by removing it.
                 let _ = fs::remove_dir(&destination);
             }
+            let to = (!moved.is_empty()).then_some(destination);
             Err(Failed {
                 reason,
                 moved,
+                to,
                 remaining,
             })
         }
@@ -610,10 +932,12 @@ fn fresh_directory(removed_pairs: &Path, pair: &str, now: SystemTime) -> io::Res
 #[derive(Serialize)]
 struct Manifest<'a> {
     pair: &'a str,
+    #[serde(with = "exact_path")]
     local_root: &'a Path,
     removed_at: String,
     note: &'static str,
     items: &'a [MovedItem],
+    notes: &'a [String],
 }
 
 fn write_manifest(
@@ -629,6 +953,7 @@ fn write_manifest(
         note: "The sync history of a folder pair removed in Proton Drive Sync. Nothing here is \
                needed to sync; deleting this directory forgets that history for good.",
         items: moved,
+        notes: &plan.notes,
     };
     let bytes = serde_json::to_vec_pretty(&manifest).map_err(io::Error::other)?;
     fs::write(destination.join(MANIFEST_NAME), bytes)
@@ -639,6 +964,8 @@ fn write_manifest(
 /// A set-aside that was due and could not happen: kept so that it still can.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pending {
+    /// Who the pair was (its folder and state paths) and what was found to move when this was
+    /// recorded. The identity is what a retry plans from; the items are only checked against it.
     pub plan: Plan,
     /// Why it could not happen when it was recorded.
     pub reason: String,
@@ -660,10 +987,7 @@ pub fn record_pending(
         .mode(0o700)
         .create(&directory)?;
     let record = Pending {
-        plan: Plan {
-            items: plan.items.clone(),
-            ..plan.clone()
-        },
+        plan: plan.clone(),
         reason: reason.to_owned(),
         recorded_at: utc_stamp(now),
     };
@@ -724,46 +1048,75 @@ pub enum Settled {
     /// The folder is a configured pair again: that history is its own now. The record is dropped and
     /// nothing was moved.
     Superseded { pair: String },
+    /// Looked at again, the pair has no state left to move (it was moved or deleted by hand). The
+    /// record is dropped.
+    NothingLeft { pair: String, notes: Vec<String> },
     /// Still cannot happen; the record stays.
     StillPending { pair: String, reason: String },
 }
 
 /// Retry every pending set-aside, against the pairs configured **now**. Safe to call at any time and
 /// as often as a caller likes: each one re-checks what [`execute`] checks.
+///
+/// **A record is not the plan.** Each is re-derived from the pair's identity on the disk as it is now
+/// (so a `.sync` that has been replaced, or a drive that came back, is seen as it is), and a record
+/// whose items are not all that pair's state — its `.sync`, or a file its paths name — is refused and
+/// left where it is, with the reason, instead of moving what it names.
 pub fn settle_pending(context: &Context<'_>) -> Vec<Settled> {
     let mut results = Vec::new();
     for (path, record) in pending(context.state_dir) {
         let pair = record.plan.pair.clone();
-        // Re-plan from what is on disk: the items may have gone, or grown, since it was recorded.
-        let still_there: Vec<PathBuf> = record
-            .plan
-            .items
-            .iter()
-            .filter(|item| exists_without_following(item))
-            .cloned()
-            .collect();
-        let plan = Plan {
-            items: still_there,
-            ..record.plan.clone()
-        };
-        let readded = context.configured.iter().any(|view| {
-            view.local_root.as_deref().is_some_and(|root| {
-                canonicalize_best_effort(root) == canonicalize_best_effort(&plan.local_root)
-            })
-        });
+        // By real path: `~/Sync`, `/home/me/Sync` and a link to it are one folder.
+        let readded = !record.plan.local_root.as_os_str().is_empty()
+            && context.configured.iter().any(|view| {
+                view.local_root.as_deref().is_some_and(|root| {
+                    canonicalize_best_effort(root)
+                        == canonicalize_best_effort(&record.plan.local_root)
+                })
+            });
         if readded {
             let _ = fs::remove_file(&path);
             results.push(Settled::Superseded { pair });
             continue;
         }
-        match execute(&plan, context) {
-            Ok(done) => {
-                let _ = fs::remove_file(&path);
-                results.push(Settled::Moved { pair, done });
-            }
-            Err(failed) => results.push(Settled::StillPending {
+        let view = record.plan.view();
+        let own_state = state_candidates(&view);
+        if let Some(stranger) = record
+            .plan
+            .items
+            .iter()
+            .find(|item| !own_state.contains(item))
+        {
+            results.push(Settled::StillPending {
+                reason: format!(
+                    "the note {} names {}, which is not part of the sync state of folder pair \
+                     '{pair}' (its `.sync` folder, or a file its index and lock paths name), so \
+                     nothing was moved. If you did not write that note, delete it",
+                    path.display(),
+                    stranger.display()
+                ),
                 pair,
-                reason: failed.reason,
+            });
+            continue;
+        }
+        match plan(&view) {
+            Planned::Move(plan) => match execute(&plan, context) {
+                Ok(done) => {
+                    let _ = fs::remove_file(&path);
+                    results.push(Settled::Moved { pair, done });
+                }
+                Err(failed) => results.push(Settled::StillPending {
+                    pair,
+                    reason: failed.reason,
+                }),
+            },
+            Planned::Nothing { notes } => {
+                let _ = fs::remove_file(&path);
+                results.push(Settled::NothingLeft { pair, notes });
+            }
+            Planned::Undetermined(undetermined) => results.push(Settled::StillPending {
+                pair,
+                reason: undetermined.reason,
             }),
         }
     }

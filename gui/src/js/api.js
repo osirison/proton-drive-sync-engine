@@ -89,13 +89,17 @@ export const api = {
   // ADDING A FOLDER (#102 phase 5b-2). A WRITE, and the one whose `pair` is a name the app does NOT know
   // yet: the NEW pair's, which the engine refuses if it is taken, malformed or reserved. `init` is
   // `{ local_root, remote_root, exclude }`. Resolves with `{ pair, path, restart_needed,
-  // surviving_index, settled_earlier }` and starts nothing; the caller restarts the daemon. Nothing
+  // surviving_index, settled_earlier, warnings }` and starts nothing; the caller restarts the daemon.
+  // A refusal still names any earlier removal the call finished first (in the error text). Nothing
   // calls it until the Settings folder list (5c-2) draws the dialog.
   addPair: (init, { pair } = {}) => write("add_pair", { init }, pair),
   // REMOVING ONE, and setting its sync history aside outside every sync folder, so that adding the same
   // folder back starts fresh (D8). This restarts the daemon itself, because the history can only move
   // once the daemon has let go of it. Resolves with `{ pair, new_default, restart, restart_needed,
-  // set_aside, … }`: `set_aside.outcome` is `moved` (and where), `nothing_to_move` or `pending` (and why).
+  // set_aside, … }`: `set_aside.outcome` is `moved` (and where, and any `left_behind` link), `link_moved`
+  // (ONLY a link moved; the history is where it points), `nothing_to_move` (a readable folder with no
+  // state), or `pending` (and why; `moved`/`still_at` say how far a partial move got, and an empty
+  // `still_at` means the folder could not be looked at, not that it holds nothing).
   removePair: ({ pair } = {}) => write("remove_pair", {}, pair),
   // Settings › `Choose…`. Resolves `null` when the picker is DISMISSED and rejects when it could
   // not open — the two were one answer until Copilot's second pass, which made a broken picker
@@ -508,6 +512,7 @@ function mockInvoke(cmd, args) {
         restart_needed: true,
         surviving_index: null,
         settled_earlier: [],
+        warnings: [],
       });
     case "remove_pair":
       // Accepts, with the history moved: the ending the ordinary removal has.
@@ -522,6 +527,8 @@ function mockInvoke(cmd, args) {
           pair: args?.pair ?? null,
           to: "~/.local/state/proton-sync/removed-pairs/preview",
           items: [],
+          left_behind: [],
+          notes: [],
           message: "The sync history was moved outside every sync folder (preview mock).",
         },
         settled_earlier: [],
