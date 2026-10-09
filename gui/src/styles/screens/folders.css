@@ -1,0 +1,278 @@
+/* Folders (#102 phase 5c-2) — the Settings list at two folders or more, the add dialog and the removal
+ * confirmation. `8a Folders list`, `8a Add folder`, `8a Remove folder`.
+ *
+ * Every value is the neighbouring frame's: the list takes `8a Settings`' panel (13px radius, `--panel`,
+ * `--border-subtle`) and the skip tab's row rhythm (`--divider` between rows); the dialogs take
+ * `7a Never synced`'s head and foot and the Settings inputs' 11/13 padding. Nothing here is a new
+ * measurement of a thing the design already draws.
+ */
+
+/* ----------------------------------------------------------------------- the list, in Settings ---- */
+
+/* The panel the rows sit in. `overflow: hidden` so the selected row's tint is clipped to the radius. */
+.folders-list {
+  margin-top: 11px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-13);
+  background: var(--panel);
+  overflow: hidden;
+}
+.folders-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 11px 18px;
+  border-top: 1px solid var(--divider);
+}
+.folders-row:first-child {
+  border-top: 0;
+}
+/* The folder the settings below are about: the panel's own raised tier, and a filled dot — never a
+   colour alone, so the row that is chosen reads the same in a screenshot of any theme. */
+.folders-row.is-selected {
+  background: var(--panel-raised);
+}
+
+/* A row's whole name block is one button: choosing a folder is a click anywhere on it. Reset to nothing,
+   because the row is what is drawn. */
+.folders-row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+.folders-row-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--r-dot);
+  background: transparent;
+}
+.folders-row.is-selected .folders-row-dot {
+  background: var(--text);
+}
+.folders-row-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.folders-row-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+/* The two paths in mono, quiet, on one line that gives way with an ellipsis rather than wrapping the row. */
+.folders-row-paths {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-5);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.folders-row-state {
+  flex: none;
+  font-size: 12px;
+  color: var(--text-4);
+}
+/* `Remove` is never asked to give way to the name beside it. */
+.folders-row > .btn {
+  flex: none;
+}
+
+.folders-note {
+  margin-top: 10px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text-5);
+}
+.folders-add {
+  margin-top: 12px;
+}
+
+/* The settings the list chooses between, wrapped so the seam — positioned against its container — keeps its
+   distance from the label it was measured under, and the list above cannot move it. */
+.settings-folder-editor {
+  position: relative;
+  margin-top: 22px;
+}
+
+/* "Applies to all folders." under an Advanced setting the daemon reads once for every folder. */
+.settings-scope-note {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text-5);
+}
+
+/* ------------------------------------------------------------------------------ the dialogs ---- */
+
+/* One column of blocks with the dialog's own rhythm; scrolls if a long list of rules makes it taller than the
+   window leaves room for (the surface clips what overflows it). */
+.folders-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 0;
+  overflow-y: auto;
+}
+/* The removal confirmation is sentences, not fields: a tighter rhythm between them. */
+.folders-body.is-lines {
+  gap: 10px;
+}
+.folders-field {
+  min-width: 0;
+}
+.folders-input {
+  width: 100%;
+  margin-top: 9px;
+  padding: 11px 13px;
+  border-radius: var(--r-10);
+  background: var(--panel);
+  font-size: 13px;
+  color: var(--text);
+}
+/* The remote side right-aligns its text like the Settings field does: the pair reads as two ends of a line. */
+.folders-input.is-remote {
+  text-align: right;
+}
+.folders-hint {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text-5);
+}
+.folders-hint + .folders-skip-row,
+.folders-hint + .folders-rules {
+  margin-top: 9px;
+}
+/* The engine's own refusal of what was typed: its words, in mono, in the decision hue. Inline under a field,
+   or a block of its own for a refusal of the whole add. */
+.folders-error {
+  margin-top: 8px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 17px;
+  color: var(--decision-text);
+}
+.folders-error.is-block {
+  margin-top: 0;
+  padding: 10px 13px;
+  border: 1px solid var(--decision-card-border);
+  border-radius: var(--r-9);
+  background: var(--decision-card-bg);
+}
+
+/* The two sides, side by side as they are on the Settings tab and the first-run step. */
+.folders-sides {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+.folders-side {
+  min-width: 0;
+}
+.folders-side-row {
+  display: flex;
+  gap: 9px;
+}
+.folders-side-row .folders-input {
+  flex: 1;
+  min-width: 0;
+}
+.folders-side-row .btn {
+  flex: none;
+  margin-top: 9px;
+}
+.folders-price {
+  margin-top: 8px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 17px;
+  color: var(--text-3);
+}
+.folders-side.is-remote .folders-price {
+  text-align: right;
+}
+.folders-price.is-failed {
+  color: var(--decision-text);
+}
+
+.folders-skip-row {
+  display: flex;
+  gap: 9px;
+  margin-top: 9px;
+}
+.folders-skip-row .folders-input {
+  flex: 1;
+  min-width: 0;
+  margin-top: 0;
+}
+.folders-rules {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.folders-rule {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-8);
+  background: var(--panel);
+}
+.folders-rule-pattern {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+/* What the new folder would resume, and anything else worth reading before the button: the warm band the
+   never-synced panel wears — here but not backed up, and nothing at risk in the colour. */
+.folders-notice {
+  padding: 11px 14px;
+  border: 1px solid var(--warn-band-border);
+  border-radius: var(--r-11);
+  background: var(--warn-band-bg);
+  font-size: 12.5px;
+  line-height: 19px;
+  color: var(--text-2);
+}
+.folders-status {
+  font-size: 12.5px;
+  line-height: 19px;
+  color: var(--text-3);
+}
+.folders-status.is-cost {
+  color: var(--warn);
+}
+
+.folders-foot-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text-5);
+}
+.folders-spacer {
+  flex: 1;
+}
+
+/* The removal confirmation: four sentences, one per line, in the dialog's body voice. */
+.folders-line {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-3);
+}
+.folders-line.is-account {
+  color: var(--text-2);
+}

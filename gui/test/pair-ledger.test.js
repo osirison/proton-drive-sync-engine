@@ -176,6 +176,32 @@ const LEDGER = [
     "the last `read_config` reply FOR each pair (keyed by the pair the reply says it describes)",
   ],
   ["notifierState", DEFERRED, "5e: the notifier's memory becomes per pair (`kind@name`)"],
+
+  // ---- adding and removing folders (#102 phase 5c-2): about the SET of folders, or about one named by value ----
+  [
+    "addFolder",
+    GLOBAL,
+    "the add dialog's whole state. It is about a folder that does not exist yet, so a switch of the folder " +
+      "on screen has nothing to reset in it: the ONE step that moves the selection without a click " +
+      "(`showFolder`, once the daemon lists the new folder) is the dialog's own, and it names the folder " +
+      "by the value it captured when `Add folder` was pressed",
+  ],
+  [
+    "removeFolder",
+    GLOBAL,
+    "the removal dialog's state. It carries the folder it was drawn for (class W: `confirmRemoveFolder` " +
+      "reads `flow.pair`, never the selection), so a switch under it changes nothing it does",
+  ],
+  [
+    "folderMerge",
+    GLOBAL,
+    "the watch on a just-added folder's first pass: `{ pair, seq }`, compared only against a reply that " +
+      "says it is about that folder, so the selection moving is the thing it waits for and not a hazard",
+  ],
+  ["addFolderTimer", GLOBAL, "the debounce between a keystroke in the add dialog and the engine's answer"],
+  ["addFolderSelecting", GLOBAL, "a `showFolder` in flight for the folder the add dialog is waiting on"],
+  ["ADD_CHECK_MS", GLOBAL, "a constant"],
+  ["folderRoster", GLOBAL, "a function: the settings file's folder list (the frame's, under `?frame=`)"],
 ];
 
 const app = readFileSync(fileURLToPath(new URL("../src/js/app.js", import.meta.url)), "utf8");

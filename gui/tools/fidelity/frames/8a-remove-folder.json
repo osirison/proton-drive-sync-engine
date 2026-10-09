@@ -1,0 +1,423 @@
+{
+  "label": "8a Remove folder",
+  "kind": "dialog",
+  "width": 600,
+  "height": 305,
+  "nodes": [
+    {
+      "key": "",
+      "tag": "div",
+      "fullText": "Remove documents?✕Syncing stops for documents.Nothing is deleted on this computer or in Proton Drive.Its sync history is moved aside to ~/.local/state/proton-sync/removed-pairs, so adding the folder back later starts fresh.photos becomes the default folder: commands that name no folder, and older versions of this app, will mean it.CancelRemove folder",
+      "unbundled": true,
+      "fromPage": [
+        "color"
+      ],
+      "box": {
+        "w": 600,
+        "h": 305
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "background-color": "rgb(10, 11, 13)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(35, 38, 45)",
+        "border-right-color": "rgb(35, 38, 45)",
+        "border-bottom-color": "rgb(35, 38, 45)",
+        "border-left-color": "rgb(35, 38, 45)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "12px",
+        "border-top-right-radius": "12px",
+        "border-bottom-right-radius": "12px",
+        "border-bottom-left-radius": "12px",
+        "display": "flex",
+        "flex-direction": "column",
+        "overflow": "hidden"
+      }
+    },
+    {
+      "key": "div[0]",
+      "tag": "div",
+      "fullText": "Remove documents?✕",
+      "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 598,
+        "h": 48
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "padding-top": "22px",
+        "padding-right": "24px",
+        "padding-left": "24px",
+        "display": "flex",
+        "flex-shrink": "0",
+        "align-items": "flex-start",
+        "gap": "12px"
+      }
+    },
+    {
+      "key": "div[0]/div",
+      "tag": "div",
+      "text": "Remove documents?",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 512,
+        "h": 22
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "18px",
+        "font-weight": "600",
+        "letter-spacing": "-0.36px",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "flex-grow": "1",
+        "flex-basis": "0%"
+      }
+    },
+    {
+      "key": "div[0]/button",
+      "tag": "button",
+      "text": "✕",
+      "unbundled": true,
+      "box": {
+        "w": 26,
+        "h": 26
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(153, 162, 174)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(35, 38, 45)",
+        "border-right-color": "rgb(35, 38, 45)",
+        "border-bottom-color": "rgb(35, 38, 45)",
+        "border-left-color": "rgb(35, 38, 45)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "7px",
+        "border-top-right-radius": "7px",
+        "border-bottom-right-radius": "7px",
+        "border-bottom-left-radius": "7px",
+        "padding-top": "1px",
+        "padding-right": "6px",
+        "padding-bottom": "1px",
+        "padding-left": "6px",
+        "flex-shrink": "0"
+      }
+    },
+    {
+      "key": "div[1]",
+      "tag": "div",
+      "fullText": "Syncing stops for documents.Nothing is deleted on this computer or in Proton Drive.Its sync history is moved aside to ~/.local/state/proton-sync/removed-pairs, so adding the folder back later starts fresh.photos becomes the default folder: commands that name no folder, and older versions of this app, will mean it.",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 598,
+        "h": 150
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "padding-right": "24px",
+        "padding-left": "24px",
+        "margin-top": "16px",
+        "display": "flex",
+        "flex-direction": "column",
+        "flex-grow": "1",
+        "flex-basis": "0%",
+        "gap": "10px",
+        "overflow": "auto"
+      }
+    },
+    {
+      "key": "div[1]/div[0]",
+      "tag": "div",
+      "text": "Syncing stops for documents.",
+      "box": {
+        "w": 550,
+        "h": 20
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "20px",
+        "text-align": "start",
+        "color": "rgb(153, 162, 174)",
+        "border-top-color": "rgb(153, 162, 174)",
+        "border-right-color": "rgb(153, 162, 174)",
+        "border-bottom-color": "rgb(153, 162, 174)",
+        "border-left-color": "rgb(153, 162, 174)"
+      }
+    },
+    {
+      "key": "div[1]/div[1]",
+      "tag": "div",
+      "text": "Nothing is deleted on this computer or in Proton Drive.",
+      "box": {
+        "w": 550,
+        "h": 20
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "20px",
+        "text-align": "start",
+        "color": "rgb(153, 162, 174)",
+        "border-top-color": "rgb(153, 162, 174)",
+        "border-right-color": "rgb(153, 162, 174)",
+        "border-bottom-color": "rgb(153, 162, 174)",
+        "border-left-color": "rgb(153, 162, 174)"
+      }
+    },
+    {
+      "key": "div[1]/div[2]",
+      "tag": "div",
+      "text": "Its sync history is moved aside to ~/.local/state/proton-sync/removed-pairs, so adding the folder back later starts fresh.",
+      "box": {
+        "w": 550,
+        "h": 40
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "20px",
+        "text-align": "start",
+        "color": "rgb(153, 162, 174)",
+        "border-top-color": "rgb(153, 162, 174)",
+        "border-right-color": "rgb(153, 162, 174)",
+        "border-bottom-color": "rgb(153, 162, 174)",
+        "border-left-color": "rgb(153, 162, 174)"
+      }
+    },
+    {
+      "key": "div[1]/div[3]",
+      "tag": "div",
+      "text": "photos becomes the default folder: commands that name no folder, and older versions of this app, will mean it.",
+      "box": {
+        "w": 550,
+        "h": 40
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "20px",
+        "text-align": "start",
+        "color": "rgb(153, 162, 174)",
+        "border-top-color": "rgb(153, 162, 174)",
+        "border-right-color": "rgb(153, 162, 174)",
+        "border-bottom-color": "rgb(153, 162, 174)",
+        "border-left-color": "rgb(153, 162, 174)"
+      }
+    },
+    {
+      "key": "div[2]",
+      "tag": "div",
+      "fullText": "CancelRemove folder",
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 598,
+        "h": 73
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-width": "1px",
+        "border-top-color": "rgb(22, 24, 29)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "border-top-style": "solid",
+        "padding-top": "14px",
+        "padding-right": "24px",
+        "padding-bottom": "18px",
+        "padding-left": "24px",
+        "margin-top": "16px",
+        "display": "flex",
+        "flex-shrink": "0",
+        "align-items": "center",
+        "gap": "10px"
+      }
+    },
+    {
+      "key": "div[2]/span",
+      "tag": "span",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 310.78,
+        "h": 0
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "flex-grow": "1",
+        "flex-basis": "0%"
+      }
+    },
+    {
+      "key": "div[2]/button[0]",
+      "tag": "button",
+      "text": "Cancel",
+      "box": {
+        "w": 86.63,
+        "h": 38
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13px",
+        "font-weight": "600",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(10, 11, 13)",
+        "background-color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(10, 11, 13)",
+        "border-right-color": "rgb(10, 11, 13)",
+        "border-bottom-color": "rgb(10, 11, 13)",
+        "border-left-color": "rgb(10, 11, 13)",
+        "border-top-left-radius": "10px",
+        "border-top-right-radius": "10px",
+        "border-bottom-right-radius": "10px",
+        "border-bottom-left-radius": "10px",
+        "padding-top": "11px",
+        "padding-right": "22px",
+        "padding-bottom": "11px",
+        "padding-left": "22px"
+      }
+    },
+    {
+      "key": "div[2]/button[1]",
+      "tag": "button",
+      "text": "Remove folder",
+      "box": {
+        "w": 132.59,
+        "h": 40
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(201, 208, 218)",
+        "background-color": "rgb(16, 18, 22)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(35, 38, 45)",
+        "border-right-color": "rgb(35, 38, 45)",
+        "border-bottom-color": "rgb(35, 38, 45)",
+        "border-left-color": "rgb(35, 38, 45)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "10px",
+        "border-top-right-radius": "10px",
+        "border-bottom-right-radius": "10px",
+        "border-bottom-left-radius": "10px",
+        "padding-top": "11px",
+        "padding-right": "22px",
+        "padding-bottom": "11px",
+        "padding-left": "22px"
+      }
+    }
+  ]
+}

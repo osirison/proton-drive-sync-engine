@@ -1528,6 +1528,117 @@ export function settingsFids(view) {
   return standalone ? body : { ...settingsShell, ...body };
 }
 
+// ----------------------------------------------------------------------- 5c-2 · the folders ----
+
+/**
+ * `8a Folders list` — a 600px crop of the Folders tab at two folders: the list that sits above the
+ * settings it chooses between. The crop's own root (a bordered card that exists nowhere in the window)
+ * is undeclared, as the other crops' are; every node below it is the tab's real content.
+ *
+ * A ROW'S THREE CHILDREN ARE THREE KEYS, and the prototype's key scheme shows why they differ: the name
+ * block is a `button` (the first of two in the row, so it is indexed) and the state is the row's only
+ * `span`, which therefore carries no index at all.
+ */
+const FOLDERS_LIST_FIDS = {
+  listLabel: "div[0]",
+  list: "div[1]",
+  listRow: (i) => `div[1]/div[${i}]`,
+  listMain: (i) => `div[1]/div[${i}]/button[0]`,
+  listDot: (i) => `div[1]/div[${i}]/button[0]/span[0]`,
+  listText: (i) => `div[1]/div[${i}]/button[0]/span[1]`,
+  listName: (i) => `div[1]/div[${i}]/button[0]/span[1]/span[0]`,
+  listPaths: (i) => `div[1]/div[${i}]/button[0]/span[1]/span[1]`,
+  listState: (i) => `div[1]/div[${i}]/span`,
+  listRemove: (i) => `div[1]/div[${i}]/button[1]`,
+  listNote: "div[2]",
+  listAddWrap: "div[3]",
+  listAdd: "div[3]/button",
+};
+
+/**
+ * `8a Save two folders` — a 600px crop of the Settings action bar when a save costs two folders their
+ * syncing. The bar IS the crop's whole content, so its keys are the bar's own and the same slot names the
+ * window's bar stamps (`bar`, `barNote`, `barSpacer`, `discard`, `save`).
+ */
+const SAVE_TWO_FOLDERS_FIDS = {
+  bar: "div",
+  barNote: "div/span[0]",
+  barSpacer: "div/span[1]",
+  discard: "div/button[0]",
+  save: "div/button[1]",
+};
+
+/**
+ * `8a Add folder` — the 720px dialog, checked and ready: name, the two sides priced, the skip rules, the
+ * index it would resume, and the sentence that there is no preview.
+ *
+ * EVERY BODY SLOT IS PREFIXED (`af`), by the collision rule `activityFids` states: this dialog floats over
+ * the Settings window, whose own slots are not in this map and so are not stamped, but a name that two
+ * tables share is resolved by name.
+ */
+const ADD_FOLDER_FIDS = {
+  dlgHead: "div[0]",
+  dlgHeadings: "div[0]/div",
+  dlgTitle: "div[0]/div/div[0]",
+  dlgSub: "div[0]/div/div[1]",
+  dlgClose: "div[0]/button",
+
+  afBody: "div[1]",
+  afNameBlock: "div[1]/div[0]",
+  afNameLabel: "div[1]/div[0]/div[0]",
+  afNameInput: "div[1]/div[0]/input",
+  afNameNote: "div[1]/div[0]/div[1]",
+
+  afSides: "div[1]/div[1]",
+  afSide: (i) => `div[1]/div[1]/div[${i}]`,
+  afSideLabel: (i) => `div[1]/div[1]/div[${i}]/div[0]`,
+  afSideRow: (i) => `div[1]/div[1]/div[${i}]/div[1]`,
+  afSideInput: (i) => `div[1]/div[1]/div[${i}]/div[1]/input`,
+  afChoose: "div[1]/div[1]/div[0]/div[1]/button",
+  afPrice: (i) => `div[1]/div[1]/div[${i}]/div[2]`,
+
+  afSkipBlock: "div[1]/div[2]",
+  afSkipLabel: "div[1]/div[2]/div[0]",
+  afSkipSub: "div[1]/div[2]/div[1]",
+  afSkipRow: "div[1]/div[2]/div[2]",
+  afSkipInput: "div[1]/div[2]/div[2]/input",
+  afSkipAdd: "div[1]/div[2]/div[2]/button",
+
+  afNotice: "div[1]/div[3]",
+
+  afFoot: "div[2]",
+  afFootText: "div[2]/span",
+  afCancel: "div[2]/button[0]",
+  afPrimary: "div[2]/button[1]",
+};
+
+/** `8a Remove folder` — the 600px confirmation: four sentences, then the safe button and the one that acts. */
+const REMOVE_FOLDER_FIDS = {
+  dlgHead: "div[0]",
+  dlgTitle: "div[0]/div",
+  dlgClose: "div[0]/button",
+
+  rfBody: "div[1]",
+  rfLine: (i) => `div[1]/div[${i}]`,
+
+  rfFoot: "div[2]",
+  rfFootSpacer: "div[2]/span",
+  rfCancel: "div[2]/button[0]",
+  rfConfirm: "div[2]/button[1]",
+};
+
+/** The four maps a folders fixture asks for by view. */
+export function foldersFids(view) {
+  const map = {
+    list: FOLDERS_LIST_FIDS,
+    save: SAVE_TWO_FOLDERS_FIDS,
+    add: ADD_FOLDER_FIDS,
+    remove: REMOVE_FOLDER_FIDS,
+  }[view];
+  if (!map) throw new Error(`fids: no folders view "${view}"`);
+  return map;
+}
+
 // ------------------------------------------------------------------------- S7 · onboarding ----
 
 // FIVE FRAMES, TWO OF WHICH ARE THE WINDOW. `9a Folders` and `9a Review` are the takeover's two

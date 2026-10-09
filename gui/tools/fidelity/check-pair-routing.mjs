@@ -8,9 +8,10 @@
 // that answers each command and **holds a reply open when told to**, which is what makes the window
 // between "the person pressed it" and "the daemon answered" a thing a test can stand in.
 //
-// Seventy-four scenarios (the first sixteen are phases 5a-2, 5d and 5b-1's; forty-three are phase 5c-1's —
+// Eighty-nine scenarios (the first sixteen are phases 5a-2, 5d and 5b-1's; forty-three are phase 5c-1's —
 // twenty-one built with the selector, the nineteen its review added and the three its second review added — and the last fifteen
-// are phase 5e's, the notifications: the six it was built with and the nine its review added; both below the list). The first four are each a way a write can land on a different pair than the one it was
+// are phase 5e's, the notifications: the six it was built with and the nine its review added; both below the list —
+// and the fifteen after them are phase 5c-2's, adding and removing folders, below the notifications'). The first four are each a way a write can land on a different pair than the one it was
 // drawn for — each was a bug before the capture existed or would be again if it were removed. The fifth
 // and sixth are the first-run rule at two pairs and at one. The next three are the rest of the capture:
 // a late READ, the decision on a conflict, and the tray panel's pin. The next two are the tray panel's
@@ -170,7 +171,17 @@
 
 import puppeteer from "puppeteer";
 import { serve } from "./serve.mjs";
-import { CHROME, CONFLICTS, DELETIONS, MAIN, PLAN, SETTINGS, TRAY } from "../../src/js/ui/copy.js";
+import {
+  CHROME,
+  CONFLICTS,
+  DELETIONS,
+  FOLDERS,
+  MAIN,
+  ONBOARDING,
+  PLAN,
+  SETTINGS,
+  TRAY,
+} from "../../src/js/ui/copy.js";
 import { EMPTY_CONFIG } from "../../src/js/api.js";
 
 // The default roster of every Bridge that does not name its own. FROZEN: it is one array shared by all of them,
@@ -240,6 +251,21 @@ class Bridge {
     } = {},
   ) {
     this.names = names;
+    // Each folder's pass counter (`reconcile_seq`), 1 unless a scenario moves it: `finishPass` is how a
+    // scenario says a folder's pass has completed, and the merge dialog of an added folder waits for exactly that.
+    this.seqs = {};
+    // Folder adding and removing (#102 phase 5c-2): what the engine's check says about a name and a folder,
+    // what the measurement of a side answers (or refuses with), an index a folder would resume, and the
+    // sentence the add command refuses with. The roster is the settings FILE's; `restart_service` is what makes
+    // the daemon run it.
+    this.survivors = {};
+    this.nameRefusals = {};
+    this.probeFailures = {};
+    this.addRefusal = null;
+    // A daemon that restarts and still does not run the new folder: the file lists it and the daemon does not.
+    this.refuseToList = false;
+    this.setAsideDir = "/home/u/.local/state/proton-sync/removed-pairs";
+    this.removeReply = null;
     // The `notify_policy` the window reads at boot. `never` for every scenario that is not about banners
     // (the default stays what it was), so only the ones that ask for it can raise one.
     this.notifyPolicy = notifyPolicy;
@@ -299,6 +325,45 @@ class Bridge {
     return this.trackPause && this.pausedPairs.has(pair);
   }
 
+  /** A folder's pass has completed: its counter moves, and it is no longer a folder that has never synced. */
+  finishPass(pair) {
+    this.seqs[pair] = (this.seqs[pair] ?? 1) + 1;
+    this.neverSynced = this.neverSynced.filter((name) => name !== pair);
+  }
+
+  /**
+   * The engine's answer to `check_add_pair`, as far as a scripted stand-in can be it. The names it refuses and
+   * the index it finds are the scenario's to say (`nameRefusals`, `survivors`); the suggestion is the
+   * folder's own name, lower-cased, which is what the command makes of `~/Photos`.
+   */
+  checkAdd(args) {
+    const name = String(args?.name ?? "");
+    const local = String(args?.init?.local_root ?? "");
+    const remote = String(args?.init?.remote_root ?? "");
+    const last = local.split("/").filter(Boolean).pop() ?? "";
+    const suggested = last.toLowerCase().replace(/[^a-z0-9._]+/g, "-") || "folder";
+    const known = this.roster ?? this.names;
+    const taken = known.some((existing) => existing.toLowerCase() === name.toLowerCase());
+    const nameError =
+      this.nameRefusals[name] ??
+      (name === ""
+        ? "a `[[pair]]` table has an empty `name`: every pair needs a name"
+        : taken
+          ? `two \`[[pair]]\` tables are named \`${name}\``
+          : null);
+    const refusal =
+      !nameError && local && remote && !local.startsWith("/") && !local.startsWith("~")
+        ? `the folder \`${local}\` is not a full path`
+        : null;
+    return {
+      suggested_name: suggested,
+      name_error: nameError,
+      refusal: nameError || !local || !remote ? null : refusal,
+      surviving_index: nameError || refusal ? null : (this.survivors[local] ?? null),
+      warnings: [],
+    };
+  }
+
   /** What Rust answers when the socket does not (`status_payload`): no reply, no roster, the app's own selection. */
   unreachable() {
     return { state: "unreachable", error: "connect: no such file or directory", selected: this.selected };
@@ -312,6 +377,7 @@ class Bridge {
     const never = (pair) => this.neverSynced.includes(pair);
     const pairs = this.names.map((pair) => ({
       ...summaryOf(pair, this.queues[pair].length),
+      reconcile_seq: this.seqs[pair] ?? 1,
       last_sync_epoch_secs: this.lastSyncOf[pair] ?? this.lastSync,
       ...(never(pair) ? { last_sync_epoch_secs: null } : {}),
       ...(this.states[pair]?.summary ?? {}),
@@ -333,7 +399,7 @@ class Bridge {
         status: "running",
         paused: this.isPaused(name),
         syncing: false,
-        reconcile_seq: 1,
+        reconcile_seq: this.seqs[name] ?? 1,
         pending_changes: 0,
         message: "",
         last_sync_epoch_secs: never(name) ? null : (this.lastSyncOf[name] ?? this.lastSync),
@@ -428,6 +494,7 @@ class Bridge {
         return {
           ...EMPTY_CONFIG,
           exists: true,
+          set_aside_dir: this.setAsideDir,
           pair,
           pairs: (this.roster ?? this.names).map((name) => ({
             name,
@@ -439,6 +506,56 @@ class Bridge {
       }
       case "read_notify_policy":
         return this.notifyPolicy;
+      case "check_add_pair":
+        return this.checkAdd(args);
+      case "probe_folder":
+        if (this.probeFailures[args?.side]) throw new Error(this.probeFailures[args.side]);
+        return {
+          files: args?.side === "local" ? 1204 : 1190,
+          bytes: args?.side === "local" ? 3_400_000_000 : null,
+          truncated: false,
+          unreadable_directories: 0,
+        };
+      case "add_pair": {
+        if (this.addRefusal) throw new Error(this.addRefusal);
+        const known = this.roster ?? this.names;
+        this.roster = [...known, args.pair];
+        this.queues[args.pair] = [];
+        return {
+          pair: args.pair,
+          path: "/home/u/.config/proton-sync/proton-sync.toml",
+          restart_needed: true,
+          surviving_index: this.survivors[args.init?.local_root] ?? null,
+          settled_earlier: [],
+          warnings: [],
+        };
+      }
+      case "remove_pair": {
+        const known = this.roster ?? this.names;
+        const first = known[0] === args.pair;
+        this.roster = known.filter((name) => name !== args.pair);
+        this.names = this.names.filter((name) => name !== args.pair);
+        if (this.selected === args.pair) this.selected = this.names[0];
+        return (
+          this.removeReply ?? {
+            pair: args.pair,
+            path: "/home/u/.config/proton-sync/proton-sync.toml",
+            new_default: first ? (this.roster[0] ?? null) : null,
+            restart: { ending: "restarted", detail: "restarted" },
+            restart_needed: false,
+            set_aside: {
+              outcome: "moved",
+              pair: args.pair,
+              to: `${this.setAsideDir}/${args.pair}-1`,
+              items: [],
+              left_behind: [],
+              notes: [],
+              message: `The sync history of '${args.pair}' was moved to ${this.setAsideDir}/${args.pair}-1, outside every sync folder. Your files were not touched.`,
+            },
+            settled_earlier: [],
+          }
+        );
+      }
       case "check_cli":
         return { installed: true, distro: null };
       case "scan_conflicts":
@@ -476,7 +593,7 @@ class Bridge {
         // A restart that worked puts the daemon on the file's settings: it runs the file's folders now.
         if (this.restartEnding === "restarted") {
           this.pairUnknown = null;
-          if (this.roster) this.names = [...this.roster];
+          if (this.roster && !this.refuseToList) this.names = [...this.roster];
         }
         return {
           ending: this.restartEnding,
@@ -3053,6 +3170,492 @@ await scenario(
     await page.close();
   },
 );
+
+// ---- adding and removing folders (#102 phase 5c-2) ---------------------------------------------------
+//
+// THE ROAD THE ADD TAKES, driven on the real page against the scripted daemon: a dialog opened from the ⋯ menu, a
+// name that follows the folder, a check that prices both sides and writes nothing, ONE `add_pair`, the restart, the
+// wait for the daemon to LIST the folder, the selection, and a merge dialog that waits for the NEW folder's pass.
+// What the bridge cannot be is the engine: the sentences it refuses with are the scenario's (`nameRefusals`,
+// `survivors`), and the assertion is that the page quotes them.
+//
+//  70. THE WHOLE ROAD, in order, to the new folder's merge and no further.
+//  71. A RESTART THAT FAILED shows the engine's reason in the dialog, offers the retry, and leaves the Settings bar's.
+//  72. A NAME THE ENGINE REFUSES is quoted verbatim under the field, and nothing is sent.
+//  73. A CHECK IS ABOUT THE TEXT IT WAS MADE FOR: editing after it puts `Check folders` back, and Enter does not add.
+//  74. THE INDEX THE FOLDER WOULD RESUME is named in the confirmation, before anything is written.
+//  75. A DIALOG WITH SOMETHING IN FLIGHT CANNOT BE LEFT: Esc is swallowed and the ✕ does nothing.
+//  76. AN ADD THE ENGINE REFUSES is quoted, restarts nothing, and puts the check back.
+//  77. A DAEMON THAT DOES NOT LIST THE FOLDER says so after the wait, and the folder is in the file.
+//  78. THE LIST draws at two folders, not at one; a click on a row selects that folder.
+//  79. REMOVING THE FIRST FOLDER names which one becomes the default; removing another does not.
+//  80. THE ANSWER OF A REMOVAL is the command's own account, verbatim.
+//  81. A SAVE AT TWO FOLDERS says what it costs all of them; at one it says what it always did.
+//  82. WHAT WAS STAGED FOR ONE FOLDER SURVIVES CHOOSING ANOTHER FROM THE LIST and still saves to the first.
+//  83. THE MENU OFFERS `Add folder…` AT EVERY COUNT.
+
+/** The dialog's text, or "" when none is open. */
+const dialogText = (page) => page.evaluate(() => document.querySelector(".dialog")?.innerText ?? "");
+const hasDialog = (page) => page.evaluate(() => Boolean(document.querySelector(".dialog")));
+/** What a dialog field holds, by its `data-field`. */
+const fieldValue = (page, field) =>
+  page.evaluate((name) => document.querySelector(`[data-field="${name}"]`)?.value ?? null, field);
+/** Type into a dialog field, replacing what it holds. */
+async function typeIntoField(page, field, text) {
+  await page.focus(`[data-field="${field}"]`);
+  await page.evaluate((name) => {
+    const node = document.querySelector(`[data-field="${name}"]`);
+    node.select();
+  }, field);
+  await page.keyboard.press("Backspace");
+  if (text) await page.keyboard.type(text);
+}
+/** Is the button reading `label` there, and armed? */
+const armed = (page, label) =>
+  page.evaluate(
+    (text) =>
+      [...document.querySelectorAll("button")].some((b) => b.textContent.trim() === text && !b.disabled),
+    label,
+  );
+
+/** Open the add dialog from the ⋯ menu and fill the two folders in. */
+async function fillAddDialog(page, local = "~/Photos", remote = "/Drive/Photos") {
+  await press(page, "⋯");
+  await press(page, FOLDERS.addFolder);
+  await until("the add dialog", () => hasDialog(page));
+  await typeIntoField(page, "folder-local", local);
+  await typeIntoField(page, "folder-remote", remote);
+}
+
+/** Press `Check folders` and wait for the dialog to offer `Add folder`. */
+async function checkTheFolders(page) {
+  await until("an armed Check folders", () => armed(page, FOLDERS.add.check));
+  await press(page, FOLDERS.add.check);
+  await until("Add folder", () => armed(page, FOLDERS.add.add));
+}
+
+/** A daemon with ONE folder, which is the person the ⋯ menu's entry is for. */
+const oneFolder = (extra = {}) => new Bridge({ docs: [] }, { names: ["docs"], selected: "docs", ...extra });
+
+await scenario(
+  "adding a folder checks, writes once, restarts, waits to be listed, selects it and merges against ITS counter",
+  async () => {
+    const bridge = oneFolder();
+    // The folder on screen has run many passes and the new one none: its counter is not the new folder's, and a
+    // merge that took the baseline from it would wait for a pass number the new folder never reaches.
+    bridge.seqs.docs = 40;
+    const page = await open(bridge);
+    await until("a first poll", () => bridge.called("get_status").length >= 1);
+    await fillAddDialog(page);
+    // THE NAME FOLLOWS THE FOLDER until it is typed in: the engine's suggestion, not a regex of the page's.
+    await until("the suggested name", async () => (await fieldValue(page, "folder-name")) === "photos");
+    if (bridge.called("add_pair").length) throw new Error("typing wrote the file");
+
+    await checkTheFolders(page);
+    const shown = await dialogText(page);
+    for (const sentence of ["1,204 files, 3.4 GB", "1,190 files", FOLDERS.add.noPreview]) {
+      if (!shown.includes(sentence))
+        throw new Error(`the checked dialog does not say ${JSON.stringify(sentence)}`);
+    }
+    // BOTH SIDES WERE PRICED, the remote one as a Drive path, and the check wrote nothing.
+    const probes = bridge.called("probe_folder").map((call) => `${call.args.side}:${call.args.path}`);
+    if (JSON.stringify(probes.sort()) !== JSON.stringify(["local:~/Photos", "remote:/Drive/Photos"])) {
+      throw new Error(`the sides were measured as ${JSON.stringify(probes)}`);
+    }
+    if (bridge.called("add_pair").length) throw new Error("the check wrote the file");
+
+    // The new folder is a folder that has never synced; the first-run takeover must not take the window.
+    bridge.neverSynced = ["photos"];
+    await press(page, FOLDERS.add.add);
+    await until("the one add", () => bridge.called("add_pair").length === 1);
+    expectPair(bridge.called("add_pair"), "photos", "add_pair");
+    const sent = bridge.called("add_pair")[0].args.init;
+    if (
+      JSON.stringify(sent) !==
+      JSON.stringify({ local_root: "~/Photos", remote_root: "/Drive/Photos", exclude: [] })
+    ) {
+      throw new Error(`add_pair carried ${JSON.stringify(sent)}`);
+    }
+    await until("the restart", () => bridge.called("restart_service").length === 1);
+    if (bridge.called("restart_service")[0].args.onlyIfRunning !== true) {
+      throw new Error("the restart was not `only if running`: an add is not a request to start syncing");
+    }
+
+    // THE MERGE DIALOG, for the folder the daemon now lists — and only then was it selected.
+    await until("the merge dialog", async () => (await dialogText(page)).includes(ONBOARDING.progressTitle));
+    const selections = bridge.called("select_pair");
+    if (selections.length !== 1 || selections[0].args.name !== "photos") {
+      throw new Error(`the selection was ${JSON.stringify(selections.map((c) => c.args))}`);
+    }
+    const order = bridge.calls.map((call) => call.cmd);
+    if (
+      order.indexOf("add_pair") > order.indexOf("restart_service") ||
+      order.indexOf("restart_service") > order.indexOf("select_pair")
+    ) {
+      throw new Error(
+        `the steps ran out of order: ${order.filter((c) => /add_pair|restart_service|select_pair/.test(c)).join(" ")}`,
+      );
+    }
+    const merge = await dialogText(page);
+    if (/nothing (was )?deleted/i.test(merge)) {
+      throw new Error(
+        `the merge of a folder nobody rehearsed claims nothing was deleted: ${JSON.stringify(merge)}`,
+      );
+    }
+    if ((await pageText(page)).includes("Which two folders should match?")) {
+      throw new Error("the first-run takeover took the window beside the new folder");
+    }
+
+    // ITS counter and nobody else's: another folder finishing a pass does not end the merge …
+    bridge.seqs.docs = 99;
+    await poll(page, bridge);
+    if (!(await dialogText(page)).includes(ONBOARDING.progressTitle)) {
+      throw new Error("another folder's pass ended the new folder's merge");
+    }
+    // … and its own pass does.
+    bridge.finishPass("photos");
+    await poll(page, bridge);
+    await until("the merge to end", async () => !(await hasDialog(page)));
+    await page.close();
+  },
+);
+
+await scenario(
+  "a restart that did not work is quoted in the dialog, retried from it, and left on the bar",
+  async () => {
+    const bridge = oneFolder();
+    bridge.restartEnding = "never_stopped";
+    const page = await open(bridge);
+    await until("a first poll", () => bridge.called("get_status").length >= 1);
+    await fillAddDialog(page);
+    await checkTheFolders(page);
+    await press(page, FOLDERS.add.add);
+    await until("the engine's reason", async () => (await dialogText(page)).includes("it would not stop"));
+    const said = await dialogText(page);
+    if (!said.includes(SETTINGS.savedOldSettings("it would not stop"))) {
+      throw new Error(`the failure is not the Settings save's sentence: ${JSON.stringify(said)}`);
+    }
+    if (!(await hasButton(page, SETTINGS.restart))) throw new Error("the dialog offers no way to restart");
+
+    // The retry is NOT `only if running` — the failure may have stopped the daemon — and it carries on.
+    bridge.restartEnding = "restarted";
+    await press(page, SETTINGS.restart);
+    await until("the retry", () => bridge.called("restart_service").length === 2);
+    if (bridge.called("restart_service")[1].args.onlyIfRunning !== false) {
+      throw new Error("the retry was `only if running`");
+    }
+    await until("the merge dialog", async () => (await dialogText(page)).includes(ONBOARDING.progressTitle));
+    await page.close();
+  },
+);
+
+await scenario("the Settings bar keeps the retry a failed add-restart left behind", async () => {
+  const bridge = oneFolder();
+  bridge.restartEnding = "never_stopped";
+  const page = await open(bridge);
+  await until("a first poll", () => bridge.called("get_status").length >= 1);
+  await fillAddDialog(page);
+  await checkTheFolders(page);
+  await press(page, FOLDERS.add.add);
+  await until("the failure", async () => (await dialogText(page)).includes("it would not stop"));
+  await press(page, FOLDERS.remove.done);
+  await until("the dialog to close", async () => !(await hasDialog(page)));
+  await press(page, "Settings");
+  await until("the bar's retry", () => hasButton(page, SETTINGS.restart));
+  await page.close();
+});
+
+await scenario("a name the engine refuses is quoted under the field and nothing is sent", async () => {
+  const bridge = oneFolder();
+  const page = await open(bridge);
+  await until("a first poll", () => bridge.called("get_status").length >= 1);
+  await fillAddDialog(page);
+  await until("the suggested name", async () => (await fieldValue(page, "folder-name")) === "photos");
+  await typeIntoField(page, "folder-name", "docs");
+  const sentence = "two `[[pair]]` tables are named `docs`";
+  await until("the engine's sentence", async () => (await dialogText(page)).includes(sentence));
+  if (await armed(page, FOLDERS.add.check)) throw new Error("Check folders is armed over a refused name");
+  if (await hasButton(page, FOLDERS.add.add)) throw new Error("Add folder is offered over a refused name");
+  if (bridge.called("add_pair").length) throw new Error("something was written");
+  // A name the person typed is theirs: a later folder does not overwrite it.
+  await typeIntoField(page, "folder-local", "~/Pictures");
+  await settle(page);
+  await until("a settled field", async () => (await fieldValue(page, "folder-name")) === "docs");
+  await page.close();
+});
+
+await scenario(
+  "a check is about the text it was made for, and Enter never adds an unchecked folder",
+  async () => {
+    const bridge = oneFolder();
+    const page = await open(bridge);
+    await until("a first poll", () => bridge.called("get_status").length >= 1);
+    await fillAddDialog(page);
+    await checkTheFolders(page);
+    await typeIntoField(page, "folder-remote", "/Drive/Pictures");
+    await until("Check folders back", () => armed(page, FOLDERS.add.check));
+    if (await hasButton(page, FOLDERS.add.add)) throw new Error("Add folder survived an edit");
+    await page.focus('[data-field="folder-remote"]');
+    await page.keyboard.press("Enter");
+    await until("a second check", () => bridge.called("probe_folder").length >= 4);
+    if (bridge.called("add_pair").length) throw new Error("Enter added a folder that had not been checked");
+    await page.close();
+  },
+);
+
+await scenario(
+  "the index a new folder would resume is named in the confirmation, before anything is written",
+  async () => {
+    const bridge = oneFolder();
+    const message =
+      "This folder already holds sync history from an earlier setup (~/Photos/.sync/sync_index.db); adding it resumes from that history. To start fresh instead, run proton-sync reset-index --yes --pair photos after adding.";
+    bridge.survivors["~/Photos"] = {
+      path: "~/Photos/.sync/sync_index.db",
+      set_aside_pending: false,
+      message,
+    };
+    const page = await open(bridge);
+    await until("a first poll", () => bridge.called("get_status").length >= 1);
+    await fillAddDialog(page);
+    if ((await dialogText(page)).includes("earlier setup")) {
+      throw new Error("the index was named before the folders were checked: it belongs to the confirmation");
+    }
+    await checkTheFolders(page);
+    if (!(await dialogText(page)).includes(message)) throw new Error("the surviving index is not named");
+    if (bridge.called("add_pair").length) throw new Error("naming it wrote the file");
+    await page.close();
+  },
+);
+
+await scenario("a dialog with an add in flight cannot be left, by Esc or by the ✕", async () => {
+  const bridge = oneFolder();
+  const page = await open(bridge);
+  await until("a first poll", () => bridge.called("get_status").length >= 1);
+  await fillAddDialog(page);
+  await checkTheFolders(page);
+  const release = bridge.hold("add_pair");
+  await press(page, FOLDERS.add.add);
+  await until("the add in flight", () => bridge.called("add_pair").length === 1);
+  await page.keyboard.press("Escape");
+  await page.evaluate(() => document.querySelector(".dialog-close")?.click());
+  await settle(page);
+  if (!(await hasDialog(page))) throw new Error("the dialog was closed with an add in flight");
+  release();
+  await until("the restart", () => bridge.called("restart_service").length === 1);
+  await page.close();
+});
+
+await scenario(
+  "an add the engine refuses is quoted, restarts nothing, and asks for a new check",
+  async () => {
+    const bridge = oneFolder();
+    bridge.addRefusal = "the folder `/home/u/Photos` overlaps the folder of `docs`";
+    const page = await open(bridge);
+    await until("a first poll", () => bridge.called("get_status").length >= 1);
+    await fillAddDialog(page);
+    await checkTheFolders(page);
+    await press(page, FOLDERS.add.add);
+    await until("the refusal", async () =>
+      (await dialogText(page)).includes("overlaps the folder of `docs`"),
+    );
+    if (bridge.called("restart_service").length) throw new Error("a refused add restarted the daemon");
+    await until("Check folders back", () => armed(page, FOLDERS.add.check));
+    await page.close();
+  },
+);
+
+await scenario(
+  "a daemon that restarts and does not list the folder says so, and the folder is in the file",
+  async () => {
+    const bridge = oneFolder();
+    bridge.refuseToList = true;
+    const page = await open(bridge);
+    await until("a first poll", () => bridge.called("get_status").length >= 1);
+    await fillAddDialog(page);
+    await checkTheFolders(page);
+    await press(page, FOLDERS.add.add);
+    await until("the restart", () => bridge.called("restart_service").length === 1);
+    for (let i = 0; i < 24; i += 1) await poll(page, bridge);
+    await until("the sentence", async () =>
+      (await dialogText(page)).includes(FOLDERS.add.notListed("photos")),
+    );
+    if (bridge.called("select_pair").length) throw new Error("a folder the daemon does not run was selected");
+    await page.close();
+  },
+);
+
+await scenario("the list is drawn at two folders and not at one, and a row chooses its folder", async () => {
+  const two = new Bridge({ docs: [], photos: [] });
+  const page = await open(two);
+  await press(page, "Settings");
+  await until("the list", () => page.$(".folders-list"));
+  const rows = await page.evaluate(() =>
+    [...document.querySelectorAll(".folders-row")].map((row) => ({
+      name: row.querySelector(".folders-row-name")?.textContent,
+      selected: row.classList.contains("is-selected"),
+    })),
+  );
+  if (
+    JSON.stringify(rows) !==
+    JSON.stringify([
+      { name: "docs", selected: true },
+      { name: "photos", selected: false },
+    ])
+  ) {
+    throw new Error(`the list was ${JSON.stringify(rows)}`);
+  }
+  if (!(await pageText(page)).includes(FOLDERS.list.editing("docs"))) {
+    throw new Error("the list does not say which folder the settings below are for");
+  }
+  await page.evaluate(() =>
+    document.querySelector('.folders-row[data-folder="photos"] .folders-row-main').click(),
+  );
+  await until("the selection", () => two.called("select_pair").length === 1);
+  if (two.called("select_pair")[0].args.name !== "photos")
+    throw new Error("a click on photos' row chose another folder");
+  await page.close();
+
+  const one = oneFolder();
+  const alone = await open(one);
+  await press(alone, "Settings");
+  await until("the settings", () => hasButton(alone, SETTINGS.save));
+  await settle(alone);
+  if (await alone.$(".folders-list")) throw new Error("a list was drawn for one folder");
+  if ((await pageText(alone)).includes(FOLDERS.list.title.toUpperCase()))
+    throw new Error("the list's title is on screen");
+  await alone.close();
+});
+
+/** Open Settings at two folders and press `Remove` on the row of `name`. */
+async function pressRemoveOn(page, name) {
+  await press(page, "Settings");
+  await until("the list", () => page.$(".folders-list"));
+  await page.evaluate(
+    (folder) =>
+      document
+        .querySelector(
+          `.folders-row[data-folder="${folder}"] .folders-row > .btn, .folders-row[data-folder="${folder}"] button[aria-label^="Remove"]`,
+        )
+        ?.click(),
+    name,
+  );
+  await until("the confirmation", async () => (await dialogText(page)).includes(FOLDERS.remove.title(name)));
+}
+
+await scenario(
+  "removing the first folder says which one becomes the default; removing another does not",
+  async () => {
+    const bridge = new Bridge({ docs: [], photos: [] });
+    const page = await open(bridge);
+    await pressRemoveOn(page, "docs");
+    const first = await dialogText(page);
+    for (const sentence of [
+      FOLDERS.remove.stops("docs"),
+      FOLDERS.remove.keeps,
+      FOLDERS.remove.history(bridge.setAsideDir),
+      FOLDERS.remove.becomesDefault("photos"),
+    ]) {
+      if (!first.includes(sentence))
+        throw new Error(`the confirmation does not say ${JSON.stringify(sentence)}`);
+    }
+    await press(page, FOLDERS.add.cancel);
+    await until("the dialog to close", async () => !(await hasDialog(page)));
+    if (bridge.called("remove_pair").length) throw new Error("Cancel removed a folder");
+
+    await pressRemoveOn(page, "photos");
+    const second = await dialogText(page);
+    if (second.includes("becomes the default folder")) {
+      throw new Error("removing the second folder names a new default: the first is still the default");
+    }
+    if (!second.includes(FOLDERS.remove.keeps)) throw new Error("the second confirmation lost its sentences");
+    await page.close();
+  },
+);
+
+await scenario(
+  "a removal shows the command's own account, verbatim, and is acted on for the folder it named",
+  async () => {
+    const bridge = new Bridge({ docs: [], photos: [] });
+    const page = await open(bridge);
+    await pressRemoveOn(page, "photos");
+    await select(page, bridge, "docs");
+    await press(page, FOLDERS.remove.confirm);
+    await until("the removal", () => bridge.called("remove_pair").length === 1);
+    expectPair(bridge.called("remove_pair"), "photos", "remove_pair");
+    const account = `The sync history of 'photos' was moved to ${bridge.setAsideDir}/photos-1, outside every sync folder. Your files were not touched.`;
+    await until("the account", async () => (await dialogText(page)).includes(account));
+    if (!(await dialogText(page)).includes(FOLDERS.remove.removed("photos"))) {
+      throw new Error("the answer does not say the folder was removed");
+    }
+    await press(page, FOLDERS.remove.done);
+    await until("the dialog to close", async () => !(await hasDialog(page)));
+    await page.close();
+  },
+);
+
+await scenario(
+  "a save at two folders says what it costs all of them, and at one says what it always did",
+  async () => {
+    const two = new Bridge({ docs: [], photos: [] }, { configs: SETTINGS_CONFIGS });
+    const page = await open(two);
+    await openDeletions(page);
+    await pressCard(page, SETTINGS.askNever);
+    const note = await until("the bar's sentence", async () => {
+      const text = await pageText(page);
+      return text.includes(FOLDERS.saveRestartsAll(2)) ? text : null;
+    });
+    if (!note) throw new Error("no sentence");
+    await page.close();
+
+    const one = new Bridge({ docs: [] }, { names: ["docs"], selected: "docs", configs: SETTINGS_CONFIGS });
+    const alone = await open(one);
+    await openDeletions(alone);
+    await pressCard(alone, SETTINGS.askNever);
+    await settle(alone);
+    if ((await pageText(alone)).includes("Saving restarts syncing for all")) {
+      throw new Error("the sentence about all folders is on screen with one");
+    }
+    await alone.close();
+  },
+);
+
+await scenario(
+  "choosing another folder from the list keeps what was staged, and it still saves to the first",
+  async () => {
+    const bridge = new Bridge({ docs: [], photos: [] }, { configs: SETTINGS_CONFIGS });
+    const page = await open(bridge);
+    await openDeletions(page);
+    await pressCard(page, SETTINGS.askNever);
+    await press(page, SETTINGS.tabs.folders);
+    await until("the list", () => page.$(".folders-list"));
+    await page.evaluate(() =>
+      document.querySelector('.folders-row[data-folder="photos"] .folders-row-main').click(),
+    );
+    await until("photos selected", () => bridge.selected === "photos");
+    await poll(page, bridge);
+    // The folder chosen has nothing staged: docs' edit is not applied to it, and Save is not armed for it.
+    if (await armed(page, SETTINGS.save)) throw new Error("docs' staged edit arms Save on photos");
+    await page.evaluate(() =>
+      document.querySelector('.folders-row[data-folder="docs"] .folders-row-main').click(),
+    );
+    await until("docs selected", () => bridge.selected === "docs");
+    await poll(page, bridge);
+    await press(page, SETTINGS.save);
+    await until("the write", () => bridge.called("write_config").length === 1);
+    expectPair(bridge.called("write_config"), "docs", "write_config");
+    await page.close();
+  },
+);
+
+await scenario("the menu offers Add folder… at one folder and at two", async () => {
+  for (const bridge of [oneFolder(), new Bridge({ docs: [], photos: [] })]) {
+    const page = await open(bridge);
+    await until("a first poll", () => bridge.called("get_status").length >= 1);
+    await press(page, "⋯");
+    await until("the entry", () => hasButton(page, FOLDERS.addFolder));
+    await page.close();
+  }
+});
 
 await browser.close();
 server.close();

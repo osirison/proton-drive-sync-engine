@@ -1,8 +1,8 @@
-// The 64 in-scope frames and what KIND of thing each one is. IMPLEMENTATION-PLAN.md §1.2: they are
+// The 68 in-scope frames and what KIND of thing each one is. IMPLEMENTATION-PLAN.md §1.2: they are
 // not all windows, and asserting a content crop's width against 1040 is the first way a fidelity
 // gate produces a failure that means nothing.
 //
-// Nine of the 73 drawn frames are out of scope — the `1a`/`1b`/`1c` round-one frames, and the two
+// Nine of the 77 drawn frames are out of scope — the `1a`/`1b`/`1c` round-one frames, and the two
 // demoted tide-chart Activity frames. Listed rather than derived: "round one" is not a property of
 // the markup.
 
@@ -34,7 +34,20 @@ export const FRAME_CLASS = {
   // radius, padding and presentation shadow as that crop, and the frame's own caption calls it "the
   // settings tab". F9 put them in `notification` because nothing had yet decided where they live;
   // S9 did, and a crop is what they are. DEVIATIONS §83.
-  crop: ["8a Deletions tab", "8a Schedule monthly", "11a Rules", "11a Settings"],
+  //
+  // `8a Folders list` and `8a Save two folders` (#102 phase 5c-2) are two more of the same: the Folders tab
+  // at two folders or more draws a list ABOVE the settings it chooses between, and a save at two folders
+  // costs a sentence that a save at one does not. Each is the part of the window that is new, drawn at
+  // 600px — the rest of the tab is `8a Settings`, unchanged — so what is compared is styles, and the
+  // window around them is drawn by the app and compared against nothing.
+  crop: [
+    "8a Deletions tab",
+    "8a Schedule monthly",
+    "8a Folders list",
+    "8a Save two folders",
+    "11a Rules",
+    "11a Settings",
+  ],
   specimen: ["10a In situ", "11a In situ", "10a Glyph states", "12a Tray light"],
   // Desktop notification banners (S9). Their own class because the fit gate does not apply — a
   // banner is sized by the desktop's notification chrome, not by a 1040×764 window — and because

@@ -106,17 +106,33 @@ test("the tray no longer asks the shell to navigate, so there is nothing left to
 // `filePending` joined the set with S5. It is the fourth and, unlike the other three, it draws no
 // title row and no ✕ — which is a fact about its CONTENTS, not about how it is presented, so it is
 // still a dialog by this test's measure: a floating surface with no header and no footer doors.
-test("only the seven drawn dialogs are dialogs", () => {
+//
+// The folder dialogs (#102 phase 5c-2) made it ten: `addFolder` and `removeFolder` (drawn: `8a Add folder`,
+// `8a Remove folder`) and `folderMerge`, which is `firstSync` addressed to a folder that was just added and so
+// draws the same frame.
+test("only the ten drawn dialogs are dialogs", () => {
   const dialogs = Object.keys(ROUTES).filter((id) => isDialog(id));
   assert.deepEqual(dialogs.sort(), [
+    "addFolder",
     "cliMissing",
     "consent",
     "details",
     "filePending",
     "firstSync",
+    "folderMerge",
     "neverSynced",
+    "removeFolder",
     "saveRefused",
   ]);
+});
+
+test("the added folder's merge is the first-run merge's surface, and neither is closable by a ✕", () => {
+  // One body for both (`mergeDialogContent`), so the size and the tone are one fact written twice here:
+  // a difference between them would be a merge that looks different depending on how the folder arrived.
+  for (const key of ["size", "tone", "presentation", "closable"]) {
+    assert.deepEqual(ROUTES.folderMerge[key], ROUTES.firstSync[key], `folderMerge.${key}`);
+  }
+  assert.equal(ROUTES.folderMerge.closable, false);
 });
 
 test("none of onboarding's three dialogs is closable", () => {

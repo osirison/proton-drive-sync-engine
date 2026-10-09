@@ -344,6 +344,26 @@ const NOT_DRAWN = new Map([
   ["ONBOARDING.skipTitle", "no frame draws the skip editor the takeover's own button opens"],
   ["ONBOARDING.noSkipRules", "no frame draws that editor with an empty list"],
   ["ONBOARDING.actionsTitle", "no frame draws the action list `See all N actions` opens"],
+  // #102 phase 5c-2, the folders. Four strings of states the four frames do not draw, each a fact about
+  // the state and not about the effort of drawing it.
+  //
+  // A FOLDER THE FILE LISTS AND THE DAEMON DOES NOT RUN. `8a Folders list` draws two folders the daemon runs,
+  // so the word that stands in a row's place when it does not has no row to stand in: the state is the one
+  // `2a Folder not running` draws as a notice, and a list that shows it needs a daemon that has not restarted
+  // since the file was edited — exactly the moment between an add and its restart.
+  ["FOLDERS.list.notRunning", "no frame draws a list row for a folder only the settings file knows"],
+  // The Advanced tab is drawn in no frame (`08-settings.md` specifies it in prose), and this is a line under
+  // three of its fields that exists only at two folders or more.
+  ["FOLDERS.list.scopeAll", "the Advanced tab is drawn in no frame"],
+  // THE TWO LABELS OF THE ADD DIALOG'S PRIMARY BEFORE IT HAS BEEN CHECKED. `8a Add folder` draws the dialog
+  // after the check — both sides priced, the button reading `Add folder` — which is the state the person
+  // confirms in. The state before it has the same dialog with `Check folders` on the button and no price
+  // lines; the state during it has this word on a disabled one. `fidelity:pairs` drives both on the real page.
+  [
+    "FOLDERS.add.check",
+    "the button before the folders have been checked; the frame draws the checked dialog",
+  ],
+  ["FOLDERS.add.checking", "the button mid-click: on screen only while the two folders are being measured"],
 ]);
 
 /**
@@ -620,6 +640,56 @@ const UNGATED_TEMPLATES = new Map([
       absent: "The full sweep didn't start —",
     },
   ],
+  // #102 phase 5c-2, the folders: five templates of states the four frames do not draw. Each fragment is
+  // fixed text of the template that no frame contains, so the entry fails the day a frame draws it.
+  [
+    "FOLDERS.add.notMeasured",
+    {
+      why:
+        "A side the check could not measure, with the daemon's own reason after the dash (voice rule 4). " +
+        "`8a Add folder` draws both sides measured; a failed measurement needs a folder that does not exist " +
+        "or a daemon that is busy, and the reason is not fixed text.",
+      absent: "Couldn't be measured",
+    },
+  ],
+  [
+    "FOLDERS.add.waiting",
+    {
+      why:
+        "The line the add dialog says while it waits for the restarted daemon to list the new folder. The " +
+        "dialog is mid-flight there, with the inputs disabled and no button to press: no frame draws a " +
+        "moment that lasts the seconds a restart takes.",
+      absent: "Waiting for the sync service to list",
+    },
+  ],
+  [
+    "FOLDERS.add.notListed",
+    {
+      why:
+        "The add dialog's answer when the restarted daemon has not listed the folder within the time allowed. " +
+        "It needs a daemon that restarted and did not run the folder, which no frame can be in.",
+      absent: "has not listed it yet",
+    },
+  ],
+  [
+    "FOLDERS.remove.removing",
+    {
+      why:
+        "The removal dialog while the command runs (it restarts the daemon, which takes seconds). " +
+        "`8a Remove folder` draws the confirmation that precedes it.",
+      absent: "Removing ",
+    },
+  ],
+  [
+    "FOLDERS.remove.removed",
+    {
+      why:
+        "The first line of the removal dialog's answer. The answer itself (where the history went) is the " +
+        "command's own sentence and is never fixed text, so the frame that would draw it would draw a " +
+        "fixture's words about an account nothing made.",
+      absent: "was removed from the settings.",
+    },
+  ],
 ]);
 
 /**
@@ -868,6 +938,17 @@ const DRAWN = [
   // ungated for the reason the old exemption gave: `failedSub(0)` is the bare `Nothing is lost.`,
   // which `10a Offline` and `3a Conflict` also contain, so a row at `[0]` would pass on the wrong frame.
   ["MAIN.failedSub", [4], "10a Two folders failed"],
+  // #102 phase 5c-2, the folders: each template is checked in the frame that draws it, at the frame's own
+  // arguments — the folder names, counts and path the fixtures carry.
+  ["FOLDERS.list.editing", ["documents"], "8a Folders list"],
+  ["FOLDERS.add.nameHint", ["photos"], "8a Add folder"],
+  ["FOLDERS.add.priceLocal", [1204, 3_400_000_000], "8a Add folder"],
+  ["FOLDERS.add.priceRemote", [1190, false], "8a Add folder"],
+  ["FOLDERS.remove.title", ["documents"], "8a Remove folder"],
+  ["FOLDERS.remove.stops", ["documents"], "8a Remove folder"],
+  ["FOLDERS.remove.history", ["~/.local/state/proton-sync/removed-pairs"], "8a Remove folder"],
+  ["FOLDERS.remove.becomesDefault", ["photos"], "8a Remove folder"],
+  ["FOLDERS.saveRestartsAll", [2], "8a Save two folders"],
 ];
 
 /** Every own-text string in every frame, and which frames said it. */

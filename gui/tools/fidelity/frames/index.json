@@ -324,16 +324,40 @@
     "nodes": 29
   },
   {
+    "label": "8a Add folder",
+    "kind": "dialog",
+    "file": "8a-add-folder.json",
+    "nodes": 34
+  },
+  {
     "label": "8a Deletions tab",
     "kind": "crop",
     "file": "8a-deletions-tab.json",
     "nodes": 21
   },
   {
+    "label": "8a Folders list",
+    "kind": "crop",
+    "file": "8a-folders-list.json",
+    "nodes": 22
+  },
+  {
+    "label": "8a Remove folder",
+    "kind": "dialog",
+    "file": "8a-remove-folder.json",
+    "nodes": 13
+  },
+  {
     "label": "8a Save refused",
     "kind": "dialog",
     "file": "8a-save-refused.json",
     "nodes": 13
+  },
+  {
+    "label": "8a Save two folders",
+    "kind": "crop",
+    "file": "8a-save-two-folders.json",
+    "nodes": 6
   },
   {
     "label": "8a Schedule monthly",

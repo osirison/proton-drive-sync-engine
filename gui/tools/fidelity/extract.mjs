@@ -275,7 +275,7 @@ const frames = await page.evaluate(
           if (v) attrs[a] = v;
         }
         // The properties this node's recorded colour came from the PAGE for, not from the frame.
-        // Recorded for all 64 frames and theme-neutral on purpose: on a dark frame the inherited
+        // Recorded for all 68 frames and theme-neutral on purpose: on a dark frame the inherited
         // `#F2F4F7` happens to be right and is still asserted, so nothing is lost. assert.mjs is
         // where it turns into a wildcard, and only for the `12a` set.
         const pageColour = colourFromPage(el, frame);
@@ -351,7 +351,7 @@ console.log(
       .map(([k, n]) => `${n} ${k}`)
       .join(", ")}) -> ${readdirSync(OUT_DIR).length} files`,
 );
-if (index.length !== 64) {
-  console.error(`fidelity:extract: expected 64 in-scope frames, got ${index.length}`);
+if (index.length !== 68) {
+  console.error(`fidelity:extract: expected 68 in-scope frames, got ${index.length}`);
   process.exit(1);
 }

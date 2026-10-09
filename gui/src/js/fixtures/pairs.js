@@ -30,7 +30,7 @@ import { ago } from "./clock.js";
 import { SHELL_FIDS, mainFids, pairSelectFids, noticeFids } from "./fids.js";
 
 /** What a pair's `PairSummary` carries, from the three roots a folder has and the numbers a test cares about. */
-const summary = (name, over = {}) => ({
+export const summary = (name, over = {}) => ({
   name,
   local_root: `~/${name[0].toUpperCase()}${name.slice(1)}`,
   remote_root: `/Drive/${name[0].toUpperCase()}${name.slice(1)}`,
@@ -46,7 +46,7 @@ const summary = (name, over = {}) => ({
 });
 
 /** `gui_core::PairState`: Rust's own derivation for a folder, with the rank it sorts by. */
-const stateOf = (name, state, rank) => ({ name, state, rank });
+export const stateOf = (name, state, rank) => ({ name, state, rank });
 
 /**
  * The reply as the daemon sends it for the pair it is about (`documents`, the default and the selected
@@ -76,7 +76,7 @@ function replyFor(pairs, over = {}) {
 }
 
 /** A well-formed `read_config` reply (`ConfigPayload`), listing `names` — what the file says, in file order. */
-function configListing(names) {
+export function configListing(names) {
   return {
     path: "~/.config/proton-sync/proton-sync.toml",
     exists: true,
@@ -101,6 +101,7 @@ function configListing(names) {
     delete_approval_local: null,
     deletion_policy: "ask_every_time",
     local_delete_mode: "trash",
+    set_aside_dir: "~/.local/state/proton-sync/removed-pairs",
   };
 }
 
@@ -129,7 +130,7 @@ const FOUR_STATES = [
 ];
 
 /** Shared by the three settled frames that differ only in what the pill and the band say. */
-const settledStatus = (pairs, states, extra = {}) => ({
+export const settledStatus = (pairs, states, extra = {}) => ({
   state: "idle",
   selected: "documents",
   pairs,

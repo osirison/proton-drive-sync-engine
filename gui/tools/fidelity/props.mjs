@@ -123,7 +123,7 @@ export const SVG_ATTRS = [
  * `stroke="#2E323A"`; the app writes `stroke="var(--hex-settled-track)"` and MUST, because
  * `tokens.css` is the only file allowed to carry a raw colour (`check-tokens.mjs` enforces it) and
  * because the light theme is a token swap — a literal hex here would be a mark that never changes
- * theme. Compared literally, those two can never be equal, so every hexagon in all 64 frames would
+ * theme. Compared literally, those two can never be equal, so every hexagon in all 68 frames would
  * have failed and the honest fix would have looked like "stop theming the mark".
  *
  * So a colour attribute is compared the way every style property already is: as what the ENGINE

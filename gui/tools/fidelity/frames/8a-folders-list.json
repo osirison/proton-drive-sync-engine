@@ -1,0 +1,662 @@
+{
+  "label": "8a Folders list",
+  "kind": "crop",
+  "width": 600,
+  "height": 264,
+  "nodes": [
+    {
+      "key": "",
+      "tag": "div",
+      "fullText": "Your foldersdocuments~/Documents ⇄ /Drive/Documentsup to dateRemovephotos~/Photos ⇄ /Drive/PhotossyncingRemoveThe settings below are for documents. Click another folder to change its settings instead.Add folder…",
+      "unbundled": true,
+      "fromPage": [
+        "color"
+      ],
+      "box": {
+        "w": 600,
+        "h": 264
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "background-color": "rgb(10, 11, 13)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(26, 29, 34)",
+        "border-right-color": "rgb(26, 29, 34)",
+        "border-bottom-color": "rgb(26, 29, 34)",
+        "border-left-color": "rgb(26, 29, 34)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "12px",
+        "border-top-right-radius": "12px",
+        "border-bottom-right-radius": "12px",
+        "border-bottom-left-radius": "12px",
+        "padding-top": "20px",
+        "padding-right": "24px",
+        "padding-bottom": "22px",
+        "padding-left": "24px",
+        "overflow": "hidden"
+      }
+    },
+    {
+      "key": "div[0]",
+      "tag": "div",
+      "text": "Your folders",
+      "box": {
+        "w": 550,
+        "h": 13
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "10px",
+        "font-weight": "600",
+        "letter-spacing": "1.6px",
+        "line-height": "normal",
+        "text-transform": "uppercase",
+        "text-align": "start",
+        "color": "rgb(98, 107, 120)",
+        "border-top-color": "rgb(98, 107, 120)",
+        "border-right-color": "rgb(98, 107, 120)",
+        "border-bottom-color": "rgb(98, 107, 120)",
+        "border-left-color": "rgb(98, 107, 120)"
+      }
+    },
+    {
+      "key": "div[1]",
+      "tag": "div",
+      "fullText": "documents~/Documents ⇄ /Drive/Documentsup to dateRemovephotos~/Photos ⇄ /Drive/PhotossyncingRemove",
+      "unbundled": true,
+      "fromPage": [
+        "color"
+      ],
+      "box": {
+        "w": 550,
+        "h": 117
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "background-color": "rgb(13, 14, 17)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(26, 29, 34)",
+        "border-right-color": "rgb(26, 29, 34)",
+        "border-bottom-color": "rgb(26, 29, 34)",
+        "border-left-color": "rgb(26, 29, 34)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "13px",
+        "border-top-right-radius": "13px",
+        "border-bottom-right-radius": "13px",
+        "border-bottom-left-radius": "13px",
+        "margin-top": "11px",
+        "overflow": "hidden"
+      }
+    },
+    {
+      "key": "div[1]/div[0]",
+      "tag": "div",
+      "fullText": "documents~/Documents ⇄ /Drive/Documentsup to dateRemove",
+      "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 548,
+        "h": 57
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "background-color": "rgb(16, 18, 22)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "padding-top": "11px",
+        "padding-right": "18px",
+        "padding-bottom": "11px",
+        "padding-left": "18px",
+        "display": "flex",
+        "align-items": "center",
+        "gap": "14px"
+      }
+    },
+    {
+      "key": "div[1]/div[0]/button[0]",
+      "tag": "button",
+      "fullText": "documents~/Documents ⇄ /Drive/Documents",
+      "unbundled": true,
+      "box": {
+        "w": 355.7,
+        "h": 35
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13.3333px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "left",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "display": "flex",
+        "flex-grow": "1",
+        "flex-basis": "0%",
+        "align-items": "center",
+        "gap": "12px"
+      }
+    },
+    {
+      "key": "div[1]/div[0]/button[0]/span[0]",
+      "tag": "span",
+      "box": {
+        "w": 8,
+        "h": 8
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13.3333px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "left",
+        "color": "rgb(242, 244, 247)",
+        "background-color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "border-top-left-radius": "50%",
+        "border-top-right-radius": "50%",
+        "border-bottom-right-radius": "50%",
+        "border-bottom-left-radius": "50%",
+        "flex-shrink": "0"
+      }
+    },
+    {
+      "key": "div[1]/div[0]/button[0]/span[1]",
+      "tag": "span",
+      "fullText": "documents~/Documents ⇄ /Drive/Documents",
+      "unbundled": true,
+      "box": {
+        "w": 200.63,
+        "h": 35
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13.3333px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "left",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "display": "flex",
+        "flex-direction": "column",
+        "gap": "3px"
+      }
+    },
+    {
+      "key": "div[1]/div[0]/button[0]/span[1]/span[0]",
+      "tag": "span",
+      "text": "documents",
+      "box": {
+        "w": 200.63,
+        "h": 18
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "14px",
+        "font-weight": "600",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "left",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)"
+      }
+    },
+    {
+      "key": "div[1]/div[0]/button[0]/span[1]/span[1]",
+      "tag": "span",
+      "text": "~/Documents ⇄ /Drive/Documents",
+      "unbundled": true,
+      "box": {
+        "w": 200.63,
+        "h": 14
+      },
+      "styles": {
+        "font-family": "\"IBM Plex Mono\", ui-monospace, monospace",
+        "font-size": "11px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "left",
+        "color": "rgb(109, 119, 131)",
+        "border-top-color": "rgb(109, 119, 131)",
+        "border-right-color": "rgb(109, 119, 131)",
+        "border-bottom-color": "rgb(109, 119, 131)",
+        "border-left-color": "rgb(109, 119, 131)",
+        "overflow": "hidden"
+      }
+    },
+    {
+      "key": "div[1]/div[0]/span",
+      "tag": "span",
+      "text": "up to date",
+      "box": {
+        "w": 55.2,
+        "h": 15
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(130, 139, 152)",
+        "border-top-color": "rgb(130, 139, 152)",
+        "border-right-color": "rgb(130, 139, 152)",
+        "border-bottom-color": "rgb(130, 139, 152)",
+        "border-left-color": "rgb(130, 139, 152)",
+        "flex-shrink": "0"
+      }
+    },
+    {
+      "key": "div[1]/div[0]/button[1]",
+      "tag": "button",
+      "text": "Remove",
+      "box": {
+        "w": 73.09,
+        "h": 29
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(153, 162, 174)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(35, 38, 45)",
+        "border-right-color": "rgb(35, 38, 45)",
+        "border-bottom-color": "rgb(35, 38, 45)",
+        "border-left-color": "rgb(35, 38, 45)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "8px",
+        "border-top-right-radius": "8px",
+        "border-bottom-right-radius": "8px",
+        "border-bottom-left-radius": "8px",
+        "padding-top": "6px",
+        "padding-right": "13px",
+        "padding-bottom": "6px",
+        "padding-left": "13px",
+        "flex-shrink": "0"
+      }
+    },
+    {
+      "key": "div[1]/div[1]",
+      "tag": "div",
+      "fullText": "photos~/Photos ⇄ /Drive/PhotossyncingRemove",
+      "unbundled": true,
+      "fromPage": [
+        "color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 548,
+        "h": 58
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-width": "1px",
+        "border-top-color": "rgb(22, 24, 29)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "border-top-style": "solid",
+        "padding-top": "11px",
+        "padding-right": "18px",
+        "padding-bottom": "11px",
+        "padding-left": "18px",
+        "display": "flex",
+        "align-items": "center",
+        "gap": "14px"
+      }
+    },
+    {
+      "key": "div[1]/div[1]/button[0]",
+      "tag": "button",
+      "fullText": "photos~/Photos ⇄ /Drive/Photos",
+      "unbundled": true,
+      "box": {
+        "w": 368.09,
+        "h": 35
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13.3333px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "left",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "display": "flex",
+        "flex-grow": "1",
+        "flex-basis": "0%",
+        "align-items": "center",
+        "gap": "12px"
+      }
+    },
+    {
+      "key": "div[1]/div[1]/button[0]/span[0]",
+      "tag": "span",
+      "box": {
+        "w": 8,
+        "h": 8
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13.3333px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "left",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "border-top-left-radius": "50%",
+        "border-top-right-radius": "50%",
+        "border-bottom-right-radius": "50%",
+        "border-bottom-left-radius": "50%",
+        "flex-shrink": "0"
+      }
+    },
+    {
+      "key": "div[1]/div[1]/button[0]/span[1]",
+      "tag": "span",
+      "fullText": "photos~/Photos ⇄ /Drive/Photos",
+      "unbundled": true,
+      "box": {
+        "w": 161.02,
+        "h": 35
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "13.3333px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "left",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "display": "flex",
+        "flex-direction": "column",
+        "gap": "3px"
+      }
+    },
+    {
+      "key": "div[1]/div[1]/button[0]/span[1]/span[0]",
+      "tag": "span",
+      "text": "photos",
+      "box": {
+        "w": 161.02,
+        "h": 18
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "14px",
+        "font-weight": "600",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "left",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)"
+      }
+    },
+    {
+      "key": "div[1]/div[1]/button[0]/span[1]/span[1]",
+      "tag": "span",
+      "text": "~/Photos ⇄ /Drive/Photos",
+      "unbundled": true,
+      "box": {
+        "w": 161.02,
+        "h": 14
+      },
+      "styles": {
+        "font-family": "\"IBM Plex Mono\", ui-monospace, monospace",
+        "font-size": "11px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "left",
+        "color": "rgb(109, 119, 131)",
+        "border-top-color": "rgb(109, 119, 131)",
+        "border-right-color": "rgb(109, 119, 131)",
+        "border-bottom-color": "rgb(109, 119, 131)",
+        "border-left-color": "rgb(109, 119, 131)",
+        "overflow": "hidden"
+      }
+    },
+    {
+      "key": "div[1]/div[1]/span",
+      "tag": "span",
+      "text": "syncing",
+      "box": {
+        "w": 42.81,
+        "h": 15
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(130, 139, 152)",
+        "border-top-color": "rgb(130, 139, 152)",
+        "border-right-color": "rgb(130, 139, 152)",
+        "border-bottom-color": "rgb(130, 139, 152)",
+        "border-left-color": "rgb(130, 139, 152)",
+        "flex-shrink": "0"
+      }
+    },
+    {
+      "key": "div[1]/div[1]/button[1]",
+      "tag": "button",
+      "text": "Remove",
+      "box": {
+        "w": 73.09,
+        "h": 29
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(153, 162, 174)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(35, 38, 45)",
+        "border-right-color": "rgb(35, 38, 45)",
+        "border-bottom-color": "rgb(35, 38, 45)",
+        "border-left-color": "rgb(35, 38, 45)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "8px",
+        "border-top-right-radius": "8px",
+        "border-bottom-right-radius": "8px",
+        "border-bottom-left-radius": "8px",
+        "padding-top": "6px",
+        "padding-right": "13px",
+        "padding-bottom": "6px",
+        "padding-left": "13px",
+        "flex-shrink": "0"
+      }
+    },
+    {
+      "key": "div[2]",
+      "tag": "div",
+      "text": "The settings below are for documents. Click another folder to change its settings instead.",
+      "box": {
+        "w": 550,
+        "h": 18
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "18px",
+        "text-align": "start",
+        "color": "rgb(109, 119, 131)",
+        "border-top-color": "rgb(109, 119, 131)",
+        "border-right-color": "rgb(109, 119, 131)",
+        "border-bottom-color": "rgb(109, 119, 131)",
+        "border-left-color": "rgb(109, 119, 131)",
+        "margin-top": "10px"
+      }
+    },
+    {
+      "key": "div[3]",
+      "tag": "div",
+      "fullText": "Add folder…",
+      "fromPage": [
+        "color",
+        "border-top-color",
+        "border-right-color",
+        "border-bottom-color",
+        "border-left-color"
+      ],
+      "box": {
+        "w": 550,
+        "h": 39
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "16px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "start",
+        "color": "rgb(242, 244, 247)",
+        "border-top-color": "rgb(242, 244, 247)",
+        "border-right-color": "rgb(242, 244, 247)",
+        "border-bottom-color": "rgb(242, 244, 247)",
+        "border-left-color": "rgb(242, 244, 247)",
+        "margin-top": "12px"
+      }
+    },
+    {
+      "key": "div[3]/button",
+      "tag": "button",
+      "text": "Add folder…",
+      "box": {
+        "w": 99.2,
+        "h": 39
+      },
+      "styles": {
+        "font-family": "\"Instrument Sans\", system-ui, sans-serif",
+        "font-size": "12.5px",
+        "font-weight": "400",
+        "letter-spacing": "normal",
+        "line-height": "normal",
+        "text-align": "center",
+        "color": "rgb(201, 208, 218)",
+        "background-color": "rgb(16, 18, 22)",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "rgb(35, 38, 45)",
+        "border-right-color": "rgb(35, 38, 45)",
+        "border-bottom-color": "rgb(35, 38, 45)",
+        "border-left-color": "rgb(35, 38, 45)",
+        "border-top-style": "solid",
+        "border-right-style": "solid",
+        "border-bottom-style": "solid",
+        "border-left-style": "solid",
+        "border-top-left-radius": "10px",
+        "border-top-right-radius": "10px",
+        "border-bottom-right-radius": "10px",
+        "border-bottom-left-radius": "10px",
+        "padding-top": "11px",
+        "padding-right": "15px",
+        "padding-bottom": "11px",
+        "padding-left": "15px",
+        "display": "inline-block"
+      }
+    }
+  ]
+}

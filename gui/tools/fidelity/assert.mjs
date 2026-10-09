@@ -464,7 +464,7 @@ for (const entry of index) {
   // folded into a truncated `…` list. (It was 806 when #247 wrote this down.) That frame is the one
   // this mechanism exists for.
   //
-  // Since S10 there are no unmapped frames left to cost anything: all 64 carry a `fids` map. The
+  // Since S10 there are no unmapped frames left to cost anything: all 68 carry a `fids` map. The
   // clause it replaces was "all 15 unmapped frames are screens with no `fids` map at all, so they
   // declare nothing and produce no observations", and it stops being the reassurance it was — every
   // frame now declares slots, so every frame can now report one unstamped.
@@ -531,7 +531,7 @@ for (const entry of index) {
     // A failure in its own right rather than left to the slot check, and it stays that way now that
     // the slot check covers factories too: a mapping whose every key sits past `PROBE_DEPTH`, or
     // behind a non-numeric argument, would stamp nothing and report nothing. Zero frames are in that
-    // state — all 64 with a `fids` map stamp something — so this costs nothing and states the case
+    // state — all 68 with a `fids` map stamp something — so this costs nothing and states the case
     // the probe cannot.
     if (Object.keys(declaredFids).length) blankFrames.push(frame.label);
     else unmappedFrames.push(frame.label);
@@ -562,7 +562,7 @@ for (const entry of index) {
     // DARK FRAMES KEEP THEM. There the inherited value is accidentally correct — the app inherits
     // `#F2F4F7` too — so it is a real comparison and dropping it would trade a fixed light theme for
     // a weaker dark one. Same fixture, different reading, which is why `fromPage` is recorded for all
-    // 64 and interpreted here.
+    // 68 and interpreted here.
     const fromPage = scheme === "light" && want.fromPage ? new Set(want.fromPage) : null;
     for (const prop of STYLE_PROPS) {
       if (fromPage?.has(prop)) {
