@@ -114,7 +114,21 @@ let screenStack = []; // [{ id, back }] — body-replacing overlays, innermost l
 let dialogOverlay = null; // the floating one, at most one at a time
 let dialogReturn = null; // where to send focus when it closes — see focusKeyOf
 let menuOpen = false;
-let configInfo = null;
+/**
+ * What the config file says, ONE `read_config` REPLY PER FOLDER PAIR (#102 phase 5b-1), keyed by the pair
+ * the reply says it describes (`reply.pair`). Its per-pair values are that pair's table of the file; its
+ * daemon-wide values are the top level, the same in every one. Keyed rather than single so a pair that
+ * has been switched to is drawn from ITS settings and never from the previous pair's for a poll, and a
+ * reply that lands after a switch is a fact about the pair it was asked for (`viewedConfig`).
+ */
+let configByPair = {};
+/**
+ * The file's whole roster (`read_config.pairs`), the same in every reply. Kept apart from the replies
+ * because the first-run check and the pair count ask "how many folders are there" and "is any of them
+ * placed", which are not questions about whichever pair is on screen — and answering them from the
+ * viewed pair's reply would let a momentary mismatch of names read as a machine with no folders.
+ */
+let configRoster = [];
 let configLoaded = false; // has the GUI config file been read at least once (even if empty)?
 /**
  * Why the last `read_config` failed, or null.
@@ -160,7 +174,31 @@ function toggleTheme() {
  * longer (see `render`). Never reads a state a screen could mistake for "the daemon is down".
  */
 function pairCountNow() {
-  return Math.max(store.select.pairs().length, configInfo?.pairs?.length ?? 0);
+  return Math.max(store.select.pairs().length, configRoster.length);
+}
+
+/**
+ * The config file as it describes the pair on screen: the last `read_config` reply FOR it, or `null`
+ * before one has landed. This is the reader the screens use — the single config reply the app held when
+ * there was one folder, and for one folder it is the same object.
+ */
+function viewedConfig() {
+  return configByPair[store.select.pairName()] ?? null;
+}
+
+/**
+ * The config as the first-run check reads it (`configHasPair`): the WHOLE roster, plus the viewed
+ * pair's flat roots as the fallback that function documents. `null` before any read, like the single
+ * reply it replaces.
+ */
+function firstRunConfig() {
+  if (!configLoaded) return null;
+  const viewed = viewedConfig();
+  return {
+    pairs: configRoster,
+    local_root: viewed?.local_root ?? null,
+    remote_root: viewed?.remote_root ?? null,
+  };
 }
 
 // ---- the status chip ----
@@ -764,8 +802,8 @@ function render() {
   // The folder pair: the running daemon's reported roots are ground truth; the GUI config file is
   // the fallback when no daemon is reachable. Em-dashes only when neither knows.
   const live = store.select.response()?.config ?? null;
-  const localRoot = live?.local_root ?? configInfo?.local_root ?? null;
-  const remoteRoot = live?.remote_root ?? configInfo?.remote_root ?? null;
+  const localRoot = live?.local_root ?? viewedConfig()?.local_root ?? null;
+  const remoteRoot = live?.remote_root ?? viewedConfig()?.remote_root ?? null;
   // How many folder pairs there are, from the running daemon's list and from the config file's, taking
   // the larger: either one saying "two" is enough for the takeover to stay shut (E14), and a stopped
   // daemon has no list at all. Both are zero for a legacy daemon with no `[[pair]]` tables, so the
@@ -834,7 +872,7 @@ function render() {
             // The roots the daemon reports or the file's top level, OR a pair the file declares in a
             // `[[pair]]` table — those roots are in no top-level key, and with the daemon stopped a
             // check made of the first two alone called that machine fresh (F-J).
-            Boolean(localRoot && remoteRoot) || configHasPair(configInfo),
+            Boolean(localRoot && remoteRoot) || configHasPair(firstRunConfig()),
             configLoaded,
             statusPolled,
             pairCount,
@@ -1096,7 +1134,7 @@ function render() {
   } else if (active === "settings") {
     // REBUILT EVERY PASS, with the focused field's caret put back — the same trade the activity
     // screen makes and for the same reason, except that this screen has five text fields rather
-    // than one. Everything they hold lives in `settingsEdits`, so a rebuild loses nothing except
+    // than one. Everything they hold lives in `settingsByPair`, so a rebuild loses nothing except
     // the selection, which is restored below; patching instead would mean a diff over four tab
     // bodies to protect state that is not in the DOM in the first place.
     if (dom.bodyRoute !== active) {
@@ -1192,7 +1230,7 @@ function render() {
           ? updatePlanBar(dom.footer, planProps())
           : // The settings bar is REBUILT rather than patched, and it holds no typed state to
             // protect: `Save`'s enabled-ness, the note and the amber cost line all move with
-            // `settingsEdits`, and every one of them changes on the same keystroke. `dataset.shape`
+            // `settingsByPair`, and every one of them changes on the same keystroke. `dataset.shape`
             // is what makes the rebuild conditional — an unchanged bar is left where it is.
             owner === "settings"
             ? settingsBarUnchanged(dom.footer)
@@ -2346,7 +2384,7 @@ function resetActivityScreen() {
 
 /** The exclude rules' cost, once per visit. Fired and not awaited, like every other screen's fetch. */
 async function ensureSkipRules() {
-  // `configLoaded`, NOT `configInfo`. The rules come from the config file, and `read_config` is a
+  // `configLoaded`, NOT the reply. The rules come from the config file, and `read_config` is a
   // round trip — so the first render of this screen has no config at all, sees an empty `exclude`,
   // and would latch `skipRuleAsked` on the strength of not having asked yet. The band would then
   // never appear until you left the screen and came back. Latching only once the config is
@@ -2356,12 +2394,12 @@ async function ensureSkipRules() {
   // The pair this walk is for. A switch resets the screen (and `skipRuleAsked` with it), and a walk
   // that was already running must not land on the pair that replaced it.
   const pair = store.select.pairName();
-  const exclude = configInfo?.exclude ?? [];
+  const exclude = configByPair[pair]?.exclude ?? [];
   // Nothing excluded is not a reason to walk the tree: the band counts files a RULE hides, and with
   // no rules the answer is known without asking.
   if (exclude.length === 0) return;
   try {
-    const report = await api.skipRuleUsage(exclude, configInfo?.include ?? [], { pair });
+    const report = await api.skipRuleUsage(exclude, configByPair[pair]?.include ?? [], { pair });
     if (pair === store.select.pairName()) skipRuleReport = report;
   } catch (error) {
     console.error("skip_rule_usage failed:", error);
@@ -2524,8 +2562,8 @@ function activityProps() {
     receivedAt: ui?.clock?.received ?? null,
     never,
     history,
-    localRoot: response?.config?.local_root ?? configInfo?.local_root ?? null,
-    remoteRoot: response?.config?.remote_root ?? configInfo?.remote_root ?? null,
+    localRoot: response?.config?.local_root ?? viewedConfig()?.local_root ?? null,
+    remoteRoot: response?.config?.remote_root ?? viewedConfig()?.remote_root ?? null,
     // Both sub-lines are claims about WHEN, so both are omitted rather than guessed when the daemon
     // has not reported a pass yet.
     quietSub: lastSync != null ? ACTIVITY.quietSub(clockAt(ui, "since", lastSync), since(lastSync)) : null,
@@ -2698,10 +2736,10 @@ function activityDialog(id) {
         destructive_actions: summary?.destructive_actions ?? null,
         skipped_unsupported: summary?.skipped_unsupported ?? null,
       },
-      // The FIXTURE's config first. `configInfo` is filled by `refreshConfig`, which is a round
-      // trip — so under `?frame=` the first render has none, and two of these eight rows would
+      // The FIXTURE's config first. The viewed pair's reply is filled by `refreshConfig`, which is a
+      // round trip — so under `?frame=` the first render has none, and two of these eight rows would
       // draw a dash where the frame draws a value.
-      config: activeFixture()?.config ?? configInfo,
+      config: activeFixture()?.config ?? viewedConfig(),
       socketOk: Boolean(store.select.response()) && !store.select.error(),
       historyCount: props.history.length,
       // The dialog's own `Open the system log` (#231) — the same handler the passes tab's copy of
@@ -2762,32 +2800,53 @@ function activityDialog(id) {
 //
 // THE STAGED EDIT LIVES HERE, NOT IN THE DOM, and it has to: the body is rebuilt or patched on
 // every 2s poll, so a form that kept its half-typed folder path in an `<input>`'s value would lose
-// it twice a second. `settingsEdits` is the only record of what has been changed and not saved —
-// `Discard changes` is `settingsEdits = {}` and nothing else.
+// it twice a second. `settingsByPair` is the only record of what has been changed and not saved —
+// `Discard changes` empties the viewed pair's slot and nothing else.
 
 let settingsTab = "folders";
-/** Staged fields, keyed exactly as `ConfigPayload` names them. Empty means nothing to save. */
-let settingsEdits = {};
 /**
- * The two add fields, ONE PER LIST. Not config fields: a draft is staged only once `Add` is pressed.
+ * WHAT IS STAGED ON THIS SCREEN, ONE SLOT PER FOLDER PAIR (#102 phase 5b-1, brief 3.4): `pair name →
+ * { edits, drafts, scheduleMonthly, notice }`. Settings edits the pair on screen, so what a person has
+ * typed belongs to that pair — and a screen that held ONE object would apply a half-edited skip list
+ * for `docs` to `photos` the moment the selection moved. Kept per pair, nothing is lost by switching
+ * (no modal, no discard) and nothing is ever written to a pair it was not typed for: a save reads the
+ * slot of the pair it was started for (`saveSettings`) and sends that pair's name with the write.
  *
- * Two, not one, and the reason is that the lists mean opposite things. A pattern typed into the skip
- * tab HIDES what it matches; the same pattern in Advanced's include list makes it the only thing
- * that syncs. One shared buffer would carry a half-typed `*.psd` across a tab switch and hand it to
- * whichever `Add` was pressed next — inverting what the person meant, on the two settings that
- * decide what is backed up at all.
- */
-let settingsDrafts = { exclude: "", include: "" };
-/**
- * Which full-sweep editor the schedule panel is showing (#193). `null` until someone picks a
- * segment, and back to `null` whenever a schedule is set or cleared — at which point the schedule
- * itself says which editor to show.
+ * The slot's fields:
  *
- * Frontend state, deliberately: a mode is not a schedule, so switching it stages nothing and leaves
- * the screen clean. It has to OUTRANK the configured schedule while it is set, or the
- * Weekly/Monthly control is inert on every daemon that has one — see `schedulePanel`.
+ * - `edits`: staged fields, keyed exactly as `ConfigPayload` names them. Empty means nothing to save.
+ *   Every staging path assigns a FRESH object, so identity is an exact "nothing was staged since" test.
+ * - `drafts`: the two add fields, ONE PER LIST. Not config fields: a draft is staged only once `Add`
+ *   is pressed. Two, not one, and the reason is that the lists mean opposite things. A pattern typed
+ *   into the skip tab HIDES what it matches; the same pattern in Advanced's include list makes it the
+ *   only thing that syncs. One shared buffer would carry a half-typed `*.psd` across a tab switch and
+ *   hand it to whichever `Add` was pressed next — inverting what the person meant, on the two
+ *   settings that decide what is backed up at all.
+ * - `scheduleMonthly`: which full-sweep editor the schedule panel is showing (#193). `null` until
+ *   someone picks a segment, and back to `null` whenever a schedule is set or cleared — at which point
+ *   the schedule itself says which editor to show. Frontend state, deliberately: a mode is not a
+ *   schedule, so switching it stages nothing and leaves the screen clean. It has to OUTRANK the
+ *   configured schedule while it is set, or the Weekly/Monthly control is inert on every daemon that
+ *   has one — see `schedulePanel`.
+ * - `notice`: what the bar says about the last thing asked for in this pair — in flight, or failed.
+ *   Every one of these was silence before the S6 review: `resync` RESOLVES with a socket error folded
+ *   into its payload rather than rejecting, so a `Sweep now` against a dead daemon did nothing at all
+ *   and said nothing at all; a failed `restart_service` wrote its reason into a variable only the
+ *   refusal dialog reads, and nothing opens that dialog from there. Per pair because a sweep is.
  */
-let settingsScheduleMonthly = null;
+let settingsByPair = {};
+const BLANK_STAGING = Object.freeze({
+  edits: {},
+  drafts: { exclude: "", include: "" },
+  scheduleMonthly: null,
+  notice: null,
+});
+/** What is staged for `pair` — the blank slot for one nothing was typed for. Read-only. */
+const stagedFor = (pair) => settingsByPair[pair] ?? BLANK_STAGING;
+/** Replace some of `pair`'s staged state. Never touches another pair's. */
+function patchStaging(pair, patch) {
+  settingsByPair = { ...settingsByPair, [pair]: { ...stagedFor(pair), ...patch } };
+}
 let settingsSaving = false;
 /**
  * A `Sweep now` in flight.
@@ -2820,30 +2879,21 @@ let settingsError = null;
 let settingsSaveOutcome = null;
 /** A restart asked for and not yet answered. `restart_service` can take ten seconds. */
 let settingsRestarting = false;
-/**
- * What the bar says about the last thing that was asked for — in flight, or failed.
- *
- * Every one of these was silence before the S6 review: `resync` RESOLVES with a socket error folded
- * into its payload rather than rejecting, so a `Sweep now` against a dead daemon did nothing at all
- * and said nothing at all; a failed `restart_service` wrote its reason into a variable only the
- * refusal dialog reads, and nothing opens that dialog from there.
- */
-let settingsNotice = null;
 
 /** Entering or leaving: nothing staged, no draft, no refusal, and the walk to be asked for again. */
 function resetSettingsScreen() {
   settingsTab = "folders";
-  settingsEdits = {};
+  // EVERY PAIR'S: walking away from the screen discards what was staged on it, for all of them. It is a
+  // switch of pair that keeps them (see `settingsByPair`), not a switch of screen.
+  settingsByPair = {};
   // WITH THE REST OF THE STAGED STATE. It is one of the two things a person can stage on this
-  // screen and it lives outside `settingsEdits` (it is not a daemon-config key), so leaving it out
+  // screen and it lives outside the pair slots (it is not a daemon-config key), so leaving it out
   // here made it the one edit that survived walking away: the card stayed chosen and the screen
   // stayed dirty about a value nothing had written, for the life of the window.
   notifyPolicyEdit = null;
-  settingsDrafts = { exclude: "", include: "" };
   settingsSaving = false;
   settingsSweeping = false;
   settingsRestarting = false;
-  settingsNotice = null;
   settingsError = null;
   clearSaveOutcome();
   skipRuleReport = null;
@@ -2872,13 +2922,15 @@ function clearSaveOutcome() {
 }
 
 /**
- * Stage one field. An edit forgets a SETTLED save's sentence — it is no longer describing what is on
- * disk — and keeps an unresolved restart, which still is. See `clearSaveOutcome`.
+ * Stage one field, for `pair`. An edit forgets a SETTLED save's sentence — it is no longer describing
+ * what is on disk — and keeps an unresolved restart, which still is. See `clearSaveOutcome`.
+ *
+ * `pair` is the one the control was drawn for, taken when the screen's props were built, so a click on
+ * a screen that is a poll stale stages into the pair it showed and not the one selected since.
  */
-function stageSetting(key, value) {
-  settingsEdits = { ...settingsEdits, [key]: value };
+function stageSetting(key, value, pair = store.select.pairName()) {
+  patchStaging(pair, { edits: { ...stagedFor(pair).edits, [key]: value }, notice: null });
   clearSaveOutcome();
-  settingsNotice = null;
   render();
 }
 
@@ -2891,10 +2943,13 @@ function stageSetting(key, value) {
  * both rather than one merged view.
  */
 function settingsProps() {
-  // The pair a `Sweep now` is for, taken as the props are built (see `mainProps`).
-  const sweepPair = store.select.pairName();
+  // THE PAIR THIS SCREEN IS DRAWN FOR, taken as the props are built (see `mainProps`) and carried by
+  // every handler below: what is staged, saved, swept or chosen is that pair's, whichever is selected
+  // by the time the handler runs.
+  const pair = store.select.pairName();
+  const slot = stagedFor(pair);
   const ui = activeFixture()?.ui ?? null;
-  const saved = activeFixture()?.config ?? configInfo ?? {};
+  const saved = activeFixture()?.config ?? configByPair[pair] ?? {};
   const tab = ui?.tab ?? settingsTab;
   // Fired and not awaited — see `ensureSkipRules`. Only the tab that draws the counts asks for the
   // walk; the other three would pay for a full metadata pass of the sync folder to draw nothing.
@@ -2905,7 +2960,7 @@ function settingsProps() {
   // first about what is on disk.
   const edits = ui?.removing
     ? { exclude: (saved.exclude ?? []).filter((p) => p !== ui.removing) }
-    : settingsEdits;
+    : slot.edits;
   const config = { ...saved, ...edits };
   const skip = activeFixture()?.skipRules ?? skipRuleReport;
   // THE SAME FILTER S5's DIALOG USES, not a second reading of the list. This tab's panel counts and
@@ -2938,11 +2993,11 @@ function settingsProps() {
     onSeeUnsyncable: () => navigate("neverSynced"),
     // The frame names it; otherwise the staged value, then what is on disk.
     notifyPolicy: ui?.notifyPolicy ?? notifyPolicyEdit ?? notifyPolicy,
-    drafts: settingsDrafts,
+    drafts: slot.drafts,
     // Which schedule editor is showing. A FRAME NAMES IT (`8a Schedule monthly`), which is what
     // makes the monthly variant reachable by the fixture harness at all — without this the frame
     // rendered the weekly panel and every monthly node went unexercised by every gate.
-    scheduleDraftMonthly: ui?.schedule ? ui.schedule === "monthly" : settingsScheduleMonthly,
+    scheduleDraftMonthly: ui?.schedule ? ui.schedule === "monthly" : slot.scheduleMonthly,
     saving: settingsSaving,
     // The ending the last save's restart left UNRESOLVED, or null (#320/#335) — the one post-save
     // state with an action attached, which is why the bar reads it rather than reading the sentence
@@ -2962,21 +3017,26 @@ function settingsProps() {
     // of magnitude. Reporting `Saving…` for the eight seconds the daemon takes to stop would name
     // the wrong step and look stuck on it.
     notice:
-      settingsNotice ?? (settingsRestarting ? SETTINGS.restarting : settingsSaving ? SETTINGS.saving : null),
+      slot.notice ?? (settingsRestarting ? SETTINGS.restarting : settingsSaving ? SETTINGS.saving : null),
     // What the save left behind: the sentence for the ending it had (#320/#335). Built from the
     // ending rather than stored beside it, so the sentence and the button can never describe two
     // different endings.
     note: ending == null ? null : saveNoteFor(ending, settingsSaveOutcome?.reason ?? ""),
     // WHETHER THE CONFIG IS KNOWN AT ALL. `read_config` rejects an unparseable file and
-    // `refreshConfig` swallows it, so `configInfo` stays null — and `?? {}` would draw that as an
+    // `refreshConfig` swallows it, so the pair's reply stays absent — and `?? {}` would draw that as an
     // empty, valid config: both folder fields blank, live updates on, and a deletion policy card
     // selected that is not the one running. A screen may not answer for a file it could not read.
     // `configLoaded && !configError`, and the second half is not redundant: `refreshConfig` runs on
     // a timer, so a file that PARSED once and stops parsing later leaves `configLoaded` true with a
-    // stale `configInfo` behind it. The screen would then keep a deletion-policy card selected from
+    // stale reply behind it. The screen would then keep a deletion-policy card selected from
     // the last good read, underneath a banner saying the file could not be read — answering for it
     // and disclaiming it in the same breath.
-    loaded: Boolean(activeFixture()) || (configLoaded && !configError),
+    //
+    // AND A REPLY FOR THIS PAIR (#102 phase 5b-1). `configLoaded` says some pair's file was read; the
+    // pair that has just been switched to has no reply of its own until the next read lands, and the
+    // screen may not answer for it with another pair's values or with an empty config. For one pair
+    // the two are the same fact: the reply is filed in the same step that sets `configLoaded`.
+    loaded: Boolean(activeFixture()) || (configLoaded && !configError && configByPair[pair] != null),
     configError: activeFixture() ? null : configError,
     // The daemon is mid-pass, or one has just been asked for: `Sweep now` would queue behind it
     // with nothing to show for the click. A plan rehearsal counts here on purpose — it holds the
@@ -3004,19 +3064,20 @@ function settingsProps() {
         settingsTab = id;
         render();
       },
-      onRoot: (key, value) => stageSetting(key, value),
-      onField: (key, value) => stageSetting(key, value),
-      onEvents: (on) => stageSetting("events_driven", on),
+      onRoot: (key, value) => stageSetting(key, value, pair),
+      onField: (key, value) => stageSetting(key, value, pair),
+      onEvents: (on) => stageSetting("events_driven", on, pair),
       // #193. `null` stages the EMPTY STRING, not a missing key: `write_config` clears a key whose
       // value is empty, and clearing is how a scheduled sweep is turned off — there is no off value
       // to write. Staging `undefined` would drop the field from the update and leave the old
       // schedule on disk while the screen showed none.
-      onSchedule: (schedule) => stageSetting("full_scan_schedule", schedule ? formatSchedule(schedule) : ""),
+      onSchedule: (schedule) =>
+        stageSetting("full_scan_schedule", schedule ? formatSchedule(schedule) : "", pair),
       // The editor's mode, NOT a setting. With no schedule configured there is nothing to convert,
       // and switching a live one would move the sweep to a day nobody chose — so this stages
       // nothing and the screen stays clean until a day is picked.
       onScheduleMode: (monthly) => {
-        settingsScheduleMonthly = monthly;
+        patchStaging(pair, { scheduleMonthly: monthly });
         render();
       },
       // ONE FIELD, not three. `deletion_policy` is a daemon key now (#194) and `set_deletion_policy`
@@ -3025,8 +3086,7 @@ function settingsProps() {
       // the daemon refuses to start on. A card that set one direction would still leave a pair no
       // card describes (DEVIATIONS §68); the engine's enum is what guarantees it cannot.
       onPolicy: (policy) => {
-        settingsNotice = null;
-        settingsEdits = { ...settingsEdits, deletion_policy: policy.id };
+        patchStaging(pair, { notice: null, edits: { ...stagedFor(pair).edits, deletion_policy: policy.id } });
         clearSaveOutcome();
         render();
       },
@@ -3034,8 +3094,10 @@ function settingsProps() {
       // are two settings: one decides whether a deletion waits for you, this one what happens when
       // it goes ahead. Staging them together would make choosing one write the other.
       onDisposal: (disposal) => {
-        settingsNotice = null;
-        settingsEdits = { ...settingsEdits, local_delete_mode: disposal.id };
+        patchStaging(pair, {
+          notice: null,
+          edits: { ...stagedFor(pair).edits, local_delete_mode: disposal.id },
+        });
         clearSaveOutcome();
         render();
       },
@@ -3043,7 +3105,7 @@ function settingsProps() {
       // already selected does not mark the screen dirty — the same rule `configUpdate` applies to
       // every other control.
       onNotifyPolicy: (id) => {
-        settingsNotice = null;
+        patchStaging(pair, { notice: null });
         notifyPolicyEdit = id === notifyPolicy ? null : id;
         clearSaveOutcome();
         render();
@@ -3051,46 +3113,48 @@ function settingsProps() {
       // The Activity link inside the rules sheet. A real route change, not decoration.
       onRoute: (id) => navigate(id),
       onDraft: (key, value) => {
-        settingsDrafts = { ...settingsDrafts, [key]: value };
+        patchStaging(pair, { drafts: { ...stagedFor(pair).drafts, [key]: value } });
         render();
       },
-      onAddRule: () => addPattern("exclude"),
-      onRemoveRule: (pattern) => removePattern("exclude", pattern),
-      onAddInclude: () => addPattern("include"),
-      onRemoveInclude: (pattern) => removePattern("include", pattern),
-      onChoose: chooseLocalRoot,
-      onSweep: () => sweepNow(sweepPair),
-      onSave: saveSettings,
+      onAddRule: () => addPattern("exclude", pair),
+      onRemoveRule: (pattern) => removePattern("exclude", pattern, pair),
+      onAddInclude: () => addPattern("include", pair),
+      onRemoveInclude: (pattern) => removePattern("include", pattern, pair),
+      onChoose: () => chooseLocalRoot(pair),
+      onSweep: () => sweepNow(pair),
+      onSave: () => saveSettings(pair),
       onDiscard: () => {
-        settingsEdits = {};
-        settingsDrafts = { exclude: "", include: "" };
+        patchStaging(pair, { edits: {}, drafts: BLANK_STAGING.drafts });
         notifyPolicyEdit = null;
         clearSaveOutcome();
         render();
       },
-      onRestart: restartAfterSave,
+      onRestart: () => restartAfterSave(pair),
     },
   };
 }
 
-/** The current staged value of a list field, saved-or-staged. */
-const stagedList = (key) => settingsEdits[key] ?? (activeFixture()?.config ?? configInfo)?.[key] ?? [];
+/** The current staged value of a list field for `pair`, saved-or-staged. */
+const stagedList = (key, pair) =>
+  stagedFor(pair).edits[key] ?? (activeFixture()?.config ?? configByPair[pair])?.[key] ?? [];
 
-function addPattern(key) {
-  const pattern = settingsDrafts[key].trim();
+function addPattern(key, pair) {
+  const pattern = stagedFor(pair).drafts[key].trim();
   // A duplicate is not an error and not a second row: the rule is already there, so the field
   // clears and nothing is staged.
-  if (pattern && !stagedList(key).includes(pattern)) {
-    settingsEdits = { ...settingsEdits, [key]: [...stagedList(key), pattern] };
+  if (pattern && !stagedList(key, pair).includes(pattern)) {
+    patchStaging(pair, { edits: { ...stagedFor(pair).edits, [key]: [...stagedList(key, pair), pattern] } });
     clearSaveOutcome();
   }
-  settingsDrafts = { ...settingsDrafts, [key]: "" };
+  patchStaging(pair, { drafts: { ...stagedFor(pair).drafts, [key]: "" } });
   render();
 }
 
 /** Un-stages an addition and stages a removal, from one path — both are "not in the staged list". */
-function removePattern(key, pattern) {
-  settingsEdits = { ...settingsEdits, [key]: stagedList(key).filter((p) => p !== pattern) };
+function removePattern(key, pattern, pair) {
+  patchStaging(pair, {
+    edits: { ...stagedFor(pair).edits, [key]: stagedList(key, pair).filter((p) => p !== pattern) },
+  });
   clearSaveOutcome();
   render();
 }
@@ -3100,12 +3164,15 @@ function removePattern(key, pattern) {
  * and a picker that could not OPEN rejects, which is an error and must not read as a dismissal.
  * `choose_folder` returns `Result<Option<String>, String>` precisely so the two stay apart.
  */
-async function chooseLocalRoot() {
+async function chooseLocalRoot(pair) {
   try {
-    const picked = await api.chooseFolder(settingsEdits.local_root ?? configInfo?.local_root ?? null);
-    if (picked) stageSetting("local_root", picked);
+    const picked = await api.chooseFolder(
+      stagedFor(pair).edits.local_root ?? configByPair[pair]?.local_root ?? null,
+    );
+    // Staged into the pair the dialog was opened for: it is modal, but it is not instant.
+    if (picked) stageSetting("local_root", picked, pair);
   } catch (error) {
-    settingsNotice = SETTINGS.chooseFailed(String(error?.message ?? error));
+    patchStaging(pair, { notice: SETTINGS.chooseFailed(String(error?.message ?? error)) });
     render();
   }
 }
@@ -3114,7 +3181,7 @@ async function chooseLocalRoot() {
 async function sweepNow(pair) {
   if (settingsSweeping) return;
   settingsSweeping = true;
-  settingsNotice = SETTINGS.sweeping;
+  patchStaging(pair, { notice: SETTINGS.sweeping });
   render();
   try {
     // THE REPLY HAS TO BE READ, not just awaited. `resync` is a status command, and every one of
@@ -3122,9 +3189,9 @@ async function sweepNow(pair) {
     // against a stopped daemon, or one older than `ControlCommand::Resync`, the `catch` below never
     // fires and an unread reply is a button that does nothing and says nothing.
     const reply = await api.resync({ pair });
-    settingsNotice = reply?.error ? SETTINGS.sweepFailed(reply.error) : null;
+    patchStaging(pair, { notice: reply?.error ? SETTINGS.sweepFailed(reply.error) : null });
   } catch (error) {
-    settingsNotice = SETTINGS.sweepFailed(String(error?.message ?? error));
+    patchStaging(pair, { notice: SETTINGS.sweepFailed(String(error?.message ?? error)) });
   }
   // Released as soon as the daemon has answered. From here the button stays disabled on the reply's
   // own `syncing`, which is the fact rather than our memory of having asked — so re-poll for it.
@@ -3153,9 +3220,13 @@ async function sweepNow(pair) {
  * or it could not be told apart, so nothing was done. The last three keep `Restart it now` on the
  * bar until the state they name is over — see `restartUnresolved` and `clearsRestartFailure`.
  */
-async function saveSettings() {
-  const saved = activeFixture()?.config ?? configInfo ?? {};
-  const update = configUpdate(saved, settingsEdits);
+async function saveSettings(pair = store.select.pairName()) {
+  // `pair` IS THE ONE THE EDITS WERE STAGED FOR (class W). The screen's `Save` passes the pair it was
+  // drawn for; Ctrl S, which has no screen of its own to ask, passes the pair on screen now. Either
+  // way it is fixed here, before anything is awaited: the selection can move while the write is in
+  // flight, and the write, the refresh and the restart must all be about the same folder.
+  const saved = activeFixture()?.config ?? configByPair[pair] ?? {};
+  const update = configUpdate(saved, stagedFor(pair).edits);
   const policy = notifyPolicyEdit != null && notifyPolicyEdit !== notifyPolicy ? notifyPolicyEdit : null;
   if (settingsSaving || (Object.keys(update).length === 0 && !policy)) return;
   settingsSaving = true;
@@ -3164,7 +3235,7 @@ async function saveSettings() {
   // THE MAP AS IT WAS SENT. Every staging path assigns a fresh object, so identity is an exact
   // "nothing was staged since" test — and clearing the whole map on the way back would discard a
   // keystroke typed while the write was in flight, while telling the person it had been saved.
-  const sent = settingsEdits;
+  const sent = stagedFor(pair).edits;
   try {
     // TWO FILES, AND `notify_policy` NEVER GOES IN THE DAEMON'S. Its config parser is
     // `deny_unknown_fields`, so one stray key stops the daemon starting; the GUI's own `gui.toml`
@@ -3173,21 +3244,21 @@ async function saveSettings() {
     // THE CONFIG GOES FIRST, because it is the one that can be refused. `8a Save refused` says
     // "Nothing was saved. Your old settings are still running", and a policy written before a
     // refusal would make that sentence false about the one thing that HAD been written.
-    if (Object.keys(update).length) await api.writeConfig(update);
+    if (Object.keys(update).length) await api.writeConfig(update, { pair });
     if (policy) {
       await api.writeNotifyPolicy(policy);
       notifyPolicy = policy;
       notifyPolicyEdit = null;
     }
-    if (settingsEdits === sent) settingsEdits = {};
+    if (stagedFor(pair).edits === sent) patchStaging(pair, { edits: {} });
     // The rules changed under the report, so the counts on the skip tab are about a config that is
     // no longer on disk. Ask again rather than showing yesterday's numbers next to today's rules.
     skipRuleReport = null;
     skipRuleAsked = false;
-    await refreshConfig();
+    await refreshConfig(pair);
     // ONLY FOR A DAEMON-CONFIG WRITE. A policy-only save touches `gui.toml`, which the daemon never
     // reads, so bouncing it would interrupt a transfer for a setting it has never heard of.
-    if (Object.keys(update).length) await restartForSave();
+    if (Object.keys(update).length) await restartForSave(pair);
   } catch (error) {
     settingsError = String(error?.message ?? error);
     openOverlay("saveRefused");
@@ -3207,12 +3278,14 @@ async function saveSettings() {
  * same `Err`. A rejection now means the request itself never got as far as an ending, which is
  * `undetermined` — the one answer that claims nothing.
  */
-async function restartForSave() {
+async function restartForSave(pair) {
   settingsRestarting = true;
   // WITH ITS SIBLING'S CLEAR, which it was missing (#335). `barNoteOf` puts `notice` first, so a
   // stale `The full sweep didn't start …` from a `Sweep now` minutes ago masked ALL of the endings
-  // below — `Restart it now` appearing on the bar with no sentence explaining why.
-  settingsNotice = null;
+  // below — `Restart it now` appearing on the bar with no sentence explaining why. The saved pair's:
+  // the restart is daemon-wide, and the notice that would mask its ending is the one on the screen
+  // that asked for it.
+  patchStaging(pair, { notice: null });
   render();
   try {
     // `onlyIfRunning`: a save is not a request to start syncing. See `restart_service`.
@@ -3270,10 +3343,10 @@ function latchRestart(ending, reason) {
  * the poll — so a daemon that came back up would not retire it, and one that did not come back
  * would lose it on the next navigation.
  */
-async function restartAfterSave() {
+async function restartAfterSave(pair = store.select.pairName()) {
   if (settingsRestarting) return;
   settingsRestarting = true;
-  settingsNotice = null;
+  patchStaging(pair, { notice: null });
   render();
   try {
     // `restart_service` answers the ending on the Ok payload, so this reads the reply rather than
@@ -3394,7 +3467,7 @@ function onboardingStepNow() {
  */
 function onboardingSkipRulesNow() {
   if (onboardingSkipRules) return onboardingSkipRules;
-  return activeFixture()?.config?.exclude ?? configInfo?.exclude ?? [];
+  return activeFixture()?.config?.exclude ?? viewedConfig()?.exclude ?? [];
 }
 
 /** Which dialog the flow has open, if any. A fixture may name one directly. */
@@ -3499,8 +3572,8 @@ function onboardingRootsNow() {
   // daemon at a folder they never chose.
   const live = store.select.response()?.config ?? null;
   return {
-    local: live?.local_root ?? configInfo?.local_root ?? PROPOSED_LOCAL,
-    remote: live?.remote_root ?? configInfo?.remote_root ?? PROPOSED_REMOTE,
+    local: live?.local_root ?? viewedConfig()?.local_root ?? PROPOSED_LOCAL,
+    remote: live?.remote_root ?? viewedConfig()?.remote_root ?? PROPOSED_REMOTE,
   };
 }
 
@@ -3591,21 +3664,24 @@ function onboardingProps() {
         try {
           // The pair has to be ON DISK before the rehearsal: `run_dry_run` shells
           // `proton-syncd --dry-run`, which reads the config file and not this screen.
-          const pair = onboardingRootsNow();
+          const chosen = onboardingRootsNow();
+          // The pair these roots are written FOR, captured before anything is awaited (class W): the
+          // folder the takeover is about — the only one there is, since it never arms beside two.
+          const pair = store.select.pairName();
           // THE SKIP RULES GO WITH IT, and only when they are DIFFERENT from what is on disk
           // (#244). `write_config` edits the TOML in place and a field sent as `Some` is a key
           // written, so sending an unchanged list would materialise an `exclude = []` line in a
           // file that never had one — the same promise `configUpdate` keeps on the Settings screen,
           // and by the same array comparison. "Touched" is not the test: adding a rule and removing
           // it again leaves a staged `[]` that is identical to the absent key it would write.
-          const update = { local_root: pair.local, remote_root: pair.remote };
+          const update = { local_root: chosen.local, remote_root: chosen.remote };
           const staged = configUpdate(
-            { exclude: configInfo?.exclude ?? [] },
+            { exclude: configByPair[pair]?.exclude ?? [] },
             { exclude: onboardingSkipRulesNow() },
           );
           if ("exclude" in staged) update.exclude = staged.exclude;
-          await api.writeConfig(update);
-          await refreshConfig();
+          await api.writeConfig(update, { pair });
+          await refreshConfig(pair);
           onboardingStep = "review";
           onboardingSeq += 1;
         } catch (error) {
@@ -3857,9 +3933,21 @@ function advanceOnboardingStage() {
 }
 
 // ---- data ----
-async function refreshConfig() {
+/**
+ * Read the config file for one pair and file the reply under the pair IT says it describes.
+ *
+ * `pair` is the pair on screen once a status has said which that is. Before one has, naming none is
+ * right and naming the placeholder `default` would be wrong: a daemon whose only pair is called `docs`
+ * would be asked about a pair that does not exist. Nothing is named, Rust answers for the selection it
+ * holds, and the reply says which pair that was.
+ */
+async function refreshConfig(pair = store.select.settledPair() ?? undefined) {
   try {
-    configInfo = await api.readConfig();
+    const info = await api.readConfig({ pair });
+    // Filed by what the reply says, then by what was asked, then by the pair on screen: the browser
+    // preview's replies carry no `pair`, and a real one always does.
+    configByPair = { ...configByPair, [info?.pair ?? pair ?? store.select.pairName()]: info };
+    configRoster = Array.isArray(info?.pairs) ? info.pairs : [];
     configError = null;
     // A missing config file reads back as an empty doc (not an error), so a successful read means we
     // now *know* whether a folder pair exists — the signal nextOnboardingLatch needs to distinguish a

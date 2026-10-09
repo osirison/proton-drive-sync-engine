@@ -8,11 +8,12 @@
 // that answers each command and **holds a reply open when told to**, which is what makes the window
 // between "the person pressed it" and "the daemon answered" a thing a test can stand in.
 //
-// Eleven scenarios. The first four are each a way a write can land on a different pair than the one it was
+// Fifteen scenarios. The first four are each a way a write can land on a different pair than the one it was
 // drawn for — each was a bug before the capture existed or would be again if it were removed. The fifth
 // and sixth are the first-run rule at two pairs and at one. The next three are the rest of the capture:
-// a late READ, the decision on a conflict, and the tray panel's pin. The last two are the tray panel's
-// rows at two folders (#102 phase 5d) and its `Review them`, which names the folder it is drawn for.
+// a late READ, the decision on a conflict, and the tray panel's pin. The next two are the tray panel's
+// rows at two folders (#102 phase 5d) and its `Review them`, which names the folder it is drawn for. The
+// last four are the Settings screen's (#102 phase 5b-1): what is staged belongs to one folder.
 //
 //   1. THE TAIL OF A DECISION. `Move to Proton's Trash` approves, waits for the daemon, then nudges a
 //      sync. The selection moves while the approval is in flight; the nudge must still go where the
@@ -54,6 +55,15 @@
 //      and when the decisions move to the other folder while the panel stays a needs-you panel, it is
 //      patched in place, so the button it keeps must send the NEW folder's id, not the one it was built
 //      for.
+//  12. THE SAVE OF STAGED SETTINGS. A policy is staged against one folder and the selection moves before
+//      `Save` is pressed on the bar that was drawn for it: the write names the folder the edit was typed
+//      for, with that folder's update, and nothing is written for the folder now showing.
+//  13. WHAT IS STAGED BELONGS TO ONE FOLDER. The folder switched to draws its own saved settings and
+//      none of the other's edits (and has nothing to save), and switching back finds the edit still there.
+//  14. A READ NAMES THE FOLDER ON SCREEN. Once a status has said which folder is shown, the settings
+//      read asks about THAT folder; and a reply is filed under the folder it says it describes.
+//  15. WHAT THE WINDOW READS BACK IS THE FOLDER ON SCREEN'S. The Details dialog states the scan interval
+//      of the folder it is about, from the config reply filed for that folder.
 //
 // WHAT IT CANNOT SEE: it scripts the bridge, so it proves the facade and the screens agree with each
 // other, not that the real Rust agrees with either (that is `selection_tests.rs`); and it drives the
@@ -61,7 +71,7 @@
 
 import puppeteer from "puppeteer";
 import { serve } from "./serve.mjs";
-import { CONFLICTS, DELETIONS, MAIN, PLAN, TRAY } from "../../src/js/ui/copy.js";
+import { CONFLICTS, DELETIONS, MAIN, PLAN, SETTINGS, TRAY } from "../../src/js/ui/copy.js";
 import { EMPTY_CONFIG } from "../../src/js/api.js";
 
 const PAIRS = ["docs", "photos"];
@@ -112,9 +122,11 @@ const CONFLICT = { original: "note.txt", sidecar: "note.proton-cloud.txt", kind:
 class Bridge {
   constructor(
     queues,
-    { names = PAIRS, neverSynced = [], conflicts = {}, selected = "docs", states = {} } = {},
+    { names = PAIRS, neverSynced = [], conflicts = {}, selected = "docs", states = {}, configs = {} } = {},
   ) {
     this.names = names;
+    // pair -> the per-pair values its `read_config` reply carries beyond the empty config's.
+    this.configs = configs;
     this.neverSynced = neverSynced;
     // pair -> `{ state, rank, summary }`: what Rust derived for a folder that is not simply idle.
     this.states = states;
@@ -220,16 +232,21 @@ class Bridge {
       case "tray_action":
         // A row of the panel: the reply is the panel's own status, never the addressed folder's.
         return this.status(this.names[0]);
-      case "read_config":
+      case "read_config": {
+        // Answered for the pair the request names, else the selected one — and says which, as Rust does.
+        const pair = args?.pair ?? this.selected;
         return {
           ...EMPTY_CONFIG,
           exists: true,
+          pair,
           pairs: this.names.map((name) => ({
             name,
             local_root: `/home/u/${name}`,
             remote_root: `/Drive/${name}`,
           })),
+          ...this.configs[pair],
         };
+      }
       case "read_notify_policy":
         return "never";
       case "check_cli":
@@ -716,6 +733,165 @@ await scenario(
     await page.close();
   },
 );
+
+// ---- 12-14. the Settings screen's staged edits -------------------------------------------------------------
+
+/** Every policy card on the Deletions tab, by title: whether it is the selected one. */
+const policyCards = (page) =>
+  page.evaluate(() =>
+    Object.fromEntries(
+      [...document.querySelectorAll(".settings-cards .radio-card")].map((card) => [
+        card.querySelector(".radio-title")?.textContent.trim(),
+        card.getAttribute("aria-checked") === "true",
+      ]),
+    ),
+  );
+
+/** Open Settings on its Deletions tab and wait for the cards to be drawn from a config that has arrived. */
+async function openDeletions(page) {
+  await press(page, "Settings");
+  await press(page, SETTINGS.tabs.deletions);
+  await until("the policy cards", async () => Object.values(await policyCards(page)).some(Boolean));
+}
+
+const pressCard = (page, title) =>
+  page.evaluate((label) => {
+    [...document.querySelectorAll(".settings-cards .radio-card")]
+      .find((card) => card.querySelector(".radio-title")?.textContent.trim() === label)
+      .click();
+  }, title);
+
+/** The two folders' saved policies differ, so a card drawn from the wrong folder's file is a different card. */
+const SETTINGS_CONFIGS = {
+  docs: { deletion_policy: "ask_every_time" },
+  photos: { deletion_policy: "only_permanent" },
+};
+
+await scenario(
+  "a save of staged settings names the pair the edit was staged for, not the one selected when it runs",
+  async () => {
+    const bridge = new Bridge({ docs: [], photos: [] }, { configs: SETTINGS_CONFIGS });
+    const page = await open(bridge);
+    await openDeletions(page);
+    await pressCard(page, SETTINGS.askNever); // staged against docs
+    const save = await until("an armed Save", async () => {
+      const handle = await page.evaluateHandle(
+        (label) =>
+          [...document.querySelectorAll("button")].find(
+            (b) => b.textContent.trim() === label && !b.disabled,
+          ) ?? null,
+        SETTINGS.save,
+      );
+      return handle.asElement();
+    });
+
+    // The selection moves under a Save that has not been redrawn yet, and the press lands on THAT
+    // button: held across the switch, which is what a click arriving in the gap looks like.
+    await select(page, bridge, "photos");
+    await save.evaluate((button) => button.click());
+    await until("the write", () => bridge.called("write_config").length === 1);
+    expectPair(bridge.called("write_config"), "docs", "write_config");
+    const sent = bridge.called("write_config")[0].args.update;
+    if (JSON.stringify(sent) !== JSON.stringify({ deletion_policy: "never" })) {
+      throw new Error(`write_config carried ${JSON.stringify(sent)}, not docs' staged policy`);
+    }
+    await page.close();
+  },
+);
+
+await scenario("what is staged for one pair is never shown on, or saved for, another", async () => {
+  const bridge = new Bridge({ docs: [], photos: [] }, { configs: SETTINGS_CONFIGS });
+  const page = await open(bridge);
+  await openDeletions(page);
+  await pressCard(page, SETTINGS.askNever); // staged against docs
+  const staged = await policyCards(page);
+  if (!staged[SETTINGS.askNever]) throw new Error("the staged card is not drawn as chosen for docs");
+
+  await select(page, bridge, "photos");
+  // Photos' config arrives on the next read; wait until the card drawn is photos' own saved one.
+  const photos = await until("photos' own policy", async () => {
+    const cards = await policyCards(page);
+    return cards[SETTINGS.askPermanent] ? cards : null;
+  });
+  if (photos[SETTINGS.askNever]) throw new Error("docs' staged policy is drawn as photos'");
+  const armed = await page.evaluate(
+    (label) =>
+      [...document.querySelectorAll("button")].some((b) => b.textContent.trim() === label && !b.disabled),
+    SETTINGS.save,
+  );
+  if (armed) throw new Error("photos has nothing staged but Save is armed: docs' edit leaks into it");
+
+  // Nothing was lost by looking at the other folder: docs' edit is where it was left.
+  await select(page, bridge, "docs");
+  const back = await until("docs' staged policy", async () => {
+    const cards = await policyCards(page);
+    return cards[SETTINGS.askNever] ? cards : null;
+  });
+  if (!back[SETTINGS.askNever]) throw new Error("docs' staged policy was lost by looking at photos");
+
+  await press(page, SETTINGS.save);
+  await until("the write", () => bridge.called("write_config").length >= 1);
+  await settle(page);
+  expectPair(bridge.called("write_config"), "docs", "write_config");
+  if (bridge.called("write_config").length !== 1) {
+    throw new Error(`${bridge.called("write_config").length} writes went out for one folder's edit`);
+  }
+  await page.close();
+});
+
+await scenario(
+  "the settings read asks about the folder on screen and is filed under the one it names",
+  async () => {
+    const bridge = new Bridge({ docs: [], photos: [] }, { configs: SETTINGS_CONFIGS, selected: "photos" });
+    const page = await open(bridge);
+    await openDeletions(page);
+    // The first read may name nothing (no status has said which folder is shown); every read after the
+    // status has landed names the folder on screen, and that folder's saved policy is what is drawn.
+    await until("a read that names photos", () =>
+      bridge.called("read_config").some((call) => call.args?.pair === "photos"),
+    );
+    const cards = await until("photos' policy", async () => {
+      const drawn = await policyCards(page);
+      return drawn[SETTINGS.askPermanent] ? drawn : null;
+    });
+    if (cards[SETTINGS.askEvery]) throw new Error("another folder's saved policy is drawn for photos");
+    const named = bridge.called("read_config").filter((call) => call.args?.pair != null);
+    const wrong = named.filter((call) => call.args.pair !== "photos");
+    if (wrong.length) {
+      throw new Error(`a read named ${JSON.stringify(wrong.map((c) => c.args.pair))} while photos was shown`);
+    }
+    await page.close();
+  },
+);
+
+await scenario("the Details dialog reads the config of the folder on screen", async () => {
+  const bridge = new Bridge(
+    { docs: [], photos: [] },
+    {
+      configs: {
+        docs: { scan_interval_secs: 300 },
+        photos: { scan_interval_secs: 777 },
+      },
+    },
+  );
+  const page = await open(bridge);
+  await until("docs' config", () => bridge.called("read_config").length >= 1);
+  await select(page, bridge, "photos");
+  await until("a read of photos' config", () =>
+    bridge.called("read_config").some((call) => call.args?.pair === "photos"),
+  );
+  await settle(page);
+  await press(page, "Details");
+  const shown = await until("the interval row", async () => {
+    const text = await pageText(page);
+    return /scan_interval/.test(text) ? text : null;
+  });
+  if (!shown.includes("777s")) {
+    throw new Error(`the Details dialog does not state photos' interval: ${JSON.stringify(shown)}`);
+  }
+  if (shown.includes("300s")) throw new Error("the Details dialog states docs' interval over photos");
+  await page.close();
+});
 
 await browser.close();
 server.close();

@@ -67,6 +67,15 @@ const WRITES = [
     (opts) => api.resolveConflict(CONFLICT, "keep_both", opts),
     { conflict: { original: "a.txt", sidecar: "a.proton-cloud.txt", kind: "content" }, choice: "keep_both" },
   ],
+  // THE SETTINGS SAVE (#102 phase 5b-1). A write to ONE pair's table, so the pair is the one the staged
+  // edits belong to — and it is sent beside the update, not inside it, because the update is the
+  // file's keys and the pair is which table of the file they go to.
+  [
+    "write_config",
+    "writeConfig",
+    (opts) => api.writeConfig({ scan_interval_secs: 60, log_level: "debug" }, opts),
+    { update: { scan_interval_secs: 60, log_level: "debug" } },
+  ],
 ];
 
 test("a_class_w_wrapper_without_a_pair_rejects_and_sends_nothing", async () => {
@@ -120,6 +129,7 @@ test("a_class_r_wrapper_with_no_pair_sends_what_it_always_sent", async () => {
   await api.openFolder("a.txt");
   await api.freeSpace(null);
   await api.skipRuleUsage(["*.tmp"], []);
+  await api.readConfig();
   assert.deepEqual(
     calls.map((call) => [call.cmd, call.args]),
     [
@@ -136,6 +146,7 @@ test("a_class_r_wrapper_with_no_pair_sends_what_it_always_sent", async () => {
       ["open_folder", { relative: "a.txt" }],
       ["free_space", { path: null }],
       ["skip_rule_usage", { patterns: ["*.tmp"], include: [] }],
+      ["read_config", undefined],
     ],
   );
 });
@@ -146,6 +157,7 @@ test("a_class_r_wrapper_may_name_a_pair_and_then_does", async () => {
   await api.pathSyncStatus("a.txt", { pair: "photos" });
   await api.searchFiles("a", undefined, { pair: "photos" });
   await api.openFolder("a.txt", { pair: "photos" });
+  await api.readConfig({ pair: "photos" });
   for (const call of calls) assert.equal(call.args.pair, "photos", call.cmd);
   // A name left undefined (the tray panel before the daemon has listed its pairs) names nothing.
   calls.length = 0;

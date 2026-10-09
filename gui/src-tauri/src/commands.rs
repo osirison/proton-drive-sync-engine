@@ -24,11 +24,13 @@
 //!
 //! **A command that touches the filesystem, a subprocess or a socket must be `async` and do its
 //! work in `spawn_blocking`.** A synchronous one runs on the GTK main loop, and WebKitGTK aborts
-//! the whole process when that loop stalls (#142/#143). `read_config`, `write_config`,
-//! `resolve_conflict` and `read_conflict_pair` predate the rule and are still synchronous.
-//! `path_sync_status` was one until it was given a pair argument (#102 phase 5a): it can hold the
-//! loop for its full 3s index busy timeout, and a command being touched anyway is the moment to stop
-//! being a violation. The rest are bounded enough to have survived; anything unbounded is not, and
+//! the whole process when that loop stalls (#142/#143). `resolve_conflict` and
+//! `read_conflict_pair` predate the rule and are still synchronous.
+//! `path_sync_status` was one until it was given a pair argument (#102 phase 5a), and `read_config`
+//! and `write_config` until theirs (phase 5b-1): `path_sync_status` can hold the loop for its full 3s
+//! index busy timeout, and `write_config` canonicalizes paths when an edit can move a folder — a
+//! command being touched anyway is the moment to stop being a violation. The rest are bounded
+//! enough to have survived; anything unbounded is not, and
 //! none of the commands added since is synchronous. S9's two `notify_policy` commands were, for one
 //! commit, and the review that caught them is the reason this sentence is checkable at all.
 
@@ -688,6 +690,13 @@ pub struct ConfigPayload {
     path: String,
     exists: bool,
     toml: String,
+    /// The pair every PER-PAIR value below describes (`local_root` … `local_delete_mode`), as the
+    /// command resolved it (#102 phase 5b-1). A request that named none is answered for the pair the
+    /// app has selected, and this is how the caller learns which that was: a payload filed under the
+    /// pair it was ASKED about would be filed under the wrong one whenever the two differ. The
+    /// daemon-wide values (`proton_cli`, the timeouts, `socket_path`, `log_level`) are the file's top
+    /// level whichever pair this is.
+    pair: String,
     /// Every pair the file declares, in file order (the first is the default pair), including the
     /// one implicit pair — called `default` — of a file with no `[[pair]]` tables.
     ///
@@ -737,11 +746,33 @@ pub struct ConfigPayload {
     local_delete_mode: config_io::LocalDeleteMode,
 }
 
+/// Class R (#102 phase 5b-1). The config file as the Settings screen reads it, for one pair.
+///
+/// The per-pair values are the addressed pair's TABLE of the file — or the top level of a file that
+/// declares none, which is that one pair (`ConfigDoc::pair`, the same code for both). The daemon-wide
+/// values are the top level whichever pair is asked about, and `pairs` is the whole roster. Naming no
+/// pair means the pair the app has selected; naming one the app does not know is refused, and so is
+/// one the FILE does not declare (the daemon may know a pair the file has since lost, and an answer
+/// built from another pair's table would be the wrong pair's settings under this one's name).
+///
+/// Asynchronous, with the file read on a blocking thread, like every command that touches the
+/// filesystem (`commands.rs` header).
 #[tauri::command]
-pub fn read_config(state: Paths) -> Result<ConfigPayload, String> {
-    let path = state.lock().unwrap().config_path.clone();
+pub async fn read_config(state: Paths<'_>, pair: Option<String>) -> Result<ConfigPayload, String> {
+    let (path, pair) = {
+        let paths = state.lock().unwrap();
+        let pair = paths.resolve_ask(Ask::read(pair.as_deref()))?;
+        (paths.config_path.clone(), pair.name)
+    };
+    tauri::async_runtime::spawn_blocking(move || config_payload(&path, &pair))
+        .await
+        .map_err(|error| format!("config read task failed: {error}"))?
+}
+
+/// [`read_config`]'s body, over a path and a pair name.
+fn config_payload(path: &std::path::Path, pair: &str) -> Result<ConfigPayload, String> {
     let exists = path.exists();
-    let doc = config_io::ConfigDoc::load(&path).map_err(|e| e.to_string())?;
+    let doc = config_io::ConfigDoc::load(path).map_err(|e| e.to_string())?;
     let toml = doc.to_toml_string();
     let pairs = config_io::pair_views(&toml)
         .unwrap_or_default()
@@ -752,28 +783,36 @@ pub fn read_config(state: Paths) -> Result<ConfigPayload, String> {
             remote_root: view.remote_root.map(|root| root.display().to_string()),
         })
         .collect();
+    let table = doc.pair(pair).ok_or_else(|| {
+        config_io::ConfigError::NoSuchPair {
+            name: pair.to_owned(),
+            known: doc.pair_names(),
+        }
+        .to_string()
+    })?;
     Ok(ConfigPayload {
         path: path.display().to_string(),
         exists,
         toml,
+        pair: pair.to_owned(),
         pairs,
-        local_root: doc.get_str("local_root"),
-        remote_root: doc.get_str("remote_root"),
-        scan_interval_secs: doc.get_int("scan_interval_secs"),
-        full_scan_schedule: doc.get_str("full_scan_schedule"),
-        events_driven: doc.get_bool("events_driven"),
-        include: doc.get_string_array("include"),
-        exclude: doc.get_string_array("exclude"),
+        local_root: table.get_str("local_root"),
+        remote_root: table.get_str("remote_root"),
+        scan_interval_secs: table.get_int("scan_interval_secs"),
+        full_scan_schedule: table.get_str("full_scan_schedule"),
+        events_driven: table.get_bool("events_driven"),
+        include: table.get_string_array("include"),
+        exclude: table.get_string_array("exclude"),
         proton_cli: doc.get_str("proton_cli"),
         proton_timeout_secs: doc.get_int("proton_timeout_secs"),
         proton_list_attempts: doc.get_int("proton_list_attempts"),
         socket_path: doc.get_str("socket_path"),
         log_level: doc.get_str("log_level"),
-        conflict_suffix: doc.get_str("conflict_suffix"),
-        delete_approval_remote: doc.get_delete_approval("remote"),
-        delete_approval_local: doc.get_delete_approval("local"),
-        deletion_policy: doc.get_deletion_policy(),
-        local_delete_mode: doc.get_local_delete_mode(),
+        conflict_suffix: table.get_str("conflict_suffix"),
+        delete_approval_remote: table.get_delete_approval("remote"),
+        delete_approval_local: table.get_delete_approval("local"),
+        deletion_policy: table.get_deletion_policy(),
+        local_delete_mode: table.get_local_delete_mode(),
     })
 }
 
@@ -807,36 +846,75 @@ pub struct ConfigUpdate {
     local_delete_mode: Option<config_io::LocalDeleteMode>,
 }
 
-#[tauri::command]
-pub fn write_config(state: Paths, update: ConfigUpdate) -> Result<(), String> {
-    let path = state.lock().unwrap().config_path.clone();
-    let mut doc = config_io::ConfigDoc::load(&path).map_err(|e| e.to_string())?;
+impl ConfigUpdate {
+    /// Whether this update can move a pair's folder or state files — the three keys
+    /// (`local_root`, `db_path`, `lockfile_path`) the on-disk overlap rule reads
+    /// (`config::real_path_conflicts`). Only `local_root` is an update field today; a Settings control
+    /// for either state path would be a field here, and **the destructure below names every field
+    /// with no `..`**, so adding one cannot compile until this function has said whether it moves
+    /// them. The check it gates touches the filesystem, so it is asked for only when it can matter.
+    fn touches_state_paths(&self) -> bool {
+        let Self {
+            local_root,
+            remote_root: _,
+            scan_interval_secs: _,
+            full_scan_schedule: _,
+            events_driven: _,
+            include: _,
+            exclude: _,
+            proton_cli: _,
+            proton_timeout_secs: _,
+            proton_list_attempts: _,
+            socket_path: _,
+            log_level: _,
+            conflict_suffix: _,
+            delete_approval_remote: _,
+            delete_approval_local: _,
+            deletion_policy: _,
+            local_delete_mode: _,
+        } = self;
+        local_root.is_some()
+    }
+}
+
+/// Write `update` into `doc`, each key to the table it belongs in: the named pair's for a per-pair
+/// key, the top level of the file for a daemon-wide one (`ConfigDoc::writer_for` routes by the
+/// engine's own `ConfigKey::scope`).
+///
+/// **In the order this always wrote them**, because a key a file does not have is appended where it
+/// is written: a one-pair file's save is the same bytes it was before pairs had tables.
+fn apply_update(
+    doc: &mut config_io::ConfigDoc,
+    pair: &str,
+    update: &ConfigUpdate,
+) -> Result<(), config_io::ConfigError> {
+    let mut doc = doc.writer_for(pair);
     if let Some(v) = &update.local_root {
-        doc.set_str("local_root", v);
+        doc.set_str("local_root", v)?;
     }
     if let Some(v) = &update.remote_root {
-        doc.set_str("remote_root", v);
+        doc.set_str("remote_root", v)?;
     }
     if let Some(v) = update.scan_interval_secs {
-        doc.set_int("scan_interval_secs", v);
+        doc.set_int("scan_interval_secs", v)?;
     }
     if let Some(v) = update.events_driven {
-        doc.set_bool("events_driven", v);
+        doc.set_bool("events_driven", v)?;
     }
     if let Some(v) = &update.include {
-        doc.set_string_array("include", v);
+        doc.set_string_array("include", v)?;
     }
     if let Some(v) = &update.exclude {
-        doc.set_string_array("exclude", v);
+        doc.set_string_array("exclude", v)?;
     }
     if let Some(v) = &update.proton_cli {
-        doc.set_str("proton_cli", v);
+        doc.set_str("proton_cli", v)?;
     }
     if let Some(v) = update.proton_timeout_secs {
-        doc.set_int("proton_timeout_secs", v);
+        doc.set_int("proton_timeout_secs", v)?;
     }
     if let Some(v) = update.proton_list_attempts {
-        doc.set_int("proton_list_attempts", v);
+        doc.set_int("proton_list_attempts", v)?;
     }
     // An EMPTY string clears the key rather than writing `key = ""` — for all three of these an
     // empty value is either rejected outright (`conflict_suffix`) or means something the user did
@@ -850,24 +928,74 @@ pub fn write_config(state: Paths, update: ConfigUpdate) -> Result<(), String> {
         ("full_scan_schedule", &update.full_scan_schedule),
     ] {
         match value.as_deref().map(str::trim) {
-            Some("") => doc.remove(key),
-            Some(v) => doc.set_str(key, v),
+            Some("") => doc.remove(key)?,
+            Some(v) => doc.set_str(key, v)?,
             None => {}
         }
     }
     if let Some(v) = update.delete_approval_remote {
-        doc.set_delete_approval("remote", v);
+        doc.set_delete_approval("remote", v)?;
     }
     if let Some(v) = update.delete_approval_local {
-        doc.set_delete_approval("local", v);
+        doc.set_delete_approval("local", v)?;
     }
     if let Some(v) = update.deletion_policy {
-        doc.set_deletion_policy(v);
+        doc.set_deletion_policy(v)?;
     }
     if let Some(v) = update.local_delete_mode {
-        doc.set_local_delete_mode(v);
+        doc.set_local_delete_mode(v)?;
     }
-    doc.save(&path).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// [`write_config`]'s file half: load, edit, check, save. Blocking — it reads and writes the file
+/// and, when the update can move a folder, canonicalizes paths.
+fn write_config_file(
+    path: &std::path::Path,
+    pair: &str,
+    update: &ConfigUpdate,
+) -> Result<(), String> {
+    let mut doc = config_io::ConfigDoc::load(path).map_err(|e| e.to_string())?;
+    apply_update(&mut doc, pair, update).map_err(|e| e.to_string())?;
+    if update.touches_state_paths() {
+        // THE HALF OF THE DAEMON'S BOOT CHECK THE LEXICAL VALIDATOR CANNOT SEE. `save` passes two
+        // roots that reach one folder through a symlink, and the daemon refuses to start on them —
+        // fatally, and on a unit that restarts every ten seconds. Asked after `validate` so a file
+        // that is simply invalid says so in the validator's words first, and refused in the ENGINE's
+        // sentence (not one built here): it is the daemon's own message for the same fact. Advisory
+        // — a link made after this changes the answer — and the boot check stays fatal.
+        doc.validate().map_err(|e| e.to_string())?;
+        config_io::real_path_conflicts(&doc.to_toml_string()).map_err(|e| e.to_string())?;
+    }
+    doc.save(path).map_err(|e| e.to_string())
+}
+
+/// Class W (#102 phase 5b-1): a write, so the pair is REQUIRED and is the one the caller captured
+/// when the edits began — never the app's selection, which can move between a click and this running.
+/// A name the app does not know is refused (`Ask::Named`), and so is one the file has no table for.
+///
+/// Per-pair values go into the named pair's table and daemon-wide ones stay at the top level of the
+/// file; an inline-array file refuses a per-pair edit with its own sentence. Asynchronous because an
+/// update that can move a pair's folder is checked against the real paths (`real_path_conflicts`),
+/// which canonicalizes: file I/O, on a blocking thread.
+#[tauri::command]
+pub async fn write_config(
+    state: Paths<'_>,
+    pair: String,
+    update: ConfigUpdate,
+) -> Result<(), String> {
+    let (path, pair) = {
+        let paths = state.lock().unwrap();
+        let pair = paths.resolve_ask(Ask::Named(&pair))?;
+        (paths.config_path.clone(), pair.name)
+    };
+    let written = {
+        let path = path.clone();
+        tauri::async_runtime::spawn_blocking(move || write_config_file(&path, &pair, &update))
+            .await
+            .map_err(|error| format!("config write task failed: {error}"))?
+    };
+    written?;
     // Re-resolve in case local_root / db changed, but keep the daemon-reported live config — the
     // daemon is still running with it until restarted. (Saving still requires a daemon restart to
     // take effect — the frontend prompts for that.)
@@ -4206,6 +4334,9 @@ mod selection_tests;
 mod tray_tests;
 
 #[cfg(all(test, unix))]
+mod config_tests;
+
+#[cfg(all(test, unix))]
 mod socket_tests {
     use super::*;
     use std::io::{BufRead, BufReader, Write};
@@ -4693,10 +4824,11 @@ mod socket_tests {
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("mock app should build");
 
-        write_config(
+        tauri::async_runtime::block_on(write_config(
             app.state::<Mutex<RuntimePaths>>(),
+            "default".to_owned(),
             socket_path_update(&new_socket),
-        )
+        ))
         .expect("an absolute socket_path saves");
 
         let after = app.state::<Mutex<RuntimePaths>>();
@@ -4726,10 +4858,11 @@ mod socket_tests {
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("mock app should build");
 
-        write_config(
+        tauri::async_runtime::block_on(write_config(
             app.state::<Mutex<RuntimePaths>>(),
+            "default".to_owned(),
             socket_path_update(&new_socket),
-        )
+        ))
         .expect("an absolute socket_path saves");
 
         // The save re-resolves at the file it just wrote, and that file now names `new_socket`, so
@@ -4769,10 +4902,11 @@ mod socket_tests {
 
         // The save. Must not move `socket_path` — pinned directly above, re-checked here because
         // it is the premise the rest of this test depends on.
-        write_config(
+        tauri::async_runtime::block_on(write_config(
             app.state::<Mutex<RuntimePaths>>(),
+            "default".to_owned(),
             socket_path_update(&new_socket),
-        )
+        ))
         .expect("an absolute socket_path saves");
         assert_eq!(
             app.state::<Mutex<RuntimePaths>>()

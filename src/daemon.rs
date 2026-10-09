@@ -4780,162 +4780,31 @@ fn daemon_wide_mismatch(first: &DaemonConfig, other: &DaemonConfig) -> Option<&'
     }
 }
 
-/// One pair's folder and state files as the **filesystem** names them: every symlink resolved, a
-/// path that does not exist yet resolved as far as it exists (`index::canonicalize_best_effort`).
-struct RealPairPaths {
-    local_root: RealPath,
-    /// The index and the lockfile: the real directory each lives in, with the file's own name.
-    db_path: RealPath,
-    lockfile_path: RealPath,
-}
-
-/// A configured path beside the real one it resolves to, so a message can say both.
-struct RealPath {
-    written: PathBuf,
-    real: PathBuf,
-}
-
-impl RealPath {
-    fn of(written: &Path) -> Self {
-        Self {
-            written: written.to_path_buf(),
-            real: crate::index::canonicalize_best_effort(written),
-        }
-    }
-
-    /// A state **file**: the directory it lives in is resolved and the file's own name is kept, so
-    /// a path that does not exist yet (the index, before it is first opened) still has a real
-    /// place, and a file that is itself a link is judged by where it sits, which is where the
-    /// scanner of whoever owns that directory would find it.
-    fn of_state_file(written: &Path) -> Self {
-        let real = match (written.parent(), written.file_name()) {
-            (Some(parent), Some(name)) if !parent.as_os_str().is_empty() => {
-                crate::index::canonicalize_best_effort(parent).join(name)
-            }
-            _ => crate::index::canonicalize_best_effort(written),
-        };
-        Self {
-            written: written.to_path_buf(),
-            real,
-        }
-    }
-
-    /// `` `written` `` alone when it is already the real path, otherwise `` `written` (really
-    /// `real`) `` — a message that repeats a path as its own alias is noise.
-    fn describe(&self) -> String {
-        if self.written == self.real {
-            format!("`{}`", self.written.display())
-        } else {
-            format!(
-                "`{}` (really `{}`)",
-                self.written.display(),
-                self.real.display()
-            )
-        }
-    }
-}
-
-impl RealPairPaths {
-    fn of(config: &PairConfig) -> Self {
-        Self {
-            local_root: RealPath::of(&config.local_root),
-            db_path: RealPath::of_state_file(&config.db_path),
-            lockfile_path: RealPath::of_state_file(&config.lockfile_path),
-        }
-    }
-
-    fn state_files(&self) -> [(&'static str, &RealPath); 2] {
-        [
-            ("db_path", &self.db_path),
-            ("lockfile_path", &self.lockfile_path),
-        ]
-    }
-}
-
-/// Whether `candidate` and `other` overlap **on disk**, and if so the whole refusal as one
-/// sentence naming both pairs and, for every path, both the written and the real form (ADR 0005
-/// §2 rule 4, phase 4c). `None` when they do not.
+/// Whether `candidate` and `other` overlap **on disk**, and if so the whole refusal as one sentence
+/// (ADR 0005 §2 rule 4, phase 4c). `None` when they do not. The rule, its wording and its reasons
+/// are `config::real_path_overlap`'s — this is that function over the daemon's resolved
+/// [`PairConfig`], and nothing else (#102 phase 5b-1: the body moved so a client that only has a
+/// config file's text can ask the same question, `config::real_path_conflicts`).
 ///
-/// The config reader's rule is lexical, because a file must be checkable without touching the
-/// filesystem, and it says so: it cannot see a symlink or a relative path. This is the half that
-/// can, and the consequences are the same ones. A pair whose folder sits inside another's has its
-/// `.sync` index, lockfile and sidecars scanned and uploaded as the outer pair's ordinary files
-/// (`is_sync_state_path` ignores only a **top-level** `.sync`); two pairs over one folder plan
-/// opposing actions for it; and the same shape is reached around the folder rule by a state file
-/// placed in another pair's folder, or the same state file named twice. Exact aliasing used to be
-/// caught only illegibly, by `flock` on the shared lockfile inode ("daemon already running");
-/// nesting through a symlink was not caught at all.
-///
-/// Symmetric in its two arguments except for the wording. **One function, three callers**: the
-/// daemon at boot (every pair against every earlier one, before anything is created or locked), a
-/// retry (`Daemon::retry_unavailable`, the pair being promoted against all the others), so a pair
-/// that becomes available later stays unavailable on an overlap exactly as one at boot refuses the
-/// start, and a pair that is already running (`Daemon::stop_overlapping_pairs`, against every other
-/// pair whose folder exists, ready or not, and stopping only the ready ones). The retry and the
-/// running check both skip a neighbour whose folder is not there ([`neighbours_with_a_folder`]);
-/// boot does not.
+/// **One function, three callers here**: the daemon at boot (every pair against every earlier one,
+/// before anything is created or locked), a retry (`Daemon::retry_unavailable`, the pair being
+/// promoted against all the others), so a pair that becomes available later stays unavailable on an
+/// overlap exactly as one at boot refuses the start, and a pair that is already running
+/// (`Daemon::stop_overlapping_pairs`, against every other pair whose folder exists, ready or not,
+/// and stopping only the ready ones). The retry and the running check both skip a neighbour whose
+/// folder is not there ([`neighbours_with_a_folder`]); boot does not.
 fn real_path_overlap(candidate: &PairConfig, other: &PairConfig) -> Option<String> {
-    let (this, that) = (RealPairPaths::of(candidate), RealPairPaths::of(other));
-    let (this_name, that_name) = (&candidate.name, &other.name);
-    let root_relation = if this.local_root.real == that.local_root.real {
-        Some("is the same folder as")
-    } else if this.local_root.real.starts_with(&that.local_root.real) {
-        Some("is inside")
-    } else if that.local_root.real.starts_with(&this.local_root.real) {
-        Some("contains")
-    } else {
-        None
-    };
-    if let Some(relation) = root_relation {
-        return Some(format!(
-            "folder pair '{this_name}': its local_root {} {relation} folder pair '{that_name}''s \
-             local_root {}. Two pairs may not share a folder or nest: the inner pair's `.sync` \
-             state directory — its index, lockfile and sidecars — would be scanned and uploaded to \
-             Proton Drive as the outer pair's ordinary files, and two pairs over one folder plan \
-             opposing actions for it. Symlinks are followed, so this is the folders as they really \
-             are",
-            this.local_root.describe(),
-            that.local_root.describe(),
-        ));
+    crate::config::real_path_overlap(&state_paths_of(candidate), &state_paths_of(other))
+}
+
+/// The four things the overlap rule reads, borrowed from a resolved pair.
+fn state_paths_of(config: &PairConfig) -> crate::config::PairStatePaths<'_> {
+    crate::config::PairStatePaths {
+        name: &config.name,
+        local_root: &config.local_root,
+        db_path: &config.db_path,
+        lockfile_path: &config.lockfile_path,
     }
-    for (field, state) in this.state_files() {
-        if state.real.starts_with(&that.local_root.real) {
-            return Some(format!(
-                "folder pair '{this_name}': its {field} {} is inside folder pair '{that_name}''s \
-                 local_root {}: pair '{that_name}' would scan that file and upload pair \
-                 '{this_name}''s live SQLite index or lockfile to Proton Drive as its own",
-                state.describe(),
-                that.local_root.describe(),
-            ));
-        }
-    }
-    for (field, state) in that.state_files() {
-        if state.real.starts_with(&this.local_root.real) {
-            return Some(format!(
-                "folder pair '{that_name}': its {field} {} is inside folder pair '{this_name}''s \
-                 local_root {}: pair '{this_name}' would scan that file and upload pair \
-                 '{that_name}''s live SQLite index or lockfile to Proton Drive as its own",
-                state.describe(),
-                this.local_root.describe(),
-            ));
-        }
-    }
-    for (field, state) in this.state_files() {
-        for (other_field, other_state) in that.state_files() {
-            if state.real == other_state.real {
-                return Some(format!(
-                    "folder pair '{this_name}''s {field} {} and folder pair '{that_name}''s \
-                     {other_field} {} are the same file: no two of these may be, because `flock` \
-                     treats two descriptors on one inode as independent (a shared lockfile \
-                     surfaces as a spurious \"already running\") and a shared index has two \
-                     writers of one baseline",
-                    state.describe(),
-                    other_state.describe(),
-                ));
-            }
-        }
-    }
-    None
 }
 
 /// [`real_path_overlap`] against each of `others`, in order: the first overlap found.

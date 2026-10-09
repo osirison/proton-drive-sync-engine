@@ -756,13 +756,14 @@ fn select_pair_validates_persists_and_announces() {
 fn a_save_keeps_the_selection() {
     let h = harness(two_pair_daemon(), Some(TWO_PAIR_FILE));
     run!(select_pair(h.app.handle().clone(), "photos".to_owned())).unwrap();
-    write_config(
+    run!(write_config(
         h.state(),
+        "docs".to_owned(),
         ConfigUpdate {
             log_level: Some("debug".to_owned()),
             ..Default::default()
         },
-    )
+    ))
     .expect("a daemon-wide edit saves");
     assert_eq!(
         h.state().lock().unwrap().selected.as_deref(),
@@ -797,23 +798,27 @@ fn config_payload(text: Option<&str>) -> ConfigPayload {
         .manage(Mutex::new(paths))
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("mock app should build");
-    read_config(app.state::<Mutex<RuntimePaths>>()).expect("the file reads")
+    run!(read_config(app.state::<Mutex<RuntimePaths>>(), None)).expect("the file reads")
 }
 
 /// `a_pair_file_with_the_daemon_down_is_not_a_fresh_machine`, the Rust half (F-J). In a `[[pair]]`
-/// file every root sits inside a table, so the flat top-level roots read `None` — which the first-run
-/// check took for "nobody has chosen a folder", with the daemon stopped. The pairs list is what says
+/// file every root sits inside a table, so the TOP-LEVEL roots read `None` — which the first-run check
+/// took for "nobody has chosen a folder", with the daemon stopped. The pairs list is what says
 /// otherwise.
+///
+/// Since `read_config(pair)` (phase 5b-1) the flat values are the addressed pair's own table, so they
+/// are no longer empty for a `[[pair]]` file — the reading that used to be wrong in the quiet
+/// direction is now right, and the list is still what the first-run check consults first.
 #[test]
-fn read_config_lists_the_pairs_a_pair_file_declares_though_its_flat_roots_are_empty() {
+fn read_config_lists_the_pairs_a_pair_file_declares_and_describes_the_default_one_flat() {
     let payload = config_payload(Some(TWO_PAIR_FILE));
     let json = serde_json::to_value(&payload).unwrap();
     assert_eq!(
-        json["local_root"],
-        Value::Null,
-        "the premise: nothing at the top level"
+        json["pair"], "docs",
+        "naming none is the default pair, and the payload says so"
     );
-    assert_eq!(json["remote_root"], Value::Null);
+    assert_eq!(json["local_root"], "/fake/docs/local");
+    assert_eq!(json["remote_root"], "/Drive/docs");
     let pairs = json["pairs"].as_array().unwrap();
     assert_eq!(pairs.len(), 2);
     assert_eq!(pairs[0]["name"], "docs");

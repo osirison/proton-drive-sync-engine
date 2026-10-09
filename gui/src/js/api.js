@@ -77,8 +77,15 @@ export const api = {
   // other side — so the row does not return on the next poll.
   keep: (target, literalPath = true, { pair } = {}) => write("keep", { target, literalPath }, pair),
   listPendingDeletions: (opts) => invoke("list_pending_deletions", readArgs(undefined, opts)),
-  readConfig: () => invoke("read_config"),
-  writeConfig: (update) => invoke("write_config", { update }),
+  // THE CONFIG FILE FOR ONE PAIR (#102 phase 5b-1). A READ: naming none means the pair the app has
+  // selected, and the reply's own `pair` says which that was — file it by that, not by what was asked.
+  // The per-pair values in it are that pair's TABLE of the file; the daemon-wide ones are the top level.
+  readConfig: (opts) => invoke("read_config", readArgs(undefined, opts)),
+  // A WRITE, so the pair is REQUIRED and is the one the staged edits belong to: the pair the Settings
+  // screen was showing when the edits were typed, not the one selected when the save finally runs. A
+  // `Never ask` policy staged for one folder and saved after the selection moved is the wrong-folder
+  // bug with data in it. Daemon-wide fields in the same update still go to the top level of the file.
+  writeConfig: (update, { pair } = {}) => write("write_config", { update }, pair),
   // Settings › `Choose…`. Resolves `null` when the picker is DISMISSED and rejects when it could
   // not open — the two were one answer until Copilot's second pass, which made a broken picker
   // indistinguishable from a closed one.
@@ -204,6 +211,10 @@ export const EMPTY_CONFIG = {
   path: "~/.config/proton-sync/proton-sync.toml",
   exists: false,
   toml: "",
+  // The pair every per-pair value below describes (`ConfigPayload.pair`): the implicit one, for a
+  // file that does not exist. A screen filing this reply by `config.pair` must not find it missing in
+  // browser preview and nowhere else.
+  pair: "default",
   // The pairs the file declares, in file order (`ConfigPayload.pairs`). Empty here: the preview's
   // "no config file" has declared nothing — a real missing file lists the one implicit pair, which
   // places no roots and so answers the same question the same way (`configHasPair`). The point is the
@@ -280,7 +291,7 @@ function mockInvoke(cmd, args) {
         // preview and nowhere else, which is the worst place for a difference to live.
         //
         // The 38 frames without an explicit config lose nothing either way: the footer's folder pair
-        // reads the STATUS first (`app.js`'s `live?.local_root ?? configInfo?.local_root`), which is
+        // reads the STATUS first (`app.js`'s `live?.local_root ?? viewedConfig()?.local_root`), which is
         // the correct precedence anyway — a running daemon's roots are ground truth and the file is
         // the fallback.
         return Promise.resolve(
@@ -576,6 +587,7 @@ function mockInvoke(cmd, args) {
         path: "~/.config/proton-sync/proton-sync.toml",
         exists: true,
         toml: "# preview\n",
+        pair: "default",
         pairs: [{ name: "default", local_root: "~/ProtonDrive", remote_root: "/Drive/RemoteFolder" }],
         local_root: "~/ProtonDrive",
         remote_root: "/Drive/RemoteFolder",

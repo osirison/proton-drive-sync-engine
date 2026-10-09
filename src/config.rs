@@ -259,6 +259,65 @@ impl ConfigKey {
         }
     }
 
+    /// Every spelling the file parser accepts for this key, the canonical one first (#102 phase
+    /// 5b-1). A client that edits the file finds the key in whichever of these the file already uses
+    /// and writes it back in that one: a second spelling of one key is a `duplicate field` the daemon
+    /// will not start on.
+    ///
+    /// Two shapes, and they are not the same rule. Every key has the kebab-case alias
+    /// ([`Self::spelling`] with `_` as `-`) **except** the two glob lists, which are spelled
+    /// `include`/`exclude` and do **not** accept `include-patterns`. The aliases are `#[serde(alias)]`
+    /// attributes on [`FileConfig`] and [`FilePair`], not data, so this table is a hand-written second
+    /// copy of them — and `the_engine_accepts_exactly_the_listed_spellings` is what keeps it honest, in
+    /// both directions, by reading the names serde itself says it accepts.
+    ///
+    /// Exhaustive by variant with no `_` arm, like [`Self::spelling`] and [`Self::scope`].
+    pub fn spellings(self) -> &'static [&'static str] {
+        match self {
+            Self::LocalRoot => &["local_root", "local-root"],
+            Self::RemoteRoot => &["remote_root", "remote-root"],
+            Self::DbPath => &["db_path", "db-path"],
+            Self::SocketPath => &["socket_path", "socket-path"],
+            Self::LockfilePath => &["lockfile_path", "lockfile-path"],
+            Self::ScanIntervalSecs => &["scan_interval_secs", "scan-interval-secs"],
+            Self::FullScanSchedule => &[
+                crate::schedule::FULL_SCAN_SCHEDULE_KEY,
+                "full-scan-schedule",
+            ],
+            Self::ProtonCli => &["proton_cli", "proton-cli"],
+            Self::ProtonTimeoutSecs => &["proton_timeout_secs", "proton-timeout-secs"],
+            Self::ProtonListAttempts => &["proton_list_attempts", "proton-list-attempts"],
+            Self::DownloadBatchSize => &["download_batch_size", "download-batch-size"],
+            Self::IncludePatterns => &["include_patterns", "include"],
+            Self::ExcludePatterns => &["exclude_patterns", "exclude"],
+            Self::DryRun => &["dry_run", "dry-run"],
+            Self::EventsDriven => &["events_driven", "events-driven"],
+            Self::EventsFullScanEvery => &["events_full_scan_every", "events-full-scan-every"],
+            Self::WarmStart => &["warm_start", "warm-start"],
+            Self::WarmStartFullWalkEvery => {
+                &["warm_start_full_walk_every", "warm-start-full-walk-every"]
+            }
+            Self::WarmStartMaxCursorAgeSecs => &[
+                "warm_start_max_cursor_age_secs",
+                "warm-start-max-cursor-age-secs",
+            ],
+            Self::DeleteApproval => &["delete_approval", "delete-approval"],
+            Self::DeletionPolicyKey => &["deletion_policy", "deletion-policy"],
+            Self::LocalDeleteMode => &["local_delete_mode", "local-delete-mode"],
+            Self::LogLevel => &["log_level", "log-level"],
+            Self::ConflictSuffix => &["conflict_suffix", "conflict-suffix"],
+        }
+    }
+
+    /// The key a spelling names, if it is one the parser accepts — the inverse of
+    /// [`Self::spellings`], so a client that is handed a key by name can ask which setting it is and
+    /// therefore which scope it has. Byte-exact: the parser is.
+    pub fn from_spelling(spelling: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|key| key.spellings().contains(&spelling))
+    }
+
     /// Which scope this key belongs to. **Exhaustive, no `_` arm** — see [`KeyScope`] for why that
     /// is the mechanism rather than a convention, and for why the three `proton_*` keys have no
     /// choice about their answer (#23).
@@ -915,6 +974,224 @@ pub fn pair_views(text: &str) -> AppResult<Vec<PairView>> {
         .iter()
         .map(PairView::from_file)
         .collect())
+}
+
+/// One pair's folder and state files: the four things the on-disk overlap rule reads, and nothing
+/// else. **The shape the rule is stated over**, so that the daemon (which holds a resolved
+/// `PairConfig`) and a client that only has a config file's text ([`pair_views`]) put the same
+/// question to the same function instead of each carrying a copy (#102 phase 5b-1, ADR 0005 §2).
+#[derive(Debug, Clone, Copy)]
+pub struct PairStatePaths<'a> {
+    pub name: &'a str,
+    pub local_root: &'a Path,
+    pub db_path: &'a Path,
+    pub lockfile_path: &'a Path,
+}
+
+/// One pair's folder and state files as the **filesystem** names them: every symlink resolved, a
+/// path that does not exist yet resolved as far as it exists (`index::canonicalize_best_effort`).
+struct RealPairPaths {
+    local_root: RealPath,
+    /// The index and the lockfile: the real directory each lives in, with the file's own name.
+    db_path: RealPath,
+    lockfile_path: RealPath,
+}
+
+/// A configured path beside the real one it resolves to, so a message can say both.
+struct RealPath {
+    written: PathBuf,
+    real: PathBuf,
+}
+
+impl RealPath {
+    fn of(written: &Path) -> Self {
+        Self {
+            written: written.to_path_buf(),
+            real: crate::index::canonicalize_best_effort(written),
+        }
+    }
+
+    /// A state **file**: the directory it lives in is resolved and the file's own name is kept, so
+    /// a path that does not exist yet (the index, before it is first opened) still has a real
+    /// place, and a file that is itself a link is judged by where it sits, which is where the
+    /// scanner of whoever owns that directory would find it.
+    fn of_state_file(written: &Path) -> Self {
+        let real = match (written.parent(), written.file_name()) {
+            (Some(parent), Some(name)) if !parent.as_os_str().is_empty() => {
+                crate::index::canonicalize_best_effort(parent).join(name)
+            }
+            _ => crate::index::canonicalize_best_effort(written),
+        };
+        Self {
+            written: written.to_path_buf(),
+            real,
+        }
+    }
+
+    /// `` `written` `` alone when it is already the real path, otherwise `` `written` (really
+    /// `real`) `` — a message that repeats a path as its own alias is noise.
+    fn describe(&self) -> String {
+        if self.written == self.real {
+            format!("`{}`", self.written.display())
+        } else {
+            format!(
+                "`{}` (really `{}`)",
+                self.written.display(),
+                self.real.display()
+            )
+        }
+    }
+}
+
+impl RealPairPaths {
+    fn of(paths: &PairStatePaths<'_>) -> Self {
+        Self {
+            local_root: RealPath::of(paths.local_root),
+            db_path: RealPath::of_state_file(paths.db_path),
+            lockfile_path: RealPath::of_state_file(paths.lockfile_path),
+        }
+    }
+
+    fn state_files(&self) -> [(&'static str, &RealPath); 2] {
+        [
+            ("db_path", &self.db_path),
+            ("lockfile_path", &self.lockfile_path),
+        ]
+    }
+}
+
+/// Whether `candidate` and `other` overlap **on disk**, and if so the whole refusal as one
+/// sentence naming both pairs and, for every path, both the written and the real form (ADR 0005
+/// §2 rule 4, phase 4c). `None` when they do not.
+///
+/// The config reader's rule is lexical, because a file must be checkable without touching the
+/// filesystem, and it says so: it cannot see a symlink or a relative path. This is the half that
+/// can, and the consequences are the same ones. A pair whose folder sits inside another's has its
+/// `.sync` index, lockfile and sidecars scanned and uploaded as the outer pair's ordinary files
+/// (`is_sync_state_path` ignores only a **top-level** `.sync`); two pairs over one folder plan
+/// opposing actions for it; and the same shape is reached around the folder rule by a state file
+/// placed in another pair's folder, or the same state file named twice. Exact aliasing used to be
+/// caught only illegibly, by `flock` on the shared lockfile inode ("daemon already running");
+/// nesting through a symlink was not caught at all.
+///
+/// Symmetric in its two arguments except for the wording. **One function, four callers**: the
+/// daemon at boot (every pair against every earlier one, before anything is created or locked), a
+/// retry (`Daemon::retry_unavailable`, the pair being promoted against all the others), so a pair
+/// that becomes available later stays unavailable on an overlap exactly as one at boot refuses the
+/// start, a pair that is already running (`Daemon::stop_overlapping_pairs`, against every other
+/// pair whose folder exists, ready or not, and stopping only the ready ones), and
+/// [`real_path_conflicts`], which asks it of a file's text before a client writes that file. The
+/// daemon's callers go through its own `real_path_overlap` wrapper over `PairConfig`.
+pub fn real_path_overlap(
+    candidate: &PairStatePaths<'_>,
+    other: &PairStatePaths<'_>,
+) -> Option<String> {
+    let (this, that) = (RealPairPaths::of(candidate), RealPairPaths::of(other));
+    let (this_name, that_name) = (candidate.name, other.name);
+    let root_relation = if this.local_root.real == that.local_root.real {
+        Some("is the same folder as")
+    } else if this.local_root.real.starts_with(&that.local_root.real) {
+        Some("is inside")
+    } else if that.local_root.real.starts_with(&this.local_root.real) {
+        Some("contains")
+    } else {
+        None
+    };
+    if let Some(relation) = root_relation {
+        return Some(format!(
+            "folder pair '{this_name}': its local_root {} {relation} folder pair '{that_name}''s \
+             local_root {}. Two pairs may not share a folder or nest: the inner pair's `.sync` \
+             state directory — its index, lockfile and sidecars — would be scanned and uploaded to \
+             Proton Drive as the outer pair's ordinary files, and two pairs over one folder plan \
+             opposing actions for it. Symlinks are followed, so this is the folders as they really \
+             are",
+            this.local_root.describe(),
+            that.local_root.describe(),
+        ));
+    }
+    for (field, state) in this.state_files() {
+        if state.real.starts_with(&that.local_root.real) {
+            return Some(format!(
+                "folder pair '{this_name}': its {field} {} is inside folder pair '{that_name}''s \
+                 local_root {}: pair '{that_name}' would scan that file and upload pair \
+                 '{this_name}''s live SQLite index or lockfile to Proton Drive as its own",
+                state.describe(),
+                that.local_root.describe(),
+            ));
+        }
+    }
+    for (field, state) in that.state_files() {
+        if state.real.starts_with(&this.local_root.real) {
+            return Some(format!(
+                "folder pair '{that_name}': its {field} {} is inside folder pair '{this_name}''s \
+                 local_root {}: pair '{this_name}' would scan that file and upload pair \
+                 '{that_name}''s live SQLite index or lockfile to Proton Drive as its own",
+                state.describe(),
+                this.local_root.describe(),
+            ));
+        }
+    }
+    for (field, state) in this.state_files() {
+        for (other_field, other_state) in that.state_files() {
+            if state.real == other_state.real {
+                return Some(format!(
+                    "folder pair '{this_name}''s {field} {} and folder pair '{that_name}''s \
+                     {other_field} {} are the same file: no two of these may be, because `flock` \
+                     treats two descriptors on one inode as independent (a shared lockfile \
+                     surfaces as a spurious \"already running\") and a shared index has two \
+                     writers of one baseline",
+                    state.describe(),
+                    other_state.describe(),
+                ));
+            }
+        }
+    }
+    None
+}
+
+/// The on-disk overlap rule ([`real_path_overlap`]) asked of a config file's **text**: the first
+/// pair that overlaps an earlier one, as the same refusal the daemon would exit with at boot (#102
+/// phase 5b-1, ADR 0005 §2 rule 4). `Ok` when no pair does.
+///
+/// [`validate_file_config_text`] is lexical by design and passes two roots that reach one folder
+/// through a symlink; this is the half that follows them, so a client can say so **before** it
+/// writes a file the daemon refuses to start on. It touches the filesystem (it canonicalizes), so a
+/// caller on an interactive thread runs it on a blocking one. It is **advisory** there — a link made
+/// after the check changes the answer — and the daemon's own check stays fatal.
+///
+/// Pairs are put to the rule in boot's order (each against every earlier one, so the sentence names
+/// the same pair as the candidate that boot would), through [`pair_views`] and so tolerant of a
+/// document part-way through an edit: a pair that does not place all three paths (no `local_root`
+/// yet, or a state path the daemon would refuse) has nothing to compare and is skipped, which is
+/// [`validate_file_config_text`]'s to report. Unlike the daemon's running-pair check it does **not**
+/// skip a neighbour whose folder does not exist yet: at boot a config that overlaps is fatal whether
+/// or not the folder exists, and this is the boot question.
+pub fn real_path_conflicts(text: &str) -> AppResult<()> {
+    let views = pair_views(text)?;
+    let placed: Vec<Option<PairStatePaths<'_>>> = views
+        .iter()
+        .map(|view| {
+            Some(PairStatePaths {
+                name: view.name.as_str(),
+                local_root: view.local_root.as_deref()?,
+                db_path: view.db_path.as_deref()?,
+                lockfile_path: view.lockfile_path.as_deref()?,
+            })
+        })
+        .collect();
+    for (index, candidate) in placed.iter().enumerate() {
+        let Some(candidate) = candidate else {
+            continue;
+        };
+        if let Some(message) = placed[..index]
+            .iter()
+            .flatten()
+            .find_map(|other| real_path_overlap(candidate, other))
+        {
+            return Err(boxed_error(message));
+        }
+    }
+    Ok(())
 }
 
 /// **With more than one pair, every table sets both roots** (ADR 0005 §2, phase 4c).
@@ -4089,6 +4366,262 @@ download_batch_size = 5
         expected.push("name".to_owned());
         expected.sort();
         assert_eq!(top_level_keys(&file_pair_with_every_key_set()), expected);
+    }
+
+    /// The names serde says a struct accepts, read from its own refusal of a name it does not know.
+    /// `deny_unknown_fields` makes the derive list **every accepted spelling, aliases included**
+    /// (`expected one of …`), which is the only place an alias is data rather than an attribute.
+    fn names_the_parser_accepts(text: &str) -> Vec<String> {
+        let error = parse_file_config(text).expect_err("an unknown key is refused");
+        let message = error.message();
+        assert!(
+            message.starts_with("unknown field `no_such_key`, expected"),
+            "the derive's refusal changed shape, so this reads nothing: {message}"
+        );
+        // `unknown field `no_such_key`, expected one of `a`, `b`` — the backticked names after the
+        // first are the accepted ones.
+        let mut names: Vec<String> = message
+            .split('`')
+            .skip(1)
+            .step_by(2)
+            .skip(1)
+            .map(str::to_owned)
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// A value of the right TOML type for each key, so a spelling can be tried in a real position.
+    /// Exhaustive with no `_` arm: a key added to the engine must say what it holds before this
+    /// test can run, which is the point of the test.
+    fn sample_value(key: ConfigKey) -> &'static str {
+        match key {
+            ConfigKey::LocalRoot
+            | ConfigKey::RemoteRoot
+            | ConfigKey::DbPath
+            | ConfigKey::SocketPath
+            | ConfigKey::LockfilePath
+            | ConfigKey::ProtonCli => "\"/x\"",
+            ConfigKey::ScanIntervalSecs
+            | ConfigKey::ProtonTimeoutSecs
+            | ConfigKey::ProtonListAttempts
+            | ConfigKey::DownloadBatchSize
+            | ConfigKey::EventsFullScanEvery
+            | ConfigKey::WarmStartFullWalkEvery
+            | ConfigKey::WarmStartMaxCursorAgeSecs => "1",
+            ConfigKey::FullScanSchedule => "\"weekly sun 03:00\"",
+            ConfigKey::IncludePatterns | ConfigKey::ExcludePatterns => "[\"a\"]",
+            ConfigKey::DryRun | ConfigKey::EventsDriven | ConfigKey::WarmStart => "true",
+            ConfigKey::DeleteApproval => "{ remote = true }",
+            ConfigKey::DeletionPolicyKey => "\"never\"",
+            ConfigKey::LocalDeleteMode => "\"trash\"",
+            ConfigKey::LogLevel => "\"info\"",
+            ConfigKey::ConflictSuffix => "\"x\"",
+        }
+    }
+
+    #[test]
+    fn the_engine_accepts_exactly_the_listed_spellings() {
+        // `ConfigKey::spellings` is a hand-written second copy of attributes, and a client (the GUI's
+        // writer) edits a file by it: a spelling the parser accepts and the table omits is a key the
+        // client reads as unset and then writes beside the one in force, which serde refuses as a
+        // duplicate field. So the table is held to what the parser says, in BOTH directions.
+        //
+        // 1. The SET, read from serde itself: what a file's top level accepts is every key's
+        //    spellings plus the `pair` container, and what a `[[pair]]` table accepts is the per-pair
+        //    keys' spellings plus `name`. An alias added to the struct and not to the table (or the
+        //    reverse) is a difference here.
+        let mut top_level: Vec<String> = ConfigKey::ALL
+            .into_iter()
+            .flat_map(|key| key.spellings().iter().map(|s| (*s).to_owned()))
+            .chain(["pair".to_owned()])
+            .collect();
+        top_level.sort();
+        assert_eq!(
+            names_the_parser_accepts("no_such_key = 1\n"),
+            top_level,
+            "FileConfig accepts a different set of spellings than ConfigKey::spellings lists"
+        );
+        let mut per_pair: Vec<String> = ConfigKey::ALL
+            .into_iter()
+            .filter(|key| key.scope() == KeyScope::Pair)
+            .flat_map(|key| key.spellings().iter().map(|s| (*s).to_owned()))
+            .chain(["name".to_owned()])
+            .collect();
+        per_pair.sort();
+        assert_eq!(
+            names_the_parser_accepts("[[pair]]\nname = \"a\"\nno_such_key = 1\n"),
+            per_pair,
+            "a [[pair]] table accepts a different set of spellings than the per-pair keys list"
+        );
+
+        // 2. The BEHAVIOUR: every listed spelling really parses, in the position its scope names,
+        //    and a daemon-wide key really does not parse inside a pair table.
+        for key in ConfigKey::ALL {
+            assert_eq!(
+                key.spellings()[0],
+                key.spelling(),
+                "the canonical spelling is first"
+            );
+            for spelling in key.spellings() {
+                let value = sample_value(key);
+                parse_file_config(&format!("{spelling} = {value}\n"))
+                    .unwrap_or_else(|e| panic!("top level `{spelling}`: {e}"));
+                let in_pair =
+                    parse_file_config(&format!("[[pair]]\nname = \"a\"\n{spelling} = {value}\n"));
+                assert_eq!(
+                    in_pair.is_ok(),
+                    key.scope() == KeyScope::Pair,
+                    "`{spelling}` inside a [[pair]] table: {in_pair:?}"
+                );
+            }
+        }
+
+        // 3. The near-misses that matter: the glob lists do NOT have the kebab alias every other key
+        //    has, which is exactly what a snake-to-kebab-only writer got wrong (F-D).
+        for near_miss in [
+            "include-patterns",
+            "exclude-patterns",
+            "Local_Root",
+            "local root",
+        ] {
+            assert!(
+                parse_file_config(&format!("\"{near_miss}\" = [\"a\"]\n")).is_err(),
+                "`{near_miss}` is not a spelling the parser accepts"
+            );
+        }
+    }
+
+    #[test]
+    fn a_spelling_names_one_key_and_one_key_only() {
+        // `from_spelling` is the inverse the writer asks ("which setting is this key?"), so two keys
+        // sharing a spelling would make its answer depend on iteration order.
+        let mut all: Vec<&str> = ConfigKey::ALL
+            .into_iter()
+            .flat_map(|key| key.spellings().iter().copied())
+            .collect();
+        let total = all.len();
+        all.sort_unstable();
+        all.dedup();
+        assert_eq!(all.len(), total, "two keys share a spelling");
+        for key in ConfigKey::ALL {
+            for spelling in key.spellings() {
+                assert_eq!(ConfigKey::from_spelling(spelling), Some(key), "{spelling}");
+            }
+        }
+        for unknown in ["pair", "name", "include-patterns", ""] {
+            assert_eq!(ConfigKey::from_spelling(unknown), None, "{unknown:?}");
+        }
+    }
+
+    /// Two pairs whose folders are lexically apart and really one inside the other: the shape the
+    /// lexical rule cannot see and the boot check refuses fatally.
+    fn two_pairs_through_a_symlink(base: &Path) -> String {
+        let outer = base.join("outer");
+        fs::create_dir_all(outer.join("inner")).expect("outer/inner");
+        let alias = base.join("alias");
+        std::os::unix::fs::symlink(outer.join("inner"), &alias).expect("symlink");
+        format!(
+            "[[pair]]\nname = \"outer\"\nlocal_root = \"{}\"\nremote_root = \"/Drive/a\"\n\n\
+             [[pair]]\nname = \"inner\"\nlocal_root = \"{}\"\nremote_root = \"/Drive/b\"\n",
+            outer.display(),
+            alias.display()
+        )
+    }
+
+    #[test]
+    fn a_symlinked_alias_passes_the_lexical_check_and_fails_the_real_path_one() {
+        let directory = tempdir().expect("tempdir");
+        let text = two_pairs_through_a_symlink(directory.path());
+        validate_file_config_text(&text).expect("the lexical rule cannot see a symlink");
+        let error = real_path_conflicts(&text)
+            .expect_err("the real folders nest")
+            .to_string();
+        // The daemon's own sentence, naming the pair boot would name as the candidate (the later
+        // table, against each earlier one) and both the written and the real form of the path.
+        assert!(
+            error.starts_with("folder pair 'inner': its local_root"),
+            "{error}"
+        );
+        assert!(error.contains("is inside folder pair 'outer''s"), "{error}");
+        assert!(error.contains("(really `"), "{error}");
+    }
+
+    #[test]
+    fn real_path_conflicts_asks_the_daemons_function_and_gets_the_daemons_sentence() {
+        // The split is behaviour-preserving only if both ends reach ONE body. Put the same two
+        // pairs to `real_path_overlap` directly and the text-level answer must be that string.
+        let directory = tempdir().expect("tempdir");
+        let text = two_pairs_through_a_symlink(directory.path());
+        let views = pair_views(&text).expect("views");
+        fn paths(view: &PairView) -> PairStatePaths<'_> {
+            PairStatePaths {
+                name: view.name.as_str(),
+                local_root: view.local_root.as_deref().expect("local_root"),
+                db_path: view.db_path.as_deref().expect("db_path"),
+                lockfile_path: view.lockfile_path.as_deref().expect("lockfile_path"),
+            }
+        }
+        let direct = real_path_overlap(&paths(&views[1]), &paths(&views[0]))
+            .expect("the body finds the overlap");
+        assert_eq!(
+            real_path_conflicts(&text).unwrap_err().to_string(),
+            direct,
+            "the text-level check must be the body's sentence, verbatim"
+        );
+    }
+
+    #[test]
+    fn real_path_conflicts_has_nothing_to_say_about_apart_unplaced_or_single_pairs() {
+        let directory = tempdir().expect("tempdir");
+        let base = directory.path();
+        for (text, why) in [
+            (String::new(), "an empty file is one unplaced pair"),
+            (
+                "local_root = \"/x\"\nremote_root = \"/Drive/x\"\n".to_owned(),
+                "one pair has nothing to overlap with",
+            ),
+            (
+                format!(
+                    "[[pair]]\nname = \"a\"\nlocal_root = \"{0}/a\"\nremote_root = \"/Drive/a\"\n\n\
+                     [[pair]]\nname = \"b\"\nlocal_root = \"{0}/b\"\nremote_root = \"/Drive/b\"\n",
+                    base.display()
+                ),
+                "two apart folders do not overlap, existing or not",
+            ),
+            (
+                format!(
+                    "[[pair]]\nname = \"a\"\nlocal_root = \"{0}/a\"\nremote_root = \"/Drive/a\"\n\n\
+                     [[pair]]\nname = \"b\"\nremote_root = \"/Drive/b\"\n",
+                    base.display()
+                ),
+                "a pair with no local_root yet is not placed, and is validate's to report",
+            ),
+        ] {
+            real_path_conflicts(&text).unwrap_or_else(|e| panic!("{why}: {e}"));
+        }
+        // Not a config at all: the same refusal `pair_views` gives, not a silent pass.
+        assert!(real_path_conflicts("local_root = \n").is_err());
+    }
+
+    #[test]
+    fn a_state_file_placed_in_another_pairs_folder_is_a_real_path_conflict_too() {
+        // The rule has four shapes; the folder-in-folder one is covered above. This is the one reached
+        // AROUND the folder rule: pair b's index sits inside pair a's tree.
+        let directory = tempdir().expect("tempdir");
+        let base = directory.path();
+        fs::create_dir_all(base.join("a")).expect("a");
+        let text = format!(
+            "[[pair]]\nname = \"a\"\nlocal_root = \"{0}/a\"\nremote_root = \"/Drive/a\"\n\n\
+             [[pair]]\nname = \"b\"\nlocal_root = \"{0}/b\"\nremote_root = \"/Drive/b\"\n\
+             db_path = \"{0}/a/b.db\"\n",
+            base.display()
+        );
+        let error = real_path_conflicts(&text).unwrap_err().to_string();
+        assert!(
+            error.contains("its db_path") && error.contains("is inside folder pair 'a''s"),
+            "{error}"
+        );
     }
 
     #[test]
