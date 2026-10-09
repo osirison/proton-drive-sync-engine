@@ -4,7 +4,7 @@
   runs them all (the lift, phase 4c), and the desktop app lists, selects, pauses, adds and removes
   them (phase 5, closed out 2026-10-09: see "Phase 5 shipped, with departures" under the phase
   plan). Phase 6 (the shared-volume event scope) is not scheduled and is not built; it is tracked
-  in its own issue (to be filed). Written as a design (2026-08-17); the phases below carry their own
+  in its own issue, #456. Written as a design (2026-08-17); the phases below carry their own
   "Shipped, with departures" notes.
 - **Date:** 2026-08-17
 - **Issue:** #102 (E5 · Multiple folder pairs). This ADR is the "scoping pass" the maintainer's
@@ -1927,9 +1927,10 @@ Closes: the feature for users.
 > | #444 | Tray residuals: the count and the folder line can disagree, two guards are unpinned, wording edges. |
 > | #449 | Notification residuals: a hand-edited rename re-announces a first sync, and the n1 gate's wording. |
 > | #451 | Settings folders: a folder in the file but not run by the daemon cannot be selected, and a banner's `Review` moves the selection under a dialog that cannot be left. |
-> | to be filed | The index records no remote root. A pair started with a different `remote_root` over an existing index plans `LocalDelete` for what the old Proton folder had. Gated by delete approval and recoverable by default; neither holds when the guard is off or `local_delete_mode` is `permanent`. Found by the brief (A9). Phase 5 does not remove the app-driven route: the Proton folder field in Settings re-points an existing folder's `remote_root` at one folder or many, and the Add folder dialog over a surviving index names that index without comparing roots. What the set-aside closes is one route, adding back a folder that was removed through the app. |
-> | to be filed | The app does not check that the daemon can run more than one folder before it writes a second. A daemon from before #434 exits on a file with two `[[pair]]` tables and nothing syncs until one is removed (see the last paragraph of this section). |
-> | to be filed | Phase 6, the shared-volume event scope (§8a), as its own issue so #102 can close. It needs its own ADR. |
+> | #453 | The index records no remote root. A pair started with a different `remote_root` over an existing index plans `LocalDelete` for what the old Proton folder had. Gated by delete approval and recoverable by default; neither holds when the guard is off or `local_delete_mode` is `permanent`. Found by the brief (A9). Phase 5 does not remove the app-driven route: the Proton folder field in Settings re-points an existing folder's `remote_root` at one folder or many, and the Add folder dialog over a surviving index names that index without comparing roots. What the set-aside closes is one route, adding back a folder that was removed through the app. |
+> | #454 | The app does not check that the daemon can run more than one folder before it writes a second. A daemon from before #434 exits on a file with two `[[pair]]` tables and nothing syncs until one is removed (see the last paragraph of this section). |
+> | #455 | At two folders or more, the window tells someone whose folder has not synced yet to "Open Drive Sync to choose your two folders", which is the tray's sentence. |
+> | #456 | Phase 6, the shared-volume event scope (§8a), as its own issue so #102 can close. It needs its own ADR. |
 >
 > To get this, upgrade the installed daemon and the installed app together. A daemon from before #434
 > refuses a file with more than one `[[pair]]` table (it exits with "syncing more than one pair is not
