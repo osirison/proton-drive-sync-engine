@@ -116,10 +116,17 @@ rules it keeps.
   runs), then the selection, then the merge dialog watching the new folder's own pass counter. The selection moving
   without a click is that one step, and everything before it carries the name captured when the button was pressed.
 - **A dialog with something in flight cannot be left.** While the add is writing, restarting or waiting, Esc and
-  the ✕ do nothing and `Cancel` is gone; while a removal runs, the same. The file is written before the restart,
-  and a dialog closed between the two would leave a folder added and nothing watching for it to appear. A restart
-  that did not work ends the wait with the Settings save's own five sentences and a `Restart it now`, which is also
-  latched for the Settings bar.
+  the ✕ do nothing and `Cancel` is gone; while a removal runs, the same. So does every other way out of the
+  dialog — Ctrl+, Ctrl+F, a banner's `Review`, another dialog opened over it — which is consumed and moves nothing.
+  The file is written before the restart, and a dialog closed between the two would leave a folder added and
+  nothing watching for it to appear. A dialog that IS left lets go of what it held (a check a keystroke had queued
+  is not asked afterwards). A restart that did not work ends the wait with the Settings save's own five sentences
+  and a `Restart it now`, which is also latched for the Settings bar.
+- **An add that finished an earlier removal says so before the merge.** `add_pair` first settles what an earlier
+  removal could not move (or drops it, if the folder was added back); the dialog quotes that account and rests on
+  the listed folder with `Done`, and `Done` opens the merge.
+- **Removing the selected folder moves the selection first.** The window's selection goes to the first folder that
+  remains before anything asks for the removed name; removing another folder moves nothing.
 - **A daemon that never lists the folder is said so** after a bounded wait (twenty polls), not waited for for ever,
   and the folder stays in the file.
 - **The first-run takeover never takes the window beside a new folder.** The new folder has not synced; at two

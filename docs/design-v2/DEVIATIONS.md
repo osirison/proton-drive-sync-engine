@@ -6391,10 +6391,41 @@ costs none; `fidelity:n1` keeps holding the one-folder app to the 55 frames it a
 assertions became 125,981); the contrast gate reads 1,696 nodes across 68 frames (it was 1,423 across 64); the copy
 gate's drawn strings 404 (116 templates rendered at their frame's arguments; the exemptions are 99, up from 95: the
 four are the strings no frame can draw, each with its reason in `copy-gate.mjs`); `fidelity:pairs` 74 scenarios
-became 89 (adding and removing a folder: fifteen); the unit tests became 597, 25 of them in the new
-`folders.test.js`; `fidelity:fixtures` 68/68 with 1,521 fids keys. **`fidelity:n1` is still 55/55**: the four new
+became 99 (adding and removing a folder: fifteen; the review of #450: ten, §110f); the unit tests became 600, 28 of
+them in the new `folders.test.js`; `fidelity:fixtures` 68/68 with 1,521 fids keys. **`fidelity:n1` is still 55/55**: the four new
 frames draw two folders, so each is compared with itself alone (eight such frames became twelve), and the one counted
 apart is unchanged. The `64` is quoted in `extract.mjs`, `frame-classes.mjs`, `check-fixtures.mjs`,
 `check-contrast.mjs`, `assert.mjs`, `check-n1-identity.mjs`, `props.mjs`, `fidelity/README.md`,
 `IMPLEMENTATION-PLAN.md` and the fixture comments that gave it as a current count; all now say 68. Measurements dated
-to a past run are left as they were measured.
+to a past run are left as they were measured. `fidelity/README.md` gave the contrast count as 1423 on a line whose
+frame count had been updated; it says 1,696 (the review of #450 found it).
+
+### §110f · The review round (#450)
+
+An adversarial review of this phase found two medium and several low findings; each is fixed test-first (the test
+fails at the commit it was found on) and each guard was poisoned. What changed, and what it cost the frames:
+
+- **A dialog with something in flight is not left by anything** (F1). Ctrl+, and Ctrl+F called `navigate`, which
+  cleared the dialog without asking; so did a banner's `Review` and the tray's navigate event. Every way a dialog is
+  left now goes through `leaveDialog` (which also lets go of the folder state it held), and every way that can be
+  refused asks `dialogVetoed` first: Esc, the ✕, `navigate`, `openOverlay`, the two folder openers and Ctrl+F. The
+  one thing refused that was not before is a failed save's `Save refused` opening over an add in flight (its edits
+  stay staged). No frame changes.
+- **`remove_pair` resolves the name against the file** (F2), not the daemon's list: the folder that most needs a
+  `Remove` is the one the daemon does not run.
+- **`8a Save two folders` says `both folders`** (F6). The prototype said `all two folders`; the prototype, the
+  extracted frame (`8a-save-two-folders.json`: the text and two box widths), the copy, `08-settings.md`,
+  `13-copy-deck.md` and the website page were changed in that order. From three folders it is `all three`, `all ten`,
+  `all 11`. The extraction also moved four other frames by 0.01px of SVG box rounding, which was not kept
+  (`fidelity:stale` still matches all 68).
+- **An add refuses a Drive path with `..`** (F4). Measured with a real `proton-syncd` and a fake CLI: the daemon starts
+  on `remote_root = "/Drive/../x"` and hands the path to the CLI as written; when the CLI does not find it the root is
+  planned for creation and every pass fails with `unsafe remote root path`. Config resolution is deliberately not
+  changed (a config that starts today keeps starting); the add and its check refuse in the client's own words.
+- **The only folder says why it cannot be removed** (F5), and an add that finished an earlier removal says so and rests
+  on `Done` before the merge dialog (F9). Neither state is drawn by a frame; `copy-gate.mjs` records both templates
+  with the reason.
+- **Removing the selected folder moves the selection first**: Rust keeps the choice, the window's own record is the last
+  reply, and the config read that follows a removal used to ask for the removed name and draw the refusal.
+- **The add dialog keeps its prices** for as long as the text on screen is the text they were measured for. Editing a
+  side used to drop that side's price, so returning to the checked text armed `Add folder` with one price missing.

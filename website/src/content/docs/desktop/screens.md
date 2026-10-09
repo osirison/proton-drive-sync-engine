@@ -212,8 +212,8 @@ the new settings. A staged Notifications change draws no warning, because it wri
 own file and restarts nothing.
 
 With **two or more folders**, a staged daemon-config change says what the save costs all of them:
-*Saving restarts syncing for all two folders, briefly. Anything running now stops, and folders you
-paused stay paused.* A folder's pause is kept by the daemon across a restart, so the app does not
+*Saving restarts syncing for both folders, briefly. Anything running now stops, and folders you
+paused stay paused.* (At three or more it reads *for all three folders*, and so on.) A folder's pause is kept by the daemon across a restart, so the app does not
 re-pause anything. (One case is not covered: a pause made while a folder was unavailable is kept
 in memory only — see [Controlling the pairs](/daemon/folder-pairs/#controlling-the-pairs).)
 
@@ -245,14 +245,16 @@ first), restarts the sync service if it was running, waits for the service to li
 selects it, and shows the same merge dialog first-run shows, for that folder — with no
 `nothing deleted` line, because no plan was made. A restart that did not work says so in the same
 five sentences a Settings save uses, with **Restart it now**. While the add is in flight the dialog
-cannot be closed.
+cannot be left: Esc, the ✕, shortcuts such as Ctrl+, and a notification's *Review* all do nothing
+until the service has answered. If the add also finished the move of an earlier removal's history,
+the dialog tells you what happened to it and waits for **Done** before the merge dialog.
 
 **Removing** asks first: syncing stops for the folder; nothing is deleted on this computer or in
 Proton Drive; its sync history is moved aside to the app's state folder, so adding the folder back
 later starts fresh; and, when it was the first folder, which folder becomes the default one (the
 one every command that names no folder, and every older client, means). Then the dialog shows the
 command's own account — moved to where, nothing to move, or *not yet*, with the reason. The last
-folder cannot be removed.
+folder cannot be removed, and its confirmation says so.
 
 ## First run
 

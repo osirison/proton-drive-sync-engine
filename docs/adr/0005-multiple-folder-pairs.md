@@ -1807,11 +1807,19 @@ Closes: the feature for users.
 > each folder's pause across a restart, so the app re-pauses nothing. What a save costs at two folders or more is one
 > sentence — it restarts syncing for all of them, briefly, and folders you paused stay paused — drawn only while a
 > change the daemon reads is staged, and silent on the one case that is not true (a pause set while a folder was
-> unavailable, #442). (59) **A dialog with an add in flight cannot be left** (Esc and the ✕ are swallowed): the
-> file is written before the restart, and a dialog closed between the two would leave a folder added and nothing
-> watching for it to appear. A restart that did not work is the Settings save's own five sentences, in the dialog
-> and latched for the bar's `Restart it now`. (60) **`probe_folder` expands a leading `~` on the local side** by the
-> engine's own rule (#135), because the dialog prices what was typed. DEVIATIONS §110.
+> unavailable, #442). (59) **A dialog with an add or a removal in flight cannot be left** — by Esc, the ✕, Ctrl+,
+> Ctrl+F, a banner's `Review`, another dialog opened over it: each is consumed and nothing moves (review of #450,
+> F1: the shortcuts used to clear it). The file is written before the restart, and a dialog closed between the two
+> would leave a folder added and nothing watching for it to appear; a removal's answer, a pending set-aside reason
+> included, is written to the dialog that asked. A dialog that IS left lets go of what it held, through one
+> function. A restart that did not work is the Settings save's own five sentences, in the dialog and latched for
+> the bar's `Restart it now`. (60) **`probe_folder` expands a leading `~` on the local side** by the
+> engine's own rule (#135), because the dialog prices what was typed. (61) **The name a removal acts on is the
+> file's** (F2): `remove_pair` looks it up in the settings file, byte-exactly, and not in the daemon's list — the
+> folder that most needs removing is one the daemon does not run. (62) **An add refuses a Drive path with `..`** in
+> the client's own words (F4): the engine accepts it and the daemon starts on it (measured), but a pass that finds
+> the root missing then fails with `unsafe remote root path` for ever. Config resolution is unchanged on purpose.
+> DEVIATIONS §110.
 
 **Phase 6 — Shared-volume event scope (its own ADR).** §8a. Independent of everything above and
 worth doing on its own merits, since one pair already pays the cost. Not scheduled here.

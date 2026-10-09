@@ -32,8 +32,9 @@ Right: `Discard changes` (quiet) + `Save` (primary; `#2A2E36`/`#6D7783` disabled
 
 **At two folders or more** a staged change the daemon reads has one more cost, and it is the same for every
 folder, because a save restarts the one daemon: the line becomes
-`Saving restarts syncing for all two folders, briefly. Anything running now stops, and folders you paused stay paused.`
-(`#FF9F1C`, 12px, `max-width:600px` — two sentences — and following a rule-removal cost when both are staged).
+`Saving restarts syncing for both folders, briefly. Anything running now stops, and folders you paused stay paused.`
+(`all three folders` at three, `all ten` at ten, `all 11` above it; `#FF9F1C`, 12px, `max-width:600px` — two
+sentences — and following a rule-removal cost when both are staged).
 It says what is true and no more: a folder's pause is kept by the daemon across a restart (#441), and a pause
 set while a folder was unavailable is the known gap (#442) the line does not mention. It is drawn only while a
 daemon-config change is staged — a policy kept in the app's own file restarts nothing — and never below two.
@@ -233,9 +234,12 @@ and does not block: a daemon that is busy says nothing about the folder.
 the staged rules), restarts the daemon only if it was running, **waits for the daemon's own list to name the
 folder**, selects it, and opens `9a First sync` addressed to the new folder. That dialog has **no plan footer** —
 nothing rehearsed this merge — and watches the NEW folder's own pass counter, read from its own summary. While the
-add is in flight the dialog cannot be left (Esc and ✕ do nothing), because the file is written before the restart.
-A restart that did not work says so in the Settings save's own five sentences, with `Restart it now` there and on
-the Settings bar.
+add is in flight the dialog cannot be left (Esc, ✕, Ctrl+, Ctrl+F and a banner's `Review` all do nothing), because
+the file is written before the restart. A restart that did not work says so in the Settings save's own five
+sentences, with `Restart it now` there and on the Settings bar. If the add also finished an earlier removal (a move
+of its history that could not run when it was asked for), the dialog says what that did, in the command's own
+words, and rests on `<name> was added, and the sync service now lists it.` with `Done`; `Done` opens the merge
+dialog. An add that finished nothing goes straight to the merge.
 
 ## Remove a folder (600px dialog)
 
@@ -248,6 +252,8 @@ the first, because the first is the default one):
 4. `photos becomes the default folder: commands that name no folder, and older versions of this app, will mean it.`
 
 `Cancel` is the **primary** (the safe choice is the loud one) and `Remove folder` the quiet button beside it. The
+only folder in the settings says `<name> is the only folder, and syncing needs at least one, so it can't be
+removed. Add another folder first.` in place of the four sentences, with `Remove folder` disabled. The
 dialog then shows the command's actual reply in place of the sentences — `was removed from the settings.`, then the
 account of where the history went (moved to X, nothing to move, or **pending, with the reason**), verbatim — and
 `Done`. (Drawn: `8a Remove folder`, the first folder; the answer is the command's own words and is not drawn.)
