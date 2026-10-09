@@ -36,10 +36,16 @@
   gap: 8px;
 }
 
+/* min-width:0 and overflow-wrap are for `Drive Sync · {folder}` (#102 phase 5e): a folder name may be 64
+   characters, and a flex item refuses to shrink below its text, which would push the time out of the
+   banner. Neither property changes a line that fits, so the five frames that predate folders are the
+   boxes they were. */
 .notify-app {
   font-size: 12px;
   font-weight: 600;
   color: var(--text-3);
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .notify-spacer {

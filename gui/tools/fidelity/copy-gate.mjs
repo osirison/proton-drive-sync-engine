@@ -818,6 +818,9 @@ const DRAWN = [
   ["NOTIFY.groupedTitle", [5], "11a Grouped"],
   ["NOTIFY.groupedBody", [10], "11a Grouped"],
   ["NOTIFY.outageBody", [61], "11a Outage"],
+  // #102 phase 5e (D10): the application line of a banner about one of several folders. The frame draws
+  // a conflict banner, whose title and body are the existing ones above; this is the only new string.
+  ["NOTIFY.appFor", ["photos"], "11a Two folders"],
 
   // #372: 25 templates that were in neither table. Each row's arguments are read off the frame
   // named beside it, and each was verified to land on the node that draws that sentence rather

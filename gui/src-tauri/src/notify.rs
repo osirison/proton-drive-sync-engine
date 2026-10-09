@@ -50,6 +50,16 @@ pub struct NotifyPayload {
     /// indicator resolve the same drawing.
     pub icon: String,
     pub actions: Vec<NotifyAction>,
+    /// The folder pair the banner is about, **at two folders or more** (#102 phase 5e); absent at one.
+    ///
+    /// The NAME, not a rendering: `app` above is `Drive Sync · photos` for a server to draw, and a click
+    /// has to act on `photos` however long after the banner went up it lands and whatever the window is
+    /// showing by then. Kept beside the notification id and put back on [`ActionEvent`], which is the
+    /// only route the name has — the server's `ActionInvoked` signal carries an id and an action key and
+    /// nothing else. `#[serde(default)]`: the one-folder payload never sent it, and this field is the
+    /// only one of the struct that may be missing.
+    #[serde(default)]
+    pub pair: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -59,11 +69,50 @@ pub struct NotifyAction {
 }
 
 /// What the webview is told when a banner is clicked.
-#[derive(Clone, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ActionEvent {
     pub id: u32,
     pub kind: String,
     pub action: String,
+    /// The folder pair the banner was sent about, or nothing for a banner sent without one (the
+    /// one-folder event is the three fields above, byte for byte).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pair: Option<String>,
+}
+
+/// The banner we sent LAST, kept after it closes — what a click is attributed to.
+///
+/// Pure and free of the bus, so the attribution can be tested without a notification server: a click is
+/// ours only if its id is this one, and then it carries everything the webview needs to act on the right
+/// thing — the event kind AND the folder the banner was about.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Sent {
+    id: u32,
+    kind: String,
+    pair: Option<String>,
+}
+
+#[cfg(target_os = "linux")]
+impl Sent {
+    fn of(id: u32, payload: &NotifyPayload) -> Self {
+        Self {
+            id,
+            kind: payload.kind.clone(),
+            pair: payload.pair.clone(),
+        }
+    }
+
+    /// The event for a click on `action` of notification `id`, or `None` when `id` is not this banner's
+    /// (another application's, or one of ours the server has already forgotten).
+    fn action_event(&self, id: u32, action: &str) -> Option<ActionEvent> {
+        (self.id == id).then(|| ActionEvent {
+            id,
+            kind: self.kind.clone(),
+            action: action.to_owned(),
+            pair: self.pair.clone(),
+        })
+    }
 }
 
 /// The one banner that may be on screen, or `None` before the first send.
@@ -181,13 +230,13 @@ pub struct Notifier {
     /// never issued comes back unchanged — but the spec requires neither, and a server that
     /// allocates a fresh id for one it has forgotten would stack the banner this rule prevents.
     live: u32,
-    /// The id and event of the banner we sent LAST, kept after it closes.
+    /// The id, event and folder of the banner we sent LAST, kept after it closes.
     ///
     /// NOT CLEARED WITH `live`, and that asymmetry is the point. A server emits `ActionInvoked` and
     /// `NotificationClosed` for the same click, `tokio::select!` picks randomly between two ready
     /// branches, and clearing the attribution on close would therefore drop the click about half
     /// the time — including the click that keeps someone's files.
-    last: Option<(u32, String)>,
+    last: Option<Sent>,
     /// Whether to assume the server parses markup in a body. Read once, at connect — and `true`
     /// until it is, which is the direction that fails safe. See [`assume_markup`].
     markup: bool,
@@ -278,19 +327,17 @@ impl Notifier {
         .map_err(|_| zbus::Error::Failure("the notification server did not answer".into()))??;
 
         self.live = id;
-        self.last = Some((id, payload.kind.clone()));
+        self.last = Some(Sent::of(id, payload));
         Ok(id)
     }
 
-    /// The event a notification id is about, if it is one of ours.
+    /// The event a click on `action` of notification `id` is about, if `id` is one of ours — with the
+    /// folder the banner was sent about.
     ///
     /// Reads `last` rather than `live`, so a click still resolves when the close signal for the very
     /// same click has already been handled.
-    pub fn kind_of(&self, id: u32) -> Option<&str> {
-        match &self.last {
-            Some((last, kind)) if *last == id => Some(kind.as_str()),
-            _ => None,
-        }
+    pub fn action_event(&self, id: u32, action: &str) -> Option<ActionEvent> {
+        self.last.as_ref()?.action_event(id, action)
     }
 
     /// Stop replacing a banner the server says is gone. The attribution in `last` survives it.
@@ -391,17 +438,16 @@ async fn spawn_signal_listener(app: AppHandle, connection: Connection) -> zbus::
                 Some(signal) = invoked.next() => {
                     let Ok(args) = signal.args() else { continue };
                     let state = app.state::<NotifierState>();
-                    let kind = {
+                    let event = {
                         let guard = state.lock().await;
-                        guard.as_ref().and_then(|n| n.kind_of(args.id).map(str::to_owned))
+                        guard
+                            .as_ref()
+                            .and_then(|n| n.action_event(args.id, &args.action_key))
                     };
                     // Not ours: another application's banner, or one of ours the server has already
                     // forgotten. Silence is the only correct response.
-                    let Some(kind) = kind else { continue };
-                    let _ = app.emit(
-                        "notification-action",
-                        ActionEvent { id: args.id, kind, action: args.action_key.clone() },
-                    );
+                    let Some(event) = event else { continue };
+                    let _ = app.emit("notification-action", event);
                 }
                 Some(signal) = closed.next() => {
                     let Ok(args) = signal.args() else { continue };
@@ -427,7 +473,66 @@ async fn spawn_signal_listener(app: AppHandle, connection: Connection) -> zbus::
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
-    use super::{assume_markup, escape_markup};
+    use super::{assume_markup, escape_markup, ActionEvent, NotifyPayload, Sent};
+
+    /// The payload the webview sends, as JSON: `pair` is present at two folders or more and absent at one.
+    fn payload(pair: Option<&str>) -> NotifyPayload {
+        let mut value = serde_json::json!({
+            "app": "Drive Sync",
+            "kind": "conflict",
+            "summary": "You both changed a.txt",
+            "body": "Both versions are safe.",
+            "icon": "proton-sync-attention-symbolic",
+            "actions": [{ "id": "compare", "label": "Compare" }],
+        });
+        if let Some(pair) = pair {
+            value["pair"] = pair.into();
+            value["app"] = format!("Drive Sync · {pair}").into();
+        }
+        serde_json::from_value(value).expect("the webview's payload deserializes")
+    }
+
+    #[test]
+    fn a_click_carries_the_folder_its_banner_was_sent_about() {
+        // The server's `ActionInvoked` signal says an id and an action key and nothing else, so the folder
+        // can only come back from what was kept beside the id when the banner went out.
+        let sent = Sent::of(41, &payload(Some("photos")));
+        assert_eq!(
+            sent.action_event(41, "compare"),
+            Some(ActionEvent {
+                id: 41,
+                kind: "conflict".into(),
+                action: "compare".into(),
+                pair: Some("photos".into()),
+            })
+        );
+    }
+
+    #[test]
+    fn a_click_on_somebody_elses_banner_is_not_ours() {
+        // `ActionInvoked` is broadcast to every listener on the bus. An id that is not the last one we
+        // sent is another application's, or one the server forgot, and acts on nothing.
+        let sent = Sent::of(41, &payload(Some("photos")));
+        assert_eq!(sent.action_event(42, "keep"), None);
+    }
+
+    #[test]
+    fn a_banner_sent_without_a_folder_reports_none_and_serializes_as_it_always_did() {
+        // One folder: the payload never sent a `pair` (it deserializes without one), the click carries
+        // none, and the event the webview receives is the three fields it always was.
+        let sent = Sent::of(7, &payload(None));
+        let event = sent.action_event(7, "keep").expect("ours");
+        assert_eq!(event.pair, None);
+        assert_eq!(
+            serde_json::to_value(&event).expect("serializes"),
+            serde_json::json!({ "id": 7, "kind": "conflict", "action": "keep" })
+        );
+        // …and with one, the name is on the wire under the key the webview reads.
+        let named = Sent::of(8, &payload(Some("photos")));
+        let wire =
+            serde_json::to_value(named.action_event(8, "keep").expect("ours")).expect("serializes");
+        assert_eq!(wire["pair"], "photos");
+    }
 
     #[test]
     fn an_unreadable_capability_list_escapes() {

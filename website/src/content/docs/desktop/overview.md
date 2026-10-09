@@ -108,9 +108,14 @@ notice:
   there is no pill, and nothing about the window changes. The hero's button names its folder at two or
   more (`Pause photos`), and a pause the daemon could not write down is said under the hero. The
   app still cannot add a pair or create a `[[pair]]` file, and the **tray** lists every pair with a
-  pause row for each (see [Two or more folders](/desktop/tray/#two-or-more-folders)). If you
-  wrote a `[[pair]]` file by hand, know that:
-  - the notifications still describe the default pair, not the others.
+  pause row for each (see [Two or more folders](/desktop/tray/#two-or-more-folders)). The
+  **notifications** name the folder they are about — the line above a banner reads `Drive Sync · photos`
+  — and their buttons act on that folder, whichever one the window is showing: *Keep them* keeps that
+  folder's deletions and no other's, *Review* and *Compare* switch the window to it before they open
+  the screen, and *Try again now* syncs that folder alone. Each folder has its own memory of what it has
+  said, so adding a second folder does not repeat what the first already said, and one banner is on
+  screen at a time whatever it is about. With one folder a banner is exactly what it always was.
+  If you wrote a `[[pair]]` file by hand, know that:
   - Settings edits the chosen folder's own `[[pair]]` table for a per-pair setting (the folders,
     skip rules, deletion policy) and the top level of the file for a daemon-wide one (log level,
     the socket, the CLI path). A file that writes its pairs as an inline array

@@ -142,16 +142,71 @@ test("a payload carries every field the Rust struct requires", () => {
   // `app` was missing and every gate in this repo was green.
   const rust = readFileSync(new URL("../src-tauri/src/notify.rs", import.meta.url), "utf8");
   const struct = rust.slice(rust.indexOf("pub struct NotifyPayload"));
-  const fields = [...struct.slice(0, struct.indexOf("}")).matchAll(/pub (\w+):/g)].map((m) => m[1]);
+  const declared = [...struct.slice(0, struct.indexOf("\n}")).matchAll(/^ {4}pub (\w+): ([^\n]+),$/gm)].map(
+    (m) => ({ name: m[1], optional: m[2].startsWith("Option<") }),
+  );
+  const fields = declared.map((field) => field.name);
   assert.ok(fields.length >= 5, `parsed ${fields.length} fields — did the struct move?`);
   const payload = payloadFor(bannerFor(EVENTS.deletion));
-  for (const field of fields) {
-    assert.ok(payload[field] != null, `payloadFor sends no \`${field}\``);
+  // EVERY field but one. `pair` is the only field that may be missing, and only at ONE folder, where there is
+  // no choice of folders to name; an `Option` field added later is not exempt just for being an `Option` —
+  // serde fills it with `None` and the banner loses whatever it carried, which no other gate would notice.
+  for (const { name } of declared) {
+    if (name === "pair") continue;
+    assert.ok(payload[name] != null, `payloadFor sends no \`${name}\``);
   }
+  const pair = declared.find((field) => field.name === "pair");
+  assert.ok(pair?.optional, "`pair` is the one field that may be absent, so the struct must default it");
+  assert.equal("pair" in payload, false, "a one-folder payload carries a pair");
   // And the other way: a field the struct does not declare is dropped by serde, silently.
   for (const key of Object.keys(payload)) {
     assert.ok(fields.includes(key), `payloadFor sends \`${key}\`, which NotifyPayload does not take`);
   }
+  // …including the one that names the folder, at two folders or more, under the name the struct reads.
+  const named = payloadFor(bannerFor({ ...EVENTS.deletion, pair: "photos" }));
+  for (const key of Object.keys(named)) {
+    assert.ok(
+      fields.includes(key),
+      `payloadFor sends \`${key}\` for a folder, which NotifyPayload does not take`,
+    );
+  }
+  assert.equal(named.pair, "photos", "at two folders `pair` is sent, under the name the struct reads");
+  assert.ok(fields.includes("pair"), "NotifyPayload has no `pair`");
+});
+
+test("a banner at one folder is the banner it always was", () => {
+  // D10: "with one pair the banner is byte-identical". No `pair` key on the spec, none on the payload,
+  // and the application line is the product's name — whatever the feature adds happens only when the
+  // event names a folder.
+  for (const kind of EVENT_KINDS) {
+    const spec = bannerFor(EVENTS[kind]);
+    assert.equal("pair" in spec, false, `${kind}: a one-folder spec carries a pair`);
+    const payload = payloadFor(spec);
+    assert.equal("pair" in payload, false, `${kind}: a one-folder payload carries a pair`);
+    assert.equal(payload.app, NOTIFY.app);
+  }
+});
+
+test("a banner at two folders names its folder in the application line and nowhere else", () => {
+  // D10: the meta row. Every sentence of the four events stays verbatim, so the existing copy rows hold,
+  // and the deletion body's leading path keeps its width.
+  for (const kind of EVENT_KINDS) {
+    const plain = bannerFor(EVENTS[kind]);
+    const named = bannerFor({ ...EVENTS[kind], pair: "photos" });
+    assert.deepEqual(
+      { ...named, pair: undefined },
+      { ...plain, pair: undefined },
+      `${kind}: a sentence moved`,
+    );
+    const payload = payloadFor(named);
+    assert.equal(payload.app, "Drive Sync · photos");
+    assert.equal(payload.pair, "photos");
+    assert.equal(payload.summary, payloadFor(plain).summary);
+    assert.equal(payload.body, payloadFor(plain).body);
+    assert.deepEqual(payload.actions, payloadFor(plain).actions);
+  }
+  // The line is the deck's template, not a string built here.
+  assert.equal(NOTIFY.appFor("photos"), "Drive Sync · photos");
 });
 
 test("the guard fires — the rule is enforced, not merely satisfied", () => {

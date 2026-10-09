@@ -1,4 +1,4 @@
-// Notification fixtures (S9) — the five `11a` frames.
+// Notification fixtures (S9) — the six `11a` frames (five, and `11a Two folders` of #102 phase 5e).
 //
 // TWO OF THEM ARE NOT NOTIFICATIONS. `11a Rules` and `11a Settings` are the two halves of Settings ›
 // Notifications, re-rendered at 600 and 520 the way `8a Deletions tab` re-renders its tab at 600 —
@@ -94,6 +94,21 @@ export const NOTIFICATION_FIXTURES = {
       event: { kind: "outage", changes: 61 },
     },
     fids: notifyFids("outage"),
+  },
+
+  /**
+   * A banner at TWO FOLDERS OR MORE (#102 phase 5e, D10): the same conflict banner `11a In situ` draws,
+   * about a folder of several, so its application line reads `Drive Sync · photos`. `pair` is the
+   * event's folder, which `notifier.js` sets only when the daemon runs two or more; a banner at one
+   * folder carries none and is the five frames above, unchanged. A conflict, because it needs no
+   * sentence the other frames do not already draw — the folder is the only new text.
+   */
+  "11a Two folders": {
+    notification: {
+      ...NOW,
+      event: { kind: "conflict", paths: ["2019/IMG_2041.jpg"], pair: "photos" },
+    },
+    fids: notifyFids("twoFolders"),
   },
 
   // ---------------------------------------------------------- the two Settings › Notifications ----

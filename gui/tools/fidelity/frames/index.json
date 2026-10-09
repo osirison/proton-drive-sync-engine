@@ -90,6 +90,12 @@
     "nodes": 21
   },
   {
+    "label": "11a Two folders",
+    "kind": "notification",
+    "file": "11a-two-folders.json",
+    "nodes": 15
+  },
+  {
     "label": "12a Compact needs light",
     "kind": "compact",
     "file": "12a-compact-needs-light.json",

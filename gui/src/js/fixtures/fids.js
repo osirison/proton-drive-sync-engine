@@ -1873,6 +1873,9 @@ export function notifyFids(view) {
   const banners = {
     outage: [{ form: "unreachable" }],
     grouped: [{ form: "needsNumeral" }],
+    // `11a Two folders` (#102 phase 5e): one conflict banner about one of two folders, so the mark is the
+    // `needsDot` form and there is an actions row and no mono path.
+    twoFolders: [{ form: "needsDot" }],
     inSitu: IN_SITU_BANNERS,
   }[view];
   if (!banners) throw new Error(`fids: no notification view "${view}"`);

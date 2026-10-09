@@ -1,8 +1,8 @@
-// The 63 in-scope frames and what KIND of thing each one is. IMPLEMENTATION-PLAN.md §1.2: they are
+// The 64 in-scope frames and what KIND of thing each one is. IMPLEMENTATION-PLAN.md §1.2: they are
 // not all windows, and asserting a content crop's width against 1040 is the first way a fidelity
 // gate produces a failure that means nothing.
 //
-// Nine of the 72 drawn frames are out of scope — the `1a`/`1b`/`1c` round-one frames, and the two
+// Nine of the 73 drawn frames are out of scope — the `1a`/`1b`/`1c` round-one frames, and the two
 // demoted tide-chart Activity frames. Listed rather than derived: "round one" is not a property of
 // the markup.
 
@@ -39,7 +39,7 @@ export const FRAME_CLASS = {
   // Desktop notification banners (S9). Their own class because the fit gate does not apply — a
   // banner is sized by the desktop's notification chrome, not by a 1040×764 window — and because
   // 520px would otherwise classify them as dialogs, which they are not.
-  notification: ["11a Outage", "11a Grouped"],
+  notification: ["11a Outage", "11a Grouped", "11a Two folders"],
 };
 
 /**

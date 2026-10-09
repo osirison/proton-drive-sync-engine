@@ -59,7 +59,7 @@ export function applyPreviewTheme() {
 
 /**
  * `?pairs=1` — render the frame as a daemon that lists ONE pair would have answered it (#102 phase
- * 5a-2). 55 of the 63 fixtures are one-pair, legacy-shaped replies: no `pair`, no `pairs` (the other
+ * 5a-2). 56 of the 64 fixtures are one-pair, legacy-shaped replies: no `pair`, no `pairs` (the other
  * eight draw two folders on purpose, `fixtures/pairs.js`). A current daemon
  * answers the same screen with both, and **the screen must not look any different for it** (D2: a
  * one-folder user sees nothing new). That is a claim about two renderings of one frame, and this is

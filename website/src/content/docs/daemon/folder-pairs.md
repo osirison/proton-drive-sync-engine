@@ -136,11 +136,13 @@ resume it, and `proton-sync reset-index` does not clear it. One case is not cove
 
 ## Known limits
 
-- **The desktop app's notifications act on the default pair only.** They were built for one
-  folder. The daemon logs a warning about this once, at startup, when it finds more than one pair
-  configured. Use `proton-sync --pair NAME` to address the others. The **window** follows the
-  folder you choose from the pill in its header, and the **tray** lists every pair, pauses and
-  resumes each one separately, and shows the worst folder's state (see
+- **A request that names no pair acts on the default pair only.** That is every `proton-sync`
+  command without `--pair`, and any client that predates folder pairs. The daemon logs a warning
+  about this once, at startup, when it finds more than one pair configured. Use
+  `proton-sync --pair NAME` to address the others. The desktop app addresses each folder itself: its
+  **window** follows the folder you choose from the pill in its header, its **notifications** name
+  the folder they are about and act on it, and its **tray** lists every pair, pauses and resumes each
+  one separately, and shows the worst folder's state (see
   [the tray](/desktop/tray/#two-or-more-folders)). The app cannot create a `[[pair]]` file, and
   its Settings screen edits the chosen folder's own table for a per-pair setting and the top level
   for a daemon-wide one, so only a file you wrote by hand reaches this.
