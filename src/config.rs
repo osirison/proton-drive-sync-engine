@@ -1644,7 +1644,12 @@ fn local_comparison_key(path: &Path) -> PathBuf {
 /// `proton::clean_remote_root_path` refuses any path carrying a `..`, so resolving one
 /// here would be this layer alone deciding that two Drive locations are one while nothing
 /// downstream agrees, for a value that is refused either way.
-fn remote_root_comparison_key(remote_root: &Path) -> PathBuf {
+///
+/// **Also the key an index records its Proton folder under** (#453, `index::load_recorded_remote_root`),
+/// so the question "is this the folder the baseline describes" has the config reader's own answer to
+/// "are these two the same folder" and no second normaliser. A change to what it drops is therefore
+/// a change to what an existing index reads as a different folder.
+pub(crate) fn remote_root_comparison_key(remote_root: &Path) -> PathBuf {
     remote_root
         .components()
         .filter(|component| !matches!(component, Component::RootDir | Component::CurDir))
@@ -6918,6 +6923,27 @@ local_delete_mode = \"permanent\"
         assert_eq!(
             remote_root_comparison_key(Path::new("/Drive/a/../b")),
             PathBuf::from("Drive/a/../b")
+        );
+    }
+
+    #[test]
+    fn the_key_an_index_records_its_proton_folder_under_is_the_same_for_every_spelling() {
+        // #453. An index stores this key, and a pair is held when the stored key differs from the
+        // configured one, so a spelling that keyed differently would hold a pair whose folder did
+        // not change. These four are one Drive location (`/Drive/X` is `Drive/X`; a trailing
+        // separator and a leading `.` name nothing).
+        let key = PathBuf::from("Drive/X");
+        for spelling in ["/Drive/X", "Drive/X", "/Drive/X/", "./Drive/X", "Drive/./X"] {
+            assert_eq!(
+                remote_root_comparison_key(Path::new(spelling)),
+                key,
+                "{spelling}"
+            );
+        }
+        assert_ne!(
+            remote_root_comparison_key(Path::new("/Drive/Y")),
+            key,
+            "and another folder is another key"
         );
     }
 

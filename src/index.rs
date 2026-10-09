@@ -47,6 +47,10 @@ CREATE TABLE IF NOT EXISTS pair_pause (
     id INTEGER PRIMARY KEY CHECK (id = 0),
     paused INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS remote_root_identity (
+    id INTEGER PRIMARY KEY CHECK (id = 0),
+    remote_root BLOB NOT NULL
+);
 CREATE TABLE IF NOT EXISTS unsyncable_items (
     path BLOB PRIMARY KEY,
     entity_kind TEXT NOT NULL,
@@ -1017,6 +1021,10 @@ pub fn reset_index_state(connection: &Connection) -> AppResult<()> {
         "forced_delete_approval",
         // NOT `pair_pause`: it is the user's standing request, not learned state (see
         // `load_pair_paused`).
+        // The Proton folder the baseline describes goes with the baseline: it is what the reset
+        // of a held pair (`StandingCause::RemoteRootChanged`) exists to release, and the pass that
+        // follows records the folder it then syncs.
+        "remote_root_identity",
         "delete_approvals",
         "unsyncable_items",
         // The ancestor summaries are things the daemon has LEARNED about content it agreed on, so
@@ -1126,6 +1134,73 @@ pub fn store_pair_paused(connection: &Connection, paused: bool) -> AppResult<()>
         params![i64::from(paused)],
     )?;
     Ok(())
+}
+
+/// The Proton folder this index's baseline describes, as the comparison key
+/// (`config::remote_root_comparison_key`) of the `remote_root` the pair last synced with — or
+/// `None` when nothing is recorded (#453). A baseline is the last agreed state of one local folder
+/// against **one** Proton folder; started over a different folder it reads every path the old one
+/// had and the new one lacks as deleted on Proton. A single-row table (`id = 0`) like
+/// `warm_start_state`; an index written before the table existed answers `None`.
+///
+/// Byte-exact like every path stored here ([`index_key`]), so two roots that differ only in
+/// invalid UTF-8 are two roots.
+pub fn load_recorded_remote_root(connection: &Connection) -> AppResult<Option<PathBuf>> {
+    let root = connection
+        .query_row(
+            "SELECT remote_root FROM remote_root_identity WHERE id = 0",
+            [],
+            |row| read_index_key_column(row, 0),
+        )
+        .optional()?;
+    Ok(root)
+}
+
+/// Records the Proton folder the baseline describes **unless one is already recorded**, and says
+/// whether it wrote. Never overwrites: a recorded root changes only by the reset that empties the
+/// baseline it belongs to (`reset_index_state`). `key` is the comparison key, never the root as
+/// written.
+///
+/// Callers write it in the same transaction as the baseline rows it describes, so the row can
+/// never precede a side effect nor outlive a rolled-back one.
+pub fn record_remote_root_if_unrecorded(connection: &Connection, key: &Path) -> AppResult<bool> {
+    let written = connection.execute(
+        "INSERT OR IGNORE INTO remote_root_identity (id, remote_root) VALUES (0, ?1)",
+        params![index_key(key)],
+    )?;
+    Ok(written > 0)
+}
+
+/// Whether the baseline holds any row at all, as stored — not as a pair's selective-sync filter
+/// sees it: the question is whether the index describes **some** Proton folder, which a row the
+/// filter hides still does.
+pub fn baseline_has_rows(connection: &Connection) -> AppResult<bool> {
+    let any: bool =
+        connection.query_row("SELECT EXISTS (SELECT 1 FROM file_index)", [], |row| {
+            row.get(0)
+        })?;
+    Ok(any)
+}
+
+/// [`load_recorded_remote_root`] for the one-shot preview, which reads the index off disk without
+/// opening it for writing: `None` for a database that is not there, and for one written before the
+/// table existed (opening it read-only cannot add the table, and a query on a missing table is an
+/// error rather than an empty answer).
+pub fn load_existing_recorded_remote_root(path: &Path) -> AppResult<Option<PathBuf>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let has_table: bool = connection.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' \
+         AND name = 'remote_root_identity')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_table {
+        return Ok(None);
+    }
+    load_recorded_remote_root(&connection)
 }
 
 /// Every entity the daemon currently holds as unsyncable, **ordered by path**.
@@ -4631,6 +4706,118 @@ mod tests {
         reset_index_state(&connection).expect("reset");
 
         assert!(!load_forced_delete_approval(&connection).expect("cleared"));
+    }
+
+    #[test]
+    fn the_recorded_remote_root_is_added_to_a_preexisting_database_and_reads_as_nothing() {
+        // #453. An index written before the table exists opens cleanly and records no root, which
+        // is what every index was before one could be recorded; the daemon decides what that means
+        // (a baseline with no recorded root is recorded as the configured one at open).
+        let directory = tempdir().expect("tempdir");
+        let db_path = directory.path().join("sync_index.db");
+        {
+            let connection = Connection::open(&db_path).expect("open");
+            connection
+                .execute_batch(
+                    "CREATE TABLE file_index (
+                        file_path TEXT PRIMARY KEY,
+                        entity_kind TEXT NOT NULL DEFAULT 'file',
+                        file_size INTEGER NOT NULL,
+                        mtime INTEGER NOT NULL,
+                        sha1_hash TEXT,
+                        proton_id TEXT,
+                        sync_status TEXT NOT NULL
+                    );
+                    INSERT INTO file_index VALUES ('a.txt', 'file', 1, 1, 'h', NULL, 'synced');",
+                )
+                .expect("preexisting schema with a baseline row");
+        }
+        assert_eq!(
+            load_existing_recorded_remote_root(&db_path).expect("a read-only look at an old index"),
+            None,
+            "a database without the table reads as nothing recorded, not as an error"
+        );
+        let connection = open_database(&db_path).expect("open database upgrades cleanly");
+        assert_eq!(load_recorded_remote_root(&connection).expect("load"), None);
+        assert!(
+            baseline_has_rows(&connection).expect("baseline"),
+            "the pre-existing row is still the baseline"
+        );
+
+        assert!(
+            record_remote_root_if_unrecorded(&connection, Path::new("Drive/Photos"))
+                .expect("record")
+        );
+        assert_eq!(
+            load_recorded_remote_root(&connection).expect("reload"),
+            Some(PathBuf::from("Drive/Photos"))
+        );
+        assert_eq!(
+            load_existing_recorded_remote_root(&db_path).expect("read-only look"),
+            Some(PathBuf::from("Drive/Photos"))
+        );
+    }
+
+    #[test]
+    fn a_recorded_remote_root_is_never_overwritten() {
+        // The one way a recorded root changes is the reset that empties the baseline it belongs to.
+        // An overwrite by a later pass would let a changed root be adopted by the next commit.
+        let connection = Connection::open_in_memory().expect("open");
+        connection.execute_batch(SCHEMA).expect("schema");
+        assert!(record_remote_root_if_unrecorded(&connection, Path::new("Drive/Old")).expect("1"));
+        assert!(
+            !record_remote_root_if_unrecorded(&connection, Path::new("Drive/New")).expect("2"),
+            "the second record is a no-op and says so"
+        );
+        assert_eq!(
+            load_recorded_remote_root(&connection).expect("load"),
+            Some(PathBuf::from("Drive/Old"))
+        );
+    }
+
+    #[test]
+    fn a_recorded_remote_root_keeps_bytes_that_are_not_utf8() {
+        use std::os::unix::ffi::OsStrExt;
+        let connection = Connection::open_in_memory().expect("open");
+        connection.execute_batch(SCHEMA).expect("schema");
+        let one = PathBuf::from(std::ffi::OsStr::from_bytes(b"Drive/caf\xe9"));
+        assert!(record_remote_root_if_unrecorded(&connection, &one).expect("record"));
+        assert_eq!(
+            load_recorded_remote_root(&connection).expect("load"),
+            Some(one),
+            "lossy storage would make two roots that differ only in invalid bytes one root"
+        );
+    }
+
+    #[test]
+    fn a_reset_clears_the_recorded_remote_root() {
+        // The reset of a held pair (`StandingCause::RemoteRootChanged`) is released by exactly this:
+        // the baseline goes, and the folder it described goes with it.
+        let connection = Connection::open_in_memory().expect("open");
+        connection.execute_batch(SCHEMA).expect("schema");
+        record_remote_root_if_unrecorded(&connection, Path::new("Drive/Old")).expect("record");
+        assert!(
+            load_recorded_remote_root(&connection)
+                .expect("precondition")
+                .is_some()
+        );
+
+        reset_index_state(&connection).expect("reset");
+
+        assert_eq!(load_recorded_remote_root(&connection).expect("read"), None);
+        // And it can be recorded again, as the folder the next pass syncs.
+        assert!(
+            record_remote_root_if_unrecorded(&connection, Path::new("Drive/New")).expect("new")
+        );
+    }
+
+    #[test]
+    fn a_missing_index_file_has_no_recorded_remote_root() {
+        let directory = tempdir().expect("tempdir");
+        assert_eq!(
+            load_existing_recorded_remote_root(&directory.path().join("absent.db")).expect("read"),
+            None
+        );
     }
 
     #[test]

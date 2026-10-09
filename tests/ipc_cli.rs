@@ -3,7 +3,9 @@ mod common;
 #[cfg(unix)]
 mod unix_tests {
     use crate::common;
-    use proton_drive_sync_engine::index::load_existing_index;
+    use proton_drive_sync_engine::index::{
+        load_existing_index, load_existing_recorded_remote_root,
+    };
     use serde_json::Value;
     use std::ffi::OsStr;
     use std::fs;
@@ -1308,6 +1310,7 @@ exit 64
             "fake-multi-root-proton-drive",
             &format!(
                 r#"#!/bin/sh
+printf '%s\n' "$*" >> "$0.calls"
 if [ "$1" = "filesystem" ] && [ "$2" = "list" ] && [ "$3" = "--json" ]; then
   case "$4" in
     /Drive/*) printf '{{"entries":[]}}\n'; exit 0 ;;
@@ -1322,6 +1325,17 @@ exit 64
 "#
             ),
         )
+    }
+
+    /// Every invocation the fake received, its arguments on one line each, in order — recorded
+    /// before it answers anything, so a listing or a creation the daemon should not have asked for
+    /// is visible even though the fake answers it harmlessly.
+    fn recorded_calls(fake_proton_drive: &Path) -> Vec<String> {
+        fs::read_to_string(format!("{}.calls", fake_proton_drive.display()))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
     }
 
     /// What the fake recorded uploading, one `upload:<local>:<remote parent>` per line.
@@ -1531,6 +1545,119 @@ exit 64
             run_control_pair(&socket_path, Some("b"), "status")["paused"],
             false,
             "`b` was resumed before the second restart"
+        );
+    }
+
+    /// #453, through the real binaries: a pair whose `remote_root` is edited between two runs over
+    /// the same state is held with both folders named, nothing is asked of the new folder, the
+    /// other pair runs, and `reset-index --yes --pair` is the way out. The CLI is a recording fake
+    /// that lists every `/Drive/*` as empty — so a refusal that is missing would plan a delete of
+    /// `f.txt` for the pair and list the new folder, and the fake's record would show it.
+    #[test]
+    fn proton_syncd_holds_a_pair_whose_remote_root_changed_between_two_runs() {
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, socket_path, fake, paths) = two_pair_daemon(directory.path(), [60, 60]);
+        let config = directory.path().join("pairs.toml");
+        for ((_, db_path), folder) in paths.iter().zip(["Drive/A", "Drive/B"]) {
+            assert_eq!(
+                load_existing_recorded_remote_root(db_path).expect("recorded root"),
+                Some(PathBuf::from(folder)),
+                "precondition: the first run's index names the folder it synced"
+            );
+        }
+        run_control_args(&socket_path, &["--json", "stop"]);
+        wait_for_exit(&mut daemon.child, Duration::from_secs(10)).expect("the daemon exits");
+        drop(daemon);
+        let calls_before = recorded_calls(&fake).len();
+        let local_a = paths[0].0.join("f.txt");
+        let content_before = fs::read(&local_a).expect("a's file");
+
+        // The edit: pair `a` now points at another Proton folder. `b` is untouched.
+        let text = fs::read_to_string(&config).expect("config");
+        assert!(text.contains("remote_root = \"/Drive/A\""), "{text}");
+        fs::write(
+            &config,
+            text.replace(
+                "remote_root = \"/Drive/A\"",
+                "remote_root = \"/Drive/Other\"",
+            ),
+        )
+        .expect("edit the config");
+        let mut daemon = DaemonProcess::spawn_with_config(&config, &socket_path, &fake);
+        wait_for_socket(&socket_path, &mut daemon);
+        wait_for_pair_reconcile_seq(&socket_path, &mut daemon, Some("b"), 1);
+
+        let a = run_control_pair(&socket_path, Some("a"), "status");
+        let reason = a["last_error"].as_str().unwrap_or_default().to_owned();
+        assert!(
+            reason.contains("/Drive/A") && reason.contains("/Drive/Other"),
+            "the reason names both folders: {a}"
+        );
+        assert!(
+            reason.contains("proton-sync reset-index --yes --pair a"),
+            "and the way to start over: {a}"
+        );
+        let b = run_control_pair(&socket_path, Some("b"), "status");
+        assert!(b["last_error"].is_null(), "`b` is not held: {b}");
+        let calls: Vec<String> = recorded_calls(&fake).split_off(calls_before);
+        assert!(
+            !calls.iter().any(|call| call.contains("/Drive/Other")),
+            "nothing was asked of the new folder: {calls:?}"
+        );
+        assert!(
+            calls.iter().any(|call| call.contains("/Drive/B")),
+            "while `b` was listed: {calls:?}"
+        );
+        assert_eq!(fs::read(&local_a).expect("a's file"), content_before);
+        assert!(
+            load_existing_index(&paths[0].1)
+                .expect("a's index")
+                .contains_key(Path::new("f.txt")),
+            "a's baseline is untouched"
+        );
+        assert_eq!(
+            load_existing_recorded_remote_root(&paths[0].1).expect("recorded root"),
+            Some(PathBuf::from("Drive/A")),
+            "and still names the old folder"
+        );
+
+        // The way out: start `a` over against the new folder.
+        run_control_args(
+            &socket_path,
+            &["--pair", "a", "--json", "reset-index", "--yes"],
+        );
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let status = run_control_pair(&socket_path, Some("a"), "status");
+            if status["last_error"].is_null() && status["syncing"] == false {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "`a` was not released: {status}\n{}",
+                daemon.stderr_tail()
+            );
+            thread::sleep(Duration::from_millis(50));
+        }
+        let uploads = recorded_uploads(&fake);
+        assert!(
+            uploads
+                .iter()
+                .any(|line| line.starts_with(&format!("upload:{}:/Drive/Other", local_a.display()))),
+            "the pass after the reset compared both sides and uploaded into the new folder: \
+             {uploads:?}"
+        );
+        assert!(
+            recorded_calls(&fake)
+                .iter()
+                .all(|call| !call.contains("delete") && !call.contains(" rm ")),
+            "and nothing was deleted: {:?}",
+            recorded_calls(&fake)
+        );
+        assert_eq!(
+            load_existing_recorded_remote_root(&paths[0].1).expect("recorded root"),
+            Some(PathBuf::from("Drive/Other")),
+            "the reset pass recorded the folder it synced"
         );
     }
 
