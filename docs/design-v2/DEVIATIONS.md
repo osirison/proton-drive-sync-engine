@@ -1670,7 +1670,7 @@ only sentence the deck has for this situation, quoted across surfaces the way `c
 and the settled sub-line and buttons underneath.
 
 **Prose-normative and unverified.** Same footing as the seam's 320ms transition (§38) and the ⋯ menu
-(§45). Flagged for the designer with `paused` and `unreachable`, which are also specified in words
+(§46). Flagged for the designer with `paused` and `unreachable`, which are also specified in words
 and drawn in no `2a` frame — `unreachable` borrows `TRAY.unreachableTitle`/`unreachableBody`, the
 deck's own outage sentences, and `paused` renders `pausedSub` against `last_sync_epoch_secs` because
 nothing records _when you paused_.
@@ -6320,7 +6320,7 @@ count; measurements dated to a past run (§108f) are left as they were measured.
 later is not this flow") and `13-copy-deck.md` carry the new normative text. Four frames, drawn in the change that
 builds them (the brief's correction A1: no design-only commit), all dark: `8a Folders list` and `8a Save two
 folders` (class `crop`, 600px), `8a Add folder` (a 720px dialog) and `8a Remove folder` (a 600px dialog). Nothing
-draws below two folders **except the ⋯ menu's `Add folder…`**, which sits in a menu no frame draws (§45) and so
+draws below two folders **except the ⋯ menu's `Add folder…`**, which sits in a menu no frame draws (§46) and so
 costs none; `fidelity:n1` keeps holding the one-folder app to the 55 frames it already compared.
 
 ### §110a · The decisions applied

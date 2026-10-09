@@ -18,9 +18,9 @@ fidelity:assert: N unclaimed drawn node(s). Declare the slot, or add a KNOWN_UNC
 non-empty key that no slot claims and no `KNOWN_UNCLAIMED` row names is reported, and the run exits 1
 on it. `KNOWN_UNCLAIMED` rows carry exact keys, never a prefix. The 68 frames in
 `gui/tools/fidelity/frames` have 5 to 86 nodes with a non-empty key (median 30, counted 2026-10-09;
-`9a-folders.json` has 43), so a new frame means that many exact rows. The `fidelity` job in CI is not
+`9a-folders.json` has 42), so a new frame means that many exact rows. The `fidelity` job in CI is not
 filtered by path.
 
 **Rule:** draw a frame in the PR that builds it, with its fixture and `fids` map. Phase 5 split its PRs
 this way (ADR 0005, "Phase 5 shipped, with departures") for this reason. A frame that cannot be built
-yet needs one `KNOWN_UNCLAIMED` row per node, each with a class and, for `issue`, an open number.
+yet needs one `KNOWN_UNCLAIMED` row per node, each with a class and, for `issue` and `mapping`, an open issue number.

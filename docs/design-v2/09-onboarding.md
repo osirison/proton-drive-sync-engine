@@ -128,8 +128,8 @@ instructions rather than guessing a package manager.~~
 ## Adding a folder later is not this flow (#102 phase 5c-2, DEVIATIONS §110)
 
 Everything above is the FIRST folder: a machine with none, the implicit single pair, a rehearsed plan, one
-consent. **It never arms at two folders or more** — its `Next` writes top-level roots, which a `[[pair]]` file
-refuses — and it is not reused to add a second.
+consent. **It never arms at two folders or more** — it is the first-folder flow — and it is not reused to add a
+second.
 
 A second folder is a dialog (`08-settings.md` "Add a folder"), opened from Settings or the ⋯ menu. It keeps what
 step 1 is for — both sides named, both sides priced, skip rules staged, nothing written until the person says —

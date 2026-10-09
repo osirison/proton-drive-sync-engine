@@ -1856,7 +1856,7 @@ Closes: the feature for users.
 >
 > Below two folders nothing the app draws in a frame changed, and one thing the app does changed: the
 > ⋯ menu offers `Add folder…` at every count, one folder included (note 54, maintainer decision D7), so
-> that a person with one folder can start a second. No frame draws that menu open (DEVIATIONS §45), so no
+> that a person with one folder can start a second. No frame draws that menu open (DEVIATIONS §46), so no
 > gate sees it. For the frames, `fidelity:n1` compares the one-folder frames: a plain render and a
 > `?pairs=1` render must give equal bytes. Frames that list two folders are rendered twice instead, since
 > they have no one-folder rendering to equal. Note 39 gives the split as it stood when #447 merged, at 63
@@ -1941,16 +1941,22 @@ Closes: the feature for users.
 > requests until the daemon shows it can read a selector (note 3). That check asks whether a reply
 > carries `pairs[]`, which a daemon from #409 on does, so a daemon from #409 to #433 passes it while
 > running one pair. `Add folder` makes no capability check at all (`add_pair` and the dialog read
-> none). So with such a daemon, adding a second folder writes the second `[[pair]]` table, stops the
-> daemon and starts it again, and the new process refuses the file and exits. The dialog then says
+> none). So with such a daemon running, adding a second folder writes the second `[[pair]]` table,
+> stops the daemon and starts it again, and the new process refuses the file and exits. (If the
+> daemon was not running, the add leaves it stopped, as a settings save does.) The dialog then says
 > that the folder "was added to the settings, but the sync service has not listed it yet", and
-> nothing syncs until the table is removed. The app has a way out (`Remove` on the Folders list works
-> from the file and restarts the daemon). **Confirmed by running** a daemon built from the commit
-> before #434, in a scratch environment, on a two-pair file: it exits with status 1 and that message,
-> and creates no folder. **Read from the code, not run:** the app's dialog wording and the restart
-> ending it reports (`systemctl --user start` returning success is enough for it to say the service
-> restarted), and the unit's `Restart=on-failure` with `RestartSec=10`, which would start and refuse
-> the file every ten seconds.
+> nothing syncs until the table is removed. The app has a way out in `Remove` on the Folders list,
+> which works from the file and takes the table out. `Remove` restarts the daemon only if one is
+> running, and a daemon that has already exited on the file is not running, so `Remove` does not
+> start it. It comes back through the unit's `Restart=on-failure` (`RestartSec=10`), or the Start
+> button; with no unit and the app's direct start, only the Start button does it. **Confirmed by
+> running** a daemon built from the commit before #434, in a scratch environment, on a two-pair
+> file: it exits with status 1 and that message, and creates no folder. **Read from the code, not
+> run:** the app's dialog wording and the restart ending it reports (`systemctl --user start`
+> returning success is enough for it to say the service restarted), what `Remove` does when the
+> daemon is not running (`remove_pair` restarts with `only_if_running`, which leaves a stopped
+> daemon stopped), and the unit's `Restart=on-failure` with `RestartSec=10`, which would start and
+> refuse the file every ten seconds until the table is removed.
 
 **Phase 6 — Shared-volume event scope (its own ADR).** §8a. Independent of everything above and
 worth doing on its own merits, since one pair already pays the cost. Not scheduled here.

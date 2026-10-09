@@ -275,7 +275,7 @@
 
 /* NO FRAME DRAWS THIS MENU OPEN. `02-shell.md` says only that the theme toggle moves into it, so
    everything here is prose-normative and unverified — the same footing as the seam's 320ms
-   transition (DEVIATIONS.md §38). Recorded as §45. */
+   transition (DEVIATIONS.md §38). Recorded as §46. */
 .menu-popover {
   position: absolute;
   top: 46px;

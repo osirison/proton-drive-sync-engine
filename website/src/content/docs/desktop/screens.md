@@ -274,9 +274,7 @@ If the `proton-drive` binary will not run, a dialog says so rather than the flow
 Once the daemon is up, the app hands off out of the takeover on its own — including when the
 first pass *fails*, which releases you onto Home's **Try again now** rather than trapping you.
 
-The takeover is for the first folder only: its first step writes the single folder a new config
-starts with, and a config written with `[[pair]]` tables refuses that. With two or more folders it
-does not open. A folder that has never synced shows *Nothing has synced yet* on Home when it is the
+The takeover is for the first folder only. With two or more folders it does not open. A folder that has never synced shows *Nothing has synced yet* on Home when it is the
 one the window is about, instead of *Everything is up to date*, and further folders are added from
 [Settings](#adding-and-removing-a-folder).
 
