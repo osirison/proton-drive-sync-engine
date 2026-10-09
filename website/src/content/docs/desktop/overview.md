@@ -104,7 +104,7 @@ notice:
   finish, or its folder is not there (an unplugged drive). A folder you paused yourself marks
   nothing, and if both apply the red dot is the one shown. While the daemon is not answering, the
   list says every folder is *unreachable* rather than repeating what it last knew. The chip and the
-  band count the folder on screen only. A list of more than ten folders scrolls. With one folder
+  band count the folder on screen only. A list of more than eleven folders scrolls. With one folder
   there is no pill, and nothing about the window changes. The hero's button names its folder at two or
   more (`Pause photos`), and a pause the daemon could not write down is said under the hero. The
   app still cannot add a pair or create a `[[pair]]` file, and the **tray** lists every pair with a
