@@ -1,0 +1,22 @@
+log_level = "trace"
+
+[[pair]]
+name = "default"
+local_root = "/home/u/All"
+remote_root = "/Drive/All"
+db_path = "/home/u/All/.sync/sync_index.db"
+lockfile_path = "/home/u/All/.sync/proton-sync.lock"
+scan_interval_secs = 120
+full_scan_schedule = "weekly sun 03:00"
+download_batch_size = 10
+include = ["a/**"]
+exclude = ["b/**"]
+dry_run = true
+events_driven = true
+events_full_scan_every = 20
+warm_start = true
+warm_start_full_walk_every = 10
+warm_start_max_cursor_age_secs = 86400
+deletion_policy = "ask_every_time"
+local_delete_mode = "trash"
+conflict_suffix = "elsewhere"

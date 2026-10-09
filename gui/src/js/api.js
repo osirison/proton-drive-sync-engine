@@ -86,6 +86,17 @@ export const api = {
   // `Never ask` policy staged for one folder and saved after the selection moved is the wrong-folder
   // bug with data in it. Daemon-wide fields in the same update still go to the top level of the file.
   writeConfig: (update, { pair } = {}) => write("write_config", { update }, pair),
+  // ADDING A FOLDER (#102 phase 5b-2). A WRITE, and the one whose `pair` is a name the app does NOT know
+  // yet: the NEW pair's, which the engine refuses if it is taken, malformed or reserved. `init` is
+  // `{ local_root, remote_root, exclude }`. Resolves with `{ pair, path, restart_needed,
+  // surviving_index, settled_earlier }` and starts nothing; the caller restarts the daemon. Nothing
+  // calls it until the Settings folder list (5c-2) draws the dialog.
+  addPair: (init, { pair } = {}) => write("add_pair", { init }, pair),
+  // REMOVING ONE, and setting its sync history aside outside every sync folder, so that adding the same
+  // folder back starts fresh (D8). This restarts the daemon itself, because the history can only move
+  // once the daemon has let go of it. Resolves with `{ pair, new_default, restart, restart_needed,
+  // set_aside, … }`: `set_aside.outcome` is `moved` (and where), `nothing_to_move` or `pending` (and why).
+  removePair: ({ pair } = {}) => write("remove_pair", {}, pair),
   // Settings › `Choose…`. Resolves `null` when the picker is DISMISSED and rejects when it could
   // not open — the two were one answer until Copilot's second pass, which made a broken picker
   // indistinguishable from a closed one.
@@ -489,6 +500,32 @@ function mockInvoke(cmd, args) {
       // A browser has no notification server, and drawing one here would be the preview inventing a
       // surface. `?frame=11a Outage` is where a banner is looked at.
       return Promise.resolve(null);
+    case "add_pair":
+      // Accepts, and says what a real add says: nothing is running the new pair until a restart.
+      return Promise.resolve({
+        pair: args?.pair ?? null,
+        path: "~/.config/proton-sync/proton-sync.toml",
+        restart_needed: true,
+        surviving_index: null,
+        settled_earlier: [],
+      });
+    case "remove_pair":
+      // Accepts, with the history moved: the ending the ordinary removal has.
+      return Promise.resolve({
+        pair: args?.pair ?? null,
+        path: "~/.config/proton-sync/proton-sync.toml",
+        new_default: null,
+        restart: { ending: "restarted", detail: "the service restarted (preview mock)" },
+        restart_needed: false,
+        set_aside: {
+          outcome: "moved",
+          pair: args?.pair ?? null,
+          to: "~/.local/state/proton-sync/removed-pairs/preview",
+          items: [],
+          message: "The sync history was moved outside every sync folder (preview mock).",
+        },
+        settled_earlier: [],
+      });
     case "write_config":
       // Accepts. The REFUSAL is what `8a Save refused` is for, and it is reached by the fixture's
       // own `saveError` rather than by a mock that decides to fail — a preview that rejected every

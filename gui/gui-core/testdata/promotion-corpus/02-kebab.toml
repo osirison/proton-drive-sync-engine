@@ -1,0 +1,10 @@
+local-root = "/home/u/Kebab"
+remote-root = "/Drive/Kebab"
+scan-interval-secs = 300
+log-level = "info"
+proton-timeout-secs = 90
+conflict-suffix = "cloud"
+
+[delete-approval]
+remote = true
+local = false

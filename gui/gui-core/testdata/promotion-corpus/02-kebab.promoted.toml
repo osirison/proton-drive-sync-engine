@@ -1,0 +1,13 @@
+log-level = "info"
+proton-timeout-secs = 90
+
+[[pair]]
+name = "default"
+local-root = "/home/u/Kebab"
+remote-root = "/Drive/Kebab"
+scan-interval-secs = 300
+conflict-suffix = "cloud"
+
+[pair.delete-approval]
+remote = true
+local = false

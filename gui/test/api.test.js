@@ -76,6 +76,16 @@ const WRITES = [
     (opts) => api.writeConfig({ scan_interval_secs: 60, log_level: "debug" }, opts),
     { update: { scan_interval_secs: 60, log_level: "debug" } },
   ],
+  // ADDING AND REMOVING A FOLDER (#102 phase 5b-2). Both are writes: the pair of an add is the NEW
+  // pair's name, the pair of a remove is the folder being removed, and neither falls back to the
+  // selection.
+  [
+    "add_pair",
+    "addPair",
+    (opts) => api.addPair({ local_root: "/home/u/Photos", remote_root: "/Drive/Photos", exclude: [] }, opts),
+    { init: { local_root: "/home/u/Photos", remote_root: "/Drive/Photos", exclude: [] } },
+  ],
+  ["remove_pair", "removePair", (opts) => api.removePair(opts), {}],
 ];
 
 test("a_class_w_wrapper_without_a_pair_rejects_and_sends_nothing", async () => {

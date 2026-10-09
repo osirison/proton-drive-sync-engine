@@ -1,0 +1,6 @@
+log_level = 'debug'   # literal strings, a space in a path
+
+[[pair]]
+name = "default"
+local_root = '~/Literal Sync'
+remote_root = "/Drive/Tilde"

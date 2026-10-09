@@ -1,0 +1,9 @@
+# Proton Drive sync config, edited by hand.
+# Last touched: never.
+
+[[pair]]
+name = "default"
+local_root = "/home/u/Header"
+remote_root = "/Drive/Header"
+
+# trailing note about nothing in particular
