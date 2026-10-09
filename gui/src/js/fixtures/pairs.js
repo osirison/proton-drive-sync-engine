@@ -1,4 +1,4 @@
-// The datasets of the window at TWO FOLDERS OR MORE (#102 phase 5c-1) — five dark frames and two light.
+// The datasets of the window at TWO FOLDERS OR MORE (#102 phase 5c-1) — six dark frames and two light.
 //
 // Every other fixture in this directory is a reply from a daemon that predates folder pairs (no `pair`,
 // no `pairs`), and `fidelity:n1` holds the one-folder app to those. These are the opposite on purpose:
@@ -11,6 +11,8 @@
 //   2a Two folders           the pill at rest: `documents` selected, nothing waiting anywhere
 //   2a Two folders open      the list open: four folders, one in each of four states, one with a count
 //   2a Two folders waiting   `photos` has deletions waiting; the pill carries the ring, the chip does not
+//   2a Two folders failed    `photos`' last pass did not finish; the pill carries the solid dot (the problem
+//                            form), the chip does not — and the frame is NOT in the hue gate's settled set
 //   2a Folder not running    `photos` is in the settings file and not in the running daemon
 //   2a Two folders unsaved   a resume the daemon could not write down
 //   12a Two folders light    ← 2a Two folders
@@ -159,6 +161,17 @@ export const PAIR_FIXTURES = {
     status: settledStatus(
       [summary("documents"), summary("photos", { pending_deletions: 2 })],
       [stateOf("documents", "idle", 0), stateOf("photos", "idle", 0)],
+    ),
+    conflicts: [],
+  },
+
+  "2a Two folders failed": {
+    fids: { ...shell({ marker: true }), ...mainFids({ state: "settled", buttons: 2 }) },
+    // `photos` is the folder whose last pass did not finish; `documents` is on screen and fine, so the chip
+    // reads `idle` and the window says nothing — the solid dot on the pill is the only place it shows.
+    status: settledStatus(
+      [summary("documents"), summary("photos", { last_error: "the remote listing timed out" })],
+      [stateOf("documents", "idle", 0), stateOf("photos", "failed", 4)],
     ),
     conflicts: [],
   },

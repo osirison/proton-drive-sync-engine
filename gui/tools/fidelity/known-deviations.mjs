@@ -1289,7 +1289,7 @@ export function classifyUnstamped(observed) {
  *
  * # The census that produced it
  *
- * #250 measured 268 unclaimed over the 36 frames that then carried a `fids` map. All 62 do now, and
+ * #250 measured 268 unclaimed over the 36 frames that then carried a `fids` map. All 63 do now, and
  * the figure was **270 across 25 frames** (13.9% of 1,948 drawn), and is **268 across 23** (13.8%)
  * since #379's collision was fixed and its two entries went stale. It is not 280: ten nodes read as
  * unclaimed while the app stamps them on every render — eight Settings pills, whose slot is keyed by

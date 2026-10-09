@@ -198,6 +198,12 @@
     "nodes": 31
   },
   {
+    "label": "2a Two folders failed",
+    "kind": "window",
+    "file": "2a-two-folders-failed.json",
+    "nodes": 32
+  },
+  {
     "label": "2a Two folders open",
     "kind": "window",
     "file": "2a-two-folders-open.json",

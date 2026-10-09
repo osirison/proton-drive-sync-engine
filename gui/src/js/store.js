@@ -55,6 +55,13 @@ const state = {
   pairUnknown: null,
   /** The derived state of each, by name (`{ name, state }[]`), computed in Rust. */
   pairStates: [],
+  /**
+   * Which status REQUEST produced the roster above (`beginStatus`'s clock). The roster is the only place the
+   * window learns what a folder that is not on screen is doing — whether it is paused — and a fact is only
+   * evidence about something that happened AFTER the request that carried it left (`statusIssue` is the
+   * same clock for the selected folder's own reply).
+   */
+  pairsIssue: 0,
   byPair: pairTable(),
   ledgerFilter: "all",
 };
@@ -163,9 +170,11 @@ export function setStatus(payload, issue) {
   if (Array.isArray(pairs)) {
     state.pairs = pairs;
     state.pairStates = Array.isArray(payload?.pair_states) ? payload.pair_states : [];
+    state.pairsIssue = issue;
   } else if (payload?.response) {
     state.pairs = [];
     state.pairStates = [];
+    state.pairsIssue = issue;
   }
 
   // THE SELECTION MOVES ONLY ON A REPLY THAT DESCRIBES THE PAIR IT SELECTS. Rust stamps `selected` when
@@ -222,6 +231,8 @@ export const select = {
   pairs: () => state.pairs,
   /** The derived state of each pair (`{ name, state }[]`). */
   pairStates: () => state.pairStates,
+  /** The status request whose reply the roster above came from (see `state.pairsIssue`). */
+  pairsIssue: () => state.pairsIssue,
   /** The remembered folder the daemon does not run, or null (see `state.pairUnknown`). */
   pairUnknown: () => state.pairUnknown,
   /**

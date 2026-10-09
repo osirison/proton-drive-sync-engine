@@ -74,6 +74,19 @@
   box-shadow: var(--shadow-dialog);
 }
 
+/* A LONG LIST SCROLLS INSIDE ITSELF (review of #447). Unbounded, the list is as tall as the folders are many
+   and hangs from a 52px header in a 764px window that cannot be resized: 25 folders ended at 829px, below the
+   window's own edge, with no way to reach the last rows. `.is-scrolling` is set by selector.js from the
+   number of rows (more than ten), and ONLY then, so the four-row list the frames draw keeps the computed
+   `overflow` the prototype gives it (`visible`, which the style gate compares). 360px is ten and a half
+   rows: the half row shows that there is more. Keyboard focus scrolls itself into view (`focus()` does),
+   so an arrow walking down the list is never standing on a row nobody can see. */
+.pair-popover.is-scrolling {
+  max-height: 360px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
 .pair-row {
   display: flex;
   align-items: center;

@@ -1,8 +1,8 @@
-// The 62 in-scope frames and what KIND of thing each one is. IMPLEMENTATION-PLAN.md §1.2: they are
+// The 63 in-scope frames and what KIND of thing each one is. IMPLEMENTATION-PLAN.md §1.2: they are
 // not all windows, and asserting a content crop's width against 1040 is the first way a fidelity
 // gate produces a failure that means nothing.
 //
-// Nine of the 71 drawn frames are out of scope — the `1a`/`1b`/`1c` round-one frames, and the two
+// Nine of the 72 drawn frames are out of scope — the `1a`/`1b`/`1c` round-one frames, and the two
 // demoted tide-chart Activity frames. Listed rather than derived: "round one" is not a property of
 // the markup.
 

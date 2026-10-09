@@ -68,8 +68,9 @@ const SETTLED_FRAMES = new Set([
   "10a Two folders",
   // The window at two folders, at rest (#102 phase 5c-1): the pill is the one new thing on it, and it takes
   // no hue at rest — no fill, no border, `--text-3`. Joins in both themes so that stays true. The frames
-  // that DO carry the ring (`2a Two folders waiting`, `2a Two folders open`) are a decision showing and
-  // stay out, as the brief says.
+  // that DO carry a marker are something showing and stay out, as the brief says: the ring
+  // (`2a Two folders waiting`, `2a Two folders open`) is a decision, and the solid red dot of
+  // `2a Two folders failed` is a problem — a failure ring IS colour, so that frame may never join this set.
   "2a Two folders",
   "12a Two folders light",
 ]);
@@ -463,7 +464,7 @@ for (const entry of index) {
   // folded into a truncated `…` list. (It was 806 when #247 wrote this down.) That frame is the one
   // this mechanism exists for.
   //
-  // Since S10 there are no unmapped frames left to cost anything: all 62 carry a `fids` map. The
+  // Since S10 there are no unmapped frames left to cost anything: all 63 carry a `fids` map. The
   // clause it replaces was "all 15 unmapped frames are screens with no `fids` map at all, so they
   // declare nothing and produce no observations", and it stops being the reassurance it was — every
   // frame now declares slots, so every frame can now report one unstamped.
@@ -530,7 +531,7 @@ for (const entry of index) {
     // A failure in its own right rather than left to the slot check, and it stays that way now that
     // the slot check covers factories too: a mapping whose every key sits past `PROBE_DEPTH`, or
     // behind a non-numeric argument, would stamp nothing and report nothing. Zero frames are in that
-    // state — all 62 with a `fids` map stamp something — so this costs nothing and states the case
+    // state — all 63 with a `fids` map stamp something — so this costs nothing and states the case
     // the probe cannot.
     if (Object.keys(declaredFids).length) blankFrames.push(frame.label);
     else unmappedFrames.push(frame.label);
@@ -561,7 +562,7 @@ for (const entry of index) {
     // DARK FRAMES KEEP THEM. There the inherited value is accidentally correct — the app inherits
     // `#F2F4F7` too — so it is a real comparison and dropping it would trade a fixed light theme for
     // a weaker dark one. Same fixture, different reading, which is why `fromPage` is recorded for all
-    // 62 and interpreted here.
+    // 63 and interpreted here.
     const fromPage = scheme === "light" && want.fromPage ? new Set(want.fromPage) : null;
     for (const prop of STYLE_PROPS) {
       if (fromPage?.has(prop)) {

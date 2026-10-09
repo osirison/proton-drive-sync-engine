@@ -634,6 +634,10 @@ function selectorProps() {
       pairStates: store.select.pairStates(),
       selected: name,
       waiting: waitingIn,
+      // THE STORE KEEPS THE LAST ROSTER AND THE LAST STATES ACROSS A FAILED READ, so a stopped daemon would
+      // leave every row saying `up to date` beside a chip that says `unreachable` (#246). `unreachable`
+      // is the one state `derive_state` gives to exactly that: the socket did not answer.
+      reachable: store.select.daemonState() !== "unreachable",
     }),
     // A FRAME NAMES ITS OWN `open`, as it names its own route and dialog: `2a Two folders open` is a
     // popover, and `pairMenuOpen` is module state no `?frame=` can reach.
@@ -942,6 +946,7 @@ function reportTrayHeight() {
 
 function render() {
   noticeSelection();
+  retireStaleNotices();
   const root = document.getElementById("app-root");
   // The preview's own pages — the frame index, and the diagnostic for a `?frame=` label that has no
   // fixture. Both take the window: the shell never renders behind them. (The poll still runs — this
@@ -1018,7 +1023,7 @@ function render() {
   if (serviceStartError && clearsStartError(st)) serviceStartError = null;
   // A pause the daemon could not save is a fact about its NEXT RESTART. A daemon that stopped answering
   // has, as far as this window can tell, been through one.
-  if (unsavedPause && st === "unreachable") unsavedPause = null;
+  if (st === "unreachable") unsavedPauses.clear();
   // AND THE SAME RULE FOR THE SAVE'S RESTART (#335), which is a fact about a DAEMON and so has to be
   // re-validated against one: systemd ships `Restart=on-failure`, so after a start that failed the
   // service can come up on the new settings by itself while the bar still offers to restart it.
@@ -2453,12 +2458,13 @@ function mainProps(localRoot, remoteRoot) {
   // rather than the one whose hero the person was looking at. The hero's buttons call through the
   // LATEST props (`main.js`), so this is always the pair on screen.
   const pair = store.select.pairName();
+  const notice = mainNotice();
   return {
     pairCount: pairCountNow(),
     // The folder the hero is about, named on its pause button at two folders or more (decision D11).
     // The same count the folder selector is drawn at, so the pill and the button appear together.
     pair: store.select.pairs().length >= 2 ? pair : null,
-    notice: mainNotice(),
+    notice,
     daemonState: store.select.daemonState(),
     response: store.select.response(),
     conflicts: store.select.conflicts(),
@@ -2473,7 +2479,8 @@ function mainProps(localRoot, remoteRoot) {
       onSyncNow: () => command(() => api.syncNow({ pair })),
       onPause: () => setPaused(pair, true),
       onResume: () => setPaused(pair, false),
-      onRestartSyncing: restartSyncing,
+      // The folder the notice that holds this button is about: where the outcome of the restart is filed.
+      onRestartSyncing: () => restartSyncing(notice?.kind === "pairNotRunning" ? notice.name : null),
       onStartService: startService,
       onConflicts: () => navigate("conflicts"),
       onDeletions: () => navigate("deletions"),
@@ -2500,25 +2507,73 @@ async function command(run) {
 }
 
 /**
- * A pause the daemon applied and could not save (`ControlResponse.pause_unsaved`, decision D12), for the
- * folder it was about: `{ pair, kind: "pauseUnsaved" | "resumeUnsaved", reason }`, or null.
+ * A pause or resume the daemon applied and could not save (`ControlResponse.pause_unsaved`, decision
+ * D12), BY FOLDER: `{ kind: "pauseUnsaved" | "resumeUnsaved", reason, issue }`.
  *
- * ONE SLOT, tagged with its folder, and it speaks only while that folder is the one on screen — a notice
- * about `photos` over a hero about `docs` would be a sentence about the wrong folder. Dropped on a switch
- * (`noticeSelection`), by the next pause or resume (which has its own answer), and when the daemon stops
- * answering: "if syncing restarts first" is about a restart that has now happened.
+ * KEPT PER FOLDER, and spoken only while that folder is the one on screen — a notice about `photos` over a
+ * hero about `docs` would be a sentence about the wrong folder. The tray's row can pause a folder that is
+ * not the one this window shows; the event is filed under the folder it names and is there when that folder
+ * is next looked at, which a single slot dropped (review of #447).
+ *
+ * IT ENDS WHEN IT STOPS BEING TRUE, and each of these is a rule of `retireStaleNotices`:
+ *   · the hero's next press of Pause or Resume (it has its own answer — `setPaused`);
+ *   · a status reply, issued after the notice, that shows the folder's pause state is no longer the one the
+ *     notice describes — a pause saved, a resume done from the tray or `proton-sync resume`, none of which
+ *     reach this window as an event;
+ *   · the daemon not answering: "if syncing restarts first" is about a restart that has now happened.
+ * `issue` is the status-request clock (`store.beginStatus`) at the moment it was noted: a reply that left
+ * before that carries evidence from before the pause, and cannot end it.
  */
-let unsavedPause = null;
+const unsavedPauses = pairTable();
 
 /**
  * Note a pause or resume reply's `pause_unsaved`, from the hero's own press or from the tray's row
  * (which the window hears of as an event: the panel is dismissed by the time the reply arrives).
- * Ignored when the folder is no longer the one shown.
  */
 function noteUnsavedPause(pair, paused, reason) {
-  if (typeof reason !== "string" || pair !== store.select.pairName()) return;
-  unsavedPause = { pair, kind: paused ? "pauseUnsaved" : "resumeUnsaved", reason };
+  if (typeof reason !== "string" || typeof pair !== "string") return;
+  unsavedPauses.set(pair, {
+    kind: paused ? "pauseUnsaved" : "resumeUnsaved",
+    reason,
+    issue: store.select.statusesIssued(),
+  });
   render();
+}
+
+/**
+ * What the daemon last said about whether `pair` is paused, and which request said it — `{ paused, issue }`,
+ * or null when it has said nothing about that folder. At two folders or more that is the folder's own
+ * summary, whichever folder is on screen; a daemon that lists none has only the reply about the one folder.
+ */
+function pausedAccordingToDaemon(pair) {
+  const summary = store.select.pairs().find((entry) => entry.name === pair);
+  if (summary) return { paused: summary.paused === true, issue: store.select.pairsIssue() };
+  const reply = store.select.response();
+  if (reply && pair === store.select.pairName()) {
+    return { paused: reply.paused === true, issue: store.select.statusIssue() };
+  }
+  return null;
+}
+
+/**
+ * Drop what has stopped being true. Called at the top of every render, beside `noticeSelection`, so a
+ * status reply that settles a question is the render that stops saying it.
+ *
+ *   · An unsaved pause or resume whose folder the daemon now reports in the OTHER pause state, on a reply
+ *     issued after the notice (see `unsavedPauses`); and one for a folder the daemon does not list.
+ *   · A failed restart (`restartOutcomes`) for a folder that is not the one the notice is about any more.
+ */
+function retireStaleNotices() {
+  for (const [pair, note] of unsavedPauses) {
+    const known =
+      pair === store.select.pairName() || store.select.pairs().some((entry) => entry.name === pair);
+    const said = pausedAccordingToDaemon(pair);
+    const stillTrue =
+      !said || said.issue <= note.issue || (note.kind === "pauseUnsaved" ? said.paused : !said.paused);
+    if (!known || !stillTrue) unsavedPauses.delete(pair);
+  }
+  const unknown = store.select.pairUnknown();
+  for (const name of restartOutcomes.keys()) if (name !== unknown) restartOutcomes.delete(name);
 }
 
 /**
@@ -2527,7 +2582,7 @@ function noteUnsavedPause(pair, paused, reason) {
  * drawn for, captured by the props (class W).
  */
 async function setPaused(pair, paused) {
-  unsavedPause = null;
+  unsavedPauses.delete(pair);
   let reply = null;
   try {
     reply = await (paused ? api.pause({ pair }) : api.resume({ pair }));
@@ -2540,28 +2595,30 @@ async function setPaused(pair, paused) {
 }
 
 /**
- * `Restart syncing` on the notice for a folder the daemon does not run: the busy flag, and why the last
- * try did not work. Daemon-wide (a restart is), and the only state here that outlives a switch.
+ * `Restart syncing` on the notice for a folder the daemon does not run. A restart is daemon-wide, so the
+ * busy flag is one flag; why the last try did not work is a fact about THE FOLDER THE NOTICE WAS FOR, keyed
+ * by it, and it goes when the notice is about another folder. As one global `{ failed, reason }` it opened
+ * the next folder's notice already saying a restart had failed, in the last folder's words (review of #447).
  */
-let pairRestart = { busy: false, failed: false, reason: null };
+let restartBusy = false;
+const restartOutcomes = pairTable();
 
-async function restartSyncing() {
-  if (pairRestart.busy) return;
-  pairRestart = { busy: true, failed: false, reason: null };
+async function restartSyncing(name) {
+  if (restartBusy) return;
+  restartBusy = true;
+  restartOutcomes.delete(name);
   render();
   try {
     // Not `onlyIfRunning`: the daemon IS running, on the settings it started with, which is the thing
     // being fixed.
     const outcome = await api.restartService();
-    const ending = restartEndingOf(outcome);
-    pairRestart = {
-      busy: false,
-      failed: ending !== "restarted",
-      reason: String(outcome?.reason ?? outcome?.detail ?? "") || null,
-    };
+    if (restartEndingOf(outcome) !== "restarted") {
+      restartOutcomes.set(name, { reason: String(outcome?.reason ?? outcome?.detail ?? "") || null });
+    }
   } catch (error) {
-    pairRestart = { busy: false, failed: true, reason: String(error?.message ?? error) };
+    restartOutcomes.set(name, { reason: String(error?.message ?? error) });
   }
+  restartBusy = false;
   clearTimeout(pollTimer);
   poll();
 }
@@ -2579,17 +2636,17 @@ function mainNotice() {
   if (named) return { kind: named.kind, reason: named.reason };
   const unknown = store.select.pairUnknown();
   if (unknown && configRoster.some((entry) => entry.name === unknown)) {
+    const failure = restartOutcomes.get(unknown);
     return {
       kind: "pairNotRunning",
       name: unknown,
-      busy: pairRestart.busy,
-      failed: pairRestart.failed,
-      reason: pairRestart.reason,
+      busy: restartBusy,
+      failed: failure != null,
+      reason: failure?.reason ?? null,
     };
   }
-  if (unsavedPause && unsavedPause.pair === store.select.pairName()) {
-    return { kind: unsavedPause.kind, reason: unsavedPause.reason };
-  }
+  const unsaved = unsavedPauses.get(store.select.pairName());
+  if (unsaved) return { kind: unsaved.kind, reason: unsaved.reason };
   return null;
 }
 
@@ -4462,7 +4519,6 @@ function noticeSelection() {
   resetPlanScreen();
   resetActivityScreen();
   pairMenuOpen = false;
-  unsavedPause = null;
   deletionArmed = null;
   deletionBusy.clear();
   deletionStatusInFlight.clear();
@@ -4501,7 +4557,10 @@ async function poll() {
     // have (re)written it since boot, and it also drives the no-daemon fallback pair display.
     refreshConfig();
   }
-  await refreshOtherPairs();
+  // NOT AWAITED. A folder that is not on screen may be on a mount that never answers, and a poll that waits
+  // for its scan never schedules the next one: the shown folder's polls stopped for as long as it hung
+  // (review of #447). The other folders refresh beside the poll, one job each, and the poll goes on.
+  refreshOtherPairs();
   // The withheld deletions ride on the status reply itself — no second IPC round trip per tick — and
   // `store.setStatus` files them with it, under the pair the reply describes.
   //
@@ -4524,6 +4583,13 @@ const OTHER_SCAN_MS = 60000;
 const lastOtherScan = pairTable();
 
 /**
+ * The folders whose refresh (below) has not finished, by name. A `Set`, which has no `constructor` to answer
+ * for a folder called that. One job per folder at a time: a scan that hangs is still the one scan, and the
+ * next poll — two seconds later — does not stack another on it, nor a second read of the same queue.
+ */
+const otherInFlight = new Set();
+
+/**
  * Keep the folders that are NOT on screen far enough up to date to say whether they are asking for a
  * person — the folder selector's marker and counts, and nothing else (#102 phase 5c-1).
  *
@@ -4532,29 +4598,37 @@ const lastOtherScan = pairTable();
  * of its root, run at most once a minute. Each reply is filed under the folder it describes, so none of
  * it can reach the screen that is showing another one. The tray panel does none of this: it is a second
  * webview running this file, and the marker is the window's.
+ *
+ * FIRE AND FORGET, per folder (`poll` does not wait for it): see the comment at the call.
  */
-async function refreshOtherPairs() {
+function refreshOtherPairs() {
   if (activeFixture() || isTraySurface()) return;
   const shown = store.select.pairName();
   for (const summary of store.select.pairs()) {
     const pair = summary.name;
-    if (pair === shown) continue;
-    if (summary.pending_deletions > 0) {
-      const issue = store.beginStatus();
-      try {
-        store.setStatus(await api.getStatus({ pair }), issue);
-      } catch (error) {
-        console.error("get_status failed:", error);
-      }
+    if (pair === shown || otherInFlight.has(pair)) continue;
+    otherInFlight.add(pair);
+    refreshOtherPair(pair, summary.pending_deletions > 0).finally(() => otherInFlight.delete(pair));
+  }
+}
+
+/** One other folder's refresh. Never rejects: every request is caught, so the guard above is always released. */
+async function refreshOtherPair(pair, hasQueue) {
+  if (hasQueue) {
+    const issue = store.beginStatus();
+    try {
+      store.setStatus(await api.getStatus({ pair }), issue);
+    } catch (error) {
+      console.error("get_status failed:", error);
     }
-    const now = Date.now();
-    if (now - (lastOtherScan.get(pair) ?? 0) > OTHER_SCAN_MS) {
-      lastOtherScan.set(pair, now);
-      try {
-        store.setConflicts(await api.scanConflicts({ pair }), pair);
-      } catch (error) {
-        console.error("scan_conflicts failed:", error);
-      }
+  }
+  const now = Date.now();
+  if (now - (lastOtherScan.get(pair) ?? 0) > OTHER_SCAN_MS) {
+    lastOtherScan.set(pair, now);
+    try {
+      store.setConflicts(await api.scanConflicts({ pair }), pair);
+    } catch (error) {
+      console.error("scan_conflicts failed:", error);
     }
   }
 }

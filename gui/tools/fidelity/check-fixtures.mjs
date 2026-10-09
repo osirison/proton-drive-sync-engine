@@ -3,10 +3,10 @@
 // WHY THIS EXISTS AT ALL. `assert.mjs` counts a frame as mapped only when a node in the rendered app
 // carries a `data-fid`, so a fixture cannot inflate that number — which is right, and it is also why
 // nothing was checking the fixtures themselves. F9's deliverable is "every in-scope frame
-// reproducible", and without this gate that claim rests on someone having counted to 62 once.
+// reproducible", and without this gate that claim rests on someone having counted to 63 once.
 //
-// It has to have teeth, because label-set equality alone passes on `{ "3a Conflict": {} }` — 62
-// labels, 62 empty objects, a green gate and not one reproducible frame. So five checks:
+// It has to have teeth, because label-set equality alone passes on `{ "3a Conflict": {} }` — 63
+// labels, 63 empty objects, a green gate and not one reproducible frame. So five checks:
 //
 //   1. the label set IS `frames/index.json`'s, in both directions;
 //   2. every entry carries a payload of the shape its frame CLASS implies, and it is not empty;

@@ -12,15 +12,15 @@
 //   main.js   2a ×6      conflicts.js  3a ×3      deletions.js    4a ×4      plan.js   5a ×3
 //   activity.js 6a+7a ×6 settings.js   8a ×5      onboarding.js   9a ×5      tray.js  10a ×10
 //   notifications.js 11a ×5            light.js  12a ×8
-//   pairs.js 2a+12a ×7 (the window at two folders or more — #102 phase 5c-1)
+//   pairs.js 2a+12a ×8 (the window at two folders or more — #102 phase 5c-1)
 //
 // plus `fids.js` (the node-key tables — the prototype's tree, not the app's data) and `clock.js`
 // (the one value a fixture may read from the wall clock). Every one of them is a leaf or near-leaf:
 // nothing under `ui/` may be imported except `copy.js` and `format.js`, because `ui/compact.js` and
 // `ui/chrome.js` import `fid` from HERE and `import-x/no-cycle` is an error.
 //
-// A DATASET IS NOT A MAPPING, and keeping the two apart is what makes the numbers honest. All 62
-// frames have a dataset and, since S10, all 62 carry a `fids` map (11 when F9 wrote this line, 43
+// A DATASET IS NOT A MAPPING, and keeping the two apart is what makes the numbers honest. All 63
+// frames have a dataset and, since S10, all 63 carry a `fids` map (11 when F9 wrote this line, 43
 // before the light set landed). `check-fixtures.mjs` gates the first count and `assert.mjs` reports
 // the second, so adding forty datasets cannot make the style gate look like it grew teeth it did
 // not grow. It did not move 11/51 by one frame.

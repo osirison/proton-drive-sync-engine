@@ -8,12 +8,24 @@
 // one is `select_pair`. It has no pause control of its own: one place per surface, the hero's button
 // and the tray's row.
 //
-// THE MARKER IS THE EXISTING DECISION RING, NEVER A NUMBER (decision D4, `02-shell.md`: "putting a
-// number in navigation is what the v1 sidebar did"). The status chip and the attention band count the
-// SELECTED folder only, because the screens under them act on one folder; this ring is how the other
-// folders are not hidden behind that. It is the same 6px ring `CHIP.decisions` draws and means the same
-// thing — a person is needed — so it counts only what a person must decide (conflicts, withheld
-// deletions), not a folder that is merely busy. The popover says which folder and how many.
+// THE MARKER IS NEVER A NUMBER (decision D4, `02-shell.md`: "putting a number in navigation is what the
+// v1 sidebar did"), and it has TWO FORMS, because the pill can be asked two different things about the
+// folders that are not on screen. The status chip and the attention band count the SELECTED folder only,
+// because the screens under them act on one folder; the marker is how the other folders are not hidden
+// behind that.
+//
+//   · THE RING says a person is needed: the same 6px ring `CHIP.decisions` draws, counting only what a
+//     person must decide (conflicts, withheld deletions) in another folder, not a folder that is merely
+//     busy.
+//   · THE SOLID DOT says another folder has a PROBLEM: its last pass failed, or its folder is not there
+//     (an unplugged drive — Rust derives `failed` for both, `gui_core::state::facts_of`). A failure in
+//     the folder you are not looking at is otherwise a click away, behind a healthy-looking window (the
+//     tray's rule: a failure is never hidden behind a healthy folder). Filled, in `--destructive`, the
+//     hue the failed hexagon already draws; a hollow ring and a filled dot differ in shape as well as in
+//     hue. A PAUSED folder is the person's own choice and does not mark the pill.
+//
+// When both apply the problem wins: it is the one a ring cannot say. The popover says which folder and,
+// for what is waiting, how many. (Maintainer decision, #102, 2026-10-09.)
 //
 // BUILT ONCE AND PATCHED, for `app.js`'s reason (its `dom` comment): the header is patched on every ~2 s
 // poll, and a pill or a row rebuilt there drops the keyboard to <body> inside two seconds. Everything
@@ -88,31 +100,65 @@ export function stateWordOf(state) {
  * `Map` — a folder may be called `constructor`. A folder with no entry there has a `null` state and the
  * row draws no word, never `up to date`. `waiting` is asked of the caller because what counts
  * as waiting is the app's (it knows which deletions the person has already answered).
+ *
+ * `reachable` IS "THE LAST STATUS READ ANSWERED". When it did not, everything above is a memory: the
+ * store keeps the last roster and the last derived states across a failed read (a payload with no reply
+ * says nothing new), so a stopped daemon left every row saying `up to date` beside a chip that says
+ * `unreachable` — #246's false all-clear, in a list. A row then says what the chip says, in the chip's
+ * word, and counts nothing: whether a folder is waiting on a person is not known either, and a ring
+ * drawn from the last answer would be a marker for a state nobody has seen since.
  */
-export function selectorRows({ pairs = [], pairStates = [], selected = null, waiting = () => 0 } = {}) {
+export function selectorRows({
+  pairs = [],
+  pairStates = [],
+  selected = null,
+  waiting = () => 0,
+  reachable = true,
+} = {}) {
   const stateOf = new Map(pairStates.map((entry) => [entry.name, entry.state]));
   return pairs.map((pair) => ({
     name: pair.name,
     selected: pair.name === selected,
-    state: stateOf.get(pair.name) ?? null,
-    waiting: waiting(pair.name),
+    state: reachable ? (stateOf.get(pair.name) ?? null) : "unreachable",
+    waiting: reachable ? waiting(pair.name) : 0,
   }));
 }
 
 /** Does a folder OTHER than the selected one have something waiting on a person? */
 export const othersWaiting = (rows) => rows.some((row) => !row.selected && row.waiting > 0);
 
-/** The pill's accessible name: the folder, and that another one is asking for a person. */
+/**
+ * Has a folder OTHER than the selected one failed, or is it unavailable? One state, `failed`, because Rust
+ * derives it for both (a pair whose folder is missing publishes its reason as `last_error`). Not `paused`
+ * (the person's own choice), and not the process-wide `authExpired`/`unreachable`, which the chip and the
+ * hero already say for the folder on screen and which every row would say at once.
+ */
+export const othersProblem = (rows) => rows.some((row) => !row.selected && row.state === "failed");
+
+/** Which form the pill's marker takes, or `null`: the problem form outranks the ring when both apply. */
+export function markerOf(rows) {
+  if (othersProblem(rows)) return "problem";
+  return othersWaiting(rows) ? "decision" : null;
+}
+
+/** The pill's accessible name: the folder, and what about another one is asking for attention. */
 export function pillLabel(name, marker) {
-  return marker ? `Folder ${name}. Another folder has something waiting.` : `Folder ${name}`;
+  if (marker === "problem") return `Folder ${name}. Another folder has a problem.`;
+  if (marker === "decision") return `Folder ${name}. Another folder has something waiting.`;
+  return `Folder ${name}`;
 }
 
 // ------------------------------------------------------------------------------- the pill ----
 
-/** The ring dot, built exactly as the status chip builds its decision dot. */
-function markerDot() {
-  const dot = el("span", { class: "chip-dot pair-pill-marker" });
-  dot.style.border = "1px solid var(--decision)";
+/**
+ * The marker, built exactly as the status chip builds its dots: the decision RING is transparent with a
+ * 1px stroke, the problem form is a solid fill (`CHIP.deletions`' shape in the failed hexagon's hue).
+ * `data-marker` says which form a node is, so a patch can tell a ring that must become a dot.
+ */
+function markerDot(kind) {
+  const dot = el("span", { class: "chip-dot pair-pill-marker", "data-marker": kind });
+  if (kind === "problem") dot.style.background = "var(--destructive)";
+  else dot.style.border = "1px solid var(--decision)";
   return dot;
 }
 
@@ -136,7 +182,7 @@ function buildPill(name, marker) {
       "aria-expanded": "false",
       onClick: (event) => handlersOf(event).onToggle?.(),
     },
-    marker ? fid(markerDot(), "pillMarker") : null,
+    marker ? fid(markerDot(marker), "pillMarker") : null,
     fid(el("span", { class: "pair-pill-name" }, name), "pillName"),
     fid(drawn, "pillCaret"),
   );
@@ -192,6 +238,9 @@ function stampRow(node, index) {
   fid(count, "rowCount", index);
 }
 
+/** How many folders the list shows at full height before it scrolls (`.pair-popover.is-scrolling`: ten and a half rows). */
+const ROWS_BEFORE_SCROLLING = 10;
+
 function ensurePopover(container, rows) {
   let popover = container.querySelector(".pair-popover");
   if (!popover) {
@@ -202,6 +251,9 @@ function ensurePopover(container, rows) {
     });
     container.append(fid(popover, "popover"));
   }
+  // A list longer than the window can hold scrolls inside itself (`selector.css`). A class, and only for the
+  // long list: the short one is the one the frames draw, and its computed `overflow` is compared.
+  popover.classList.toggle("is-scrolling", rows.length > ROWS_BEFORE_SCROLLING);
   // Rows by position. Added and dropped at the end, never reordered: a reorder would move the node
   // under the keyboard.
   while (popover.children.length > rows.length) popover.lastElementChild.remove();
@@ -232,7 +284,7 @@ export function pairSelect({ name, rows, open, handlers = {} }) {
   const container = el("div", { class: "pair-select" });
   // One listener for the pill and for the popover's rows (arrows, Home, End, Esc): the rows come and go.
   container.addEventListener("keydown", (event) => event.currentTarget.__handlers?.onKey?.(event));
-  container.append(fid(buildPill(name, othersWaiting(rows)), "pill"));
+  container.append(fid(buildPill(name, markerOf(rows)), "pill"));
   fid(container, "pairSelect");
   return updatePairSelect(container, { name, rows, open, handlers });
 }
@@ -243,13 +295,14 @@ export function pairSelect({ name, rows, open, handlers = {} }) {
  */
 export function updatePairSelect(container, { name, rows, open, handlers }) {
   if (handlers) container.__handlers = handlers;
-  const marker = othersWaiting(rows);
+  const marker = markerOf(rows);
   const pill = container.querySelector(".pair-pill");
 
-  // The marker comes and goes INSIDE the pill: the button, and so the keyboard, stay where they are.
+  // The marker comes, goes and CHANGES FORM inside the pill: the button, and so the keyboard, stay where
+  // they are. A ring that becomes a dot (or back) is the dot node replaced, never the pill.
   const dot = pill.querySelector(".pair-pill-marker");
-  if (marker && !dot) pill.prepend(fid(markerDot(), "pillMarker"));
-  else if (!marker && dot) dot.remove();
+  if (dot && dot.dataset.marker !== marker) dot.remove();
+  if (marker && (!dot || dot.dataset.marker !== marker)) pill.prepend(fid(markerDot(marker), "pillMarker"));
 
   const label = pill.querySelector(".pair-pill-name");
   if (label.textContent !== name) label.textContent = name;

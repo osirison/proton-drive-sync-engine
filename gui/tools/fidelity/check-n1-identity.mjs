@@ -6,7 +6,7 @@
 // in the style gate can make it, because that gate compares one rendering against one drawing:
 //
 //   · the frame as authored — a fixture shaped like a daemon that predates folder pairs (no `pair`,
-//     no `pairs`); that is 55 of the 62 (the other seven draw two folders on purpose — see below), and
+//     no `pairs`); that is 55 of the 63 (the other eight draw two folders on purpose — see below), and
 //   · the same frame answered as a CURRENT daemon running one pair would answer it — `pair: "default"`
 //     and a one-entry `pairs` on the reply, `selected`/`pairs`/`pair_states` on the payload, and a
 //     `pairs` list on `read_config` (`?pairs=1`, handled in `fixtures/preview.js`).

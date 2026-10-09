@@ -1,14 +1,21 @@
 // The folder selector's pure half, and what the main screen says about two folders (#102 phase 5c-1).
 //
 // `selector.js`, `chrome.js` and `main.js` build DOM, and `node --test` has none — what they DRAW is held
-// by the fidelity gate (seven new frames) and by `fidelity:pairs`, which drives the real page. What is
+// by the fidelity gate (eight new frames) and by `fidelity:pairs`, which drives the real page. What is
 // here is the part that is a decision rather than a rendering: which folders the list names and with
 // which word, when another folder is "waiting" (the ring on the pill), what the hero's buttons say, and
 // what the notice block says for each of the three things it can be about. Each fails quietly.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { othersWaiting, pillLabel, selectorRows, stateWordOf } from "../src/js/ui/selector.js";
+import {
+  markerOf,
+  othersProblem,
+  othersWaiting,
+  pillLabel,
+  selectorRows,
+  stateWordOf,
+} from "../src/js/ui/selector.js";
 import { headlineOf, heroActionsOf, mainView, noticeOf, subOf } from "../src/js/screens/main.js";
 import { CHROME, MAIN, TRAY } from "../src/js/ui/copy.js";
 import * as store from "../src/js/store.js";
@@ -111,8 +118,111 @@ test("the_ring_is_for_another_folder_and_only_for_a_decision_waiting_there", () 
 });
 
 test("the_pill_says_which_folder_and_that_another_is_asking_for_a_person", () => {
-  assert.equal(pillLabel("documents", false), "Folder documents");
-  assert.match(pillLabel("documents", true), /^Folder documents\. Another folder has something waiting\.$/);
+  assert.equal(pillLabel("documents", null), "Folder documents");
+  assert.match(
+    pillLabel("documents", "decision"),
+    /^Folder documents\. Another folder has something waiting\.$/,
+  );
+  assert.match(pillLabel("documents", "problem"), /^Folder documents\. Another folder has a problem\.$/);
+});
+
+// ---- the second form of the marker: another folder has a PROBLEM (maintainer decision, #102, 2026-10-09) ----
+
+/** Rows as `selectorRows` builds them, from `[name, state, waiting]`, with the first one selected. */
+const rowsOf = (...entries) =>
+  entries.map(([name, state, waiting = 0], index) => ({ name, selected: index === 0, state, waiting }));
+
+test("another_folder_that_failed_marks_the_pill_in_the_problem_form", () => {
+  const rows = rowsOf(["documents", "idle"], ["photos", "failed"]);
+  assert.equal(othersProblem(rows), true);
+  assert.equal(markerOf(rows), "problem");
+});
+
+test("a_folder_that_is_unavailable_marks_the_pill_like_one_that_failed", () => {
+  // An unplugged drive: its pair publishes the reason as `last_error` and Rust derives `failed` for it
+  // from the summary (`an_unavailable_pair_derives_failed_from_its_summary`). Built the way the window
+  // gets it — a roster entry with that summary and the derived state beside it.
+  const unavailable = summary("drive", {
+    last_error: "the sync folder /mnt/usb/Sync is not available",
+    last_sync_epoch_secs: 1_750_000_000,
+  });
+  const rows = selectorRows({
+    pairs: [summary("documents"), unavailable],
+    pairStates: [
+      { name: "documents", state: "idle", rank: 0 },
+      { name: "drive", state: "failed", rank: 4 },
+    ],
+    selected: "documents",
+  });
+  assert.equal(rows[1].state, "failed");
+  assert.equal(markerOf(rows), "problem");
+});
+
+test("a_folder_the_person_paused_does_not_mark_the_pill", () => {
+  // Paused is a choice, and the list says it. Neither form: a ring would claim a person is needed.
+  const rows = rowsOf(["documents", "idle"], ["music", "paused", 0]);
+  assert.equal(othersProblem(rows), false);
+  assert.equal(markerOf(rows), null);
+});
+
+test("the_folder_on_screen_never_marks_its_own_pill_and_the_process_wide_states_do_not_either", () => {
+  // The selected folder's failure is the chip and the hero, already. Signed out and unreachable are
+  // process-wide: every row would say it at once, so there is no "other" folder to point at.
+  assert.equal(markerOf(rowsOf(["documents", "failed"], ["photos", "idle"])), null);
+  for (const state of ["authExpired", "unreachable", "firstRun", "running", "idle", "paused", null]) {
+    assert.equal(markerOf(rowsOf(["documents", "idle"], ["photos", state])), null, String(state));
+  }
+  assert.equal(markerOf([]), null);
+});
+
+test("when_a_decision_waits_in_one_folder_and_another_has_failed_the_problem_form_wins", () => {
+  const rows = rowsOf(["documents", "idle"], ["photos", "idle", 2], ["archive", "failed"]);
+  assert.equal(othersWaiting(rows), true);
+  assert.equal(othersProblem(rows), true);
+  assert.equal(markerOf(rows), "problem");
+  // And the ring is still the ring when nothing has failed.
+  assert.equal(markerOf(rowsOf(["documents", "idle"], ["photos", "idle", 2])), "decision");
+});
+
+// ---- the list when the daemon stopped answering (the review of #447) ----
+
+test("a_stopped_daemon_leaves_no_row_saying_up_to_date_and_nothing_to_ring_about", () => {
+  // The store keeps the last roster and states across a failed read. Handed to the list as they are, they
+  // read `up to date` beside a chip that says `unreachable`.
+  const args = {
+    pairs: [summary("documents"), summary("photos"), summary("archive")],
+    pairStates: [
+      { name: "documents", state: "idle", rank: 0 },
+      { name: "photos", state: "idle", rank: 0 },
+      { name: "archive", state: "failed", rank: 4 },
+    ],
+    selected: "documents",
+    waiting: (name) => (name === "photos" ? 2 : 0),
+  };
+  const live = selectorRows({ ...args, reachable: true });
+  assert.deepEqual(
+    live.map((row) => row.state),
+    ["idle", "idle", "failed"],
+  );
+  assert.equal(markerOf(live), "problem");
+
+  const stale = selectorRows({ ...args, reachable: false });
+  assert.deepEqual(
+    stale.map((row) => [row.name, row.state, row.waiting]),
+    [
+      ["documents", "unreachable", 0],
+      ["photos", "unreachable", 0],
+      ["archive", "unreachable", 0],
+    ],
+  );
+  for (const row of stale) assert.equal(stateWordOf(row.state), CHROME.pair.states.unreachable);
+  assert.equal(
+    markerOf(stale),
+    null,
+    "a marker drawn from the last answer is a marker for a state nobody has seen",
+  );
+  // The default is the reachable one: a caller that does not know passes nothing and gets the live rows.
+  assert.deepEqual(selectorRows(args), live);
 });
 
 // ---- the hero says which folder ---------------------------------------------------------------

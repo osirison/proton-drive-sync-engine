@@ -163,7 +163,8 @@ function hexFids(under, state) {
  * are `span`s, so the NAME is `span` alone without the marker and `span[1]` with it; and the popover's
  * rows are `button[i]` from two rows up and a bare `button` for one.
  *
- * @param marker    whether the pill carries the decision ring (another folder is waiting)
+ * @param marker    whether the pill carries a marker — the decision ring (another folder is waiting) or the
+ *                  solid problem dot (another folder failed): the same node, `span[0]`, in both forms
  * @param rows      how many rows the popover draws, or 0 for a closed one
  * @param selected  which row is the chosen one (the only row with a check)
  */

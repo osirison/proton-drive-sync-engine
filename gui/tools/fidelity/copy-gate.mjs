@@ -50,6 +50,9 @@ const NOT_DRAWN = new Map([
   // are the chip's own words (`app.js` `chipFor`: `sign-in expired`, `unreachable`, `first run`) said
   // once more where a folder's state is named.
   ["CHROME.pair.states.authExpired", "a daemon-wide state: every row would say it at once"],
+  // The list does say it, for EVERY row, when the daemon stops answering (the store keeps the last states
+  // across a failed read, which used to read `up to date`): `fidelity:pairs` holds that on the real page.
+  // No frame draws it for the reason above — four identical words.
   ["CHROME.pair.states.unreachable", "a daemon-wide state: every row would say it at once"],
   [
     "CHROME.pair.states.firstRun",
