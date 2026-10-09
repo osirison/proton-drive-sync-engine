@@ -470,6 +470,22 @@ fn check_local_root(local_root: &str) -> Result<(), String> {
     }
 }
 
+/// The refusal the engine's client would make of this Proton Drive folder, said first (review of #450,
+/// F4). The engine accepts a `remote_root` with a `..` in it and the daemon starts on it, but a pass
+/// that finds the root missing then fails with `unsafe remote root path` for ever — measured, not
+/// inferred — so an add that writes one is an add that never syncs. The words are the engine's own
+/// (`require_safe_remote_root`), followed by the reason in plain terms.
+fn check_drive_folder(remote_root: &str) -> Result<(), String> {
+    config_io::require_safe_remote_root(Path::new(remote_root))
+        .map(|_| ())
+        .map_err(|engine| {
+            format!(
+                "{engine}. The sync service does not accept a Proton Drive path with `..` in it, so \
+                 this folder would never sync: write the path without it."
+            )
+        })
+}
+
 /// The app's set-aside histories live in `<state dir>/removed-pairs`. A sync folder that contains
 /// them would upload them as ordinary files, so the add says so. Not a refusal: a folder that holds
 /// the whole home directory is a legitimate choice, and the state directory is under it.
@@ -490,8 +506,10 @@ fn state_dir_warnings(state_dir: Option<&Path>, new_root: &Path) -> Vec<String> 
 }
 
 /// Everything an add is refused for, on a copy of the file: the engine's rules (the name, the roots, a
-/// lexical overlap, `dry_run = true` beside a second pair), then the two local-root checks the engine
-/// does not make, then the real-path overlap, which follows symlinks and so touches the disk. Nothing is
+/// lexical overlap, `dry_run = true` beside a second pair), then the Drive path the client would refuse
+/// (`..`, in the client's own words — the daemon starts on it and fails every pass), then the two
+/// local-root checks the engine does not make, then the real-path overlap, which follows symlinks and
+/// so touches the disk. Nothing is
 /// written. **The one body of "would this add go ahead"**, read by the add itself and by the check the
 /// dialog makes before it (`check_add_pair_file`) — two copies of a refusal are how a dialog comes to
 /// say "fine" about an add the command then refuses.
@@ -511,6 +529,7 @@ fn prepare_add(
         exclude: request.exclude.clone(),
     })
     .map_err(text)?;
+    check_drive_folder(remote_root)?;
     check_local_root(local_root)?;
     config_io::real_path_conflicts(&doc.to_toml_string()).map_err(text)?;
     Ok(doc)

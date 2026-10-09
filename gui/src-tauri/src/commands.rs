@@ -1144,21 +1144,29 @@ pub async fn check_add_pair(
 /// and only then is the history moved — outside every sync folder, with the pair's own lockfile taken
 /// first. A move that cannot happen yet is recorded as pending and the reply says why. **Never
 /// touches a file of the person's**, and refuses to remove the last pair.
+///
+/// **The name is the FILE's to resolve, byte-exactly, and nothing else's** (review of #450, F2). It used
+/// to go through `resolve_ask(Ask::Named)`, which checks a name against the daemon's list once the daemon
+/// has answered — and the folder this command most needs to be able to remove is one the daemon does NOT
+/// list: an add whose restart failed leaves it in the file, the Settings list draws it as `not running
+/// yet` with a `Remove`, and the daemon's list is exactly what could not place it. The file is what this
+/// edits, so [`pair_admin::remove_pair_file`] looks the name up there (`ConfigDoc::remove_pair`) and a
+/// name the file does not have is refused, with the file's own folders, before anything is written. A
+/// name only the daemon knows therefore removes nothing.
 #[tauri::command]
 pub async fn remove_pair(
     state: Paths<'_>,
     pair: String,
 ) -> Result<pair_admin::RemovePairReply, String> {
-    let (path, socket_path, state_dir, name) = {
+    let (path, socket_path, state_dir) = {
         let paths = state.lock().unwrap();
-        let name = paths.resolve_ask(Ask::Named(&pair))?.name;
         (
             paths.config_path.clone(),
             paths.socket_path.clone(),
             paths.state_dir.clone(),
-            name,
         )
     };
+    let name = pair;
     let removed = {
         let (path, name) = (path.clone(), name.clone());
         tauri::async_runtime::spawn_blocking(move || pair_admin::remove_pair_file(&path, &name))

@@ -265,6 +265,37 @@ fn a_relative_local_root_is_refused_before_it_can_reach_the_daemon() {
 }
 
 #[test]
+fn a_drive_path_with_a_dotdot_is_refused_in_the_engines_words_and_writes_nothing() {
+    // MEASURED, not inferred (review of #450, F4): a daemon started on `remote_root = "/Drive/../x"`
+    // runs, hands the path to the CLI as written and — when the CLI does not find it — plans the root
+    // for creation, which fails with `unsafe remote root path: /Drive/../x` on every pass. The engine
+    // accepts such a file at startup (and must go on doing so: it starts today), so the add is where
+    // it stops, in the sentence the daemon itself fails with.
+    let session = one_pair();
+    let before = session.config();
+    let folder = session.folder("photos", false);
+    for remote in ["/Drive/../x", "Drive/a/../b", "/../x", "/Drive/photos/.."] {
+        let engine = format!("unsafe remote root path: {remote}");
+        let error = add(&session, "photos", &folder, remote).unwrap_err();
+        assert!(error.starts_with(&engine), "{remote}: {error}");
+        assert_eq!(
+            session.config(),
+            before,
+            "{remote}: a refusal writes nothing"
+        );
+        // The dialog's check says the same thing, before anything is added.
+        let reported = check(&session, "photos", folder.to_str().unwrap(), remote);
+        assert_eq!(
+            reported.refusal.as_deref(),
+            Some(error.as_str()),
+            "{remote}: the check and the add must say the same thing"
+        );
+    }
+    // A `.` is cleaned by the engine, not refused: it is not what was measured.
+    add(&session, "photos", &folder, "/Drive/./photos").expect("a '.' component is cleaned");
+}
+
+#[test]
 fn a_root_that_is_missing_or_not_a_folder_is_refused_and_never_created() {
     let session = one_pair();
     let before = session.config();
@@ -869,6 +900,62 @@ fn removing_a_pair_nobody_knows_is_refused_without_reading_the_file() {
     let error = remove(&session, "videos").unwrap_err();
     assert!(error.contains("no folder pair named"), "{error}");
     assert_eq!(session.config(), before);
+}
+
+/// What the daemon last said it runs: these names, and nothing about where they are.
+fn the_daemon_runs(session: &Session, names: &[&str]) {
+    session.state().lock().unwrap().daemon.pairs = names
+        .iter()
+        .map(|name| crate::config_path::PairReported {
+            name: (*name).to_owned(),
+            local_root: format!("/r/{name}").into(),
+            remote_root: format!("/Drive/r/{name}").into(),
+            db_path: format!("/r/{name}.db").into(),
+        })
+        .collect();
+}
+
+#[test]
+fn a_folder_the_file_lists_and_the_daemon_does_not_run_is_removed() {
+    // The state a failed restart after an add leaves: the file has `photos`, the daemon answered and runs
+    // `docs` alone, and the Settings list draws `photos` with `Remove`. The name is the FILE's to resolve.
+    let session = two_pairs();
+    the_daemon_runs(&session, &["docs"]);
+    let reply = remove(&session, "photos").expect("a folder only the file knows can be removed");
+    assert_eq!(reply.pair, "photos");
+    let text = session.config();
+    assert!(!text.contains("photos"), "{text}");
+    assert!(text.contains("name = \"docs\""), "{text}");
+}
+
+#[test]
+fn a_name_only_the_daemon_knows_is_refused_against_the_file_and_touches_nothing() {
+    // The daemon lists `videos` (an older file it was started on); the file does not have it. The refusal
+    // names the file's folders, not the daemon's, and the file is byte-identical afterwards.
+    let session = two_pairs();
+    the_daemon_runs(&session, &["docs", "photos", "videos"]);
+    let before = session.config();
+    for name in ["videos", "Photos", "photos ", ""] {
+        let error = remove(&session, name).unwrap_err();
+        assert!(
+            error.contains(&format!("no folder pair named {name:?}")),
+            "{name:?}: {error}"
+        );
+        assert!(
+            error.ends_with("(it has \"docs\", \"photos\")"),
+            "{name:?}: the refusal lists the file's folders: {error}"
+        );
+        assert_eq!(
+            session.config(),
+            before,
+            "{name:?}: a refusal writes nothing"
+        );
+    }
+    assert!(session
+        .dir
+        .path()
+        .join("folders/photos/.sync/sync_index.db")
+        .exists());
 }
 
 #[test]

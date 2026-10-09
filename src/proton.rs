@@ -847,12 +847,7 @@ impl ProtonClient for ProtonDriveClient {
     }
 
     fn ensure_root_directory(&self, remote_root: &Path) -> AppResult<()> {
-        let remote_root = clean_remote_root_path(remote_root).ok_or_else(|| {
-            boxed_error(format!(
-                "unsafe remote root path: {}",
-                remote_root.display()
-            ))
-        })?;
+        let remote_root = require_safe_remote_root(remote_root)?;
         if self.remote_path_exists(&remote_root)? {
             return Ok(());
         }
@@ -1877,6 +1872,24 @@ fn is_node_not_found(output: &Output) -> bool {
     trimmed_stderr(output)
         .to_ascii_lowercase()
         .contains("node not found")
+}
+
+/// The remote root as the client will work under it, or the engine's own refusal of it.
+///
+/// **The one place the rule and its words live.** `ensure_root_directory` fails with this when a pass
+/// has to create the root, and a caller that wants to know *before* a folder is written — the desktop
+/// app's add dialog (review of #450, F4) — asks the same function, so what it says is what the daemon
+/// would say. Config resolution does **not** call it, on purpose: a file whose `remote_root` carries a
+/// `..` starts today and goes on starting (measured: the path is handed to the CLI as written, and
+/// only a pass that finds the root missing fails with this sentence). Refusing it at startup would stop
+/// a config that runs.
+pub fn require_safe_remote_root(remote_root: &Path) -> AppResult<PathBuf> {
+    clean_remote_root_path(remote_root).ok_or_else(|| {
+        boxed_error(format!(
+            "unsafe remote root path: {}",
+            remote_root.display()
+        ))
+    })
 }
 
 fn clean_remote_root_path(path: &Path) -> Option<PathBuf> {
@@ -4447,6 +4460,29 @@ info:/my-files/demo\n\
 create-folder:/my-files:demo\n\
 info:/my-files/demo/nested\n\
 create-folder:/my-files/demo:nested\n"
+        );
+    }
+
+    /// The one definition of a remote root the client refuses, and the words it refuses with: the pass
+    /// that has to create the root fails with the very sentence the desktop app's add dialog quotes
+    /// before it writes the folder (review of #450, F4). A client with no executable at all is enough,
+    /// because the refusal comes before anything is run.
+    #[test]
+    fn a_remote_root_with_a_dotdot_is_refused_with_the_same_words_by_the_check_and_the_pass() {
+        let client = ProtonDriveClient::new("/nonexistent/proton-drive");
+        for root in ["/Drive/../x", "Drive/a/../b", "/../x", "/Drive/photos/.."] {
+            let said = format!("unsafe remote root path: {root}");
+            let asked = require_safe_remote_root(Path::new(root)).expect_err(root);
+            let ran = client
+                .ensure_root_directory(Path::new(root))
+                .expect_err(root);
+            assert_eq!(asked.to_string(), said, "{root}");
+            assert_eq!(ran.to_string(), said, "{root}");
+        }
+        // A `.` is cleaned, and the root is handed back as the client will use it.
+        assert_eq!(
+            require_safe_remote_root(Path::new("/Drive/./photos")).expect("cleaned"),
+            PathBuf::from("/Drive/photos")
         );
     }
 

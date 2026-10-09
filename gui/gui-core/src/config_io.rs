@@ -223,6 +223,12 @@ pub use proton_drive_sync_engine::config::{
     validate_pair_name_among,
 };
 
+/// Whether a Proton Drive folder is one the client will work under, in the engine's own words
+/// (review of #450, F4). Config resolution accepts a `remote_root` with a `..` in it and the daemon
+/// starts on it; only a pass that finds the root missing fails, with exactly this function's
+/// sentence. So the add dialog asks it **before** writing, and the refusal it shows is the daemon's.
+pub use proton_drive_sync_engine::proton::require_safe_remote_root;
+
 /// How a config file states its folder pairs (ADR 0005 §2), which the pair list alone cannot say: an
 /// implicit pair and a `[[pair]]` table named `default` read identically through [`pair_views`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
