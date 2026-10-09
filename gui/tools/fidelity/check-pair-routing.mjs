@@ -8,10 +8,11 @@
 // that answers each command and **holds a reply open when told to**, which is what makes the window
 // between "the person pressed it" and "the daemon answered" a thing a test can stand in.
 //
-// Eighty-nine scenarios (the first sixteen are phases 5a-2, 5d and 5b-1's; forty-three are phase 5c-1's —
+// Ninety-nine scenarios (the first sixteen are phases 5a-2, 5d and 5b-1's; forty-three are phase 5c-1's —
 // twenty-one built with the selector, the nineteen its review added and the three its second review added — and the last fifteen
 // are phase 5e's, the notifications: the six it was built with and the nine its review added; both below the list —
-// and the fifteen after them are phase 5c-2's, adding and removing folders, below the notifications'). The first four are each a way a write can land on a different pair than the one it was
+// the fifteen after them are phase 5c-2's, adding and removing folders, below the notifications', and the ten after those
+// are its review's (84 to 93, at the end of the file). The first four are each a way a write can land on a different pair than the one it was
 // drawn for — each was a bug before the capture existed or would be again if it were removed. The fifth
 // and sixth are the first-run rule at two pairs and at one. The next three are the rest of the capture:
 // a late READ, the decision on a conflict, and the tray panel's pin. The next two are the tray panel's
@@ -266,6 +267,14 @@ class Bridge {
     this.refuseToList = false;
     this.setAsideDir = "/home/u/.local/state/proton-sync/removed-pairs";
     this.removeReply = null;
+    // The sentence a `write_config` is refused with, or null for a save that lands.
+    this.writeRefusal = null;
+    // The accounts of earlier removals an `add_pair` finished (`settled_earlier[].message`), as it replies them.
+    this.addSettled = [];
+    // A stand-in that answers as Rust does once a folder has left the file: a folder asked for by name that the
+    // roster does not have is REFUSED (`read_config`), and a selection that names none falls back to the first
+    // folder. Off, the stand-in is kind to a selection that outlived its folder, which hides the bug it is for.
+    this.strict = false;
     // The `notify_policy` the window reads at boot. `never` for every scenario that is not about banners
     // (the default stays what it was), so only the ones that ask for it can raise one.
     this.notifyPolicy = notifyPolicy;
@@ -373,7 +382,8 @@ class Bridge {
    * The reply to a status read. `name` is the pair it DESCRIBES — the one the request named, else the
    * selected one, as Rust answers — and `selected` is the app's choice, which is not the same thing.
    */
-  status(name = this.selected) {
+  status(asked = this.selected) {
+    const name = this.strict && !this.names.includes(asked) ? this.names[0] : asked;
     const never = (pair) => this.neverSynced.includes(pair);
     const pairs = this.names.map((pair) => ({
       ...summaryOf(pair, this.queues[pair].length),
@@ -387,7 +397,8 @@ class Bridge {
       // What `derive_state` says: a reachable daemon that has never synced THIS pair — or the state the
       // scenario gave it (`states`), which is how a folder is failed, paused or unavailable on screen.
       state: never(name) ? "firstRun" : this.isPaused(name) ? "paused" : (this.states[name]?.state ?? "idle"),
-      selected: this.selected,
+      // As Rust answers it: a selection that names a folder the daemon no longer runs reads as the default one.
+      selected: this.strict && !this.names.includes(this.selected) ? this.names[0] : this.selected,
       ...(this.pairUnknown ? { pair_unknown: this.pairUnknown } : {}),
       pairs,
       pair_states: this.names.map((pair) => ({
@@ -490,7 +501,12 @@ class Bridge {
         return this.down ? this.unreachable() : this.status(this.names[0]);
       case "read_config": {
         // Answered for the pair the request names, else the selected one — and says which, as Rust does.
-        const pair = args?.pair ?? this.selected;
+        const known = this.roster ?? this.names;
+        if (this.strict && args?.pair && !known.includes(args.pair)) {
+          throw new Error(`the config has no folder pair named "${args.pair}"`);
+        }
+        const wanted = args?.pair ?? this.selected;
+        const pair = this.strict && !known.includes(wanted) ? known[0] : wanted;
         return {
           ...EMPTY_CONFIG,
           exists: true,
@@ -526,7 +542,7 @@ class Bridge {
           path: "/home/u/.config/proton-sync/proton-sync.toml",
           restart_needed: true,
           surviving_index: this.survivors[args.init?.local_root] ?? null,
-          settled_earlier: [],
+          settled_earlier: this.addSettled.map((message) => ({ outcome: "moved", pair: "old", message })),
           warnings: [],
         };
       }
@@ -535,7 +551,8 @@ class Bridge {
         const first = known[0] === args.pair;
         this.roster = known.filter((name) => name !== args.pair);
         this.names = this.names.filter((name) => name !== args.pair);
-        if (this.selected === args.pair) this.selected = this.names[0];
+        // Rust does not move the selection when its folder goes: the window has to (`strict` is Rust).
+        if (!this.strict && this.selected === args.pair) this.selected = this.names[0];
         return (
           this.removeReply ?? {
             pair: args.pair,
@@ -556,6 +573,9 @@ class Bridge {
           }
         );
       }
+      case "write_config":
+        if (this.writeRefusal) throw new Error(this.writeRefusal);
+        return null;
       case "check_cli":
         return { installed: true, distro: null };
       case "scan_conflicts":
@@ -3656,6 +3676,365 @@ await scenario("the menu offers Add folder… at one folder and at two", async (
     await page.close();
   }
 });
+
+// ---- the folder dialogs, left by a shortcut or a banner (review of #450, F1) -------------------------------------
+//
+//  84. A DIALOG WITH AN ADD IN FLIGHT is not left by Ctrl+, Ctrl+F or a banner's `Review` either: the keypress is
+//      consumed, nothing moves, and the add goes on to its merge.
+//  85. A DIALOG WITH A REMOVAL IN FLIGHT is not left by them, and when the daemon answers its account is on screen.
+//  86. A DIALOG THAT IS LEFT TAKES ITS FOLDER STATE WITH IT, by a shortcut or by Esc: a check a keystroke had queued
+//      is not asked afterwards. (Listed after 87 and 88 in the file.)
+//  87. NOTHING OPENS OVER A DIALOG WITH SOMETHING IN FLIGHT: not another folder's Remove, not the menu's Add folder,
+//      not a failed save's `Save refused`.
+//  88. CTRL+F ON THE ACTIVITY SCREEN does not move focus into the lookup behind such a dialog.
+
+/** A key with Ctrl held, as the shell's shortcuts read it (`onKeydown`). */
+async function pressWithCtrl(page, key) {
+  await page.keyboard.down("Control");
+  await page.keyboard.press(key);
+  await page.keyboard.up("Control");
+}
+
+/** The route of the door that is lit, or null when none is. */
+const litDoor = (page) =>
+  page.evaluate(() => document.querySelector('[data-route][aria-current="page"]')?.dataset.route ?? null);
+
+/** Every way the window is told to go somewhere else while a dialog is up. */
+async function tryEveryWayOut(page) {
+  await pressWithCtrl(page, ",");
+  await pressWithCtrl(page, "f");
+  await clickBanner(page, { id: 1, kind: "deletion", action: "review", pair: "docs" });
+  await settle(page);
+}
+
+await scenario(
+  "Ctrl+, Ctrl+F and a banner's Review do not leave a dialog with an add in flight, and the add goes on to its merge",
+  async () => {
+    const bridge = oneFolder();
+    const page = await open(bridge);
+    await until("a first poll", () => bridge.called("get_status").length >= 1);
+    await fillAddDialog(page);
+    await checkTheFolders(page);
+    const door = await litDoor(page);
+    const release = bridge.hold("add_pair");
+    await press(page, FOLDERS.add.add);
+    await until("the add in flight", () => bridge.called("add_pair").length === 1);
+    await tryEveryWayOut(page);
+    if (!(await hasDialog(page)))
+      throw new Error("a shortcut or a banner closed the dialog of an add in flight");
+    if ((await litDoor(page)) !== door) {
+      throw new Error(`the window moved to ${await litDoor(page)} under a dialog that cannot be left`);
+    }
+    release();
+    await until("the restart", () => bridge.called("restart_service").length === 1);
+    await until("the merge dialog", async () => (await dialogText(page)).includes(ONBOARDING.progressTitle));
+    await page.close();
+  },
+);
+
+await scenario(
+  "Ctrl+, Ctrl+F and a banner's Review do not leave a dialog with a removal in flight, and its account is shown",
+  async () => {
+    const bridge = new Bridge({ docs: [], photos: [] });
+    const page = await open(bridge);
+    await pressRemoveOn(page, "photos");
+    const release = bridge.hold("remove_pair");
+    await press(page, FOLDERS.remove.confirm);
+    await until("the removal in flight", () => bridge.called("remove_pair").length === 1);
+    await tryEveryWayOut(page);
+    if (!(await hasDialog(page)))
+      throw new Error("a shortcut or a banner closed the dialog of a removal in flight");
+    if ((await litDoor(page)) !== "settings") {
+      throw new Error(`the window moved to ${await litDoor(page)} under a dialog that cannot be left`);
+    }
+    release();
+    const account = `The sync history of 'photos' was moved to ${bridge.setAsideDir}/photos-1, outside every sync folder. Your files were not touched.`;
+    await until("the account", async () => (await dialogText(page)).includes(account));
+    await page.close();
+  },
+);
+
+await scenario(
+  "nothing opens over a dialog with something in flight: not another folder's Remove, not the menu's Add folder, not a failed save's",
+  async () => {
+    // A removal in flight. The scrim stops a pointer; a programmatic click is what reaches the buttons behind it.
+    const removing = new Bridge({ docs: [], photos: [] });
+    const page = await open(removing);
+    await pressRemoveOn(page, "photos");
+    const release = removing.hold("remove_pair");
+    await press(page, FOLDERS.remove.confirm);
+    await until("the removal in flight", () => removing.called("remove_pair").length === 1);
+    await page.evaluate(() =>
+      document.querySelector('.folders-row[data-folder="docs"] button[aria-label^="Remove"]')?.click(),
+    );
+    await press(page, "⋯");
+    await press(page, FOLDERS.addFolder);
+    await settle(page);
+    if (!(await dialogText(page)).includes(FOLDERS.remove.removing("photos"))) {
+      throw new Error(
+        `another dialog took the place of the removal: ${JSON.stringify(await dialogText(page))}`,
+      );
+    }
+    release();
+    const account = `The sync history of 'photos' was moved to ${removing.setAsideDir}/photos-1, outside every sync folder. Your files were not touched.`;
+    await until("the account", async () => (await dialogText(page)).includes(account));
+    await page.close();
+
+    // An add in flight, and a save that was already out when it started and is refused now.
+    const adding = new Bridge({ docs: [] }, { names: ["docs"], selected: "docs", configs: SETTINGS_CONFIGS });
+    const other = await open(adding);
+    await openDeletions(other);
+    await pressCard(other, SETTINGS.askNever);
+    const releaseSave = adding.hold("write_config");
+    await press(other, SETTINGS.save);
+    await until("the save to leave", () => adding.called("write_config").length === 1);
+    await fillAddDialog(other);
+    await checkTheFolders(other);
+    const releaseAdd = adding.hold("add_pair");
+    await press(other, FOLDERS.add.add);
+    await until("the add in flight", () => adding.called("add_pair").length === 1);
+    adding.writeRefusal = "disk full";
+    releaseSave();
+    await settle(other);
+    const shown = await dialogText(other);
+    if (shown.includes(SETTINGS.refusedTitleUnknown) || !shown.includes(FOLDERS.add.title)) {
+      throw new Error(`a failed save took the place of the add in flight: ${JSON.stringify(shown)}`);
+    }
+    releaseAdd();
+    await until("the merge dialog", async () => (await dialogText(other)).includes(ONBOARDING.progressTitle));
+    await other.close();
+  },
+);
+
+await scenario(
+  "Ctrl+F on the Activity screen does not move focus into the lookup behind a dialog with an add in flight",
+  async () => {
+    const bridge = oneFolder();
+    const page = await open(bridge);
+    await until("a first poll", () => bridge.called("get_status").length >= 1);
+    await pressWithCtrl(page, "f"); // the Activity screen, with the lookup focused
+    await until("the Activity screen", async () => (await litDoor(page)) === "activity");
+    await fillAddDialog(page);
+    await checkTheFolders(page);
+    const release = bridge.hold("add_pair");
+    await press(page, FOLDERS.add.add);
+    await until("the add in flight", () => bridge.called("add_pair").length === 1);
+    await page.evaluate(() => document.activeElement?.blur());
+    await pressWithCtrl(page, "f");
+    await settle(page);
+    const inLookup = await page.evaluate(() => Boolean(document.activeElement?.isContentEditable));
+    if (inLookup) throw new Error("Ctrl+F moved focus into the lookup behind the dialog");
+    release();
+    await page.close();
+  },
+);
+
+await scenario(
+  "a dialog that is left takes its folder state with it, by a shortcut or by Esc: a check a keystroke queued is not asked",
+  async () => {
+    for (const way of ["Ctrl+,", "Esc"]) {
+      const bridge = oneFolder();
+      const page = await open(bridge);
+      await until("a first poll", () => bridge.called("get_status").length >= 1);
+      await fillAddDialog(page);
+      await settle(page);
+      // The last keystroke queued a check; leave before it is asked.
+      await typeIntoField(page, "folder-local", "~/Pictures");
+      if (way === "Esc") await page.keyboard.press("Escape");
+      else await pressWithCtrl(page, ",");
+      const asked = bridge.called("check_add_pair").length;
+      await until("the dialog to go", async () => !(await hasDialog(page)));
+      await delay(600);
+      await settle(page);
+      if (bridge.called("check_add_pair").length !== asked) {
+        throw new Error(`${way}: the engine was asked about an add whose dialog had been left`);
+      }
+      await page.close();
+    }
+  },
+);
+
+// ---- the review's smaller findings (review of #450) -------------------------------------------------------------
+//
+//  89. THE LAST FOLDER'S CONFIRMATION SAYS WHY it cannot be removed (F5).
+//  90. AN ADD THAT FINISHED AN EARLIER REMOVAL says so, and rests on `Done` before the merge dialog (F9).
+//  91. REMOVING THE SELECTED FOLDER moves the selection first: nothing asks for the removed name afterwards.
+//  92. RETURNING TO THE TEXT A CHECK WAS MADE FOR brings back what the check found (J11).
+//  93. A LATE ANSWER FOR OLD TEXT does not replace the engine's answer for the text on screen (J12).
+
+await scenario(
+  "the confirmation of the last folder says why it cannot be removed, and removes nothing",
+  async () => {
+    // The file lists one folder and the daemon runs two (a restart the edit has not reached), so the list is
+    // drawn with a single row — the one state in which `Remove` is offered on the only folder.
+    const bridge = new Bridge({ docs: [], photos: [] }, { roster: ["docs"] });
+    const page = await open(bridge);
+    await pressRemoveOn(page, "docs");
+    const shown = await dialogText(page);
+    if (!shown.includes(FOLDERS.remove.last("docs"))) {
+      throw new Error(`the confirmation does not say why: ${JSON.stringify(shown)}`);
+    }
+    if (shown.includes(FOLDERS.remove.stops("docs"))) {
+      throw new Error("the confirmation promises a removal that cannot happen");
+    }
+    if (await armed(page, FOLDERS.remove.confirm))
+      throw new Error("Remove folder is armed for the only folder");
+    if (bridge.called("remove_pair").length) throw new Error("something was removed");
+    await page.close();
+  },
+);
+
+await scenario(
+  "an add that finished an earlier removal says so, and rests on Done before the merge dialog",
+  async () => {
+    const bridge = oneFolder();
+    const line =
+      "The earlier removal of 'old' moved its history to /home/u/.local/state/proton-sync/removed-pairs/old-1.";
+    bridge.addSettled = [line];
+    const page = await open(bridge);
+    await until("a first poll", () => bridge.called("get_status").length >= 1);
+    await fillAddDialog(page);
+    await checkTheFolders(page);
+    await press(page, FOLDERS.add.add);
+    await until("the dialog resting on the listed folder", async () =>
+      (await dialogText(page)).includes(FOLDERS.add.listed("photos")),
+    );
+    const resting = await dialogText(page);
+    if (!resting.includes(line))
+      throw new Error(`the earlier removal is not told: ${JSON.stringify(resting)}`);
+    if (resting.includes(ONBOARDING.progressTitle)) throw new Error("the merge dialog replaced the account");
+    if (bridge.called("select_pair").length !== 1) throw new Error("the new folder was not selected");
+    // A folder the service lists finished everything: its sentence is not drawn in the amber of a save that did not.
+    const amber = await page.evaluate(() =>
+      Boolean(document.querySelector(".folders-status")?.classList.contains("is-cost")),
+    );
+    if (amber) throw new Error("the listed folder's sentence is drawn as a cost");
+    // Nothing is in flight now: the dialog may be left, and Done carries on to the merge.
+    await press(page, FOLDERS.remove.done);
+    await until("the merge dialog", async () => (await dialogText(page)).includes(ONBOARDING.progressTitle));
+    await page.close();
+  },
+);
+
+await scenario(
+  "removing the selected folder moves the selection first, so nothing asks for the removed name",
+  async () => {
+    const bridge = new Bridge({ docs: [], photos: [] }, { selected: "photos" });
+    bridge.strict = true;
+    const page = await open(bridge);
+    await until("a first poll", () => bridge.called("get_status").length >= 1);
+    await pressRemoveOn(page, "photos");
+    await press(page, FOLDERS.remove.confirm);
+    await until("the account", async () =>
+      (await dialogText(page)).includes(FOLDERS.remove.removed("photos")),
+    );
+    await settle(page);
+    const after = bridge.calls.slice(bridge.calls.findIndex((call) => call.cmd === "remove_pair") + 1);
+    const asked = after.filter((call) => call.cmd === "read_config" && call.args?.pair === "photos");
+    if (asked.length) throw new Error(`the removed folder was asked for by name ${asked.length} time(s)`);
+    const selected = after.filter((call) => call.cmd === "select_pair").map((call) => call.args.name);
+    if (JSON.stringify(selected) !== JSON.stringify(["docs"])) {
+      throw new Error(
+        `the selection moved to ${JSON.stringify(selected)}, expected the first remaining folder`,
+      );
+    }
+    if ((await pageText(page)).includes("no folder pair named")) {
+      throw new Error("the Settings screen is showing the refusal of the removed name");
+    }
+    await page.close();
+
+    // A folder that is not the selected one goes without the selection moving at all.
+    const other = new Bridge(
+      { docs: [], photos: [], music: [] },
+      // `photos` is selected and is not the first: a removal that moved the selection to the first remaining
+      // folder for no reason would visibly move it to `docs`.
+      { names: ["docs", "photos", "music"], selected: "photos" },
+    );
+    other.strict = true;
+    const second = await open(other);
+    await until("a first poll", () => other.called("get_status").length >= 1);
+    await pressRemoveOn(second, "music");
+    await press(second, FOLDERS.remove.confirm);
+    await until("the account", async () =>
+      (await dialogText(second)).includes(FOLDERS.remove.removed("music")),
+    );
+    await settle(second);
+    if (other.called("select_pair").length) throw new Error("removing another folder moved the selection");
+    await second.close();
+  },
+);
+
+await scenario("returning to the text a check was made for brings back what the check found", async () => {
+  const bridge = oneFolder();
+  const page = await open(bridge);
+  await until("a first poll", () => bridge.called("get_status").length >= 1);
+  await fillAddDialog(page);
+  await checkTheFolders(page);
+  const prices = ["1,204 files, 3.4 GB", "1,190 files"];
+  const priced = async () => {
+    const text = await dialogText(page);
+    return prices.map((price) => text.includes(price));
+  };
+  if (JSON.stringify(await priced()) !== "[true,true]")
+    throw new Error("the checked dialog is missing a price");
+  // Away from it: unchecked, and nothing is claimed about a folder that was not measured.
+  await typeIntoField(page, "folder-local", "~/Pictures");
+  await until("Check folders back", () => armed(page, FOLDERS.add.check));
+  if ((await priced()).some(Boolean)) throw new Error("a price is on screen for text that was not measured");
+  // And back to exactly what was measured: the check is good again, and so is what it found.
+  await typeIntoField(page, "folder-local", "~/Photos");
+  await until("Add folder again", () => armed(page, FOLDERS.add.add));
+  await settle(page);
+  if (JSON.stringify(await priced()) !== "[true,true]") {
+    throw new Error(`the check is armed again but its prices are ${JSON.stringify(await priced())}`);
+  }
+  // A check that the person types away from while it is being made leaves the earlier findings alone too:
+  // it was overtaken, so it found nothing to put in their place.
+  const releaseProbe = bridge.hold("probe_folder");
+  await typeIntoField(page, "folder-local", "~/Pictures");
+  // The name follows the folder's, and a check made while it moves is overtaken by it: let it settle first.
+  await until("the suggested name", async () => (await fieldValue(page, "folder-name")) === "pictures");
+  await until("Check folders", () => armed(page, FOLDERS.add.check));
+  await press(page, FOLDERS.add.check);
+  await until("the second check's measuring to start", () => bridge.called("probe_folder").length >= 3);
+  await typeIntoField(page, "folder-local", "~/Photos");
+  releaseProbe();
+  await until("Add folder again", () => armed(page, FOLDERS.add.add));
+  await settle(page);
+  if (JSON.stringify(await priced()) !== "[true,true]") {
+    throw new Error(`an overtaken check took the prices away: ${JSON.stringify(await priced())}`);
+  }
+  await page.close();
+});
+
+await scenario(
+  "a late answer for old text does not replace the engine's answer for the text on screen",
+  async () => {
+    const bridge = oneFolder();
+    const page = await open(bridge);
+    await until("a first poll", () => bridge.called("get_status").length >= 1);
+    await press(page, "⋯");
+    await press(page, FOLDERS.addFolder);
+    await until("the add dialog", () => hasDialog(page));
+    // The answer to the first text is held back; the second text's is not.
+    const release = bridge.hold("check_add_pair");
+    await typeIntoField(page, "folder-local", "~/Photos");
+    await typeIntoField(page, "folder-remote", "/Drive/Photos");
+    await until("the first question to leave", () => bridge.called("check_add_pair").length === 1);
+    await typeIntoField(page, "folder-name", "docs");
+    const sentence = "two `[[pair]]` tables are named `docs`";
+    await until("the engine's sentence for the second text", async () =>
+      (await dialogText(page)).includes(sentence),
+    );
+    release(); // …and now the first answer arrives, late
+    await settle(page);
+    await settle(page);
+    if (!(await dialogText(page)).includes(sentence)) {
+      throw new Error("a late answer for old text replaced the engine's refusal of the name on screen");
+    }
+    await page.close();
+  },
+);
 
 await browser.close();
 server.close();

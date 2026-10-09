@@ -105,9 +105,10 @@ export const ROUTES = {
 
   // The folder dialogs (#102 phase 5c-2). `addFolder` is opened from Settings and from the ⋯ menu at any
   // count; `removeFolder` from a row of the Settings list. Both have a title row and a ✕ and both are left
-  // with Esc — EXCEPT while something is in flight (`app.js`'s `dialogVetoed`): the add writes the file
-  // before it restarts the service, and a dialog closed between the two would leave a folder added and
-  // nothing watching for it to appear. `addFolder` is wider than the others because it holds the two sides
+  // with Esc — EXCEPT while something is in flight (`app.js`'s `dialogVetoed`, asked by every way out: Esc and
+  // the ✕, `navigate` for Ctrl+, Ctrl+F and a banner's `Review`, and `openOverlay` for a second dialog): the
+  // add writes the file before it restarts the service, and a dialog closed between the two would leave a
+  // folder added and nothing watching for it to appear. `addFolder` is wider than the others because it holds the two sides
   // of the pair side by side, as the Settings tab and the first-run step do.
   addFolder: {
     kind: "overlay",

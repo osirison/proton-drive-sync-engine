@@ -53,6 +53,8 @@ export function addFolderShape({ flow, view }) {
     view.survivor?.message ?? null,
     view.warnings,
     flow.error,
+    // The accounts of earlier removals the add finished: they arrive with the add's answer, mid-dialog.
+    flow.settled ?? [],
     flow.ending,
     flow.reason,
   ]);
@@ -133,7 +135,11 @@ function statusLine(flow, view, sentence) {
   if (!sentence) return null;
   return el(
     "div",
-    { class: `folders-status${view.settled && flow.ending ? " is-cost" : ""}`, role: "status" },
+    // `is-cost` is the amber of a save that did not finish; a folder the service LISTS finished everything.
+    {
+      class: `folders-status${view.settled && flow.ending && flow.phase !== "listed" ? " is-cost" : ""}`,
+      role: "status",
+    },
     sentence,
   );
 }
@@ -241,8 +247,8 @@ export function renderAddFolder({ flow, view, handlers, sentence = null }) {
   if (busy) skipBlock.querySelector(".folders-skip-row .btn").disabled = true;
 
   // The notices, in the order a person has to take them in: an index the new folder would resume (the
-  // thing most likely to surprise), anything the add would warn about, the engine's refusal, then the
-  // account of a save that went wrong.
+  // thing most likely to surprise), anything the add would warn about, the engine's refusal, the account
+  // of a save that went wrong, then what the add finished besides.
   const notices = [];
   if (view.survivor) {
     notices.push(
@@ -259,6 +265,10 @@ export function renderAddFolder({ flow, view, handlers, sentence = null }) {
   }
   if (flow.error) {
     notices.push(el("div", { class: "folders-error is-block", role: "alert" }, flow.error));
+  }
+  // What the add did besides adding: an earlier removal it finished first, in the command's own words.
+  for (const line of flow.settled ?? []) {
+    notices.push(el("div", { class: "folders-notice", role: "note" }, line));
   }
   const status = statusLine(flow, view, sentence);
   if (status) notices.push(status);

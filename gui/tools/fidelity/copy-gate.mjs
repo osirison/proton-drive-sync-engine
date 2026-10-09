@@ -690,6 +690,27 @@ const UNGATED_TEMPLATES = new Map([
       absent: "was removed from the settings.",
     },
   ],
+  // Review of #450: two more states the four frames do not draw.
+  [
+    "FOLDERS.remove.last",
+    {
+      why:
+        "The confirmation of the only folder in the settings, which says why `Remove folder` is disabled in " +
+        "place of the four sentences. The list is drawn from two folders, so the state needs a file that " +
+        "lists one beside a daemon that runs two; `8a Remove folder` draws the first of two.",
+      absent: "is the only folder, and syncing needs at least one",
+    },
+  ],
+  [
+    "FOLDERS.add.listed",
+    {
+      why:
+        "Where the add dialog rests when the daemon lists the new folder AND the add finished an earlier " +
+        "removal, so there is an account to read before the merge: it needs a removal whose move was pending, " +
+        "which no frame can be in. An add that finished nothing goes straight to the merge dialog.",
+      absent: "was added, and the sync service now lists it.",
+    },
+  ],
 ]);
 
 /**

@@ -183,8 +183,13 @@ test("`render` clears the detour on the SAME edge it clears the main app's own l
   assert.match(block, /onboardingDetour = null;/, "arming must clear the detour, per #337");
   // The two pre-existing layers, so a future edit cannot "fix" #337 by deleting these instead.
   assert.match(block, /screenStack = \[\];/);
-  assert.match(block, /dialogOverlay = null;/);
-  assert.match(block, /dialogReturn = null;/);
+  // The dialog layer goes through `leaveDialog` — the one way a dialog is left, which also lets go of the
+  // folder state it held (review of #450, F1) — and THAT is what clears the two slots.
+  assert.match(block, /leaveDialog\(\);/);
+  const leave = app.slice(app.indexOf("function leaveDialog() {"));
+  const leaveBody = leave.slice(0, leave.indexOf("\n}"));
+  assert.match(leaveBody, /dialogOverlay = null;/);
+  assert.match(leaveBody, /dialogReturn = null;/);
 
   // And exactly one such block — a second copy of the edge is this codebase's most-repeated bug.
   const occurrences = app.split("if (entersOnboardingTakeover(").length - 1;

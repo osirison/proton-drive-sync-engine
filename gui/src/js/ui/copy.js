@@ -1327,6 +1327,12 @@ export const FOLDERS = {
     /** The folder is in the settings and the restarted service has not listed it within the time allowed. */
     notListed: (name) =>
       `${name} was added to the settings, but the sync service has not listed it yet. It may still be starting: check again in a moment, or restart it from Settings.`,
+    /**
+     * The add finished an earlier removal first, and the dialog rests here instead of going on to the merge
+     * (review of #450, F9): the sentence says the one thing that is true of the moment — the service lists the
+     * folder — and the account of what the earlier removal did is the command's own, quoted beneath it.
+     */
+    listed: (name) => `${name} was added, and the sync service now lists it.`,
   },
 
   // --------------------------------------------------------------------------------- the remove confirm ----
@@ -1342,6 +1348,13 @@ export const FOLDERS = {
     becomesDefault: (name) =>
       `${name} becomes the default folder: commands that name no folder, and older versions of this app, will mean it.`,
     confirm: "Remove folder",
+    /**
+     * The only folder: its confirmation says why `Remove folder` is disabled, in place of the four sentences,
+     * none of which is true of a removal that cannot happen (review of #450, F5). The engine refuses an empty
+     * list — a daemon with no folder has nothing to do — and the dialog does not wait to be told.
+     */
+    last: (name) =>
+      `${name} is the only folder, and syncing needs at least one, so it can't be removed. Add another folder first.`,
     removing: (name) => `Removing ${name}…`,
     /** The first line of the answer: it is out of the settings. What happened to its history follows, in the app's own words. */
     removed: (name) => `${name} was removed from the settings.`,
@@ -1357,7 +1370,9 @@ export const FOLDERS = {
    * (#442), which it does not.
    */
   saveRestartsAll: (n) =>
-    `Saving restarts syncing for all ${cardinal(n, "mid")} folders, briefly. Anything running now stops, and folders you paused stay paused.`,
+    // TWO ARE `both` (review of #450, F6): "all two folders" is not a sentence anyone says, and the frame
+    // (`8a Save two folders`) was redrawn to match. From three it is `all three`, `all ten`, `all 11`.
+    `Saving restarts syncing for ${n === 2 ? "both" : `all ${cardinal(n, "mid")}`} folders, briefly. Anything running now stops, and folders you paused stay paused.`,
 };
 
 // --------------------------------------------------------------------------- onboarding ----

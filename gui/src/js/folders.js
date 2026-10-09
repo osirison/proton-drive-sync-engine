@@ -29,10 +29,18 @@ import { selectorRows, stateWordOf } from "./ui/selector.js";
 /** The phases in which something is in flight and the dialog may not be closed or edited. */
 export const BUSY_PHASES = ["adding", "restarting", "waiting"];
 
+/**
+ * The phases that END the dialog's work and leave it to be read: the folder is in the settings and the
+ * daemon does not run it (`added`), the restart or the wait did not work (`unresolved`), or the daemon lists
+ * the folder and an earlier removal the add finished has something to tell (`listed`, review of #450, F9).
+ * Nothing is in flight in any of them, so each may be left; each has the one button, `Done`.
+ */
+export const SETTLED_PHASES = ["added", "unresolved", "listed"];
+
 /** A fresh add dialog: nothing typed, nothing asked. */
 export function blankAdd() {
   return {
-    // form | checking | adding | restarting | waiting | added | unresolved
+    // form | checking | adding | restarting | waiting | added | unresolved | listed
     phase: "form",
     name: "",
     // Has the person typed in the name field? Until they have, the field follows the suggestion made
@@ -53,6 +61,14 @@ export function blankAdd() {
     seq: 0,
     // The add command's own refusal (its sentence, verbatim), or what a failed restart left behind.
     error: null,
+    // The accounts of earlier removals this add finished (`add_pair`'s `settled_earlier`, review of #450, F9):
+    // history that was moved, or a pending move that was dropped, as a side effect of adding a folder. Said in
+    // the dialog from the moment the add answers, and the reason the dialog RESTS on `listed` instead of going
+    // straight to the merge: a move of someone's files is not a line to flash past.
+    settled: [],
+    // The merge to open when the person presses `Done` on `listed`: `{ pair, seq, waits }`, read from the new
+    // folder's own summary at the moment the daemon first listed it, exactly as the direct route reads it.
+    merge: null,
     ending: null,
     reason: "",
     // Polls counted while the add waits for the restarted daemon to list the folder (`waitStepOf`). The
@@ -81,7 +97,7 @@ export function addViewOf(flow) {
   const pre = fresh ? flow.pre : null;
   const busy = BUSY_PHASES.includes(flow.phase);
   const checking = flow.phase === "checking";
-  const settled = flow.phase === "added" || flow.phase === "unresolved";
+  const settled = SETTLED_PHASES.includes(flow.phase);
   const filled = Boolean(flow.name.trim() && flow.local.trim() && flow.remote.trim());
   // A name error is drawn once something has been typed or the field is not empty: a dialog that opens
   // with an empty name must not open with the engine's sentence about an empty name under it.
@@ -252,6 +268,7 @@ export function removalOf({ name, roster, setAsideDir = null }) {
   const index = names.indexOf(name);
   const first = index === 0;
   const newDefault = first ? (names[1] ?? null) : null;
+  const last = names.length <= 1;
   const lines = [
     FOLDERS.remove.stops(name),
     FOLDERS.remove.keeps,
@@ -260,11 +277,13 @@ export function removalOf({ name, roster, setAsideDir = null }) {
   if (newDefault) lines.push(FOLDERS.remove.becomesDefault(newDefault));
   return {
     title: FOLDERS.remove.title(name),
-    lines,
+    // The only folder says why its button is disabled and promises nothing: none of the four sentences is
+    // true of a removal that cannot happen (review of #450, F5).
+    lines: last ? [FOLDERS.remove.last(name)] : lines,
     first,
     newDefault,
     known: index >= 0,
-    last: names.length <= 1,
+    last,
   };
 }
 
@@ -281,9 +300,21 @@ export function removalOf({ name, roster, setAsideDir = null }) {
 export function accountOf(reply, { name, restartNote = null } = {}) {
   const lines = [FOLDERS.remove.removed(name ?? reply?.pair ?? "")];
   if (reply?.set_aside?.message) lines.push(reply.set_aside.message);
+  lines.push(...settledLinesOf(reply));
+  if (restartNote) lines.push(restartNote);
+  return lines;
+}
+
+/**
+ * The accounts of the earlier removals a command finished first (`settled_earlier[].message`), quoted. One
+ * reader for the two commands that carry them: `remove_pair` shows them in its answer, and `add_pair` — which
+ * settles what an earlier removal could not finish before it looks at the request — in the add dialog
+ * (review of #450, F9). An entry with no sentence is nothing to say.
+ */
+export function settledLinesOf(reply) {
+  const lines = [];
   for (const earlier of reply?.settled_earlier ?? []) {
     if (earlier?.message) lines.push(earlier.message);
   }
-  if (restartNote) lines.push(restartNote);
   return lines;
 }

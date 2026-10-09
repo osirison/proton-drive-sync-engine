@@ -17,6 +17,7 @@ import {
   remotePathForProbe,
   removalOf,
   replyAbout,
+  settledLinesOf,
   waitStepOf,
   withRule,
 } from "../src/js/folders.js";
@@ -293,6 +294,17 @@ test("the_last_folder_cannot_be_removed", () => {
   assert.equal(removalOf({ name: "ghost", roster: ROSTER }).known, false);
 });
 
+test("the_last_folder_says_why_it_cannot_be_removed", () => {
+  // The confirmation of the only folder says WHY its button is disabled (review of #450, F5), and says
+  // none of the promises that are about a removal that is not going to happen.
+  const removal = removalOf({ name: "docs", roster: [ROSTER[0]], setAsideDir: "/state/removed-pairs" });
+  assert.deepEqual(removal.lines, [FOLDERS.remove.last("docs")]);
+  assert.match(FOLDERS.remove.last("docs"), /only folder/);
+  assert.ok(!removal.lines.join(" ").includes("Syncing stops"));
+  // With another folder beside it, the usual lines.
+  assert.equal(removalOf({ name: "docs", roster: ROSTER, setAsideDir: "/s" }).lines.length, 4);
+});
+
 test("the_answer_is_the_commands_own_account_after_one_line_of_ours", () => {
   const lines = accountOf(
     {
@@ -314,16 +326,45 @@ test("the_answer_is_the_commands_own_account_after_one_line_of_ours", () => {
   assert.deepEqual(accountOf({}, { name: "docs" }), ["docs was removed from the settings."]);
 });
 
+test("an_add_that_finished_an_earlier_removal_says_so_in_the_removals_words", () => {
+  // `add_pair` settles what an earlier removal could not finish, and its reply carries the account
+  // (review of #450, F9). The same lines, from the same reader, as the removal dialog's answer.
+  const reply = { settled_earlier: [{ message: "A" }, {}, { message: "" }, { message: "B" }] };
+  assert.deepEqual(settledLinesOf(reply), ["A", "B"]);
+  assert.deepEqual(settledLinesOf({}), []);
+  assert.deepEqual(settledLinesOf(undefined), []);
+  assert.deepEqual(accountOf(reply, { name: "x" }).slice(1), ["A", "B"]);
+});
+
+test("a_listed_folder_the_dialog_has_something_to_say_about_is_a_settled_dialog", () => {
+  // The phase the add dialog rests in when the folder is listed and an earlier removal was finished by
+  // the add: nothing is in flight, so it may be left, and the one button is `Done`.
+  const view = addViewOf({ ...checked(), phase: "listed" });
+  assert.equal(view.primary, "done");
+  assert.equal(view.settled, true);
+  assert.equal(view.busy, false);
+  assert.equal(view.closable, true);
+  assert.ok(!BUSY_PHASES.includes("listed"));
+});
+
 // ---- the save, with two folders or more ------------------------------------------------------------------
 
 test("the_save_consequence_names_every_folder", () => {
   const staged = { configStaged: true, folderCount: 2 };
   assert.equal(restartsEveryFolder(staged), true);
+  // TWO ARE `both`: "all two folders" is not a sentence anyone says (review of #450, F6), and the drawn
+  // frame (`8a Save two folders`) says `both`.
   assert.equal(
     barNoteOf(staged),
-    "Saving restarts syncing for all two folders, briefly. Anything running now stops, and folders you paused stay paused.",
+    "Saving restarts syncing for both folders, briefly. Anything running now stops, and folders you paused stay paused.",
   );
-  assert.ok(barNoteOf({ configStaged: true, folderCount: 3 }).includes("all three folders"));
+  // From three, `all`, with the number in words up to ten and in digits above it (`cardinal(n, "mid")`).
+  assert.ok(barNoteOf({ configStaged: true, folderCount: 3 }).includes("for all three folders, briefly"));
+  assert.ok(barNoteOf({ configStaged: true, folderCount: 10 }).includes("for all ten folders, briefly"));
+  assert.ok(barNoteOf({ configStaged: true, folderCount: 11 }).includes("for all 11 folders, briefly"));
+  for (const n of [2, 3, 10, 11]) {
+    assert.ok(!barNoteOf({ configStaged: true, folderCount: n }).includes("all two"), `${n}`);
+  }
 });
 
 test("the_save_consequence_is_the_old_note_at_one_folder_and_when_nothing_restarts", () => {

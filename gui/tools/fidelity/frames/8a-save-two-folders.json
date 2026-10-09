@@ -7,7 +7,7 @@
     {
       "key": "",
       "tag": "div",
-      "fullText": "Saving restarts syncing for all two folders, briefly. Anything running now stops, and folders you paused stay paused.Discard changesSave",
+      "fullText": "Saving restarts syncing for both folders, briefly. Anything running now stops, and folders you paused stay paused.Discard changesSave",
       "fromPage": [
         "color"
       ],
@@ -46,7 +46,7 @@
     {
       "key": "div",
       "tag": "div",
-      "fullText": "Saving restarts syncing for all two folders, briefly. Anything running now stops, and folders you paused stay paused.Discard changesSave",
+      "fullText": "Saving restarts syncing for both folders, briefly. Anything running now stops, and folders you paused stay paused.Discard changesSave",
       "fromPage": [
         "color",
         "border-right-color",
@@ -84,9 +84,9 @@
     {
       "key": "div/span[0]",
       "tag": "span",
-      "text": "Saving restarts syncing for all two folders, briefly. Anything running now stops, and folders you paused stay paused.",
+      "text": "Saving restarts syncing for both folders, briefly. Anything running now stops, and folders you paused stay paused.",
       "box": {
-        "w": 330.34,
+        "w": 329.66,
         "h": 36
       },
       "styles": {
@@ -138,7 +138,7 @@
       "tag": "button",
       "text": "Discard changes",
       "box": {
-        "w": 94.31,
+        "w": 95,
         "h": 56
       },
       "styles": {
