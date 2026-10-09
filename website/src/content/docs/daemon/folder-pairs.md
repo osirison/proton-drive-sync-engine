@@ -136,13 +136,14 @@ resume it, and `proton-sync reset-index` does not clear it. One case is not cove
 
 ## Known limits
 
-- **The desktop app's window and the notifications act on the default pair only.** They were
-  built for one folder. The daemon logs a warning about this once, at startup, when it finds more
-  than one pair configured. Use `proton-sync --pair NAME` to address the others. The **tray** is
-  the exception: it lists every pair, pauses and resumes each one separately, and shows the worst
-  folder's state (see [the tray](/desktop/tray/#two-or-more-folders)). The app cannot create a
-  `[[pair]]` file, and its Settings screen edits the default pair's own table for a per-pair
-  setting and the top level for a daemon-wide one, so only a file you wrote by hand reaches this.
+- **The desktop app's notifications act on the default pair only.** They were built for one
+  folder. The daemon logs a warning about this once, at startup, when it finds more than one pair
+  configured. Use `proton-sync --pair NAME` to address the others. The **window** follows the
+  folder you choose from the pill in its header, and the **tray** lists every pair, pauses and
+  resumes each one separately, and shows the worst folder's state (see
+  [the tray](/desktop/tray/#two-or-more-folders)). The app cannot create a `[[pair]]` file, and
+  its Settings screen edits the chosen folder's own table for a per-pair setting and the top level
+  for a daemon-wide one, so only a file you wrote by hand reaches this.
 - **Two pairs on one Proton volume can make each other do full scans.** Proton reports changes per
   volume, not per folder. When an event names something under neither pair's indexed folders, a
   pair falls back to a full walk of its remote tree — safe, but it is the cost event-driven

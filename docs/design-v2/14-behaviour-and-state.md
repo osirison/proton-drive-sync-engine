@@ -71,6 +71,35 @@ decision form.
 **unreachable** is entered after a failed pass and retry; it does not stop the queue. Everything
 keeps waiting. The design says so on every surface.
 
+## Which folder the window is about (two folders or more)
+
+The state model above is one folder's. With two or more, the window is about **one of them at a time**
+— the one the header's pill names — and `select_pair` (Rust holds the choice, so the window and the tray
+panel read one value) is how it changes (#102 phase 5c-1, DEVIATIONS §108).
+
+- **Everything on screen is that folder's.** The chip, the attention band, the hero, Deletions,
+  Conflicts, Plan, Activity and Settings read it; another folder's waiting decisions are the pill's ring,
+  and the list says how many.
+- **A switch is a change of shape, not an update.** What describes the folder that was left is dropped
+  before anything is drawn from it: the open conflict and the position in the queue, an armed typed-`DELETE`
+  field (it is about one row of one folder, and a row of the same path in the other folder must not answer
+  to it), a plan rehearsed for the other folder, a half-typed lookup against its index, the file counts of
+  its skip rules. What is KEPT is what is keyed by folder: each folder's staged Settings edits, the
+  decisions already answered, the settings read for each. Nothing typed is lost by looking at another folder.
+- **A reply is about the folder it was asked of.** A status read, a conflict scan, a rehearsal and a
+  decision each carry the folder they were issued for and are filed under it; one that lands after a switch
+  is a true fact about a folder that is no longer on screen, and changes nothing on the one that is. A
+  button acts on the folder it was DRAWN for, not on whichever is selected when it is pressed.
+- **The folder the window remembered may not be running.** The remembered choice lives in `gui.toml`; a
+  daemon that has not restarted onto a newly added folder does not run it. The window shows the default
+  folder and says so (the notice block, `03-main-screen.md`); it does not rewrite the choice, which applies
+  again the moment the daemon runs that folder.
+- **At two folders the first-run wizard never opens** (its `Next` writes top-level roots a `[[pair]]` file
+  refuses), and a folder that has never synced is drawn as such rather than as `Everything is up to date`.
+- **A pause the daemon could not save** (`pause_unsaved`): the pause TOOK EFFECT; what is not saved is that
+  it survives a restart. The window says so in the notice block, from the hero's own press and from a tray
+  row alike (the panel is dismissed before the reply arrives, so Rust tells the window).
+
 ## Transitions
 
 | Trigger | Effect |
@@ -82,6 +111,7 @@ keeps waiting. The design says so on every surface.
 | Pause | Hexagon → dashed `opacity:.55` `220ms`; transfer rows stay, greyed; headline and button copy swap. |
 | Proton unreachable | Hexagon → struck; retry countdown ticks in mono; nothing else changes. |
 | Conflict resolved (Conflicts screen) | Crossfade to the next conflict `220ms`; header and buttons stay put. |
+| Switch of folder (two or more) | Nothing animates and nothing moves: the header keeps its pill, the screen is rebuilt for the other folder in one step. The list closes first. |
 | Theme change | `120ms` colour transition on background/border/text; no layout change. |
 
 `prefers-reduced-motion`: no travelling segments (static coloured outline at 40% opacity), no
@@ -112,6 +142,9 @@ keeps waiting. The design says so on every surface.
   dot. In pill tabs and day chips, the inverted fill.
 
 ## Keyboard
+
+The folder list (two folders or more) is its own small keyboard: `↓` on the pill opens it, `↑ ↓ Home End`
+walk it, `Enter` chooses, `Esc` closes it and returns to the pill.
 
 `Ctrl F` focus the Activity lookup · `Esc` cancel a confirmation or close a dialog ·
 `← →` move between conflicts · `Ctrl S` save settings · `Ctrl ,` open Settings ·

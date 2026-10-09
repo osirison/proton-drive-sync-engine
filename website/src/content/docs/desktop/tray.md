@@ -109,8 +109,10 @@ pause** — there is no *Pause all*:
 
 An expired session, a folder that has never synced and a stopped daemon keep their short menus:
 there is nothing to pause, or nobody to send it to. When a pause cannot be saved to the folder's
-index the daemon says so on the command line (`proton-sync pause` prints *Not saved*); the tray has
-no place to show that, so it writes a line about it to the app's log.
+index the daemon says so on the command line (`proton-sync pause` prints *Not saved*). The tray
+panel is dismissed by every row before the daemon answers, so it has no place to show that: it writes
+a line about it to the app's log, and the app's window says it under the folder's hero (*Paused, but
+not saved*) when that folder is the one it shows.
 
 ## Desktop notifications
 

@@ -17,6 +17,7 @@ are gone.)
 | ------------ | -------------------------------------------------------------------------------------------------------------------- |
 | App mark     | `icon.svg` at `20×20`. `opacity:.65–.75` on settled/secondary screens, `1` when something is happening.              |
 | Product name | `Proton Drive Sync` — 13px / 600 / `-0.01em`. `#14161A`…`#F2F4F7` when active, `#99A2AE` when the screen is settled. |
+| Folder pill  | **Only when the daemon runs two folders or more** — see "Folder selector" below. Between the name and the spacer.    |
 | Spacer       | `flex:1`                                                                                                             |
 | Status chip  | See below. Omitted on onboarding (replaced by `step 1 of 2` in mono 11px `#6D7783`).                                 |
 | Menu button  | `30×30`, `border-radius:8px`, `border:none`, `background:transparent`, glyph `⋯` 15px `#626B78`                      |
@@ -35,6 +36,32 @@ are gone.)
 
 The old titlebar also carried the folder pair as a mono string and a `◐ Theme` button. The folder
 pair moves to the footer or the seam labels; the theme toggle moves into the `⋯` menu.
+
+### Folder selector — two folders or more
+
+**Below two folders nothing is drawn** (DEVIATIONS §107a, §108): a person with one folder, and a daemon
+that lists none, sees the header above, node for node. At two or more, a pill sits right of the product
+name and names the folder the window is about. Every screen in the window is about that one folder; the
+chip, the attention band, Deletions, Conflicts, Plan, Activity and Settings all follow it.
+
+- **Pill.** Same height and type as the chip: mono 11px, `padding:5px 12px`, fully rounded, `gap:7px`,
+  a `1px` transparent border at rest. Colour `#99A2AE` (`#4B5563` light); no fill and no hue at rest.
+  The folder's name, cut at 18 characters with an ellipsis (the full name is its `title`), then an 8px
+  chevron drawn as a path. Open: `#101216` fill and a `1px #23262D` border (`#FFFFFF` / `#E0DCD5` light).
+- **The ring.** When ANOTHER folder has something waiting on a person — a conflict, or a deletion not yet
+  answered — the pill carries the chip's own decision ring (`6px`, `1px #FF6B6B`, `#BE123C` light) before
+  the name. Never a number: the chip and the band count the selected folder only, because the screens
+  under them act on one folder, and this ring is how the others are not hidden behind that. A folder that
+  is merely busy, paused or failed does not ring it; the list says so.
+- **The list.** A popover hung under the pill: `min-width:280px`, `padding:6px`, `border-radius:12px`,
+  the `⋯` menu's surface. One row per folder, in the daemon's order: a check for the chosen one, its name
+  in mono 12px, a word for its state (`up to date`, `syncing`, `paused`, `sync failed`) and a neutral
+  count of what is waiting in it (`2 waiting`, nothing when it is nothing), both mono 11px `#6D7783`.
+  There is no pause control in it — one place per surface: the hero's button and the tray's row.
+- **Keyboard.** The pill is a button; Down (or a press) opens the list on the chosen folder, the arrows,
+  Home and End walk it, Enter chooses, Esc closes and gives the keyboard back to the pill, and a press
+  or focus anywhere else closes it. The control is patched on the 2-second poll and never rebuilt, so
+  the keyboard stays where it is.
 
 ## Footer navigation — the four doors
 

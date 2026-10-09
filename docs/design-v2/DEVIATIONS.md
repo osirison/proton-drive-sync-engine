@@ -5962,7 +5962,8 @@ compares the old ones with tolerance and none moved).
   and the panel has no notice or error element to put it in — drawing one would be a new node for a
   one-shot event whose truth ends at the next daemon restart. Every row that pauses or resumes writes
   it to stderr — a folder's, and (since the review of #443) the one-folder `Pause syncing`/`Resume
-  syncing` too, which logged nothing. **Showing it stays deferred to the app PR.** The way to show it as
+  syncing` too, which logged nothing. **Showing it stays deferred to the app PR** (done in the window,
+  §108d; the panel still shows nothing). The way to show it as
   state is a `pause_unsaved` field on the folder's summary, which is engine work; recorded as deferred
   in the PR.
 - **A pair-specific sixth glyph**, which `10-tray.md` forbids ("Only five forms exist"). The cost is
@@ -5978,3 +5979,123 @@ quoted in `frame-classes.mjs`, `extract.mjs`, `check-fixtures.mjs`, `fidelity/RE
 `known-deviations.mjs`, `IMPLEMENTATION-PLAN.md` and the notes of the places it was a current-state
 count; measurements dated to a past run (`35/51 frames mapped`, `11/51`) are left as they were
 measured.
+
+## 108. The folder selector and the window at two folders or more: seven frames the design never drew, and what each leaves undrawn
+
+`design-v2` has no word for more than one folder in the window (`§107` did the tray). The window's
+behaviour with two or more is new normative text (`02-shell.md` "Folder selector", `03-main-screen.md`
+"At two folders or more", `13-copy-deck.md`, `14-behaviour-and-state.md` "Which folder the window is
+about") and seven new frames, drawn in the change that builds them (the brief's correction A1 again: a
+frame drawn alone fails the unclaimed census for every node no slot names, so there is no design-only
+commit): `2a Two folders` (the pill at rest), `2a Two folders open` (its list), `2a Two folders waiting`
+(the ring), `2a Folder not running` (the notice for a folder the daemon does not run), `2a Two folders
+unsaved` (a resume the daemon could not save) and the light pair `12a Two folders light`, `12a Two
+folders open light`. The light twins are `sameAs` their dark ones, so the mapping is inherited and
+`check-fixtures.mjs` holds the trees equal.
+
+### §108a · The decisions applied (maintainer, issue #102, 2026-10-09)
+
+- **D1/D2 and R-N1 (§107a).** A pill in the header, right of the product name, **drawn only when the
+  daemon lists two or more folders**, from the daemon's list and from nothing else: a folder only the
+  settings file knows cannot be chosen, and one that is chosen is one the daemon runs. At one folder, and
+  against a daemon that lists none, the header is the 22-frame header node for node: the pill's slot is a
+  `div` between two `span`s, so the header's `span[0]`/`span[1]`/`span[2]` (name, spacer, chip) keep their
+  keys at every count and no existing frame moved. `fidelity:n1` keeps the 55 one-folder frames identical
+  with one pair listed and compares the seven new ones with themselves alone (a frame that lists two folders
+  has no one-folder rendering to equal). It also states the pill's ABSENCE outright in every one-folder frame, with
+  and without `?pairs=1`: the brief expected a pill drawn unconditionally to fail the style gate's header-spacer box
+  (`731.08 vs <less>`), and measured, it does not — the header's `⋯` glyph takes the whole header out of the box
+  comparison (`docs/agent-notes/the-header-spacer-box-is-never-compared.md`).
+- **D4.** The chip and the attention band count the SELECTED folder, because they are read from the store's
+  selected slice and nothing else. A marker on the pill says ANOTHER folder has something waiting: the chip's
+  own decision ring (`6px`, `1px --decision`), never a number. It counts only what a person must decide —
+  a conflict, a withheld deletion not yet answered — and the two frames that carry it (`2a Two folders waiting`,
+  `2a Two folders open`) are kept out of the hue gate's settled list. The two at rest (`2a Two folders`,
+  `12a Two folders light`) join it: the pill at rest takes no hue, and the gate now says so.
+- **D11.** The hero's pause button names its folder at two folders or more, `Pause documents` and
+  `Resume documents` (the tray's `TRAY.pausePair`/`resumePair`: one control seen twice), and a paused
+  hero's second sentence names it (`TRAY.pausedSubPair`, §107c.6). One folder keeps `Pause`, `Resume syncing`
+  and `Nothing will move until you resume.`
+- **Per-pair pause (maintainer, 2026-10-08).** The hero's Pause acts on the folder the hero is about, read when
+  the props were built and not when the button is pressed (`calledThrough`), and the label is patched on a
+  switch even when the hero state is the same.
+
+### §108b · What the frames draw that no earlier frame did
+
+1. **The pill.** A `button` in a positioned container `div`: mono 11px, `padding:5px 12px`, fully rounded, a
+   transparent `1px` border at rest (so it is the same size open and closed), `--text-3`, no fill. The name is
+   cut at `18ch`, the full name is its `title`. The chevron and the list's check are `svg` paths and not the
+   characters `▾`/`✓`: neither is in the bundled faces (`fonts/README.md`), so a typed glyph would measure
+   whatever fallback font the machine has.
+2. **The list.** A child of the pill's container, not a sibling of the header: `setBody` anchors the screen on
+   `header.nextSibling`, and a node standing there makes every poll re-insert the whole screen (the `⋯` menu's
+   comment records the same trap). `position:absolute; top:34px; left:0; min-width:280px`, `border-box` (the
+   prototype's popover says so explicitly, because the app opts in globally and the prototype does not — the
+   first extraction measured 294 against 280 for exactly that). A fixed `9ch` count column, right-aligned, so
+   the state words end in one place whether or not a row has a count; a quiet folder draws no count.
+3. **The notice block.** One new block under the hero, `padding:0 32px 18px`, in the warm band's two-node form
+   `7a Activity quiet` draws, with a daemon-quoted line in mono (`.band-notice-reason`, capped and scrolling:
+   a reason can be any length) and at most one button. The seam stops above it (`mainHeroAttention`).
+4. **Frames are drawn at what the app can say.** The sub-line is `last synced 2 minutes ago` with no `· 12,480
+files · 41.2 GB` (G7, #207): a new frame has no reason to draw a clause the app cannot say, and a second
+   deviation row would record a gap in a drawing nobody made.
+5. **`2a Two folders open` draws four folders, one in each of four states** (`up to date`, `syncing`,
+   `paused`, `sync failed`), with `photos` waiting on two deletions, so the ring is on the pill in the same
+   frame and the count is drawn. The chip reads `idle` over it: that is D4, drawn.
+
+### §108c · What the app does that no frame can show
+
+- **Another folder's queue is known only once a reply has filled it, and unknown is never zero.** The poll
+  fetches a non-selected folder's withheld deletions only while its summary says it has some (E6), scans its
+  conflicts at most once a minute (`refreshOtherPairs`), and files each reply under the folder it describes.
+  A list never fetched falls back to the summary's count rather than to 0; a count of 0 in the summary is
+  believed over a list that is stale. The tray panel's webview does none of it.
+- **A refusal is not an observation** (`store.setStatus`): a request the app turned back before it left comes
+  home with no reply, `pair_unknown` set and a placeholder state, and is not filed.
+- **`pair_unknown`.** A selection read the daemon answered about the default folder because the one asked for
+  is not running carries the name. The notice block says so only when the settings file DOES list that folder
+  (the case a restart fixes); a remembered folder in neither is stale preference and the window says nothing.
+  `Restart syncing` is `restart_service` without `onlyIfRunning`: the daemon IS running, on the old settings.
+  Anything that restart does to the other folders' pauses is D12, and 5c-2's.
+- **The Plan screen's refusal** for a paused folder names it at two folders or more (`Syncing is paused for
+photos, so nothing was worked out. Resume photos and check again.`), in the words of the button that fixes
+  it; Rust builds it (`paused_plan_refusal`), where the sentence was, and one folder keeps the old one.
+
+### §108d · `pause_unsaved` (#441, #443)
+
+Shown. The daemon applies a pause or a resume and may be unable to record it; the reply says so with its
+reason, and a restart before it is recorded brings the folder back as it was. The window says so under the
+hero, in the notice block, for the folder it is about and only while that folder is on screen; it is retired by
+the next pause or resume, by a switch, and when the daemon stops answering. Two ways in: the hero's own press
+(`setPaused` reads the reply, where `command` discarded it) and the tray's rows — **the panel itself still shows
+nothing**, because every row dismisses it before its reply arrives and a one-shot event has no node to live in
+there; Rust (`tray_control_row`, shared by the panel and both native menus) emits `pause-unsaved` and the window,
+which can hold the sentence until the folder is next looked at, draws it. §107d said the way to show it as state
+was a field on the folder's summary, which is engine work; that is still the way to make it survive a restart of
+the window, and is not done.
+
+### §108e · What is deliberately not drawn, and why
+
+- **The paused window.** `MAIN.notice.pauseUnsaved` and `pauseUnsavedSub` have no frame: their hero is the paused
+  window, and no window frame draws a paused hero at 168px (`03-main-screen.md` describes it in prose; the tray's
+  `10a Paused` is the nearest). They are two `NOT_DRAWN` rows with that reason. The resume half is drawn
+  (`2a Two folders unsaved`), in the same block with the same reason line.
+- **Three state words and two button states.** `sign-in expired`, `unreachable` (daemon-wide: every row would say it
+  at once) and `nothing synced yet` (a hero, never a row), and `Restarting…`/`Syncing didn't restart.` (the
+  button mid-click and a refusal, which need a daemon that is mid-restart or refuses one). Five more `NOT_DRAWN`
+  rows, each with its reason.
+- **A failed other folder does not ring the pill.** The ring is "a person is needed"; a folder that failed, paused
+  or is unplugged is a fact, and the list says it. The cost is the one the brief named for the glyph: a failure in
+  the folder not on screen is a click away, not on the header. **For the maintainer:** a second marker form would
+  be a new drawn node, not a reuse of the ring.
+- **A needs-you state of the whole window.** The chip is the selected folder's alone (D4); there is no aggregate
+  count anywhere in the window.
+
+### §108f · Counts that moved
+
+55 in-scope frames became 62; window frames 20 became 27 (the seven are all windows); `assert.mjs` 62/62 mapped
+(119,145 assertions); `fidelity:n1` 55/55 compared and seven rendered against themselves; `fidelity:pairs` 16
+scenarios became 37; the contrast gate reads 1,403 nodes across 62 frames; the copy gate's exemptions 88 became
+95 (seven, each with its reason, §108e). The `55` is quoted in `extract.mjs`,
+`frame-classes.mjs`, `check-fixtures.mjs`, `fidelity/README.md`, `IMPLEMENTATION-PLAN.md` and the notes of the places
+it was a current-state count; measurements dated to a past run are left as they were measured.
