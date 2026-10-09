@@ -685,6 +685,58 @@ fn a_folder_added_back_by_another_spelling_is_still_added_back() {
     }
 }
 
+#[test]
+fn a_record_with_no_folder_is_not_taken_for_a_folder_that_was_added_back() {
+    // A note with no folder in it (hand-made, or from a config that placed none) compares equal to a
+    // configured pair whose folder is empty too. That is no folder at all, not a re-add.
+    let base = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    let nameless = PairView {
+        name: "nameless".to_owned(),
+        local_root: None,
+        remote_root: None,
+        db_path: None,
+        lockfile_path: None,
+        conflict_suffix: None,
+    };
+    record_pending(
+        state_dir.path(),
+        &Plan::of_view(&nameless, Vec::new(), Vec::new()),
+        "no folder",
+        now(),
+    )
+    .unwrap();
+    let configured = PairView {
+        local_root: Some(PathBuf::new()),
+        ..view_for(base.path())
+    };
+    let results = settle_pending(&context(
+        state_dir.path(),
+        std::slice::from_ref(&configured),
+    ));
+    assert!(
+        matches!(&results[..], [Settled::StillPending { .. }]),
+        "{results:?}"
+    );
+    assert_eq!(
+        pending(state_dir.path()).len(),
+        1,
+        "the note is not dropped"
+    );
+}
+
+#[test]
+fn a_relative_index_path_is_not_looked_up_from_here() {
+    // `Cargo.toml` exists in the directory the tests run from. A view that names it relatively must
+    // not be reported as an index that is there.
+    let view = PairView {
+        db_path: Some(PathBuf::from("Cargo.toml")),
+        ..view_for(Path::new("/nowhere"))
+    };
+    assert!(Path::new("Cargo.toml").exists(), "the premise of the test");
+    assert_eq!(surviving_index(&view), None);
+}
+
 // ---- looking is not the same as finding nothing (U1) ----------------------------------------------
 
 #[test]

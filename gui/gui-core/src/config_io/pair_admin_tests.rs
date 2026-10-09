@@ -566,14 +566,28 @@ fn removing_the_first_table_keeps_the_files_title_at_the_top() {
 
     // Anything that precedes the table leaves nothing of the title in its header to keep: removing
     // the first table of THREE_PAIRS keeps the file's `# hand-written` comment where it was.
+    // The table after it keeps the blank line that separates it from the key above, exactly.
     let mut preceded = doc(THREE_PAIRS);
     preceded.remove_pair("documents").unwrap();
-    assert!(
-        preceded
-            .to_toml_string()
-            .starts_with("# hand-written\nlog_level")
+    assert_eq!(
+        preceded.to_toml_string(),
+        "# hand-written\nlog_level = \"info\"\n\n# second\n[[pair]]\nname = \"photos\"\n\
+         local_root = \"/home/me/Pictures\"\nremote_root = \"/Drive/Photos\"\n\n# third\n\
+         [[pair]]\nname = \"music\"\nlocal_root = \"/home/me/Music\"\n\
+         remote_root = \"/Drive/Music\"\n"
     );
-    assert!(!preceded.to_toml_string().contains("# first"));
+
+    // A header of blank lines is not a title: nothing is carried, and the file does not start with a
+    // blank line.
+    let mut blank = doc(
+        "\n\n[[pair]]\nname = \"a\"\nlocal_root = \"/a\"\nremote_root = \"/Drive/a\"\n\
+         \n[[pair]]\nname = \"b\"\nlocal_root = \"/b\"\nremote_root = \"/Drive/b\"\n",
+    );
+    blank.remove_pair("a").unwrap();
+    assert_eq!(
+        blank.to_toml_string(),
+        "[[pair]]\nname = \"b\"\nlocal_root = \"/b\"\nremote_root = \"/Drive/b\"\n"
+    );
 }
 
 #[test]
