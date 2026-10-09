@@ -37,7 +37,8 @@ import { selectorRows } from "./ui/selector.js";
 import { dialog, dialogHead, focusTrap } from "./ui/dialog.js";
 import { renderCompactPanel, trayMenu, TRAY_FOLDER_CAP } from "./ui/compact.js";
 import { bannerFor, payloadFor, renderBanner } from "./ui/notification.js";
-import { decide, emptyState } from "./notifier.js";
+import { decide, emptyState, notifierViews, restoreState } from "./notifier.js";
+import { runBannerAction } from "./banner-actions.js";
 import { trayView, renderTrayPanel, updateTrayPanel } from "./screens/tray.js";
 import { ACTIVITY, CHROME, ONBOARDING, SETTINGS } from "./ui/copy.js";
 import { clock, since } from "./ui/format.js";
@@ -606,11 +607,7 @@ function waitingIn(pair) {
   const queued = summary?.pending_deletions ?? 0;
   let deletions = 0;
   if (queued > 0) {
-    deletions = store.select.deletionsFiledOf(pair)
-      ? store.select
-          .pendingDeletionsOf(pair)
-          .filter((item) => deletionsDecided.get(itemKey(item)) !== item.fingerprint).length
-      : queued;
+    deletions = store.select.deletionsFiledOf(pair) ? visibleDeletionsOf(pair).length : queued;
   }
   return store.select.conflictsOf(pair).length + deletions;
 }
@@ -1934,6 +1931,22 @@ function visibleDeletions() {
     if (key.startsWith(mine) && !statuses.has(key)) deletionStatuses.delete(key);
   }
   return live.filter((item) => deletionsDecided.get(itemKey(item)) !== item.fingerprint);
+}
+
+/**
+ * The withheld deletions of `pair`, less what has been answered. `null`, or the folder on screen, is
+ * `visibleDeletions()` itself — the chip, the band and the Deletions screen read that one. Any other
+ * folder is what the poll fetched for it, and only while its summary says it has some: a list fetched
+ * earlier and not since is not evidence about a queue the summary now counts as empty. Empty for a
+ * folder whose queue has not been fetched yet — a caller that needs "unknown" asks `deletionsFiledOf`.
+ */
+function visibleDeletionsOf(pair) {
+  if (pair == null || pair === store.select.pairName()) return visibleDeletions();
+  const summary = store.select.pairs().find((entry) => entry.name === pair);
+  if (!(summary?.pending_deletions > 0) || !store.select.deletionsFiledOf(pair)) return [];
+  return store.select
+    .pendingDeletionsOf(pair)
+    .filter((item) => deletionsDecided.get(itemKey(item)) !== item.fingerprint);
 }
 
 /**
@@ -4316,17 +4329,9 @@ const NOTIFIER_KEY = "notifier";
 
 function loadNotifierState() {
   try {
-    const saved = JSON.parse(localStorage.getItem(NOTIFIER_KEY) ?? "null");
-    // Shape-checked rather than trusted: a half-written or older value must not make `decide` throw
-    // inside the status poll, which would take the whole window's refresh down with it.
-    //
-    // `typeof null === "object"` PASSES THIS, and that is safe rather than overlooked — reviewed and
-    // reproduced, because it is the obvious place to assume otherwise. Object spread of `null` is a
-    // no-op by specification, so `{ said: null }` resolves to `said: {}`, which is the empty state
-    // this function would have returned anyway. It does not throw, and neither does `{ said: [] }`.
-    if (saved && typeof saved === "object" && typeof saved.said === "object") {
-      return { ...emptyState(), ...saved, said: { ...saved.said } };
-    }
+    // Shape-checked rather than trusted, and a state saved before folders is read as the default
+    // folder's own — `restoreState` says how and why.
+    return restoreState(JSON.parse(localStorage.getItem(NOTIFIER_KEY) ?? "null"));
   } catch (_) {
     /* unreadable storage is an empty state, not a failure */
   }
@@ -4369,13 +4374,14 @@ async function refreshNotifyPolicy() {
  * the four triggers see one consistent picture rather than two ticks of one.
  */
 function evaluateNotifications() {
+  // EVERY FOLDER THE WINDOW CAN SEE, from the data the poll already fetched (`notifierViews` says which
+  // and why the live roster): nothing is asked of the daemon for the notifier. At one folder this is the
+  // one view it always was.
+  const { views, roster } = notifierViews(store.select);
   const { event, state, resolved } = decide({
     state: notifierState,
-    view: {
-      response: store.select.response(),
-      conflicts: store.select.conflicts(),
-      daemonState: store.select.daemonState(),
-    },
+    views,
+    roster,
     // THE SAVED VALUE, never the staged one. The Settings footer promises "nothing is written until
     // you save", and this setting IS the written thing — a staged `Never` that silenced the deletion
     // banner before anyone pressed Save would be the one exception nobody was told about, in the
@@ -4411,9 +4417,15 @@ function evaluateNotifications() {
  * selector. On the wire that refuses EVERY withheld deletion, so a mixed queue would have this
  * banner answer for a recoverable deletion it never mentioned. Keeping is always the safe
  * direction, but doing more than the button says is not the same as safe.
+ *
+ * `pair` IS THE FOLDER THE BANNER WAS ABOUT (#102 phase 5e), `null` at one folder. It used to be read
+ * off the screen — `visibleDeletions()` is the SELECTED folder's queue — which at two folders keeps the
+ * wrong folder's items: the banner says `photos`, the window is showing `documents`, and the press
+ * refuses `documents`' deletions and leaves `photos`' for the next pass to carry out. Each item carries
+ * the folder it was fetched for (`item.pair`), so the request that keeps it names that folder too.
  */
-async function keepPermanentDeletions() {
-  const items = visibleDeletions().filter((item) => severityOfItem(item) === "permanent");
+async function keepPermanentDeletions(pair = null) {
+  const items = visibleDeletionsOf(pair).filter((item) => severityOfItem(item) === "permanent");
   if (!items.length) return;
   for (const item of items) {
     const key = itemKey(item);
@@ -4440,29 +4452,67 @@ async function keepPermanentDeletions() {
  * `trayAction` FOR THE THREE THAT OPEN OR RETRY, because they are the tray's own rows doing the
  * tray's own job: `review`/`open` show the window and `retry` is `Try again now`, which is a sync.
  * One id space, one handler, as `tray_row` already documents.
+ *
+ * AT TWO FOLDERS OR MORE the event names its folder (`pair`) and the steps are `runBannerAction`'s: the
+ * window is selected onto the folder before it navigates, and `retry` and `keep` are addressed to that
+ * folder by name. At one the event has none and every case is what it always was.
  */
-function onNotificationAction({ kind, action } = {}) {
-  switch (action) {
-    case "keep":
-      keepPermanentDeletions();
-      return;
-    case "later":
-      // Dismiss. The thing is still in the window, which is the whole design of this action.
-      return;
-    case "retry":
-      trayActionStatus("tryAgain");
-      return;
-    case "compare":
-    case "review":
-      trayActionStatus("open");
-      navigate(kind === "deletion" ? "deletions" : "conflicts");
-      return;
-    case "open":
-      trayActionStatus("open");
-      return;
-    default:
-      console.warn(`notification-action: no handler for "${action}"`);
+function onNotificationAction({ kind, action, pair } = {}) {
+  runBannerAction(
+    { kind, action, pair },
+    {
+      keep: (folder) => keepPermanentDeletions(folder),
+      tryAgain: () => trayActionStatus("tryAgain").catch(reportBannerFailure),
+      syncPair: (folder) => syncFolderNow(folder).catch(reportBannerFailure),
+      open: () => trayActionStatus("open").catch(reportBannerFailure),
+      select: showFolder,
+      navigate,
+      warn: (message) => console.warn(message),
+    },
+  ).catch(reportBannerFailure);
+}
+
+/** A banner action that threw is logged and nothing else: there is no surface left to put it on. */
+function reportBannerFailure(error) {
+  console.error("notification-action failed:", error);
+}
+
+/**
+ * `retry` for a banner about one folder: a `syncnow` addressed to THAT folder (a write: the folder is the
+ * banner's, never the selection's). The tray's `Try again now` is not this — at two folders it syncs every
+ * unpaused one, which is not what a banner about `photos` says it will do.
+ */
+function syncFolderNow(pair) {
+  const issue = store.beginStatus();
+  return api.syncNow({ pair }).then((payload) => store.setStatus(payload, issue, pair));
+}
+
+/**
+ * Make the window about `pair`, and say whether it is. `select_pair` is the one writer of the selection
+ * (Rust validates it, stores it and tells the other webview); this then reads that folder's status itself
+ * and files it, so the store is on the folder BEFORE the caller navigates — waiting for the next poll
+ * would draw the screen for the folder that was left, and a poll here also runs the shown folder's
+ * conflict scan, which can take as long as the tree is big. The ordinary poll is started as well, not
+ * waited for. A folder the daemon refuses (it went away since the banner was drawn) answers `false` and
+ * leaves the selection as it was.
+ */
+async function showFolder(pair) {
+  if (pair === store.select.pairName()) return true;
+  try {
+    await api.selectPair(pair);
+  } catch (error) {
+    console.error("select_pair failed:", error);
+    return false;
   }
+  const issue = store.beginStatus();
+  try {
+    store.setStatus(await api.getStatus({ pair }), issue, pair);
+  } catch (error) {
+    console.error("get_status failed:", error);
+  }
+  clearTimeout(pollTimer);
+  poll();
+  return true;
 }
 
 /**

@@ -36,13 +36,44 @@ const ALLOWED = {
   never: new Set(),
 };
 
+// ---------------------------------------------------------------------------- folders ----
+//
+// ONE NOTIFIER, SEVERAL FOLDERS (#102 phase 5e). What is remembered about a folder is keyed by the folder;
+// what is rate-limited is the BANNER, and there is one banner on a screen whatever folder it is about
+// (`11-notifications.md`: "never stack more than one Drive Sync banner"). So the memory splits and the
+// window does not:
+//
+//   · PER FOLDER: what was said (`said`), whether this install watched the first sync (`sawUnsynced`) and
+//     the newest sync it saw (`lastSeenSync`).
+//   · GLOBAL: when anything was last shown, and what (`lastAt`, `lastKind`, `lastPair`).
+//
+// THE DEFAULT FOLDER KEEPS THE SHAPE EVERY SAVED STATE ALREADY HAS: bare kinds in `said`, the two
+// witnesses at the top. A state written before folders existed is therefore read as the default folder's
+// with no migration, and a second folder added later does not make the first forget what it said. Every
+// OTHER folder is `kind@name` in `said` and `@name` in `seen`; the `@` is outside a folder's alphabet
+// (`[A-Za-z0-9._-]`), so such a key can be neither a kind nor another folder's, and a folder called
+// `constructor` or `__proto__` is an ordinary key rather than a property of the object.
+
+/** The key `kind` is remembered under for the folder kept as `home` — `null` is the default folder. */
+export const keyOf = (kind, home) => (home == null ? kind : `${kind}@${home}`);
+
+/** The key a folder's witnesses are kept under in `state.seen`. */
+const seenKey = (home) => `@${home}`;
+
+/** What is known about a folder this install has never watched. */
+const UNSEEN = Object.freeze({ sawUnsynced: false, lastSeenSync: null });
+
 /** The state that has to survive a restart. Serialisable on purpose — `app.js` keeps it in storage. */
 export const emptyState = () => ({
-  /** kind → the signature of the last thing we said about it. */
+  /** key (see `keyOf`) → the signature of the last thing we said about it. */
   said: {},
-  /** When we last showed anything, in ms, and about what. */
+  /** When we last showed anything, in ms, and about what — GLOBAL, because the banner is. */
   lastAt: 0,
   lastKind: null,
+  /** The folder that banner was about, kept as `home`: `null` is the default folder (and every state saved before folders). */
+  lastPair: null,
+  /** The two witnesses below are the DEFAULT folder's; this is the same pair of facts for every other folder, by `@name`. */
+  seen: {},
   /**
    * Whether this GUI has ever seen the daemon with no successful sync behind it.
    *
@@ -69,6 +100,43 @@ export const emptyState = () => ({
    */
   lastSeenSync: null,
 });
+
+/**
+ * A saved state, read back. Anything that is not the shape of one is an empty state, and a state saved
+ * BEFORE FOLDERS (no `lastPair`, no `seen`) is the default folder's own: it gets the new fields at their
+ * empty values and keeps everything else, so nothing it had said is said again.
+ *
+ * Shape-checked rather than trusted: a half-written or older value must not make `decide` throw inside
+ * the status poll, which would take the whole window's refresh down with it.
+ *
+ * `typeof null === "object"` PASSES THE FIRST CHECK, and that is safe rather than overlooked — reviewed
+ * and reproduced, because it is the obvious place to assume otherwise. Object spread of `null` is a
+ * no-op by specification, so `{ said: null }` resolves to `said: {}`, which is the empty state this
+ * function would have returned anyway. It does not throw, and neither does `{ said: [] }`.
+ *
+ * `seen` IS FILTERED ENTRY BY ENTRY, because it is read by key: a value that is not `{ sawUnsynced,
+ * lastSeenSync }` would make a folder look as though it had been watched when nothing had.
+ */
+export function restoreState(saved) {
+  if (!saved || typeof saved !== "object" || typeof saved.said !== "object") return emptyState();
+  const seen = {};
+  if (saved.seen && typeof saved.seen === "object" && !Array.isArray(saved.seen)) {
+    for (const [key, value] of Object.entries(saved.seen)) {
+      if (!key.startsWith("@") || !value || typeof value !== "object") continue;
+      seen[key] = {
+        sawUnsynced: value.sawUnsynced === true,
+        lastSeenSync: Number.isFinite(value.lastSeenSync) ? value.lastSeenSync : null,
+      };
+    }
+  }
+  return {
+    ...emptyState(),
+    ...saved,
+    said: { ...saved.said },
+    lastPair: typeof saved.lastPair === "string" ? saved.lastPair : null,
+    seen,
+  };
+}
 
 /**
  * Permanent = the file leaves this computer for good.
@@ -171,50 +239,134 @@ export function candidates({ response, conflicts = [], daemonState = null, lastS
   return out.sort((a, b) => SEVERITY[b.kind] - SEVERITY[a.kind]);
 }
 
+/** The folder a view is kept under: `null` for the default folder, else its name. */
+const homeOf = (view) => (view?.isDefault === false ? view.pair : null);
+
+/** What is known about the folder kept as `home`: the top of the state for the default folder, else `seen`. */
+function witnessOf(state, home) {
+  if (home == null) return { sawUnsynced: state.sawUnsynced, lastSeenSync: state.lastSeenSync };
+  return state.seen?.[seenKey(home)] ?? UNSEEN;
+}
+
+function setWitness(next, home, witness) {
+  if (home == null) {
+    next.sawUnsynced = witness.sawUnsynced;
+    next.lastSeenSync = witness.lastSeenSync;
+  } else {
+    next.seen[seenKey(home)] = witness;
+  }
+}
+
+/** The kind half of a `said` key, and the folder half (`null` for the default folder). */
+function splitKey(key) {
+  const at = key.indexOf("@");
+  return at < 0 ? { kind: key, home: null } : { kind: key.slice(0, at), home: key.slice(at + 1) };
+}
+
 /**
  * Decide what to show, if anything, and what to remember.
  *
  * Returns `{ event, state, resolved }` — `event` is null when nothing should interrupt, `resolved`
  * asks for the live banner to be taken down because its subject is gone, and `state` is always the
  * state to keep (it advances `sawUnsynced` and `lastSeenSync` even on a silent tick).
+ *
+ * `views` is one entry per folder the window can see: the world as `candidates` reads it, plus
+ * `pair` (the folder's name, or `null` at one folder) and `isDefault`. Without it, `view` is the one and
+ * only folder and everything is exactly what it was before folders existed. `roster` is the names the
+ * daemon runs when it has just said so, or `null` when it has not; a folder it no longer lists is
+ * forgotten.
+ *
+ * THE FOLDERS ARE DECIDED TOGETHER, in one severity order, against ONE rate limit. Each folder's
+ * triggers are its own (a signature is remembered per folder, so the same queue in two folders is two
+ * things to say), but the 30-second window and "more serious jumps it" are about the BANNER on screen:
+ * a deletion in `photos` jumps a conflict banner for `documents`, and two conflicts in two folders are
+ * one banner now and the second one later, never two at once.
  */
-export function decide({ state, view, policy = "only_when_needed", nowMs }) {
+export function decide({ state, view, views, roster = null, policy = "only_when_needed", nowMs }) {
   const nowSecs = Math.floor(nowMs / 1000);
   const allowed = ALLOWED[policy] ?? ALLOWED.only_when_needed;
-  const lastSync = view?.response?.last_sync_epoch_secs ?? null;
-  // Witnessed before anything is decided, so a tick that shows nothing still records what it saw.
-  // `response` present and `last_sync` absent is the daemon answering "nothing has ever synced";
-  // an unreachable daemon answers nothing at all and must not count as a witness.
-  const next = {
-    ...state,
-    said: { ...state.said },
-    sawUnsynced:
-      state.sawUnsynced || (Boolean(view?.response) && lastSync == null && state.lastSeenSync == null),
-    lastSeenSync: lastSync ?? state.lastSeenSync ?? null,
-  };
+  const seen = views ?? [{ ...(view ?? {}), pair: null, isDefault: true }];
+  const next = { ...state, said: { ...state.said }, seen: { ...state.seen } };
 
-  const list = candidates({ ...(view ?? {}), lastSeenSync: state.lastSeenSync }, nowSecs);
-  const present = new Set(list.map((c) => c.kind));
+  // A folder the daemon no longer runs is forgotten: what was said about it and whether it was watched,
+  // so a folder added later under the same name announces its own first sync. The banner on screen, if
+  // it was about that folder, is withdrawn: its buttons would act on a folder that is not there.
+  let gone = false;
+  if (roster) {
+    const known = new Set(roster);
+    for (const key of Object.keys(next.said)) {
+      const { home } = splitKey(key);
+      if (home != null && !known.has(home)) delete next.said[key];
+    }
+    for (const key of Object.keys(next.seen)) {
+      if (!known.has(key.slice(1))) delete next.seen[key];
+    }
+    gone = Boolean(state.lastKind) && state.lastPair != null && !known.has(state.lastPair);
+    if (gone) {
+      next.lastKind = null;
+      next.lastPair = null;
+    }
+  }
+
+  const entries = [];
+  const viewed = new Set();
+  for (const folder of seen) {
+    const home = homeOf(folder);
+    viewed.add(home);
+    const lastSync = folder?.response?.last_sync_epoch_secs ?? null;
+    const was = witnessOf(state, home);
+    // Witnessed before anything is decided, so a tick that shows nothing still records what it saw.
+    // `response` present and `last_sync` absent is the daemon answering "nothing has ever synced";
+    // an unreachable daemon answers nothing at all and must not count as a witness.
+    setWitness(next, home, {
+      sawUnsynced:
+        was.sawUnsynced || (Boolean(folder?.response) && lastSync == null && was.lastSeenSync == null),
+      lastSeenSync: lastSync ?? was.lastSeenSync ?? null,
+    });
+    for (const candidate of candidates({ ...(folder ?? {}), lastSeenSync: was.lastSeenSync }, nowSecs)) {
+      entries.push({ event: folder?.pair == null ? candidate : { ...candidate, pair: folder.pair }, home });
+    }
+  }
+  // Stable, so equal severities stay in the order the folders were given.
+  entries.sort((a, b) => SEVERITY[b.event.kind] - SEVERITY[a.event.kind]);
+  const present = new Set(entries.map(({ event, home }) => keyOf(event.kind, home)));
 
   // FORGETTING IS PART OF THE RULE. What we said about a kind is remembered so the same queue does
   // not repeat; once that queue is empty there is nothing left to repeat, and holding the signature
   // would silence the identical set if it ever came back — a conflict resolved on Monday and made
   // again on Tuesday is a new thing to say. `firstSync` is the exception, because "once, ever" is
   // its whole specification.
-  for (const kind of Object.keys(next.said)) {
-    if (kind !== "firstSync" && !present.has(kind)) delete next.said[kind];
+  //
+  // ONLY FOR A FOLDER THIS TICK COULD SEE. A folder the window has no live reading of (the daemon is
+  // not answering) has not been shown to have an empty queue, and forgetting what was said about it
+  // would say it all again when the daemon came back. At one folder that folder is always seen, so
+  // this is the rule it always was.
+  for (const key of Object.keys(next.said)) {
+    const { kind, home } = splitKey(key);
+    if (kind !== "firstSync" && viewed.has(home) && !present.has(key)) delete next.said[key];
   }
 
   // The live banner is about something that no longer exists — approved, resolved, or synced. It
-  // comes down rather than sitting there as a question nobody can answer any more.
-  const resolved = Boolean(state.lastKind) && state.lastKind !== "firstSync" && !present.has(state.lastKind);
-  if (resolved) next.lastKind = null;
+  // comes down rather than sitting there as a question nobody can answer any more. Of a folder this
+  // tick could not see it says nothing: a banner is not withdrawn on no evidence.
+  const liveHome = state.lastPair ?? null;
+  const resolved =
+    gone ||
+    (Boolean(state.lastKind) &&
+      state.lastKind !== "firstSync" &&
+      viewed.has(liveHome) &&
+      !present.has(keyOf(state.lastKind, liveHome)));
+  if (resolved) {
+    next.lastKind = null;
+    next.lastPair = null;
+  }
 
-  for (const candidate of list) {
-    if (!allowed.has(candidate.kind)) continue;
-    // Fires once, ever, and only where this install watched the wait end.
-    if (candidate.kind === "firstSync" && !next.sawUnsynced) continue;
-    if (next.said[candidate.kind] === candidate.signature) continue;
+  for (const { event, home } of entries) {
+    if (!allowed.has(event.kind)) continue;
+    // Fires once, ever, per folder, and only where this install watched the wait end.
+    if (event.kind === "firstSync" && !witnessOf(next, home).sawUnsynced) continue;
+    const key = keyOf(event.kind, home);
+    if (next.said[key] === event.signature) continue;
 
     // The rate limit, and the one thing that may jump it: something more serious than what is
     // already on screen. Waiting 25 seconds to say that files are about to be deleted, because a
@@ -224,14 +376,72 @@ export function decide({ state, view, policy = "only_when_needed", nowMs }) {
     // banner until the wall clock caught up — hours, on a timezone-sized step.
     const since = nowMs - state.lastAt;
     const withinWindow = since >= 0 && since < COALESCE_MS;
-    const moreSerious = SEVERITY[candidate.kind] > (SEVERITY[state.lastKind] ?? -1);
+    const moreSerious = SEVERITY[event.kind] > (SEVERITY[state.lastKind] ?? -1);
     if (withinWindow && !moreSerious) return { event: null, state: next, resolved };
 
-    next.said[candidate.kind] = candidate.signature;
+    next.said[key] = event.signature;
     next.lastAt = nowMs;
-    next.lastKind = candidate.kind;
+    next.lastKind = event.kind;
+    next.lastPair = home;
     // A banner that replaces the one that resolved does not also need it taken down.
-    return { event: candidate, state: next, resolved: false };
+    return { event, state: next, resolved: false };
   }
   return { event: null, state: next, resolved };
+}
+
+/**
+ * What the window can see of every folder, as `decide` reads it — and the names the daemon runs when it
+ * has just said so. `select` is the store's.
+ *
+ * TWO ADDRESSES FOR THE SAME FACTS, ONE BUILDER. The folder on screen is read from the store's selected
+ * slice, exactly as it always was; every other folder is read from the roster's summary plus what the
+ * poll has fetched for it (`refreshOtherPairs`): its withheld deletions while its summary says it has
+ * any (the summary carries a COUNT, and "permanent" needs each item's direction), and its conflicts from
+ * the scan that runs once a minute. Nothing here asks the daemon for anything. No second schedule.
+ *
+ * THE LIVE ROSTER AND NOTHING ELSE. The store keeps the last roster across a failed read, because that
+ * is how the window still NAMES its folders, and it is the wrong thing to decide from: a stopped daemon
+ * would go on being read as "photos still has a deletion waiting" and "photos last synced yesterday",
+ * and a banner built from that is #246's false statement said aloud, about a folder nothing has looked
+ * at since. `rosterLive` is the store's one answer (`livePairs`/`livePairStates` apply it). With the daemon
+ * silent only the folder on screen is read, and from its own slice, as at one folder.
+ *
+ * `pair` is `null` below two folders — the banner names a folder only when there is a choice of them.
+ */
+export function notifierViews(select) {
+  const shown = {
+    response: select.response(),
+    conflicts: select.conflicts(),
+    daemonState: select.daemonState(),
+  };
+  const named = select.pairs();
+  const roster = select.rosterLive() ? named.map((summary) => summary.name) : null;
+  if (named.length < 2) return { views: [{ ...shown, pair: null, isDefault: true }], roster };
+
+  // The default folder is the first the daemon lists — the one an unaddressed request means.
+  const defaultName = named[0].name;
+  const selected = select.pairName();
+  const folder = (name, parts) => ({ ...parts, pair: name, isDefault: name === defaultName });
+  const states = new Map(select.livePairStates().map((entry) => [entry.name, entry.state]));
+
+  const views = select.livePairs().map((summary) => {
+    if (summary.name === selected) return folder(summary.name, shown);
+    return folder(summary.name, {
+      response: {
+        pending_changes: summary.pending_changes,
+        last_sync_epoch_secs: summary.last_sync_epoch_secs,
+        paused: summary.paused,
+        // Its queue is the one the poll fetched, and only while the summary says there is one: a list
+        // fetched earlier and not since is not evidence about a queue the summary now counts as empty.
+        pending_deletions:
+          summary.pending_deletions > 0 && select.deletionsFiledOf(summary.name)
+            ? select.pendingDeletionsOf(summary.name)
+            : [],
+      },
+      conflicts: select.conflictsOf(summary.name),
+      daemonState: states.get(summary.name) ?? null,
+    });
+  });
+  if (!views.some((entry) => entry.pair === selected)) views.unshift(folder(selected, shown));
+  return { views, roster };
 }

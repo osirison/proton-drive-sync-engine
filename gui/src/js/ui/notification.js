@@ -147,12 +147,23 @@ const BUILDERS = {
   }),
 };
 
-/** Build the spec for one event. Throws on an unknown kind rather than drawing an empty banner. */
+/**
+ * Build the spec for one event. Throws on an unknown kind rather than drawing an empty banner.
+ *
+ * `event.pair` is the folder the event is about, and it is set ONLY at two folders or more
+ * (`notifier.js`): the banner then says which one in its meta row (`Drive Sync · photos`, D10) and its
+ * buttons act on it. Without one the spec is exactly what it was before folders — no `pair` key at
+ * all, so a one-folder banner is the same bytes whether or not this feature exists.
+ */
 export function bannerFor(event) {
   const build = BUILDERS[event?.kind];
   if (!build) throw new Error(`notification: unknown event "${event?.kind}"`);
-  return build(event);
+  const spec = build(event);
+  return event.pair ? { ...spec, pair: event.pair } : spec;
 }
+
+/** The application line of a banner: the product, and the folder when the banner is about one of several. */
+export const appLineOf = (spec) => (spec.pair ? NOTIFY.appFor(spec.pair) : NOTIFY.app);
 
 /** The four kinds, in the order `11-notifications.md` lists them. Used by the policy and the tests. */
 export const EVENT_KINDS = Object.keys(BUILDERS);
@@ -164,7 +175,10 @@ export function payloadFor(spec) {
     // language checks the other's shape, so its absence was not a wrong banner — it was serde
     // refusing the whole payload and every banner failing to arrive. `notification.test.js` reads
     // the struct now.
-    app: NOTIFY.app,
+    //
+    // At two folders or more it is `Drive Sync · photos` (D10): the server draws this line as the
+    // banner's own header, so it is where the folder is named without touching a sentence.
+    app: appLineOf(spec),
     kind: spec.kind,
     summary: spec.title,
     body: spec.body.map((part) => part.text ?? part.mono).join(""),
@@ -172,6 +186,10 @@ export function payloadFor(spec) {
     // resolve the same icon — `11-notifications.md`: "so the banner and the tray agree".
     icon: TRAY_ICON[spec.kind],
     actions: spec.actions.map(({ id, label }) => ({ id, label })),
+    // WHICH FOLDER A CLICK ACTS ON, round-tripped through the notification server's action signal
+    // (`notify.rs` keeps it beside the id and puts it back on `notification-action`). The line above is
+    // a rendering; this is the NAME. Absent at one folder, where the payload is what it always was.
+    ...(spec.pair ? { pair: spec.pair } : {}),
   };
 }
 
@@ -243,7 +261,7 @@ export function renderBanner(spec, { at = null, width = null, onAction = null, i
             el(
               "div",
               { class: "notify-meta" },
-              fid(el("span", { class: "notify-app" }, NOTIFY.app), "bannerApp", index),
+              fid(el("span", { class: "notify-app" }, appLineOf(spec)), "bannerApp", index),
               fid(el("span", { class: "notify-spacer" }), "bannerSpacer", index),
               time,
             ),

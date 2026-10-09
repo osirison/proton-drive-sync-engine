@@ -209,8 +209,11 @@ export const api = {
       .catch((err) => console.error("pause-unsaved listen failed:", err));
   },
   /**
-   * A click on one of a banner's buttons (S9). The payload is `{ id, kind, action }` — the action id
-   * from `SAFE_ACTIONS`, and which of the four events it belongs to.
+   * A click on one of a banner's buttons (S9). The payload is `{ id, kind, action, pair? }` — the action
+   * id from `SAFE_ACTIONS`, which of the four events it belongs to, and, at two folders or more, the
+   * name of the folder the banner was about (#102 phase 5e). `pair` is the one the banner was SENT with,
+   * not the selection at the time of the click: the window may be showing another folder by then, and
+   * the press acts on the one the banner named. Absent at one folder.
    *
    * `notify.rs` has already checked the notification id against its own before emitting, because
    * `ActionInvoked` is broadcast to every listener on the bus.

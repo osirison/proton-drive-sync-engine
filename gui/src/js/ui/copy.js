@@ -1515,6 +1515,13 @@ export const TRAY = {
 export const NOTIFY = {
   /** The notification server's app name. Not `CHROME.productName`; all five frames draw two words. */
   app: "Drive Sync",
+  /**
+   * `Drive Sync · photos` — the application line of a banner about one folder of several (D10, #102
+   * phase 5e). A banner carries it ONLY at two folders or more; with one, the line is `app` above and
+   * every sentence below is the same. The folder is named here rather than in a title or a body so no
+   * sentence of the four changes or grows, and the deletion body's leading mono path keeps its width.
+   */
+  appFor: (pair) => `${NOTIFY.app} · ${pair}`,
 
   /**
    * `1,204 photos would be deleted from this computer`.

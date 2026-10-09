@@ -2978,7 +2978,7 @@ impl<C: ProtonClient> Daemon<C> {
                 "starting daemon"
             );
         }
-        self.note_that_the_desktop_app_addresses_one_pair();
+        self.note_that_an_unaddressed_request_means_the_default_pair();
         self.install_client_hooks();
         // The signal task sets the flag the step function checks before every pop — and the client
         // polls while a CLI child runs, so an in-flight `proton-drive` command is cancelled promptly
@@ -3081,22 +3081,23 @@ impl<C: ProtonClient> Daemon<C> {
     }
 
     /// Said once at startup, at the process scope, when more than one pair is configured
-    /// (maintainer decision M4): the desktop app's notifications were written for one pair and
-    /// address the default one. (The tray's rows stopped being on this list in #102 phase 5d: it
-    /// lists every pair and pauses each one by name. The window followed in phase 5c-1: it is about
-    /// the folder chosen from the pill in its header.) The control CLI addresses any pair by name.
-    /// `warn!`, not `info!`:
+    /// (maintainer decision M4): a request that names no pair means the default one. It was first
+    /// said about the desktop app, whose tray, window and notifications were written for one pair;
+    /// each stopped being on that list in turn (the tray in #102 phase 5d, the window in 5c-1, the
+    /// notifications in 5e: the app now addresses each folder by name), and what is left is the part
+    /// that is true of every client — an unaddressed `proton-sync` command, or an older client that
+    /// predates folder pairs, reaches the default pair and no other. `warn!`, not `info!`:
     /// it is a limit the operator needs to see under `RUST_LOG=warn`, not a status line. A function
     /// of its own so a test can capture it without running the loop.
-    fn note_that_the_desktop_app_addresses_one_pair(&self) {
+    fn note_that_an_unaddressed_request_means_the_default_pair(&self) {
         if self.pairs.len() > 1 {
             warn!(
                 pairs = self.pairs.len(),
                 default_pair = %self.pair_config(0).name,
-                "more than one folder pair is configured: the desktop app's notifications \
-                 act on the default pair only (its window follows the folder chosen in its header \
-                 and its tray lists every pair); `proton-sync --pair NAME` and `--all-pairs` \
-                 address the others"
+                "more than one folder pair is configured: a request that names no pair \
+                 (an unaddressed `proton-sync` command, or a client that predates folder pairs) \
+                 acts on the default pair only; `proton-sync --pair NAME` and `--all-pairs` \
+                 address the others (the desktop app addresses each folder itself)"
             );
         }
     }
@@ -27733,7 +27734,7 @@ mod tests {
     }
 
     #[test]
-    fn more_than_one_pair_says_once_that_the_desktop_app_addresses_the_default_pair() {
+    fn more_than_one_pair_says_once_that_an_unaddressed_request_means_the_default_pair() {
         let directory = tempdir().expect("tempdir");
         let two = multi_pair_daemon(
             pair_configs(directory.path(), &["a", "b"]),
@@ -27741,12 +27742,17 @@ mod tests {
             None,
         );
         let log = capture_log("warn", || {
-            two.note_that_the_desktop_app_addresses_one_pair()
+            two.note_that_an_unaddressed_request_means_the_default_pair()
         });
         assert_eq!(
-            log.matches("act on the default pair only").count(),
+            log.matches("acts on the default pair only").count(),
             1,
             "said once, at the process scope: {log}"
+        );
+        // It says nothing false about the desktop app any more: every surface of it names its folder.
+        assert!(
+            !log.contains("notifications"),
+            "the notice no longer blames the app's notifications: {log}"
         );
         assert!(
             log.contains("default_pair=a"),
@@ -27760,7 +27766,7 @@ mod tests {
             None,
         );
         let log = capture_log("warn", || {
-            one.note_that_the_desktop_app_addresses_one_pair()
+            one.note_that_an_unaddressed_request_means_the_default_pair()
         });
         assert!(
             !log.contains("default pair"),

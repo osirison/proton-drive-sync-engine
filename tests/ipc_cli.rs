@@ -1412,10 +1412,11 @@ exit 64
             assert!(index.contains_key(Path::new("f.txt")), "{index:?}");
         }
 
-        // The notice about the desktop app, once, at startup (maintainer decision M4).
+        // The notice that an unaddressed request means the default pair, once, at startup (maintainer
+        // decision M4).
         let log = fs::read_to_string(&daemon.stderr_path).expect("daemon log");
         assert_eq!(
-            log.matches("act on the default pair only").count(),
+            log.matches("acts on the default pair only").count(),
             1,
             "{log}"
         );

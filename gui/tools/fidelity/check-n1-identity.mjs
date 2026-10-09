@@ -6,7 +6,7 @@
 // in the style gate can make it, because that gate compares one rendering against one drawing:
 //
 //   · the frame as authored — a fixture shaped like a daemon that predates folder pairs (no `pair`,
-//     no `pairs`); that is 55 of the 63 (the other eight draw two folders on purpose — see below), and
+//     no `pairs`); that is 56 of the 64 (the other eight draw two folders on purpose — see below), and
 //   · the same frame answered as a CURRENT daemon running one pair would answer it — `pair: "default"`
 //     and a one-entry `pairs` on the reply, `selected`/`pairs`/`pair_states` on the payload, and a
 //     `pairs` list on `read_config` (`?pairs=1`, handled in `fixtures/preview.js`).
@@ -139,7 +139,7 @@ let identical = 0;
  * `?pairs=1` would rewrite its reply as one folder and draw a different window, which is the point of
  * the frame and not a regression. They are still rendered twice from one URL (a frame that does not
  * settle to the same bytes twice is a finding whatever it draws), and what they carry for the claim is
- * everything else here — the 55 frames that list no folder, which are the ones a one-folder user has,
+ * everything else here — the 56 frames that list no folder, which are the ones a one-folder user has,
  * and the pill's absence at one folder, which the rest of this gate cannot see unless the pill is drawn
  * at one (poison: draw it at `pairs.length >= 1` and every frame below differs; at any count, and the
  * 22 frames that pin the header's `flex:1` spacer fail `assert.mjs`'s box compare).
@@ -365,7 +365,7 @@ if (problems.length) {
 
 /**
  * WHAT THE LISTING ACTUALLY REACHES, MEASURED: each fixture is handed to the injection the app itself
- * calls, and a reply counts as rewritten when what came back is not what went in. "55/55" reads as
+ * calls, and a reply counts as rewritten when what came back is not what went in. "56/56" reads as
  * fifty-five frames each rewritten end to end, and that is not what happens. The injection rewrites two
  * replies, and a frame only has what it has:
  *

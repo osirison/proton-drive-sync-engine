@@ -8,8 +8,9 @@
 // that answers each command and **holds a reply open when told to**, which is what makes the window
 // between "the person pressed it" and "the daemon answered" a thing a test can stand in.
 //
-// Fifty-nine scenarios (the first sixteen are phases 5a-2, 5d and 5b-1's; the other forty-three are phase 5c-1's —
-// twenty-one built with the selector, the nineteen its review added and the three its second review added — below the list). The first four are each a way a write can land on a different pair than the one it was
+// Sixty-five scenarios (the first sixteen are phases 5a-2, 5d and 5b-1's; forty-three are phase 5c-1's —
+// twenty-one built with the selector, the nineteen its review added and the three its second review added — and the last six
+// are phase 5e's, the notifications; both below the list). The first four are each a way a write can land on a different pair than the one it was
 // drawn for — each was a bug before the capture existed or would be again if it were removed. The fifth
 // and sixth are the first-run rule at two pairs and at one. The next three are the rest of the capture:
 // a late READ, the decision on a conflict, and the tray panel's pin. The next two are the tray panel's
@@ -130,6 +131,23 @@
 //      the pill's ring of the folder that IS on screen do not change.
 //  58. THE LIST SCROLLS FROM THE TWELFTH FOLDER: 31px rows, 11 of them 355px, under the 360px cap.
 //
+// PHASE 5e (notifications per folder; the bridge answers `send_notification` with nothing and records the payload, so a
+// "banner" here is a recorded call and no desktop is touched):
+//
+//  59. A BANNER ABOUT ANOTHER FOLDER names it (`Drive Sync · photos`, and `pair` in the payload), and `Keep them` on it
+//      keeps THAT folder's permanent deletions and no other's — the window shows a folder with a permanent deletion of
+//      its own, which the press must not touch.
+//  60. `Review` ON ANOTHER FOLDER'S BANNER selects the folder BEFORE it opens the Deletions screen: with the selection
+//      held in flight the window has not moved, and once it lands the screen is that folder's queue and not the one that
+//      was on screen.
+//  61. `Try again now` ON ANOTHER FOLDER'S BANNER is a `syncnow` for that folder and not the tray's sync-every-unpaused row.
+//  62. A DAEMON THAT STOPS ANSWERING raises no banner from the roster the store still holds: a folder five minutes short of
+//      "nothing has synced for a day" crosses it on a clock moved ten minutes while the daemon is down, and says nothing;
+//      the same roster with the daemon back says it, which is what makes the first half evidence.
+//  63. ANOTHER FOLDER'S QUEUE IS FETCHED only while its summary counts one.
+//  64. AT ONE FOLDER the banner has no `pair` and the line is `Drive Sync`, `Keep them` keeps the one folder's items and
+//      `Try again now` is the tray's row, exactly as before.
+//
 // WHAT IT CANNOT SEE: it scripts the bridge, so it proves the facade and the screens agree with each
 // other, not that the real Rust agrees with either (that is `selection_tests.rs`); and it drives the
 // window, except the tray panel scenarios above, which drive `?surface=tray` through the same bridge.
@@ -201,9 +219,20 @@ class Bridge {
       pairUnknown = null,
       roster = null,
       trackPause = false,
+      notifyPolicy = "never",
+      lastSync = 1_750_000_000,
     } = {},
   ) {
     this.names = names;
+    // The `notify_policy` the window reads at boot. `never` for every scenario that is not about banners
+    // (the default stays what it was), so only the ones that ask for it can raise one.
+    this.notifyPolicy = notifyPolicy;
+    // When every folder last synced, as a plain number (the same fixed instant as ever unless a scenario
+    // asks). The notifier measures "nothing has synced for a day" against the page's own clock, so a
+    // scenario about banners gives a recent one and only the folder it names is old.
+    this.lastSync = lastSync;
+    // folder -> its own last sync, over the default above.
+    this.lastSyncOf = {};
     // The control socket does not answer: a status read comes home as Rust's unreachable payload.
     this.down = false;
     // Folders whose NAMED status read fails while the daemon is otherwise fine (a socket error on one
@@ -267,6 +296,7 @@ class Bridge {
     const never = (pair) => this.neverSynced.includes(pair);
     const pairs = this.names.map((pair) => ({
       ...summaryOf(pair, this.queues[pair].length),
+      last_sync_epoch_secs: this.lastSyncOf[pair] ?? this.lastSync,
       ...(never(pair) ? { last_sync_epoch_secs: null } : {}),
       ...(this.states[pair]?.summary ?? {}),
       ...(this.isPaused(pair) ? { paused: true } : {}),
@@ -290,7 +320,7 @@ class Bridge {
         reconcile_seq: 1,
         pending_changes: 0,
         message: "",
-        last_sync_epoch_secs: never(name) ? null : 1_750_000_000,
+        last_sync_epoch_secs: never(name) ? null : (this.lastSyncOf[name] ?? this.lastSync),
         last_error: this.states[name]?.summary?.last_error ?? null,
         last_plan_summary: null,
         last_successful_sync_summary: null,
@@ -392,7 +422,7 @@ class Bridge {
         };
       }
       case "read_notify_policy":
-        return "never";
+        return this.notifyPolicy;
       case "check_cli":
         return { installed: true, distro: null };
       case "scan_conflicts":
@@ -483,6 +513,20 @@ async function open(bridge, query = "") {
   await page.exposeFunction("__bridge", (cmd, args) => bridge.handle(cmd, args));
   await page.evaluateOnNewDocument(() => {
     window.__listeners = {};
+    // THE NOTIFIER'S MEMORY LIVES IN localStorage, which every page of this browser shares. A scenario that
+    // raises a banner must not leave `said` and `lastAt` for the next page to be silenced by, so each document
+    // starts without it (the app writes it back on its first poll, as it does on a first launch).
+    try {
+      localStorage.removeItem("notifier");
+    } catch (_) {
+      /* a page with no storage has nothing to clear */
+    }
+    // The page's clock, with a skew a scenario can move: the notifier measures "nothing has synced for a day"
+    // against `Date.now()`, and a scenario about a daemon that STOPPED needs time to pass while it is down.
+    // Zero unless one moves it, so every other scenario reads the clock it always did.
+    window.__skewMs = 0;
+    const realNow = Date.now.bind(Date);
+    Date.now = () => realNow() + window.__skewMs;
     // The injection Tauri makes, as an object literal: the lint rule that keeps the app's own code
     // on the `api` facade matches the dotted `window.__TAURI__` and this is the one place the
     // injection is MADE rather than reached for.
@@ -2576,6 +2620,196 @@ await scenario(
     await page.close();
   },
 );
+
+// ---- notifications per folder (#102 phase 5e) --------------------------------------------------------------
+//
+// The notifier is pure and `notifier-folders.test.js` drives it against the real store; what only the real page
+// can show is the wiring: that the poll feeds it every folder, that the banner goes out naming one, and that a
+// press on the banner's button acts on the folder the banner named and not on the one the window shows. The
+// bridge answers `send_notification` with nothing and records the payload, so a "banner" here is a recorded
+// call and no desktop is touched.
+
+const nowSecs = () => Math.floor(Date.now() / 1000);
+/** A withheld deletion that cannot be undone (`direction: local`, no trash) — the kind a banner is raised for. */
+const permanent = (path) => ({ ...deletion(path), direction: "local" });
+const bannersOf = (bridge) => bridge.called("send_notification").map((call) => call.args.payload);
+const clickBanner = (page, payload) =>
+  page.evaluate((body) => window.__listeners["notification-action"]({ payload: body }), payload);
+
+/** A window on `queues` with banners switched on and every folder freshly synced. */
+async function openWithBanners(queues, extra = {}) {
+  const bridge = new Bridge(queues, { notifyPolicy: "only_when_needed", lastSync: nowSecs() - 60, ...extra });
+  const page = await open(bridge);
+  await page.bringToFront();
+  return { bridge, page };
+}
+
+/** Poll until `count` banners have been sent. The first poll learns of another folder's queue, the next reads it. */
+async function pollForBanners(page, bridge, count) {
+  for (let i = 0; i < 6 && bannersOf(bridge).length < count; i += 1) await poll(page, bridge);
+  if (bannersOf(bridge).length < count) {
+    throw new Error(`${bannersOf(bridge).length} banner(s) after six polls, expected ${count}`);
+  }
+}
+
+await scenario(
+  "a banner about another folder names it, and `Keep them` keeps that folder's permanent deletions and no other's",
+  async () => {
+    const { bridge, page } = await openWithBanners({ docs: [], photos: [permanent("p.txt")] });
+    await pollForBanners(page, bridge, 1);
+    const [banner] = bannersOf(bridge);
+    if (banner.kind !== "deletion" || banner.pair !== "photos" || banner.app !== "Drive Sync · photos") {
+      throw new Error(`the banner was ${JSON.stringify(banner)}, expected a deletion about photos`);
+    }
+    // The window shows `docs`, which now has a permanent deletion of its own. The banner is about `photos`.
+    bridge.queues.docs = [permanent("d.txt")];
+    await poll(page, bridge);
+    await clickBanner(page, { id: 1, kind: "deletion", action: "keep", pair: "photos" });
+    await until("the keep", () => bridge.called("keep").length >= 1);
+    await settle(page);
+    expectPair(bridge.called("keep"), "photos", "keep from photos' banner");
+    const targets = bridge.called("keep").map((call) => call.args.target);
+    if (targets.length !== 1 || targets[0] !== "p.txt") {
+      throw new Error(`the banner kept ${JSON.stringify(targets)}, expected photos' p.txt alone`);
+    }
+    await page.close();
+  },
+);
+
+await scenario(
+  "`Review` on another folder's banner selects that folder before it opens the Deletions screen",
+  async () => {
+    const { bridge, page } = await openWithBanners({
+      docs: [permanent("d.txt")],
+      photos: [permanent("p.txt")],
+    });
+    // Both folders have a queue; `docs` is first and on screen, so its banner is the one raised. Take the
+    // click for `photos`' as a banner raised earlier would deliver it.
+    await pollForBanners(page, bridge, 1);
+    const release = bridge.hold("select_pair");
+    await clickBanner(page, { id: 1, kind: "deletion", action: "review", pair: "photos" });
+    await until("the selection to be asked for", () => bridge.called("select_pair").length === 1);
+    await settle(page);
+    // Not yet answered: the window must not have gone anywhere. A navigation here would draw the folder that
+    // is still selected — `docs`' queue — under a banner that said `photos`.
+    let text = await pageText(page);
+    if (text.includes("d.txt") || text.includes("p.txt")) {
+      throw new Error("the Deletions screen was drawn before the folder was selected");
+    }
+    release();
+    await until("photos' queue on the Deletions screen", async () =>
+      (await pageText(page)).includes("p.txt"),
+    );
+    text = await pageText(page);
+    if (text.includes("d.txt")) throw new Error("the Deletions screen shows docs' queue as well");
+    if (bridge.called("select_pair")[0].args?.name !== "photos") {
+      throw new Error(`select_pair asked for ${JSON.stringify(bridge.called("select_pair")[0].args)}`);
+    }
+    await page.close();
+  },
+);
+
+await scenario("`Try again now` on another folder's banner syncs that folder and no other", async () => {
+  const bridge = new Bridge(
+    { docs: [], photos: [] },
+    { notifyPolicy: "only_when_needed", lastSync: nowSecs() - 60 },
+  );
+  bridge.lastSyncOf.photos = nowSecs() - 90_000; // more than a day: photos has not synced since yesterday
+  const page = await open(bridge);
+  await page.bringToFront();
+  await pollForBanners(page, bridge, 1);
+  const [banner] = bannersOf(bridge);
+  if (banner.kind !== "outage" || banner.pair !== "photos") {
+    throw new Error(`the banner was ${JSON.stringify(banner)}, expected an outage about photos`);
+  }
+  await clickBanner(page, { id: 1, kind: "outage", action: "retry", pair: "photos" });
+  await until("the sync", () => bridge.called("sync_now").length === 1);
+  expectPair(bridge.called("sync_now"), "photos", "retry from photos' banner");
+  const tray = bridge.called("tray_action").filter((call) => call.args?.id === "tryAgain");
+  if (tray.length)
+    throw new Error("the retry went through the tray's row, which syncs every unpaused folder");
+  await page.close();
+});
+
+await scenario(
+  "a daemon that stops answering raises no banner about another folder's stale data",
+  async () => {
+    // `photos` is five minutes short of "nothing has synced for a day". The daemon stops, ten minutes pass, and
+    // the roster the store still holds says `photos` last synced more than a day ago — which a banner built
+    // from that roster would say as news. The folder is not being read any more; nothing is said about it.
+    const bridge = new Bridge(
+      { docs: [], photos: [] },
+      { notifyPolicy: "only_when_needed", lastSync: nowSecs() - 60 },
+    );
+    bridge.lastSyncOf.photos = nowSecs() - 86_400 + 300;
+    const page = await open(bridge);
+    await page.bringToFront();
+    await poll(page, bridge);
+    await poll(page, bridge);
+    if (bannersOf(bridge).length)
+      throw new Error(`a banner before anything was wrong: ${JSON.stringify(bannersOf(bridge))}`);
+
+    bridge.down = true;
+    await page.evaluate(() => {
+      window.__skewMs = 600_000;
+    });
+    await poll(page, bridge);
+    await poll(page, bridge);
+    if (bannersOf(bridge).length) {
+      throw new Error(`the stopped daemon's stale roster raised ${JSON.stringify(bannersOf(bridge))}`);
+    }
+
+    // The positive control: the same roster, the same clock, a daemon that answers — and `photos` IS late.
+    bridge.down = false;
+    await pollForBanners(page, bridge, 1);
+    const [banner] = bannersOf(bridge);
+    if (banner.kind !== "outage" || banner.pair !== "photos") {
+      throw new Error(`the live roster raised ${JSON.stringify(banner)}, expected an outage about photos`);
+    }
+    await page.close();
+  },
+);
+
+await scenario("another folder's queue is fetched only while its summary counts one", async () => {
+  const { bridge, page } = await openWithBanners({ docs: [], photos: [] });
+  await poll(page, bridge);
+  await poll(page, bridge);
+  const reads = () => bridge.called("get_status").filter((call) => call.args?.pair === "photos").length;
+  if (reads() !== 0) throw new Error(`photos' status was read ${reads()} time(s) while its queue was empty`);
+
+  bridge.queues.photos = [permanent("p.txt")];
+  await poll(page, bridge);
+  await poll(page, bridge);
+  const during = reads();
+  if (during === 0) throw new Error("photos' queue was never read");
+
+  bridge.queues.photos = [];
+  await poll(page, bridge);
+  await poll(page, bridge);
+  const settled = reads();
+  await poll(page, bridge);
+  if (reads() !== settled) throw new Error("photos' status was still read after its queue drained");
+  await page.close();
+});
+
+await scenario("at one folder a banner names none, and its buttons act as they always did", async () => {
+  const { bridge, page } = await openWithBanners({ docs: [permanent("d.txt")] }, { names: ["docs"] });
+  await pollForBanners(page, bridge, 1);
+  const [banner] = bannersOf(bridge);
+  if ("pair" in banner || banner.app !== "Drive Sync") {
+    throw new Error(`a one-folder banner was ${JSON.stringify(banner)}`);
+  }
+  await clickBanner(page, { id: 1, kind: "deletion", action: "keep" });
+  await until("the keep", () => bridge.called("keep").length === 1);
+  expectPair(bridge.called("keep"), "docs", "a one-folder keep");
+  await clickBanner(page, { id: 1, kind: "outage", action: "retry" });
+  await until("the tray's retry", () =>
+    bridge.called("tray_action").some((call) => call.args?.id === "tryAgain"),
+  );
+  if (bridge.called("sync_now").length)
+    throw new Error("a one-folder retry was sent as a pair-addressed sync");
+  await page.close();
+});
 
 await browser.close();
 server.close();
