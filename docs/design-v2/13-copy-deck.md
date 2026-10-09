@@ -26,7 +26,8 @@ Footer doors: `Activity` · `Plan a sync` · `Settings` · `Details`
 Two folders or more (`02-shell.md` "Folder selector", DEVIATIONS §108): the header gains a pill naming the folder
 (`documents`) and its list. One word for a folder's state — `up to date` · `syncing` · `paused` · `sync failed`
 (drawn), and `sign-in expired` · `unreachable` · `nothing synced yet` (daemon-wide, or a hero, so never a row's
-word in a frame) — and the count beside it is the chip's own template, `2 waiting`, drawn as nothing at zero.
+word in a frame; the list does say `unreachable` for every row, with no count, while the daemon is not answering)
+— and the count beside it is the chip's own template, `2 waiting`, drawn as nothing at zero.
 
 ## Main screen
 

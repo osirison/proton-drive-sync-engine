@@ -21,7 +21,7 @@ tree, in `DECISIONS.md` — which also records the one the build overturned):
 
 ### 1.1 What "all screens" means, exactly
 
-`Drive Sync.dc.html` contains **71** frames carrying a `data-screen-label`. **62 are in scope** (51 when this was written; the four `10a` frames at two folders or more, #102 phase 5d, and the seven `2a`/`12a` frames at two folders or more, #102 phase 5c-1, are the difference).
+`Drive Sync.dc.html` contains **72** frames carrying a `data-screen-label`. **63 are in scope** (51 when this was written; the four `10a` frames at two folders or more, #102 phase 5d, and the eight `2a`/`12a` frames at two folders or more, #102 phase 5c-1, are the difference).
 
 | Group | Frames | Size |
 | --- | --- | --- |

@@ -99,9 +99,13 @@ notice:
   the window is about; pressing it (or Down, from the keyboard) lists the folders, each with a
   word for its state and a count of what is waiting in it, and choosing one moves the whole window
   to it — the status chip, the attention band, Deletions, Conflicts, Plan a sync, Activity and
-  Settings all follow. A ring on the pill means *another* folder has a conflict or a deletion
-  waiting on you; the chip and the band count the folder on screen only. With one folder there is
-  no pill, and nothing about the window changes. The hero's button names its folder at two or
+  Settings all follow. A hollow ring on the pill means *another* folder has a conflict or a deletion
+  waiting on you, and a solid red dot means another folder has a problem — its last sync did not
+  finish, or its folder is not there (an unplugged drive). A folder you paused yourself marks
+  nothing, and if both apply the red dot is the one shown. While the daemon is not answering, the
+  list says every folder is *unreachable* rather than repeating what it last knew. The chip and the
+  band count the folder on screen only. A list of more than ten folders scrolls. With one folder
+  there is no pill, and nothing about the window changes. The hero's button names its folder at two or
   more (`Pause photos`), and a pause the daemon could not write down is said under the hero. The
   app still cannot add a pair or create a `[[pair]]` file, and the **tray** lists every pair with a
   pause row for each (see [Two or more folders](/desktop/tray/#two-or-more-folders)). If you
@@ -113,7 +117,10 @@ notice:
     (`pair = [{ … }]`) is read but not edited: a per-pair save is refused, saying the app edits
     `[[pair]]` tables only.
   - a folder that is in your config but not yet in the running daemon (you edited the file and have
-    not restarted) shows a note under the hero with a **Restart syncing** button.
+    not restarted) shows a note under the hero with a **Restart syncing** button — but only for the
+    folder this window remembered as the one it was showing, which the daemon then cannot show. A
+    folder you never chose in this window gets no note, and neither does a remembered folder the
+    file no longer lists.
   - the daemon logs a warning once at startup when it finds more than one pair configured.
 
 Continue to [Screens](/desktop/screens/) for a tour of each view, or

@@ -129,5 +129,11 @@ folder pair and the seam's side labels are that folder's. Three things say so (D
   - …and the same for a resume — `Resumed, but not saved` / `If syncing restarts first, this folder may be paused again.`
     The daemon's own reason is quoted under the sentence, never joined to it (voice rule 4).
 
-  The seam stops above the block as it does above the band. The block comes down with the next pause or
-  resume, with a switch of folder, and when the daemon stops answering.
+  The seam stops above the block as it does above the band. A notice about an unsaved pause or resume
+  belongs to its folder: it is kept while another folder is on screen (the tray can pause a folder this
+  window is not showing) and said when that folder is next looked at, and only then. It comes down with
+  the next press of Pause or Resume on the hero, as soon as a status reply shows the folder in the other
+  pause state (a pause saved, or a resume done from the tray or `proton-sync resume`, neither of which
+  tells this window), and when the daemon stops answering. A reply that left before the notice was noted
+  cannot end it. A failed `Restart syncing` is remembered for the folder it was tried for; the notice for
+  the next folder the daemon does not run starts over.

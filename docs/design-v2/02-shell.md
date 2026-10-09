@@ -48,11 +48,23 @@ chip, the attention band, Deletions, Conflicts, Plan, Activity and Settings all 
   a `1px` transparent border at rest. Colour `#99A2AE` (`#4B5563` light); no fill and no hue at rest.
   The folder's name, cut at 18 characters with an ellipsis (the full name is its `title`), then an 8px
   chevron drawn as a path. Open: `#101216` fill and a `1px #23262D` border (`#FFFFFF` / `#E0DCD5` light).
-- **The ring.** When ANOTHER folder has something waiting on a person — a conflict, or a deletion not yet
-  answered — the pill carries the chip's own decision ring (`6px`, `1px #FF6B6B`, `#BE123C` light) before
-  the name. Never a number: the chip and the band count the selected folder only, because the screens
-  under them act on one folder, and this ring is how the others are not hidden behind that. A folder that
-  is merely busy, paused or failed does not ring it; the list says so.
+- **The marker.** When ANOTHER folder needs attention the pill carries a 6px dot before the name, in one of
+  two forms. Never a number: the chip and the band count the selected folder only, because the screens
+  under them act on one folder, and this marker is how the others are not hidden behind that.
+  - **The ring** — the chip's own decision ring (`1px #FF6B6B`, `#BE123C` light) — when the other folder has
+    something waiting on a person: a conflict, or a deletion not yet answered.
+  - **The solid dot** (`#FF3B3B`, `#DC2626` light: the failed hexagon's hue) when the other folder has a
+    PROBLEM: its last sync did not finish, or its folder is not there (an unplugged drive; the engine
+    derives `failed` for both). It is filled where the ring is hollow, so the two differ in shape as well
+    as in hue. Maintainer decision, #102, 2026-10-09.
+
+  A folder that is merely busy or paused marks neither — a pause is the person's own choice — and the list
+  says so. When both apply the solid dot is drawn, and only it. The folder on screen never marks its own
+  pill: its failure is the chip and the hero. While the daemon is not answering the pill carries no marker
+  and every row of the list says `unreachable`, the chip's own word, with no count: what was last known
+  about the other folders is a memory, and a list that kept saying `up to date` would be a false all-clear.
+  The solid dot is hue, so no frame that must contain none may draw it (the hue gate's settled set):
+  `2a Two folders failed` and the two open-list frames carry it, `2a Two folders` does not.
 - **The list.** A popover hung under the pill: `min-width:280px`, `padding:6px`, `border-radius:12px`,
   the `⋯` menu's surface. One row per folder, in the daemon's order: a check for the chosen one, its name
   in mono 12px, a word for its state (`up to date`, `syncing`, `paused`, `sync failed`) and a neutral
@@ -61,7 +73,9 @@ chip, the attention band, Deletions, Conflicts, Plan, Activity and Settings all 
 - **Keyboard.** The pill is a button; Down (or a press) opens the list on the chosen folder, the arrows,
   Home and End walk it, Enter chooses, Esc closes and gives the keyboard back to the pill, and a press
   or focus anywhere else closes it. The control is patched on the 2-second poll and never rebuilt, so
-  the keyboard stays where it is.
+  the keyboard stays where it is. Only the chosen row is in the tab order. A list of more than ten folders
+  is `360px` tall (ten and a half rows) and scrolls inside itself, by the wheel and by the arrows alike:
+  unbounded it would hang below the window's edge.
 
 ## Footer navigation — the four doors
 

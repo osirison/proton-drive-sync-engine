@@ -1,6 +1,6 @@
 # The fidelity harness (F8, F9)
 
-What makes "100% fidelity" checkable rather than a claim. Twelve gates over the 62 in-scope frames of
+What makes "100% fidelity" checkable rather than a claim. Twelve gates over the 63 in-scope frames of
 `docs/design-v2/Drive Sync.dc.html`.
 
 ```
@@ -24,10 +24,10 @@ npm run fidelity:pairs      # the pair-routing gate on its own
 | **hue** `assert.mjs`               | a settled surface contains no saturated colour anywhere                         | yes, all 8 settled frames                   |
 | **squeeze** `assert.mjs`           | a compact panel keeps its drawn height in a window too short for it             | yes, all 15 compact frames                  |
 | **copy** `copy-gate.mjs`           | every fixed string in `ui/copy.js` appears verbatim in the frames               | yes, every string and 103 templates         |
-| **contrast** `check-contrast.mjs`  | every text node is legible against what is actually behind it, in both themes   | yes, 1403 nodes across 62 frames            |
-| **fixtures** `check-fixtures.mjs`  | every in-scope frame has a dataset, of the shape its class implies              | yes, all 62                                 |
-| **n1** `check-n1-identity.mjs`     | every frame renders the same bytes when the daemon lists one folder pair        | yes, 55 of 62 — see its reach below         |
-| **pairs** `check-pair-routing.mjs` | a write acts on the pair it was drawn for, not the one selected when it runs    | yes, 37 scenarios (#102 phase 5a-2 to 5c-1) |
+| **contrast** `check-contrast.mjs`  | every text node is legible against what is actually behind it, in both themes   | yes, 1417 nodes across 63 frames            |
+| **fixtures** `check-fixtures.mjs`  | every in-scope frame has a dataset, of the shape its class implies              | yes, all 63                                 |
+| **n1** `check-n1-identity.mjs`     | every frame renders the same bytes when the daemon lists one folder pair        | yes, 55 of 63 — see its reach below         |
+| **pairs** `check-pair-routing.mjs` | a write acts on the pair it was drawn for, not the one selected when it runs    | yes, 56 scenarios (#102 phase 5a-2 to 5c-1) |
 
 Seven of the twelve are `assert.mjs` and need a browser. **contrast**, **n1** and **pairs** need one
 too. **copy** does
@@ -42,8 +42,8 @@ with one folder sees nothing new** (D2) — and a rule the app must keep — **a
 was drawn for** — are claims about _two renderings_ and about _time_, which a gate that looks at one
 rendering of one drawing at one instant cannot make.
 
-- **n1.** 55 of the 62 fixtures are replies from a daemon that predates folder pairs (no `pair`, no
-  `pairs`); the other seven (`2a Two folders` and its six siblings, #102 phase 5c-1) list two folders on purpose,
+- **n1.** 55 of the 63 fixtures are replies from a daemon that predates folder pairs (no `pair`, no
+  `pairs`); the other eight (`2a Two folders` and its seven siblings, #102 phase 5c-1) list two folders on purpose,
   have no one-folder rendering to equal, and are rendered twice from one URL and compared with themselves
   alone — the line under the result names them. `?pairs=1` (`fixtures/preview.js`) answers the same frame the way a current daemon with one
   pair does, and the gate requires the two `outerHTML`s of the app root to be equal — no tolerance, no
@@ -86,7 +86,7 @@ rendering of one drawing at one instant cannot make.
 - **pairs.** `app.js` cannot be imported, so this runs the real page against a scripted stand-in for the
   Tauri bridge that answers each command and can hold a reply open — for a named pair, so two reads of one
   command for two folders can be released in either order — which is what makes the gap between a press and
-  the daemon's answer something a test can stand in. Thirty-seven scenarios — the first twelve (#102 phases 5a-2, 5d, 5b-1), and the twenty-five of phase 5c-1 listed in the gate's own header (the selector, its keyboard and its late replies, the ring, the notice block, the Settings handlers' captured folder, a folder called `constructor`): the follow-up to an approval; the press
+  the daemon's answer something a test can stand in. Fifty-six scenarios — the first sixteen (#102 phases 5a-2, 5d, 5b-1), and the forty of phase 5c-1 listed in the gate's own header (twenty-one that came with the selector: its keyboard and its late replies, the ring, the notice block, the Settings handlers' captured folder, a folder called `constructor`; and nineteen from its review: the marker's problem form, the list with a stopped daemon, the lifetime of the unsaved-pause notice, the remaining Settings handlers, the roving tab stop, a long list, a hung scan): the follow-up to an approval; the press
   of `Run this sync` (pair and token are committed at the press); a switch between two folders that draw
   identical cards; the hero's buttons after a switch that patches the hero in place; a never-synced pair at
   two folders and at one; a **late conflict read** for the folder that was left (two folders in conflict at
@@ -472,11 +472,11 @@ green" can never be confused with "the gate looked at anything". **S10 took it t
 the light theme, and a light frame could not be mapped at all until the ground truth stopped
 recording the prototype's dark page as the frame's own colour (§58b, §91).
 
-That last frame count is the one number in this file that should be read with its companion. **628
-colour comparisons are declined on those eight frames** — printed per frame, every run — because the
-prototype never set them. A light frame is compared on everything it declares and on nothing it
-inherits, which is less than a dark frame is compared on, and the gate says so rather than letting
-55/55 imply otherwise.
+That last frame count is the one number in this file that should be read with its companion. **762
+colour comparisons are declined on the ten light frames** (628 on the first eight) — printed per
+frame, every run — because the prototype never set them. A light frame is compared on everything it
+declares and on nothing it inherits, which is less than a dark frame is compared on, and the gate
+says so rather than letting 63/63 imply otherwise.
 
 **S1 moved the assertion count by 5,296 and the frame count by zero**, which is the honest shape of
 what it did: `2a Settled`, `2a Syncing` and `2a Needs you` were already "mapped" on the strength of a
@@ -489,7 +489,7 @@ those a Phase-1 capability the daemon does not have, recorded with the issue tha
 than left to fail. Two thirds of them are one fact: `5a Checking` is a 522px window and the shell's is
 a fixed 1040.
 
-**All 55 have a dataset** (F9), which is a different claim and deliberately kept separate: a fixture
+**All 63 have a dataset** (F9), which is a different claim and deliberately kept separate: a fixture
 is what the app is fed, a `data-fid` is what gets compared. `check-fixtures.mjs` proves the first,
 `assert.mjs` counts the second, and neither number can inflate the other. Adding the 40 datasets
 moved 11/51 not at all. The two counts only met at S10, and by inheritance rather than by writing:

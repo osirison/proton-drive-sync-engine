@@ -79,7 +79,8 @@ panel read one value) is how it changes (#102 phase 5c-1, DEVIATIONS §108).
 
 - **Everything on screen is that folder's.** The chip, the attention band, the hero, Deletions,
   Conflicts, Plan, Activity and Settings read it; another folder's waiting decisions are the pill's ring,
-  and the list says how many.
+  a failed or unavailable folder is its solid dot (a paused one marks nothing), and the list says which and
+  how many.
 - **A switch is a change of shape, not an update.** What describes the folder that was left is dropped
   before anything is drawn from it: the open conflict and the position in the queue, an armed typed-`DELETE`
   field (it is about one row of one folder, and a row of the same path in the other folder must not answer
@@ -98,7 +99,9 @@ panel read one value) is how it changes (#102 phase 5c-1, DEVIATIONS §108).
   refuses), and a folder that has never synced is drawn as such rather than as `Everything is up to date`.
 - **A pause the daemon could not save** (`pause_unsaved`): the pause TOOK EFFECT; what is not saved is that
   it survives a restart. The window says so in the notice block, from the hero's own press and from a tray
-  row alike (the panel is dismissed before the reply arrives, so Rust tells the window).
+  row alike (the panel is dismissed before the reply arrives, so Rust tells the window). The notice is kept
+  per folder and ends when it stops being true — the next press, a status that shows the other pause state,
+  a daemon that stopped answering (`03-main-screen.md`).
 
 ## Transitions
 
