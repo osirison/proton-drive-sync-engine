@@ -474,14 +474,16 @@ fn check_local_root(local_root: &str) -> Result<(), String> {
 /// F4). The engine accepts a `remote_root` with a `..` in it and the daemon starts on it, but a pass
 /// that finds the root missing then fails with `unsafe remote root path` for ever — measured, not
 /// inferred — so an add that writes one is an add that never syncs. The words are the engine's own
-/// (`require_safe_remote_root`), followed by the reason in plain terms.
-fn check_drive_folder(remote_root: &str) -> Result<(), String> {
+/// (`require_safe_remote_root`), which names the rule that applied; the app adds only what holds for
+/// every such refusal. It used to explain each one as a `..` problem, which told someone whose path
+/// cleans to nothing (`.`) about a `..` that was not there.
+pub(super) fn check_drive_folder(remote_root: &str) -> Result<(), String> {
     config_io::require_safe_remote_root(Path::new(remote_root))
         .map(|_| ())
         .map_err(|engine| {
             format!(
-                "{engine}. The sync service does not accept a Proton Drive path with `..` in it, so \
-                 this folder would never sync: write the path without it."
+                "{engine}. The sync service cannot use that Proton Drive path, so this folder \
+                 would never sync: write the path another way."
             )
         })
 }

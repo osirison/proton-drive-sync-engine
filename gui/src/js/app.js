@@ -4992,15 +4992,30 @@ async function confirmRemoveFolder() {
   // window's own record is the last reply, which still says the removed folder. `refreshConfig` below asks for
   // the folder the store settled on, so a removal of the selected folder asked for the removed name, was
   // refused (`no folder pair named …`), and left the Settings screen drawing that refusal until the next read.
-  // The first folder that remains is the one Rust would fall back to, and a folder that was not selected
-  // moves nothing.
-  if (!activeFixture() && store.select.pairName() === pair) {
-    const next = folderRoster().find((entry) => entry.name !== pair)?.name;
-    if (next) await showFolder(next);
-  }
-  await refreshConfig();
+  // A folder that was not selected moves nothing. `undefined` below is "the folder on screen"; `null` is "name
+  // none", which Rust answers for the selection it holds and falls back to the default folder for.
+  let readFor;
+  if (!activeFixture() && store.select.pairName() === pair) readFor = await leaveRemovedFolder(pair);
+  await refreshConfig(readFor);
   clearTimeout(pollTimer);
   poll();
+}
+
+/**
+ * Move the selection off `pair`, a folder that has just been removed, onto one that can be selected, and say
+ * which. That is the first folder the settings file still holds that the daemon also lists: the file's first
+ * remaining folder is not enough, because `select_pair` is refused for a folder the daemon does not run (one
+ * added and not restarted onto yet) and a refusal leaves the selection on the removed name, which the config
+ * read that follows then asked for and was refused. `null` when none can be selected; the caller then names no
+ * folder and Rust answers for the default one, so the removed name is never asked for.
+ */
+async function leaveRemovedFolder(pair) {
+  const listed = new Set(store.select.pairs().map((entry) => entry?.name));
+  for (const { name } of folderRoster()) {
+    if (name === pair || !listed.has(name)) continue;
+    if (await showFolder(name)) return name;
+  }
+  return null;
 }
 
 // ---- data ----

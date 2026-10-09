@@ -6391,7 +6391,7 @@ costs none; `fidelity:n1` keeps holding the one-folder app to the 55 frames it a
 assertions became 125,981); the contrast gate reads 1,696 nodes across 68 frames (it was 1,423 across 64); the copy
 gate's drawn strings 404 (116 templates rendered at their frame's arguments; the exemptions are 99, up from 95: the
 four are the strings no frame can draw, each with its reason in `copy-gate.mjs`); `fidelity:pairs` 74 scenarios
-became 99 (adding and removing a folder: fifteen; the review of #450: ten, §110f); the unit tests became 600, 28 of
+became 101 (adding and removing a folder: fifteen; the review of #450: ten, and two in its final round, §110f); the unit tests became 600, 28 of
 them in the new `folders.test.js`; `fidelity:fixtures` 68/68 with 1,521 fids keys. **`fidelity:n1` is still 55/55**: the four new
 frames draw two folders, so each is compared with itself alone (eight such frames became twelve), and the one counted
 apart is unchanged. The `64` is quoted in `extract.mjs`, `frame-classes.mjs`, `check-fixtures.mjs`,
@@ -6429,3 +6429,19 @@ fails at the commit it was found on) and each guard was poisoned. What changed, 
   reply, and the config read that follows a removal used to ask for the removed name and draw the refusal.
 - **The add dialog keeps its prices** for as long as the text on screen is the text they were measured for. Editing a
   side used to drop that side's price, so returning to the checked text armed `Add folder` with one price missing.
+
+The final round of the same review (two routing scenarios, 94 and 95, and one Rust test):
+
+- **The selection leaves a removed folder for one the service lists.** The first version moved it to the first
+  folder the settings file still held; if the service did not run that one (a folder added and not restarted onto
+  yet) `select_pair` was refused, the selection stayed on the removed name, and the config read that followed asked
+  for it and drew `no folder pair named`. It now tries the file's remaining folders that the service lists, in file
+  order, and when none can be selected the read names no folder, which Rust answers for the default one.
+- **The Drive-path refusal names its own cause.** The engine refuses a remote root for two reasons, a `..` in it and a
+  path that cleans to nothing (`.`, `./`), in one sentence; the add used to explain every refusal as a `..` problem.
+  `require_safe_remote_root` now says which rule applied (`RemoteRootFault`), and the app adds only what holds for
+  both. Through the add command a `.` never reaches that check: beside any other pair the overlap rule, which treats
+  `.` as the parent of every root, refuses it first and truly (`a_drive_path_of_dots_is_met_by_the_overlap_rule_*`).
+- **A dialog replaced by another dialog lets go of its folder state** (the release in `openOverlay`) had no test: a
+  failed save opening `Save refused` over an add dialog that was only being typed in left a queued check to be asked
+  for a dialog nobody could see. Scenario 95 pins it.

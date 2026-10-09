@@ -8,11 +8,12 @@
 // that answers each command and **holds a reply open when told to**, which is what makes the window
 // between "the person pressed it" and "the daemon answered" a thing a test can stand in.
 //
-// Ninety-nine scenarios (the first sixteen are phases 5a-2, 5d and 5b-1's; forty-three are phase 5c-1's —
+// A hundred and one scenarios (the first sixteen are phases 5a-2, 5d and 5b-1's; forty-three are phase 5c-1's —
 // twenty-one built with the selector, the nineteen its review added and the three its second review added — and the last fifteen
 // are phase 5e's, the notifications: the six it was built with and the nine its review added; both below the list —
-// the fifteen after them are phase 5c-2's, adding and removing folders, below the notifications', and the ten after those
-// are its review's (84 to 93, at the end of the file). The first four are each a way a write can land on a different pair than the one it was
+// the fifteen after them are phase 5c-2's, adding and removing folders, below the notifications', the ten after those
+// are its review's (84 to 93), and the last two are that review's final round (94 and 95), all at the end of the
+// file). The first four are each a way a write can land on a different pair than the one it was
 // drawn for — each was a bug before the capture existed or would be again if it were removed. The fifth
 // and sixth are the first-run rule at two pairs and at one. The next three are the rest of the capture:
 // a late READ, the decision on a conflict, and the tray panel's pin. The next two are the tray panel's
@@ -275,6 +276,9 @@ class Bridge {
     // roster does not have is REFUSED (`read_config`), and a selection that names none falls back to the first
     // folder. Off, the stand-in is kind to a selection that outlived its folder, which hides the bug it is for.
     this.strict = false;
+    // Folders `select_pair` refuses although the roster lists them (strict only): the daemon stopped running
+    // one since the window last heard its list. Refused as Rust refuses, with the selection left where it was.
+    this.selectRefused = new Set();
     // The `notify_policy` the window reads at boot. `never` for every scenario that is not about banners
     // (the default stays what it was), so only the ones that ask for it can raise one.
     this.notifyPolicy = notifyPolicy;
@@ -598,6 +602,10 @@ class Bridge {
         );
         return null;
       case "select_pair":
+        // As Rust: a folder the daemon does not run is refused, and the selection stays where it was.
+        if (this.strict && (!this.names.includes(args?.name) || this.selectRefused.has(args?.name))) {
+          throw new Error(`no folder pair named "${args?.name}"`);
+        }
         this.selected = args?.name;
         return args?.name;
       case "pause":
@@ -3861,6 +3869,13 @@ await scenario(
 //  91. REMOVING THE SELECTED FOLDER moves the selection first: nothing asks for the removed name afterwards.
 //  92. RETURNING TO THE TEXT A CHECK WAS MADE FOR brings back what the check found (J11).
 //  93. A LATE ANSWER FOR OLD TEXT does not replace the engine's answer for the text on screen (J12).
+//
+// ---- the final fix round of the review (#450) --------------------------------------------------------------------
+//
+//  94. REMOVING THE SELECTED FOLDER MOVES THE SELECTION TO A FOLDER THE SERVICE LISTS, not to the first the file holds:
+//      the file's first remaining folder may be one the service does not run, and `select_pair` is refused for it.
+//      When no folder can be selected the config read names none, and the removed name is still never asked for.
+//  95. A FAILED SAVE THAT REPLACES THE ADD DIALOG takes the check a keystroke had queued with it.
 
 await scenario(
   "the confirmation of the last folder says why it cannot be removed, and removes nothing",
@@ -4031,6 +4046,105 @@ await scenario(
     await settle(page);
     if (!(await dialogText(page)).includes(sentence)) {
       throw new Error("a late answer for old text replaced the engine's refusal of the name on screen");
+    }
+    await page.close();
+  },
+);
+
+await scenario(
+  "removing the selected folder moves the selection to a folder the service lists, and names none when none can be selected",
+  async () => {
+    // The file lists `docs` first and the service does not run it (added, and not restarted onto yet), so the
+    // selection cannot go there: it is refused, and the selection stayed on the removed name for the config
+    // read to ask for.
+    const running = () => {
+      const bridge = new Bridge(
+        { docs: [], photos: [], music: [] },
+        { names: ["photos", "music"], roster: ["docs", "photos", "music"], selected: "photos" },
+      );
+      bridge.strict = true;
+      bridge.refuseToList = true;
+      return bridge;
+    };
+    const removePhotos = async (bridge) => {
+      const page = await open(bridge);
+      await until("a first poll", () => bridge.called("get_status").length >= 1);
+      await pressRemoveOn(page, "photos");
+      await press(page, FOLDERS.remove.confirm);
+      await until("the account", async () =>
+        (await dialogText(page)).includes(FOLDERS.remove.removed("photos")),
+      );
+      await settle(page);
+      const after = bridge.calls.slice(bridge.calls.findIndex((call) => call.cmd === "remove_pair") + 1);
+      if (after.some((call) => call.cmd === "read_config" && call.args?.pair === "photos")) {
+        throw new Error("the removed folder was asked for by name");
+      }
+      if ((await pageText(page)).includes("no folder pair named")) {
+        throw new Error("the Settings screen is showing the refusal of the removed name");
+      }
+      return { page, after };
+    };
+
+    const listed = running();
+    const first = await removePhotos(listed);
+    const moved = first.after.filter((call) => call.cmd === "select_pair").map((call) => call.args.name);
+    if (JSON.stringify(moved) !== JSON.stringify(["music"])) {
+      throw new Error(
+        `the selection went to ${JSON.stringify(moved)}, expected the first folder the service lists`,
+      );
+    }
+    if (listed.selected !== "music") throw new Error(`the selection is ${listed.selected}, expected music`);
+    await first.page.close();
+
+    // The one folder the service lists is refused too (it stopped running it since the window last heard): the
+    // selection stays, the read names no folder, and Rust answers for the default one.
+    const refused = running();
+    refused.selectRefused = new Set(["music"]);
+    const second = await removePhotos(refused);
+    const tried = second.after.filter((call) => call.cmd === "select_pair").map((call) => call.args.name);
+    if (JSON.stringify(tried) !== JSON.stringify(["music"])) {
+      throw new Error(`the selection was tried on ${JSON.stringify(tried)}, expected only the listed folder`);
+    }
+    // The first read after the removal is the one the removal makes: it names no folder. (Later reads are the
+    // window's own, for whichever folder the service's reply then puts on screen.)
+    const reads = second.after.filter((call) => call.cmd === "read_config");
+    if (!reads.length || reads[0].args?.pair) {
+      throw new Error(
+        `the config was first read for ${JSON.stringify(reads[0]?.args?.pair)}, expected no name`,
+      );
+    }
+    await second.page.close();
+  },
+);
+
+await scenario(
+  "a failed save that replaces the add dialog takes the check a keystroke had queued with it",
+  async () => {
+    // The add dialog is only being typed in, so nothing is in flight and the failed save's `Save refused` may take
+    // its place. A dialog that is replaced lets go of what it held exactly as one that is closed does.
+    const bridge = new Bridge({ docs: [] }, { names: ["docs"], selected: "docs", configs: SETTINGS_CONFIGS });
+    const page = await open(bridge);
+    await openDeletions(page);
+    await pressCard(page, SETTINGS.askNever);
+    const releaseSave = bridge.hold("write_config");
+    await press(page, SETTINGS.save);
+    await until("the save to leave", () => bridge.called("write_config").length === 1);
+    await fillAddDialog(page);
+    await settle(page);
+    // The last keystroke queued a check; the save is refused before it is asked.
+    await typeIntoField(page, "folder-local", "~/Pictures");
+    bridge.writeRefusal = "disk full";
+    releaseSave();
+    await until(
+      "the add dialog to be replaced",
+      async () => !(await dialogText(page)).includes(FOLDERS.add.title),
+    );
+    if (!(await hasDialog(page))) throw new Error("the failed save drew no dialog of its own");
+    const asked = bridge.called("check_add_pair").length;
+    await delay(600);
+    await settle(page);
+    if (bridge.called("check_add_pair").length !== asked) {
+      throw new Error("the engine was asked about an add whose dialog had been replaced");
     }
     await page.close();
   },

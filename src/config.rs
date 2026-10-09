@@ -1641,7 +1641,7 @@ fn local_comparison_key(path: &Path) -> PathBuf {
 /// `..` is kept verbatim rather than resolved, which is where this parts company with
 /// [`local_comparison_key`] (#365). The reason is not the arithmetic — lexically `/Drive/a/../b`
 /// is `/Drive/b` — but that **no such remote root ever reaches the daemon**:
-/// `proton::clean_remote_root_path` answers `None` for any path carrying a `..`, so resolving one
+/// `proton::clean_remote_root_path` refuses any path carrying a `..`, so resolving one
 /// here would be this layer alone deciding that two Drive locations are one while nothing
 /// downstream agrees, for a value that is refused either way.
 fn remote_root_comparison_key(remote_root: &Path) -> PathBuf {
@@ -6912,7 +6912,7 @@ local_delete_mode = \"permanent\"
 
         // A remote root is a different question and is deliberately untouched — not because the
         // arithmetic differs (lexically `/Drive/a/../b` IS `/Drive/b`) but because
-        // `proton::clean_remote_root_path` answers `None` for any remote path carrying a `..`, so
+        // `proton::clean_remote_root_path` refuses any remote path carrying a `..`, so
         // no such root reaches the daemon and this layer must not be the one deciding it means
         // something.
         assert_eq!(

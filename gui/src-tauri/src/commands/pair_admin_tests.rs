@@ -14,8 +14,8 @@
 //! daemon replaced by closures.
 
 use super::pair_admin::{
-    finish_removal, AddPairRequest, RemovedPair, SetAsideReport, DAEMON_ANSWER_WAIT,
-    DAEMON_ASK_EVERY,
+    check_drive_folder, finish_removal, AddPairRequest, RemovedPair, SetAsideReport,
+    DAEMON_ANSWER_WAIT, DAEMON_ASK_EVERY,
 };
 use super::*;
 use std::cell::{Cell, RefCell};
@@ -293,6 +293,58 @@ fn a_drive_path_with_a_dotdot_is_refused_in_the_engines_words_and_writes_nothing
     }
     // A `.` is cleaned by the engine, not refused: it is not what was measured.
     add(&session, "photos", &folder, "/Drive/./photos").expect("a '.' component is cleaned");
+}
+
+#[test]
+fn a_drive_path_that_names_no_folder_is_refused_without_blaming_a_dotdot() {
+    // The client refuses a root that cleans to nothing (`.`, `./`) as well as one with a `..` in it, and
+    // the add used to explain every refusal as a `..` problem, so such a path was met with a sentence
+    // about a `..` that is not there (final fix round of #450, item 1). The cause is the engine's to say;
+    // the app adds only what holds for every cause.
+    for remote in [".", "./", "././"] {
+        let error = check_drive_folder(remote).unwrap_err();
+        assert!(
+            error.starts_with(&format!("unsafe remote root path: {remote}")),
+            "{remote}: {error}"
+        );
+        assert!(
+            error.contains("names no folder"),
+            "{remote}: the engine says what is wrong with it: {error}"
+        );
+        assert!(
+            !error.contains(".."),
+            "{remote}: there is no `..` in it to explain: {error}"
+        );
+    }
+    // The `..` is still named when it is the cause, and not the other cause beside it.
+    let error = check_drive_folder("/Drive/../x").unwrap_err();
+    assert!(error.contains("`..`"), "{error}");
+    assert!(!error.contains("names no folder"), "{error}");
+    // A path the client accepts, `.` components cleaned, is not refused at all.
+    for remote in ["/Drive/photos", "/Drive/./photos", "Drive/photos", "/"] {
+        check_drive_folder(remote).unwrap_or_else(|error| panic!("{remote}: {error}"));
+    }
+}
+
+#[test]
+fn a_drive_path_of_dots_is_met_by_the_overlap_rule_beside_any_other_pair() {
+    // Why the test above is aimed at the check itself and not at an add: `.` is a parent of every other
+    // remote root, so beside any pair (an add always has one, since a lone pair without roots is itself
+    // refused) the engine's overlap rule speaks first, truthfully, and the Drive check never sees it.
+    // Pinned so that a change to that order is seen, not so that it is preferred.
+    let session = one_pair();
+    let before = session.config();
+    let folder = session.folder("photos", false);
+    for remote in [".", "./"] {
+        let error = add(&session, "photos", &folder, remote).unwrap_err();
+        assert!(error.contains("is a parent of"), "{remote}: {error}");
+        assert!(!error.contains("`..`"), "{remote}: {error}");
+        assert_eq!(
+            session.config(),
+            before,
+            "{remote}: a refusal writes nothing"
+        );
+    }
 }
 
 #[test]
