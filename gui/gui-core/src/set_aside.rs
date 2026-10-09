@@ -381,7 +381,9 @@ pub fn plan(view: &PairView) -> Planned {
                 {
                     return undetermined(
                         format!(
-                            "the folder {} cannot be read ({parent_error}), so the app cannot tell                              whether {} is there; a drive that is unplugged or not mounted looks the                              same, and nothing was moved",
+                            "the folder {} cannot be read ({parent_error}), so the app cannot \
+                             tell whether {} is there; a drive that is unplugged or not mounted \
+                             looks the same, and nothing was moved",
                             parent.display(),
                             file.display()
                         ),

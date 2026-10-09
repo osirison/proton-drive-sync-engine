@@ -861,6 +861,16 @@ fn a_state_file_whose_folder_is_missing_is_not_absent() {
         "{}",
         undetermined.reason
     );
+    assert!(
+        !undetermined.reason.contains("  "),
+        "the reason text should not contain double spaces: {}",
+        undetermined.reason
+    );
+    assert!(
+        undetermined.reason.contains("cannot tell whether"),
+        "the reason text should contain 'cannot tell whether': {}",
+        undetermined.reason
+    );
     // With the parent present and listable, the same absence is an absence.
     fs::create_dir_all(&gone).unwrap();
     assert!(matches!(super::plan(&view), Planned::Nothing { .. }));
