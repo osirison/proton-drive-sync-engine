@@ -148,10 +148,16 @@ test("a payload carries every field the Rust struct requires", () => {
   const fields = declared.map((field) => field.name);
   assert.ok(fields.length >= 5, `parsed ${fields.length} fields — did the struct move?`);
   const payload = payloadFor(bannerFor(EVENTS.deletion));
-  // An `Option` field is the one kind that may be missing: `pair` is sent at two folders or more only.
-  for (const { name, optional } of declared) {
-    if (!optional) assert.ok(payload[name] != null, `payloadFor sends no \`${name}\``);
+  // EVERY field but one. `pair` is the only field that may be missing, and only at ONE folder, where there is
+  // no choice of folders to name; an `Option` field added later is not exempt just for being an `Option` —
+  // serde fills it with `None` and the banner loses whatever it carried, which no other gate would notice.
+  for (const { name } of declared) {
+    if (name === "pair") continue;
+    assert.ok(payload[name] != null, `payloadFor sends no \`${name}\``);
   }
+  const pair = declared.find((field) => field.name === "pair");
+  assert.ok(pair?.optional, "`pair` is the one field that may be absent, so the struct must default it");
+  assert.equal("pair" in payload, false, "a one-folder payload carries a pair");
   // And the other way: a field the struct does not declare is dropped by serde, silently.
   for (const key of Object.keys(payload)) {
     assert.ok(fields.includes(key), `payloadFor sends \`${key}\`, which NotifyPayload does not take`);
@@ -164,6 +170,7 @@ test("a payload carries every field the Rust struct requires", () => {
       `payloadFor sends \`${key}\` for a folder, which NotifyPayload does not take`,
     );
   }
+  assert.equal(named.pair, "photos", "at two folders `pair` is sent, under the name the struct reads");
   assert.ok(fields.includes("pair"), "NotifyPayload has no `pair`");
 });
 
