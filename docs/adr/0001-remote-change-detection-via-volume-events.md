@@ -244,8 +244,9 @@ periodic full scan as backstop", and the original `EVENTS_POLL_INTERVAL` comment
   change removed.
 - **Full remote-tree walks** therefore happen on: a startup bootstrap (when warm start is
   ineligible), an event-stream fallback (no cursor / no volume / fetch error / server refresh /
-  unresolvable node / incomplete remote listing / a `Created` node whose parent listing has not
-  caught up with it), `proton-sync resync` / `--full-walk`, the opt-in
+  unresolvable node — which, since ADR 0006, is a node the pair cannot place *while its tree is not
+  fully named*, no longer any node elsewhere on the volume / incomplete remote listing / a `Created`
+  node whose parent listing has not caught up with it), `proton-sync resync` / `--full-walk`, the opt-in
   `events_full_scan_every` (in-run) and `warm_start_full_walk_every` (across restarts), and every
   pass while the session is unusable. A warm start instead replays the cursor and full-scans only
   the local tree (ADR 0004).

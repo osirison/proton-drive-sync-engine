@@ -34,7 +34,7 @@ would resolve against each process's own working directory.
 | `activity [<path>]` | Show what has moved recently, or one path's own history. |
 | `list [<path>]` | List one folder on Proton Drive, as the daemon sees it now. |
 | `pause` | Pause automatic **and** manual sync for the selected folder pair until resumed. The pause is remembered in that pair's own index, so it survives a daemon restart. A pause made while a pair is unavailable is kept in memory only, and a restart loses it. A paused unavailable pair is not retried, so to make the pause stick, resume the pair once its folder is back and pause it again. `proton-sync` says "Not saved". |
-| `resume` | Resume sync work for the selected folder pair, and forget its remembered pause. |
+| `resume` | Resume sync work for the selected folder pair, and forget its remembered pause. If the pair was paused, a pass is queued at once (as `syncnow` would) instead of waiting for the pair's next timer, and the reply says `a pass is scheduled`. A pair that was not paused queues nothing. |
 | `syncnow` | Trigger a sync and watch it finish (`--no-wait` to just schedule it). |
 | `resync` | Force a full remote re-scan on the next pass instead of the fast warm start. |
 | `reset-index --yes` | Discard the baseline, the event cursors and the standing delete approvals, and rebuild them from a full scan of both sides. Your files are not touched; the rebuild adopts what already agrees, downloads what is missing and deletes nothing. It is also how you start a folder over from Proton when the daemon [holds it as replaced by an empty folder](/reference/troubleshooting/#a-folder-pair-shows-an-error-and-isnt-syncing). |

@@ -60,13 +60,17 @@ mod unix_tests {
         let resumed = run_control(&socket_path, "resume");
         assert_eq!(resumed["status"], "running");
         assert_eq!(resumed["paused"], false);
+        // Resuming a paused pair queues a pass of its own (#456). It is waited for, so the
+        // `syncnow` below is a pass of its own too and does not coalesce into this one while it is
+        // still queued.
+        wait_for_reconcile_seq(&socket_path, &mut daemon, 2);
 
         // `syncnow` acks immediately and the CLI watches status until the scheduled pass
         // finishes, so the final `--json` payload is the post-sync status.
         let synced = run_control(&socket_path, "syncnow");
         assert_eq!(synced["status"], "running");
         assert_eq!(synced["syncing"], false);
-        assert!(synced["reconcile_seq"].as_u64().unwrap_or(0) >= 2);
+        assert!(synced["reconcile_seq"].as_u64().unwrap_or(0) >= 3);
         assert!(synced["last_sync_epoch_secs"].as_u64().is_some());
         assert!(synced["last_error"].is_null());
         assert_eq!(synced["last_plan_summary"]["total"].as_u64(), Some(0));
@@ -80,12 +84,12 @@ mod unix_tests {
         // ten minutes at the events poll cadence).
         let history = run_control(&socket_path, "history");
         let recent = history["recent"].as_array().expect("recent passes");
-        // Two passes: the startup reconcile, then the manual syncnow after resume. (The syncnow
-        // issued while paused is skipped without scheduling, so it runs no pass at all.) Both are
-        // full-tree walks against an empty tree — recorded despite changing nothing, because
-        // "when did the last full sweep run, and was anything out of step" is exactly what a full
-        // sweep's row exists to answer (#238).
-        assert_eq!(recent.len(), 2);
+        // Three passes: the startup reconcile, the one the resume queued, then the manual syncnow
+        // after it. (The syncnow issued while paused is skipped without scheduling, so it runs no
+        // pass at all.) All are full-tree walks against an empty tree — recorded despite changing
+        // nothing, because "when did the last full sweep run, and was anything out of step" is
+        // exactly what a full sweep's row exists to answer (#238).
+        assert_eq!(recent.len(), 3);
         for pass in recent {
             assert_eq!(pass["kind"], "full-sweep");
             assert_eq!(pass["outcome"], "clean");
@@ -1268,6 +1272,17 @@ exit 64
         extra_top_level: &str,
         pairs: &[(&str, &str, u64)],
     ) -> (PathBuf, Vec<(PathBuf, PathBuf)>) {
+        write_pairs_config_with_events(directory, extra_top_level, pairs, false)
+    }
+
+    /// [`write_pairs_config`] with `events_driven` chosen. `true` is for the one test that runs the
+    /// daemon's real session and events code against a scripted stream (`common::ScriptedEvents`).
+    fn write_pairs_config_with_events(
+        directory: &Path,
+        extra_top_level: &str,
+        pairs: &[(&str, &str, u64)],
+        events_driven: bool,
+    ) -> (PathBuf, Vec<(PathBuf, PathBuf)>) {
         let mut text = String::from(extra_top_level);
         let mut paths = Vec::new();
         for (name, remote_root, scan_interval_secs) in pairs {
@@ -1277,7 +1292,7 @@ exit 64
             fs::create_dir_all(&local_root).expect("local root");
             text.push_str(&format!(
                 "\n[[pair]]\nname = \"{name}\"\nlocal_root = \"{}\"\nremote_root = \"{remote_root}\"\n\
-                 db_path = \"{}\"\nlockfile_path = \"{}\"\nevents_driven = false\n\
+                 db_path = \"{}\"\nlockfile_path = \"{}\"\nevents_driven = {events_driven}\n\
                  scan_interval_secs = {scan_interval_secs}\n",
                 local_root.display(),
                 db_path.display(),
@@ -1441,6 +1456,132 @@ exit 64
             "a request for b ran b's pass, not the default pair's"
         );
         assert_eq!(pair_seq(&socket_path, "b"), b_before + 1);
+    }
+
+    /// A fake `proton-drive` for two roots on **one volume** (`vol`): `/Drive/A` and `/Drive/B`
+    /// each list one file, `f.txt`, whose SHA-1 is `sha1` (the content the test wrote locally, so
+    /// nothing needs transferring), under a root folder that carries its own uid. It appends every
+    /// directory it is asked to list to `<script>.lists`, which is what the test reads.
+    fn write_shared_volume_proton_drive(directory: &Path, sha1: &str) -> PathBuf {
+        let listing = |name: &str, node: &str| {
+            format!(
+                r#"{{"entries":[{{"name":"{name}","type":"folder","uid":"vol~root-{node}","entries":[{{"name":"f.txt","uid":"vol~f-{node}","activeRevision":{{"claimedDigests":{{"sha1":"{sha1}"}}}}}}]}}]}}"#
+            )
+        };
+        let (a, b) = (listing("A", "a"), listing("B", "b"));
+        write_script(
+            directory,
+            "fake-shared-volume-proton-drive",
+            &format!(
+                r#"#!/bin/sh
+if [ "$1" = "filesystem" ] && [ "$2" = "list" ] && [ "$3" = "--json" ]; then
+  printf '%s\n' "$4" >> "$0.lists"
+  case "$4" in
+    /Drive/A) printf '%s\n' '{a}'; exit 0 ;;
+    /Drive/B) printf '%s\n' '{b}'; exit 0 ;;
+  esac
+fi
+echo "unexpected proton-drive args: $*" >&2
+exit 64
+"#
+            ),
+        )
+    }
+
+    /// How many times the fake was asked to list `remote_root`.
+    fn lists_of(fake_proton_drive: &Path, remote_root: &str) -> usize {
+        fs::read_to_string(format!("{}.lists", fake_proton_drive.display()))
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| *line == remote_root)
+            .count()
+    }
+
+    /// #456, driven through the real binaries: two pairs on one Proton volume, the daemon's real
+    /// session and events code against a scripted stream. A change in B's folder arrives in A's
+    /// delta as a created node whose parent A has never heard of, and A used to list its whole tree
+    /// for it. Here it lists nothing.
+    #[test]
+    fn a_second_pairs_change_never_makes_the_first_pair_list_its_tree() {
+        let directory = tempdir().expect("tempdir");
+        let (config, paths) = write_pairs_config_with_events(
+            directory.path(),
+            "",
+            &[("a", "/Drive/A", 3600), ("b", "/Drive/B", 3600)],
+            true,
+        );
+        for (local_root, _) in &paths {
+            fs::write(local_root.join("f.txt"), b"content")
+                .expect("a file in step with the remote");
+        }
+        let fake = write_shared_volume_proton_drive(
+            directory.path(),
+            &proton_drive_sync_engine::index::sha1_hex(b"content"),
+        );
+        let events = common::ScriptedEvents::in_directory(directory.path());
+        events.latest("e1");
+        let socket_path = directory.path().join("daemon.sock");
+        let mut daemon = DaemonProcess::spawn_with_config_and_scripted_events(
+            &config,
+            &socket_path,
+            &fake,
+            &events,
+        );
+        wait_for_socket(&socket_path, &mut daemon);
+        wait_for_pair_reconcile_seq(&socket_path, &mut daemon, Some("a"), 1);
+        wait_for_pair_reconcile_seq(&socket_path, &mut daemon, Some("b"), 1);
+        let a_before = lists_of(&fake, "/Drive/A");
+        assert!(a_before >= 1, "precondition: A's boot pass listed its tree");
+        let a_status = run_control_pair(&socket_path, Some("a"), "status");
+        assert!(
+            a_status["last_error"].is_null(),
+            "the boot pass was clean: {a_status}"
+        );
+
+        // Somebody adds a file to B's folder. The volume's stream reports it to every pair.
+        events.page(
+            "e1",
+            "e2",
+            r#"[{"EventID":"ev-1","EventType":1,"Link":{"LinkID":"new-in-b","ParentLinkID":"root-b","IsShared":false,"IsTrashed":false}}]"#,
+        );
+        let a_seq = pair_seq(&socket_path, "a");
+        run_control_args(&socket_path, &["--pair", "a", "--json", "syncnow"]);
+        wait_for_pair_reconcile_seq(&socket_path, &mut daemon, Some("a"), a_seq + 1);
+
+        assert!(
+            events
+                .requests()
+                .iter()
+                .any(|url| url.ends_with("/drive/v2/volumes/vol/events/e1")),
+            "A's pass fetched the delta: {:?}",
+            events.requests()
+        );
+        assert_eq!(
+            lists_of(&fake, "/Drive/A"),
+            a_before,
+            "A listed nothing for a node in B's folder\n{}",
+            daemon.stderr_tail()
+        );
+        let a_status = run_control_pair(&socket_path, Some("a"), "status");
+        assert!(a_status["last_error"].is_null(), "{a_status}");
+    }
+
+    /// #456: a resumed pair runs at once, not at its next timer. Its timer here is ten minutes.
+    #[test]
+    fn a_resumed_pair_runs_before_its_timer() {
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, socket_path, _fake, _paths) =
+            two_pair_daemon(directory.path(), [600, 600]);
+
+        let paused = run_control_args(&socket_path, &["--pair", "b", "--json", "pause"]);
+        assert_eq!(paused["paused"], true);
+        let before = pair_seq(&socket_path, "b");
+
+        let resumed = run_control_args(&socket_path, &["--pair", "b", "--json", "resume"]);
+        assert_eq!(resumed["paused"], false);
+        wait_for_pair_reconcile_seq(&socket_path, &mut daemon, Some("b"), before + 1);
+
+        assert_eq!(pair_seq(&socket_path, "a"), 1, "and only `b` ran");
     }
 
     #[test]
@@ -1843,6 +1984,34 @@ exit 64
                     proton_cli.as_os_str(),
                 ],
             )
+        }
+
+        /// [`Self::spawn_with_config`] for a config whose pairs have `events_driven` on, against the
+        /// scripted event stream `events` (see `common::ScriptedEvents`): the daemon runs its real
+        /// session and events code, and every tool it shells for them is answered from the test's
+        /// own files.
+        fn spawn_with_config_and_scripted_events(
+            config_path: &Path,
+            socket_path: &Path,
+            proton_cli: &Path,
+            events: &common::ScriptedEvents,
+        ) -> Self {
+            let sandbox = socket_path.parent().expect("socket has a parent dir");
+            let stderr_path = sandbox.join("daemon.stderr");
+            let mut command = common::syncd(sandbox);
+            command
+                .args([
+                    OsStr::new("--config"),
+                    config_path.as_os_str(),
+                    OsStr::new("--socket-path"),
+                    socket_path.as_os_str(),
+                    OsStr::new("--proton-cli"),
+                    proton_cli.as_os_str(),
+                ])
+                .env("RUST_LOG", "warn");
+            events.attach(&mut command);
+            let child = common::spawn_logging(&mut command, &stderr_path);
+            Self { child, stderr_path }
         }
 
         /// **The one place a `proton-syncd` is started.** Every daemon these tests run — and every

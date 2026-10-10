@@ -191,6 +191,9 @@ impl RemoteEntity {
 struct RemoteListing {
     files: HashMap<PathBuf, RemoteFile>,
     directories: HashMap<PathBuf, RemoteDirectory>,
+    /// The id the root listing's own wrapper node carried, when it carried one. The wrapper is the
+    /// listed folder itself and never appears among the entries; this is what names it (#456).
+    root_id: Option<String>,
 }
 
 impl RemoteListing {
@@ -287,6 +290,14 @@ pub trait ProtonClient: Send + Sync {
         _wait: Duration,
     ) -> AppResult<HashMap<PathBuf, RemoteEntity>> {
         self.list_directory(remote_root, relative_directory)
+    }
+    /// The composed uid (`volumeId~nodeId`) of the node `remote_root` names, or `None` when this
+    /// client cannot tell (#456). What a pair needs it for is to tell an event inside its folder
+    /// from one elsewhere on the volume; `None` costs only that — nothing is then ever skipped as
+    /// outside. Two read-only listings at most, so it is learned once and kept, not asked per pass.
+    /// The default knows nothing, which is what a test double wants.
+    fn remote_root_uid(&self, _remote_root: &Path) -> AppResult<Option<String>> {
+        Ok(None)
     }
     fn ensure_root_directory(&self, remote_root: &Path) -> AppResult<()> {
         Err(boxed_error(format!(
@@ -662,6 +673,19 @@ impl ProtonDriveClient {
         relative_directory: &Path,
         interactive_wait: Option<Duration>,
     ) -> AppResult<HashMap<PathBuf, RemoteEntity>> {
+        Ok(self
+            .list_one_directory_listing(remote_root, relative_directory, interactive_wait)?
+            .into_entities())
+    }
+
+    /// [`Self::list_one_directory`] before the entries are flattened, so a caller that wants the
+    /// root wrapper's id ([`RemoteListing::root_id`]) can read it from the same single call.
+    fn list_one_directory_listing(
+        &self,
+        remote_root: &Path,
+        relative_directory: &Path,
+        interactive_wait: Option<Duration>,
+    ) -> AppResult<RemoteListing> {
         let remote_directory = if relative_directory.as_os_str().is_empty() {
             remote_root.to_path_buf()
         } else {
@@ -691,7 +715,7 @@ impl ProtonDriveClient {
         // Non-recursive: `parse_remote_listing` over a single directory's JSON yields that
         // directory's immediate entries, which is all the resolver needs to locate the changed
         // node among its siblings.
-        Ok(parse_remote_listing(&stdout, remote_root, relative_directory)?.into_entities())
+        parse_remote_listing(&stdout, remote_root, relative_directory)
     }
 
     pub fn new(executable: impl Into<PathBuf>) -> Self {
@@ -825,7 +849,12 @@ impl ProtonClient for ProtonDriveClient {
         }
 
         Ok(RemoteListingStatus::Found(
-            RemoteListing { files, directories }.into_entities(),
+            RemoteListing {
+                files,
+                directories,
+                root_id: None,
+            }
+            .into_entities(),
         ))
     }
 
@@ -844,6 +873,27 @@ impl ProtonClient for ProtonDriveClient {
         wait: Duration,
     ) -> AppResult<HashMap<PathBuf, RemoteEntity>> {
         self.list_one_directory(remote_root, relative_directory, Some(wait))
+    }
+
+    fn remote_root_uid(&self, remote_root: &Path) -> AppResult<Option<String>> {
+        // First, the wrapper node of a listing of the root itself: the listed folder, which the
+        // entries never include but which carries its own id when the CLI prints one.
+        let listing = self.list_one_directory_listing(remote_root, Path::new(""), None)?;
+        if let Some(id) = listing.root_id.filter(|id| id.contains('~')) {
+            return Ok(Some(id));
+        }
+        // Otherwise the root's entry in its parent's listing, named by its last component. A root
+        // with no parent is the volume's own top, which nothing sits above.
+        let (Some(parent), Some(name)) = (remote_root.parent(), remote_root.file_name()) else {
+            return Ok(None);
+        };
+        let siblings = self.list_one_directory(parent, Path::new(""), None)?;
+        Ok(match siblings.get(Path::new(name)) {
+            Some(RemoteEntity::Directory(directory)) => {
+                directory.id.clone().filter(|id| id.contains('~'))
+            }
+            _ => None,
+        })
     }
 
     fn ensure_root_directory(&self, remote_root: &Path) -> AppResult<()> {
@@ -2343,6 +2393,17 @@ fn collect_node(
         None => PathBuf::new(),
     };
 
+    // The wrapper is the listed folder itself: it is dropped from the entries below, but its id is
+    // the one thing that names the folder, so it is kept (the first identified one — a nameless
+    // structural container passes through without an id of its own).
+    if is_root_wrapper
+        && relative_path.as_os_str().is_empty()
+        && listing.root_id.is_none()
+        && let Some(id) = id
+    {
+        listing.root_id = Some(id.to_owned());
+    }
+
     let is_folder = node.is_folder.unwrap_or(false)
         || matches!(node.kind.as_deref(), Some("folder" | "directory"))
         || (!node.children.is_empty() || !node.entries.is_empty() || !node.files.is_empty());
@@ -3117,6 +3178,183 @@ printf '{"entries":[]}\n'
             "an immediately completing command must not be delayed by the cancellation \
              polling loop"
         );
+    }
+
+    // #456: a pair that knows which node its folder is can tell an event inside it from one
+    // elsewhere on the volume. The root listing's wrapper node is the folder itself; it never
+    // appears among the entries, so its id has to be kept on the way out.
+    #[test]
+    fn the_root_wrappers_uid_is_reported_when_the_listing_carries_one() {
+        let json = r#"{"entries":[{"name":"RemoteFolder","type":"folder","uid":"vol~root",
+            "entries":[{"name":"a.txt","uid":"vol~a"},{"name":"sub","type":"folder","uid":"vol~sub"}]}]}"#;
+        let listing = parse_remote_listing(json, Path::new("/Drive/RemoteFolder"), Path::new(""))
+            .expect("a listing");
+        assert_eq!(listing.root_id.as_deref(), Some("vol~root"));
+        assert!(listing.files.contains_key(Path::new("a.txt")));
+        assert!(
+            listing.directories.contains_key(Path::new("sub")),
+            "the folder itself is still not an entry of its own listing"
+        );
+        assert!(!listing.directories.contains_key(Path::new("")));
+    }
+
+    #[test]
+    fn a_wrapper_without_a_uid_reports_none_and_a_subdirectory_listing_never_reports_one() {
+        let bare = r#"{"entries":[{"name":"RemoteFolder","type":"folder","entries":[]}]}"#;
+        assert_eq!(
+            parse_remote_listing(bare, Path::new("/Drive/RemoteFolder"), Path::new(""))
+                .expect("a listing")
+                .root_id,
+            None
+        );
+        // The same wrapper shape, listed for a SUBDIRECTORY: that wrapper is `docs`, not the root.
+        let docs = r#"{"entries":[{"name":"docs","type":"folder","uid":"vol~docs","entries":[]}]}"#;
+        assert_eq!(
+            parse_remote_listing(docs, Path::new("/Drive/RemoteFolder"), Path::new("docs"))
+                .expect("a listing")
+                .root_id,
+            None,
+            "a directory's id is not the root's"
+        );
+    }
+
+    #[test]
+    fn a_top_level_node_that_is_not_the_wrapper_is_not_the_root() {
+        // A listing that is a bare array of the root's children has no wrapper: the first
+        // identified node is a child, and its id is not the folder's.
+        let json = r#"[{"name":"a.txt","uid":"vol~a"},{"name":"b.txt","uid":"vol~b"}]"#;
+        let listing = parse_remote_listing(json, Path::new("/Drive/RemoteFolder"), Path::new(""))
+            .expect("a listing");
+        assert_eq!(listing.root_id, None);
+        assert_eq!(listing.files.len(), 2);
+    }
+
+    /// A fake CLI that answers `filesystem list --json <dir>` from the directory it is asked for
+    /// and appends every directory it was asked for to `<script>.lists`.
+    #[cfg(unix)]
+    fn listing_cli(directory: &Path, root_listing: &str, parent_listing: &str) -> PathBuf {
+        write_script(
+            directory,
+            "fake-proton-drive",
+            &format!(
+                r#"#!/bin/sh
+for last; do :; done
+printf '%s\n' "$last" >> "$0.lists"
+case "$last" in
+  /Drive/RemoteFolder) printf '%s\n' '{root_listing}' ;;
+  /Drive) printf '%s\n' '{parent_listing}' ;;
+  *) echo "Node not found: $last" >&2; exit 1 ;;
+esac
+"#
+            ),
+        )
+    }
+
+    #[cfg(unix)]
+    fn lists_asked(executable: &Path) -> Vec<String> {
+        fs::read_to_string(format!("{}.lists", executable.display()))
+            .unwrap_or_default()
+            .lines()
+            .map(ToOwned::to_owned)
+            .collect()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_root_uid_comes_from_the_wrapper_when_the_listing_carries_one() {
+        let directory = tempdir().expect("tempdir");
+        let executable = listing_cli(
+            directory.path(),
+            r#"{"entries":[{"name":"RemoteFolder","type":"folder","uid":"vol~root","entries":[]}]}"#,
+            r#"{"entries":[]}"#,
+        );
+        let client = ProtonDriveClient::with_command_policy(
+            &executable,
+            CommandPolicy::new(Duration::from_secs(5), 1),
+        );
+
+        let uid = client
+            .remote_root_uid(Path::new("/Drive/RemoteFolder"))
+            .expect("a listing");
+
+        assert_eq!(uid.as_deref(), Some("vol~root"));
+        assert_eq!(
+            lists_asked(&executable),
+            ["/Drive/RemoteFolder"],
+            "one listing, of the root, and nothing above it"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_listing_of_the_roots_parent_names_the_root_by_its_basename() {
+        let directory = tempdir().expect("tempdir");
+        let executable = listing_cli(
+            directory.path(),
+            r#"{"entries":[{"name":"RemoteFolder","type":"folder","entries":[]}]}"#,
+            r#"{"entries":[{"name":"Drive","type":"folder","entries":[
+                {"name":"Other","type":"folder","uid":"vol~other","entries":[]},
+                {"name":"RemoteFolder","type":"folder","uid":"vol~root","entries":[]}]}]}"#,
+        );
+        let client = ProtonDriveClient::with_command_policy(
+            &executable,
+            CommandPolicy::new(Duration::from_secs(5), 1),
+        );
+
+        let uid = client
+            .remote_root_uid(Path::new("/Drive/RemoteFolder"))
+            .expect("a listing");
+
+        assert_eq!(
+            uid.as_deref(),
+            Some("vol~root"),
+            "the sibling named after the root, not the first one listed"
+        );
+        assert_eq!(lists_asked(&executable), ["/Drive/RemoteFolder", "/Drive"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_root_the_parent_listing_does_not_hold_or_cannot_name_has_no_uid() {
+        let directory = tempdir().expect("tempdir");
+        // The wrapper and the parent's entry for the root both carry a raw id: neither is a
+        // composed `volumeId~nodeId`, so neither can be compared with an event's node.
+        let executable = listing_cli(
+            directory.path(),
+            r#"{"entries":[{"name":"RemoteFolder","type":"folder","id":"raw-wrapper","entries":[]}]}"#,
+            r#"{"entries":[{"name":"Drive","type":"folder","entries":[
+                {"name":"RemoteFolder","type":"folder","id":"raw-id","entries":[]}]}]}"#,
+        );
+        let client = ProtonDriveClient::with_command_policy(
+            &executable,
+            CommandPolicy::new(Duration::from_secs(5), 1),
+        );
+        assert_eq!(
+            client
+                .remote_root_uid(Path::new("/Drive/RemoteFolder"))
+                .expect("a listing"),
+            None
+        );
+
+        let directory = tempdir().expect("tempdir");
+        let executable = listing_cli(
+            directory.path(),
+            r#"{"entries":[{"name":"RemoteFolder","type":"folder","entries":[]}]}"#,
+            r#"{"entries":[{"name":"Drive","type":"folder","entries":[]}]}"#,
+        );
+        let client = ProtonDriveClient::with_command_policy(
+            &executable,
+            CommandPolicy::new(Duration::from_secs(5), 1),
+        );
+        assert_eq!(
+            client
+                .remote_root_uid(Path::new("/Drive/RemoteFolder"))
+                .expect("a listing"),
+            None,
+            "a parent that does not list the root names nothing"
+        );
+        // The volume's own top has nothing above it to ask.
+        assert_eq!(client.remote_root_uid(Path::new("/")).unwrap_or(None), None);
     }
 
     // Proves the cooperative-cancellation feature this polling loop exists for: setting
