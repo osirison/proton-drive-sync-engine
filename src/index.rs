@@ -1260,15 +1260,35 @@ pub fn store_pair_paused(connection: &Connection, paused: bool) -> AppResult<()>
 ///
 /// Byte-exact like every path stored here ([`index_key`]), so two roots that differ only in
 /// invalid UTF-8 are two roots.
+///
+/// **`None` while the baseline has no row, whatever the table holds**: an empty baseline describes
+/// no folder, so a record that outlived one (every file deleted on both sides and purged) answers
+/// nothing, and no reader can hold a pair for it. The stale row itself is
+/// [`remote_root_outlived_its_baseline`]'s to report and the daemon's open to discard.
 pub fn load_recorded_remote_root(connection: &Connection) -> AppResult<Option<PathBuf>> {
     let root = connection
         .query_row(
-            "SELECT remote_root FROM remote_root_node WHERE id = 0",
+            "SELECT remote_root FROM remote_root_node \
+             WHERE id = 0 AND EXISTS (SELECT 1 FROM file_index)",
             [],
             |row| read_index_key_column(row, 0),
         )
         .optional()?;
     Ok(root)
+}
+
+/// Whether the row names a folder other than `key` while the baseline has no row — the record of a
+/// baseline that has since been emptied (#458 review). Read-only; the open that finds it starts the
+/// pair over ([`reset_index_state`]) instead of holding it, because nothing can be planned as
+/// deleted from an empty baseline.
+pub fn remote_root_outlived_its_baseline(connection: &Connection, key: &Path) -> AppResult<bool> {
+    let stale: bool = connection.query_row(
+        "SELECT EXISTS (SELECT 1 FROM remote_root_node WHERE id = 0 AND remote_root <> ?1) \
+         AND NOT EXISTS (SELECT 1 FROM file_index)",
+        params![index_key(key)],
+        |row| row.get(0),
+    )?;
+    Ok(stale)
 }
 
 /// Records the Proton folder the baseline describes — **only if the baseline has at least one row
@@ -5136,6 +5156,36 @@ mod tests {
         assert_eq!(
             load_remote_root_uid(&connection, Path::new("Drive/Released")).expect("uid"),
             None
+        );
+    }
+
+    #[test]
+    fn a_recorded_folder_that_outlived_its_baseline_answers_nothing_and_is_reported_stale() {
+        // F-A of the third #458 review: every file deleted on both sides and purged leaves the row.
+        let connection = index_with_a_baseline_row();
+        record_remote_root_of_baseline(&connection, Path::new("Drive/A")).expect("folder");
+        let stale = |key: &str| {
+            remote_root_outlived_its_baseline(&connection, Path::new(key)).expect("asked")
+        };
+        assert!(!stale("Drive/B"), "a baseline row: the record is live");
+        assert_eq!(
+            load_recorded_remote_root(&connection).expect("folder"),
+            Some(PathBuf::from("Drive/A"))
+        );
+
+        connection
+            .execute("DELETE FROM file_index", [])
+            .expect("purge every row");
+
+        assert_eq!(
+            load_recorded_remote_root(&connection).expect("folder"),
+            None,
+            "an empty baseline describes no folder"
+        );
+        assert!(stale("Drive/B"), "another folder over an empty baseline");
+        assert!(
+            !stale("Drive/A"),
+            "the same folder is not stale, and keeps its node"
         );
     }
 

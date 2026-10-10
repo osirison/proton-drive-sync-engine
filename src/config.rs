@@ -1637,7 +1637,9 @@ fn local_comparison_key(path: &Path) -> PathBuf {
 /// The engine treats `/Drive/Photos` and `Drive/Photos` as one folder: the leading separator and any
 /// `.` are dropped before comparing, as `proton.rs`'s `normalize_remote_path` strips the root either
 /// way from a listing. Whether the `proton-drive` CLI itself reads both spellings as one folder is
-/// not established here, and nothing relies on it. Equality of keys is the whole of "the same
+/// not established here. One thing does rely on it, in one direction: the Proton-folder hold
+/// (#453) never holds a pair whose `remote_root` was only respelled, so if the CLI read
+/// `Drive/X` and `/Drive/X` as two folders, a respelling would go unheld. Equality of keys is the whole of "the same
 /// folder": a subfolder, a parent, another case and a longer name sharing a prefix are different.
 ///
 /// `..` is kept verbatim rather than resolved, which is where this parts company with

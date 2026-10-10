@@ -98,10 +98,14 @@ cadence. The reason says which of these it is:
   The check compares folder **paths**, nothing more. A Proton folder you renamed or moved in
   the web app and then followed by editing `remote_root` is held like any other change (the
   `reset-index` above is the way through, and is quick because what already matches is
-  adopted). A different Proton account signed in at the same path is not noticed. Running an
-  older version of the daemon against the same index does not update what the index remembers,
-  so the newer one can hold a folder that is fine; the same `reset-index` releases it. `resync`
-  and a scheduled full sweep do not release the hold.
+  adopted). A different Proton account signed in at the same path is not noticed. Running a
+  version of the daemon from before this check against the same index does not update what the
+  index remembers, so the newer one can hold a folder that is fine; the same `reset-index`
+  releases it. `resync` and a scheduled full sweep do not release the hold.
+
+  A pair whose files were all deleted on both sides, with the deletions synced, has nothing
+  left to compare. It is not held when you change `remote_root`: the daemon starts it over
+  from the folder you configured.
 - **Its state was removed along with the folder** — the folder was deleted and made again
   with files in it, and the index and lock inside it went with it. The daemon prepares the
   pair again from the new folder on its next attempt; you don't need to do anything. (If the
