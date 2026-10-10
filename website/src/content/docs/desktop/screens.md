@@ -237,7 +237,11 @@ is only ever offered for exactly what was checked.
 If the folder already holds a sync history from an earlier setup (`.sync/sync_index.db`), the
 dialog says so before anything is written: adding it resumes from that history, so anything that
 changed since may show up as deletions to approve, and `proton-sync reset-index --yes --pair NAME`
-starts it fresh after adding. **There is no preview for a new folder** — its first sync starts as
+starts it fresh after adding. If that history was synced with a **different Proton folder** than
+the one you chose, the sync service does not resume it: it holds the folder and names both Proton
+folders in its error, until you run that `reset-index` or put the Proton folder back
+([the Proton folder changed](/reference/troubleshooting/#a-folder-pair-shows-an-error-and-isnt-syncing)).
+**There is no preview for a new folder** — its first sync starts as
 soon as you add it, and the dialog says that instead of promising what it will do.
 
 **Add folder** writes the config once (a single-pair file becomes `[[pair]]` tables, `default`

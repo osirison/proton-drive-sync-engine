@@ -155,8 +155,11 @@ moved into the pure `reconstruct_remote`.
    `remote_root` path it was learned for** (`config::remote_root_comparison_key`, so `/Drive/A` and
    `Drive/A` are one). It answers only for that path: Settings can re-point `remote_root` over a
    surviving index, and the old folder's node would make every event in the new folder read as
-   outside it. It is cleared by `reset-index` and when the remote root is found missing. Unknown
-   means nothing is skipped.
+   outside it. The daemon now also holds such a pair at open (ADR 0005, #453), and the row is the
+   same one that records which folder the baseline describes: the node is stored only onto a row
+   that names the same folder, so a node learned for another folder is not recorded. It is cleared
+   by `reset-index` (which removes the row) and when the remote root is found missing (which keeps
+   the folder). Unknown means nothing is skipped.
 10. **No other pair's index is read.** ADR 0005 §8a's second part (consult every pair's index on the
     volume) is not built. With S, a node is outside because *this* pair's tree is fully named, not
     because another pair claims it; the extra reads would couple the pairs, add a second connection

@@ -74,6 +74,38 @@ cadence. The reason says which of these it is:
     point either deletes everything remote (delete approval off, index kept outside the
     folder) or downloads everything into the mount point (default layout)
     ([#426](https://github.com/osirison/proton-drive-sync-engine/issues/426)).
+- **The Proton folder changed** — the reason says the folder "was last synced with the Proton
+  folder" one thing, "but this pair is now set to" another. A pair's index remembers which
+  Proton folder it was last synced with. Set to a different one (you edited `remote_root`, or
+  added a folder over an index kept from another Proton folder), everything the old folder had
+  and the new one lacks would read as deleted on Proton, and a Proton folder that does not
+  exist yet would be created and filled from your files. So the daemon holds the pair
+  unavailable: nothing is listed, uploaded, downloaded or deleted on either side. There are two
+  ways out:
+  - **Keep the old Proton folder.** Put `remote_root` back to the folder the reason names, and
+    restart the daemon. The pair resumes from its old baseline. A restart is safe here, unlike
+    in the cases above: the index remembers the old folder, so a restart with the wrong one is
+    held again.
+  - **Use the new Proton folder** with `proton-sync reset-index --yes --pair NAME`. It forgets
+    what was recorded about the old folder and starts over from both sides: what matches is
+    adopted, what only your folder has is uploaded to the new Proton folder, what only the new
+    one has is downloaded, what differs is kept as a conflict copy, and nothing is deleted.
+
+  An index written by a version from before this check cannot say which Proton folder it came
+  from, so the daemon takes the one that is configured when it starts and records it. A change
+  made before the upgrade is not caught.
+
+  The check compares folder **paths**, nothing more. A Proton folder you renamed or moved in
+  the web app and then followed by editing `remote_root` is held like any other change (the
+  `reset-index` above is the way through, and is quick because what already matches is
+  adopted). A different Proton account signed in at the same path is not noticed. Running a
+  version of the daemon from before this check against the same index does not update what the
+  index remembers, so the newer one can hold a folder that is fine; the same `reset-index`
+  releases it. `resync` and a scheduled full sweep do not release the hold.
+
+  A pair whose files were all deleted on both sides, with the deletions synced, has nothing
+  left to compare. It is not held when you change `remote_root`: the daemon starts it over
+  from the folder you configured.
 - **Its state was removed along with the folder** — the folder was deleted and made again
   with files in it, and the index and lock inside it went with it. The daemon prepares the
   pair again from the new folder on its next attempt; you don't need to do anything. (If the
