@@ -85,8 +85,10 @@ moved into the pure `reconstruct_remote`.
    that is not one of this volume's** (a raw id from an older index, another volume's id: such a
    record can be the node the event is about, moved out, and it is read from the baseline because a
    different node may have taken its path since); and **every record sits directly in the root or
-   in a directory of the map**, read over the baseline as well as the final map. The last part is
-   what makes "the tree's folders are the directories I hold" true: a record under a folder with no
+   in a folder that is held**: each record of the baseline is checked against the baseline's
+   directory records, and each record of the final map against the final map's directories. The
+   two are not mixed, because a removal in this delta takes a record out of the map and with it
+   the evidence that its folder had no row. The last part is what makes "the tree's folders are the directories I hold" true: a record under a folder with no
    row (an index written before folders were rows, or a folder an exclude rule has since hidden)
    could be sitting in exactly the folder the event names. Otherwise the pass falls back to a
    snapshot and the reason names the record that blocked it ("`docs` has no composed id",
@@ -257,13 +259,22 @@ Also not claimed, and also older than this change:
   holder that is later trashed; the same happens when the holder is later *moved out* instead. The
   holder's record is gone, its next event reads as foreign, and what was beneath it stays. The code
   before this change did the same, but its unknown-parent walk healed the move out by accident.
-- **The model's skip for this is broader than the real cases.** `removes_a_node_the_first_pass_overwrote`
+- **The model's skip for this is broader than the real cases.** `ends_a_node_the_first_pass_overwrote`
   skips every two-pass history whose second part removes a node the first pass's map no longer
-  holds. That includes a node trashed in one pass and deleted for good in the next, which is
-  harmless. It hides about five times as many histories as the precise overwrite test would, and
-  nothing harmful was seen among them. It looks only at removals, so a history whose second part
-  *moves* the holder out is not skipped; the review's own harness found one such history among 1.4
-  million completed two-pass runs, and the in-repo run has found none in the seeds tried.
+  holds, or moves it out of the tree (an update that is not a trash and names a parent that, by
+  the history up to that event, is outside it). That includes a node trashed in one pass and
+  deleted for good in the next, which is harmless. For removals it hides about five times as many
+  histories as the precise overwrite test would; the move-out part is built the same way and adds
+  1,342 more in the first 300,000 seeds (4,208 skipped in all, against 2,866 for removals alone;
+  without any skip one history in those seeds is wrong). The skip once looked only at removals, and
+  the large runs found what that left: the review's own harness found one move-out history among
+  1.4 million completed two-pass runs, and the in-repo run
+  (`RECONSTRUCT_FUZZ_SCENARIOS=2000000 RECONSTRUCT_FUZZ_FROM=90000000`, 16 configurations) found one
+  among 1,250,178 completed two-pass runs, seed 91177341: a new folder listed at the path of the
+  tracked `a`, then `a` moved out of the tree, and `a/b` stays. Both are this class, the one the
+  previous bullet documents, not a new one. The skip covers move-outs now and the seed is a fixed
+  case (`a_move_out_of_a_node_the_first_pass_overwrote_is_not_compared`); the same two million
+  seeds then compare 1,241,225 histories and none is wrong.
 - **A record under an id of an older index (a raw id, or another volume's) that is renamed or moved
   within the tree keeps its old path.** The id matches no event, so the old path stays in the map
   until a walk replaces the record. Moving it out of the tree, trashing it and deleting it do walk

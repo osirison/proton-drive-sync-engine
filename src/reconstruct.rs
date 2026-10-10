@@ -92,12 +92,13 @@ struct Deferred {
 ///   (condition S): every directory in the final map carries a composed uid, no record of the
 ///   baseline carries an id that is not one of this volume's (a raw id of an older index, another
 ///   volume's id; the upload window's `None` and `""` do not count), **and** every
-///   record sits directly in the root or in a directory of the map. Then the parent is neither the
-///   root nor any directory of the tree, so the node is somewhere else on the volume. A record
-///   under a folder with no row (an index written before folders were rows, or a folder an
-///   exclude rule has since hidden) could be sitting in exactly the folder the event names, and a
-///   record under an older id could be the node itself, moved out. Otherwise the pass falls back
-///   to a snapshot, naming the record that blocked it;
+///   record sits directly in the root or in a held folder (a baseline record is checked against the
+///   baseline's directory records, a record of the final map against the final map's). Then the
+///   parent is neither the root nor any directory of the tree, so the node is somewhere else on the
+///   volume. A record under a folder with no row (an index written before folders were rows, or a
+///   folder an exclude rule has since hidden) could be sitting in exactly the folder the event
+///   names, and a record under an older id could be the node itself, moved out. Otherwise the pass
+///   falls back to a snapshot, naming the record that blocked it;
 /// * an event that names **no** parent is never deferred: nothing says where its node is;
 /// * an event for a node the pair **does** hold that names an unknown parent forces a snapshot at
 ///   once. It left the tree or went into a folder the pair cannot see into (no row, nothing

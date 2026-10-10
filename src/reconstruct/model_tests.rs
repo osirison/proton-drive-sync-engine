@@ -38,12 +38,12 @@
 //!   names: such a folder is invisible to the index, so an event inside it reads as somewhere else
 //!   on the volume). A node the baseline holds *is* moved into one, because that is the case the
 //!   pair must walk for;
-//! * the two-pass check does not compare a history whose second pass trashes or deletes a node the
-//!   first pass overwrote: that pass reads its events against a listing already ahead of them, so
-//!   it can place a node at a path whose previous node is only trashed after the cut, and the
-//!   trash then reads as somebody else's (the old node's children stay in the map). The code
-//!   before #456 overwrote the record the same way; a walk heals it. Replay with seed 215742 and
-//!   this skip removed;
+//! * the two-pass check does not compare a history whose second pass trashes, deletes or moves out
+//!   of the tree a node the first pass overwrote: that pass reads its events against a listing
+//!   already ahead of them, so it can place a node at a path whose previous node is only trashed
+//!   (or moved out) after the cut, and that event then reads as somebody else's (the old node's
+//!   children stay in the map). The code before #456 overwrote the record the same way; a walk
+//!   heals it. Replay with seed 215742 (a trash) or 91177341 (a move out) and this skip removed;
 //! * a record under an id of an older index is not renamed, nor moved within the tree: the id
 //!   matches no event, so the old path stays in the map until a walk replaces the record. (Moving
 //!   it out of the tree, trashing it or deleting it *are* generated.)
@@ -1232,9 +1232,29 @@ fn the_adversarial_orderings_under_include_rules() {
 /// listing always running ahead of both.
 #[test]
 fn two_passes_over_one_history_agree_with_a_walk() {
+    let first = first_seed();
+    let (tally, _) = two_passes(first..first + scenarios(DEFAULT_SCENARIOS));
+    tally.assert_sound("two passes", 40);
+}
+
+/// Seed 91177341 of the large run (`RECONSTRUCT_FUZZ_SCENARIOS=2000000 RECONSTRUCT_FUZZ_FROM=90000000`):
+/// the listing is ahead of the first part of the history, so it places a new folder at the path of a
+/// tracked one, whose move out of the tree comes after the cut. The skip must take it (and only
+/// because it is that case: the same history is wrong without the skip).
+#[test]
+fn a_move_out_of_a_node_the_first_pass_overwrote_is_not_compared() {
+    let (tally, skipped) = two_passes(91_177_341..91_177_342);
+    assert_eq!(tally.wrong, 0, "{:?}", tally.examples);
+    assert_eq!(skipped, 1, "the seed no longer reaches the skip: {tally:?}");
+}
+
+/// Runs the two-pass check over a range of seeds; the second number is how many histories the skip
+/// left out.
+fn two_passes(seeds: std::ops::Range<u64>) -> (Tally, u64) {
     let options = Rules::None.options();
     let mut tally = Tally::default();
-    for seed in first_seed()..first_seed() + scenarios(DEFAULT_SCENARIOS) {
+    let mut skipped = 0;
+    for seed in seeds {
         let scenario = generate(seed, shape(Rules::None), &options);
         if scenario.events.len() < 2 {
             continue;
@@ -1254,7 +1274,8 @@ fn two_passes_over_one_history_agree_with_a_walk() {
             continue;
         };
         let second_base = records_from_map(&middle);
-        if removes_a_node_the_first_pass_overwrote(&scenario, cut, &second_base) {
+        if ends_a_node_the_first_pass_overwrote(&scenario, cut, &second_base) {
+            skipped += 1;
             continue;
         }
         let second_resolver = ModelResolver {
@@ -1292,16 +1313,20 @@ fn two_passes_over_one_history_agree_with_a_walk() {
             }
         }
     }
-    tally.assert_sound("two passes", 40);
+    (tally, skipped)
 }
 
 /// The limit the two-pass check leaves out (see the module doc): the first pass reads the events up
 /// to the cut against a listing that is already ahead of them, so a node can be placed at a path
-/// whose previous node is only trashed by an event after the cut. That node's record is gone from
-/// the second pass's baseline, so its trash reads as news about someone else's node and what was
-/// beneath it stays. Older than #456 (the code before it overwrote the record the same way) and
-/// healed by the next walk.
-fn removes_a_node_the_first_pass_overwrote(
+/// whose previous node is only trashed, deleted or moved out of the tree by an event after the cut.
+/// That node's record is gone from the second pass's baseline, so the event reads as news about
+/// someone else's node and what was beneath it stays. Older than #456 (the code before it
+/// overwrote the record the same way) and healed by the next walk.
+///
+/// A move out is an update that is not a trash and names a parent that, by the history up to that
+/// event, is not in the pair's tree. An update that names a parent inside it, or none, is not
+/// skipped: a parentless event always walks.
+fn ends_a_node_the_first_pass_overwrote(
     scenario: &Scenario,
     cut: usize,
     second_base: &HashMap<PathBuf, FileRecord>,
@@ -1313,12 +1338,66 @@ fn removes_a_node_the_first_pass_overwrote(
             .collect()
     };
     let (before, after) = (ids_of(&scenario.base), ids_of(second_base));
-    scenario.events[cut..].iter().any(|event| {
-        let removal = matches!(event.kind, RemoteChangeKind::Deleted)
-            || (matches!(event.kind, RemoteChangeKind::Updated) && event.trashed);
+    let prefix = format!("{VOLUME}~");
+    let node_of = |record: Option<&FileRecord>| -> Option<String> {
+        let uid = record?.proton_id.as_deref()?;
+        Some(uid.strip_prefix(&prefix)?.to_string())
+    };
+    let root = format!("n{ROOT_NODE}");
+
+    // Which node each node sat in as the history reached each event: the baseline's folders first,
+    // then every event's own parent. A node this cannot place is read as outside, which skips more
+    // histories than the case needs and never fewer.
+    let mut parent_of: HashMap<String, String> = HashMap::new();
+    for (path, record) in &scenario.base {
+        let Some(node) = node_of(Some(record)) else {
+            continue;
+        };
+        let parent = match path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            None => root.clone(),
+            Some(parent) => match node_of(scenario.base.get(parent)) {
+                Some(parent) => parent,
+                None => continue,
+            },
+        };
+        parent_of.insert(node, parent);
+    }
+    fn inside<'a>(parent_of: &'a HashMap<String, String>, mut node: &'a str, root: &str) -> bool {
+        for _ in 0..=parent_of.len() {
+            if node == root {
+                return true;
+            }
+            match parent_of.get(node) {
+                Some(parent) => node = parent,
+                None => return false,
+            }
+        }
+        false
+    }
+
+    for (index, event) in scenario.events.iter().enumerate() {
         let uid = node_uid(VOLUME, &event.node_id);
-        removal && before.contains(&uid) && !after.contains(&uid)
-    })
+        if index >= cut && before.contains(&uid) && !after.contains(&uid) {
+            let removal = matches!(event.kind, RemoteChangeKind::Deleted)
+                || (matches!(event.kind, RemoteChangeKind::Updated) && event.trashed);
+            let moves_out = matches!(event.kind, RemoteChangeKind::Updated)
+                && !event.trashed
+                && event
+                    .parent_id
+                    .as_deref()
+                    .is_some_and(|parent| !inside(&parent_of, parent, &root));
+            if removal || moves_out {
+                return true;
+            }
+        }
+        if let Some(parent) = &event.parent_id {
+            parent_of.insert(event.node_id.clone(), parent.clone());
+        }
+    }
+    false
 }
 
 /// The baseline a second pass starts from: the first pass's map, committed with the ids it listed.
