@@ -113,10 +113,17 @@ Three cases are held on purpose, so nothing is deleted on a guess:
   old one had and the new one lacks would read as deleted on Proton. Nothing is listed,
   created, uploaded, downloaded or deleted on either side. Put `remote_root` back and restart
   the daemon to resume from the old baseline, or run `proton-sync reset-index --yes --pair NAME`
-  to compare your folder with the new Proton folder from scratch; that deletes nothing.
-  `/Drive/X`, `Drive/X`, `Drive/X/` and `./Drive/X` are the same folder, so respelling
-  `remote_root` holds nothing. The one-shot `proton-syncd --dry-run` refuses with the same
-  sentence rather than previewing deletions the daemon would not run.
+  to start the folder over from both sides: what only your folder has is uploaded to the new
+  Proton folder, what only the new Proton folder has is downloaded, and nothing is deleted.
+  `resync` and a scheduled full sweep do not release the hold. The daemon compares the two
+  `remote_root` values after dropping a leading `/` and any `.`, so to the daemon `/Drive/X`,
+  `Drive/X`, `Drive/X/` and `./Drive/X` are the same folder and respelling `remote_root` holds
+  nothing. Nothing else is treated as the same: a subfolder, a parent, another capitalisation
+  and a folder with a similar name are different folders. The comparison is of paths, so a
+  Proton folder renamed or moved in the web app is a different folder to the daemon, and a
+  different Proton account signed in at the same path is not noticed. The one-shot
+  `proton-syncd --dry-run` refuses with the same sentence rather than previewing deletions the
+  daemon would not run.
 - A folder deleted and made again **with the pair's state inside it** (the default `.sync`
   directory holds the index and the lock) and **with files in it** is prepared again from
   scratch on the next attempt: the index is new, so the pair adopts what is there, downloads

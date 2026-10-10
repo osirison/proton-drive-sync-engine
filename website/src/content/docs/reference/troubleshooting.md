@@ -87,13 +87,21 @@ cadence. The reason says which of these it is:
     in the cases above: the index remembers the old folder, so a restart with the wrong one is
     held again.
   - **Use the new Proton folder** with `proton-sync reset-index --yes --pair NAME`. It forgets
-    what was recorded about the old folder and compares your folder with the new one from
-    scratch: what matches is adopted, what only one side has is copied to the other, what
-    differs is kept as a conflict copy, and nothing is deleted.
+    what was recorded about the old folder and starts over from both sides: what matches is
+    adopted, what only your folder has is uploaded to the new Proton folder, what only the new
+    one has is downloaded, what differs is kept as a conflict copy, and nothing is deleted.
 
   An index written by a version from before this check cannot say which Proton folder it came
   from, so the daemon takes the one that is configured when it starts and records it. A change
   made before the upgrade is not caught.
+
+  The check compares folder **paths**, nothing more. A Proton folder you renamed or moved in
+  the web app and then followed by editing `remote_root` is held like any other change (the
+  `reset-index` above is the way through, and is quick because what already matches is
+  adopted). A different Proton account signed in at the same path is not noticed. Running an
+  older version of the daemon against the same index does not update what the index remembers,
+  so the newer one can hold a folder that is fine; the same `reset-index` releases it. `resync`
+  and a scheduled full sweep do not release the hold.
 - **Its state was removed along with the folder** — the folder was deleted and made again
   with files in it, and the index and lock inside it went with it. The daemon prepares the
   pair again from the new folder on its next attempt; you don't need to do anything. (If the

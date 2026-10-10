@@ -1634,9 +1634,11 @@ fn local_comparison_key(path: &Path) -> PathBuf {
 
 /// A `remote_root` reduced to what it *addresses*, for comparison only.
 ///
-/// `/Drive/Photos` and `Drive/Photos` name one Drive location — `proton.rs`'s
-/// `normalize_remote_path` strips the root either way — so the leading separator and any `.` are
-/// dropped before comparing.
+/// The engine treats `/Drive/Photos` and `Drive/Photos` as one folder: the leading separator and any
+/// `.` are dropped before comparing, as `proton.rs`'s `normalize_remote_path` strips the root either
+/// way from a listing. Whether the `proton-drive` CLI itself reads both spellings as one folder is
+/// not established here, and nothing relies on it. Equality of keys is the whole of "the same
+/// folder": a subfolder, a parent, another case and a longer name sharing a prefix are different.
 ///
 /// `..` is kept verbatim rather than resolved, which is where this parts company with
 /// [`local_comparison_key`] (#365). The reason is not the arithmetic — lexically `/Drive/a/../b`
@@ -1645,8 +1647,8 @@ fn local_comparison_key(path: &Path) -> PathBuf {
 /// here would be this layer alone deciding that two Drive locations are one while nothing
 /// downstream agrees, for a value that is refused either way.
 ///
-/// **Also the key an index records its Proton folder under** (#453, `index::load_recorded_remote_root`),
-/// so the question "is this the folder the baseline describes" has the config reader's own answer to
+/// **Also the key an index records its Proton folder under** (#453, `index::load_recorded_remote_root`,
+/// the same row as the root's node, #456), so the question "is this the folder the baseline describes" has the config reader's own answer to
 /// "are these two the same folder" and no second normaliser. A change to what it drops is therefore
 /// a change to what an existing index reads as a different folder.
 pub(crate) fn remote_root_comparison_key(remote_root: &Path) -> PathBuf {
@@ -6930,8 +6932,8 @@ local_delete_mode = \"permanent\"
     fn the_key_an_index_records_its_proton_folder_under_is_the_same_for_every_spelling() {
         // #453. An index stores this key, and a pair is held when the stored key differs from the
         // configured one, so a spelling that keyed differently would hold a pair whose folder did
-        // not change. These are all one Drive location (`/Drive/X` is `Drive/X`; a trailing
-        // separator and a leading `.` name nothing).
+        // not change. The engine reads all of these as one folder (`/Drive/X` is `Drive/X`; a trailing
+        // separator and a leading `.` name nothing); it does not claim the CLI does.
         let key = PathBuf::from("Drive/X");
         for spelling in ["/Drive/X", "Drive/X", "/Drive/X/", "./Drive/X", "Drive/./X"] {
             assert_eq!(
