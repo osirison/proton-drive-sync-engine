@@ -1246,39 +1246,41 @@ pub fn load_recorded_remote_root(connection: &Connection) -> AppResult<Option<Pa
     Ok(root)
 }
 
-/// Records the Proton folder the baseline describes **unless one is already recorded**, and says
-/// whether it wrote. Never overwrites: a recorded root changes only by the reset that empties the
-/// baseline it belongs to (`reset_index_state`). `key` is the comparison key, never the root as
-/// written.
+/// Records the Proton folder the baseline describes — **only if the baseline has at least one row
+/// and no folder is recorded yet** — and says whether it wrote. The one definition of when the
+/// record is written; every writer (open, checkpoint, final commit) goes through it.
 ///
-/// Callers write it in the same transaction as the baseline rows it describes, so the row can
-/// never precede a side effect nor outlive a rolled-back one.
-pub fn record_remote_root_if_unrecorded(connection: &Connection, key: &Path) -> AppResult<bool> {
+/// - **An empty baseline describes no folder**, so nothing is recorded for one. "Has a row" is
+///   asked as stored, not as a pair's selective-sync filter sees it: a row the filter hides still
+///   belongs to a folder.
+/// - **Never overwrites**: a recorded root changes only by the reset that empties the baseline it
+///   belongs to (`reset_index_state`). `key` is the comparison key, never the root as written.
+///
+/// Callers write it in the same transaction as the baseline rows it describes, after applying
+/// them, so the row can never precede a side effect nor outlive a rolled-back one.
+pub fn record_remote_root_of_baseline(connection: &Connection, key: &Path) -> AppResult<bool> {
     let written = connection.execute(
-        "INSERT OR IGNORE INTO remote_root_identity (id, remote_root) VALUES (0, ?1)",
+        "INSERT OR IGNORE INTO remote_root_identity (id, remote_root) \
+         SELECT 0, ?1 WHERE EXISTS (SELECT 1 FROM file_index)",
         params![index_key(key)],
     )?;
     Ok(written > 0)
 }
 
-/// Whether the baseline holds any row at all, as stored — not as a pair's selective-sync filter
-/// sees it: the question is whether the index describes **some** Proton folder, which a row the
-/// filter hides still does.
-pub fn baseline_has_rows(connection: &Connection) -> AppResult<bool> {
-    let any: bool =
-        connection.query_row("SELECT EXISTS (SELECT 1 FROM file_index)", [], |row| {
-            row.get(0)
-        })?;
-    Ok(any)
-}
-
-/// [`load_recorded_remote_root`] for the one-shot preview, which reads the index off disk without
-/// opening it for writing: `None` for a database that is not there, and for one written before the
-/// table existed (opening it read-only cannot add the table, and a query on a missing table is an
-/// error rather than an empty answer).
+/// [`load_recorded_remote_root`] for the one-shot preview and for a held pair's retry, which read
+/// the index off disk without opening it for writing: `None` for a database that is not there, and
+/// for one written before the table existed (opening it read-only cannot add the table, and a query
+/// on a missing table is an error rather than an empty answer).
+///
+/// **Only "not found" says the database is not there.** `Path::exists` is `false` for any `stat`
+/// error, so an index under a directory this user cannot search (`EACCES`, or `EIO`/`ESTALE` on a
+/// network mount) read as "records nothing", and a held pair's retry took that as the hold being
+/// lifted. Any other error is an `Err`, which both callers treat as no answer.
 pub fn load_existing_recorded_remote_root(path: &Path) -> AppResult<Option<PathBuf>> {
-    if !path.exists() {
-        return Ok(None);
+    match fs::metadata(path) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
     }
     let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let has_table: bool = connection.query_row(
@@ -4963,14 +4965,14 @@ mod tests {
         );
         let connection = open_database(&db_path).expect("open database upgrades cleanly");
         assert_eq!(load_recorded_remote_root(&connection).expect("load"), None);
-        assert!(
-            baseline_has_rows(&connection).expect("baseline"),
+        assert_eq!(
+            load_index(&connection).expect("baseline").len(),
+            1,
             "the pre-existing row is still the baseline"
         );
 
         assert!(
-            record_remote_root_if_unrecorded(&connection, Path::new("Drive/Photos"))
-                .expect("record")
+            record_remote_root_of_baseline(&connection, Path::new("Drive/Photos")).expect("record")
         );
         assert_eq!(
             load_recorded_remote_root(&connection).expect("reload"),
@@ -4982,15 +4984,29 @@ mod tests {
         );
     }
 
+    /// An in-memory index with its schema and one baseline row: the state in which a root may be
+    /// recorded.
+    fn index_with_a_baseline_row() -> Connection {
+        let connection = Connection::open_in_memory().expect("open");
+        connection.execute_batch(SCHEMA).expect("schema");
+        connection
+            .execute(
+                "INSERT INTO file_index (file_path, file_size, mtime, sha1_hash, sync_status) \
+                 VALUES (x'612e747874', 1, 1, 'h', 'synced')",
+                [],
+            )
+            .expect("a baseline row");
+        connection
+    }
+
     #[test]
     fn a_recorded_remote_root_is_never_overwritten() {
         // The one way a recorded root changes is the reset that empties the baseline it belongs to.
         // An overwrite by a later pass would let a changed root be adopted by the next commit.
-        let connection = Connection::open_in_memory().expect("open");
-        connection.execute_batch(SCHEMA).expect("schema");
-        assert!(record_remote_root_if_unrecorded(&connection, Path::new("Drive/Old")).expect("1"));
+        let connection = index_with_a_baseline_row();
+        assert!(record_remote_root_of_baseline(&connection, Path::new("Drive/Old")).expect("1"));
         assert!(
-            !record_remote_root_if_unrecorded(&connection, Path::new("Drive/New")).expect("2"),
+            !record_remote_root_of_baseline(&connection, Path::new("Drive/New")).expect("2"),
             "the second record is a no-op and says so"
         );
         assert_eq!(
@@ -5000,12 +5016,47 @@ mod tests {
     }
 
     #[test]
-    fn a_recorded_remote_root_keeps_bytes_that_are_not_utf8() {
-        use std::os::unix::ffi::OsStrExt;
+    fn an_empty_baseline_describes_no_folder_so_nothing_is_recorded_for_it() {
+        // F3 of the #458 review. The record names the folder a baseline was agreed against, and a
+        // baseline with no row was agreed against none: the record is written in a transaction that
+        // leaves at least one row, and in no other.
         let connection = Connection::open_in_memory().expect("open");
         connection.execute_batch(SCHEMA).expect("schema");
+        assert!(
+            !record_remote_root_of_baseline(&connection, Path::new("Drive/Old")).expect("empty"),
+            "nothing is written, and it says so"
+        );
+        assert_eq!(load_recorded_remote_root(&connection).expect("load"), None);
+
+        // The same transaction that leaves a row records the folder; the one that purges the last
+        // row of an UNRECORDED baseline records nothing.
+        connection
+            .execute_batch(
+                "INSERT INTO file_index (file_path, file_size, mtime, sha1_hash, sync_status) \
+                 VALUES (x'612e747874', 1, 1, 'h', 'synced');",
+            )
+            .expect("a row");
+        assert!(record_remote_root_of_baseline(&connection, Path::new("Drive/Old")).expect("row"));
+        assert_eq!(
+            load_recorded_remote_root(&connection).expect("load"),
+            Some(PathBuf::from("Drive/Old"))
+        );
+        connection
+            .execute_batch("DELETE FROM remote_root_identity; DELETE FROM file_index;")
+            .expect("empty it again");
+        assert!(
+            !record_remote_root_of_baseline(&connection, Path::new("Drive/New")).expect("again"),
+            "a baseline emptied again is empty again"
+        );
+        assert_eq!(load_recorded_remote_root(&connection).expect("load"), None);
+    }
+
+    #[test]
+    fn a_recorded_remote_root_keeps_bytes_that_are_not_utf8() {
+        use std::os::unix::ffi::OsStrExt;
+        let connection = index_with_a_baseline_row();
         let one = PathBuf::from(std::ffi::OsStr::from_bytes(b"Drive/caf\xe9"));
-        assert!(record_remote_root_if_unrecorded(&connection, &one).expect("record"));
+        assert!(record_remote_root_of_baseline(&connection, &one).expect("record"));
         assert_eq!(
             load_recorded_remote_root(&connection).expect("load"),
             Some(one),
@@ -5017,9 +5068,8 @@ mod tests {
     fn a_reset_clears_the_recorded_remote_root() {
         // The reset of a held pair (`StandingCause::RemoteRootChanged`) is released by exactly this:
         // the baseline goes, and the folder it described goes with it.
-        let connection = Connection::open_in_memory().expect("open");
-        connection.execute_batch(SCHEMA).expect("schema");
-        record_remote_root_if_unrecorded(&connection, Path::new("Drive/Old")).expect("record");
+        let connection = index_with_a_baseline_row();
+        record_remote_root_of_baseline(&connection, Path::new("Drive/Old")).expect("record");
         assert!(
             load_recorded_remote_root(&connection)
                 .expect("precondition")
@@ -5029,10 +5079,14 @@ mod tests {
         reset_index_state(&connection).expect("reset");
 
         assert_eq!(load_recorded_remote_root(&connection).expect("read"), None);
-        // And it can be recorded again, as the folder the next pass syncs.
-        assert!(
-            record_remote_root_if_unrecorded(&connection, Path::new("Drive/New")).expect("new")
-        );
+        // And it can be recorded again, as the folder the next pass syncs, once there is a baseline.
+        connection
+            .execute_batch(
+                "INSERT INTO file_index (file_path, file_size, mtime, sha1_hash, sync_status) \
+                 VALUES (x'622e747874', 1, 1, 'h', 'synced');",
+            )
+            .expect("the next pass's row");
+        assert!(record_remote_root_of_baseline(&connection, Path::new("Drive/New")).expect("new"));
     }
 
     #[test]
@@ -5041,6 +5095,48 @@ mod tests {
         assert_eq!(
             load_existing_recorded_remote_root(&directory.path().join("absent.db")).expect("read"),
             None
+        );
+    }
+
+    #[test]
+    fn an_index_that_cannot_be_looked_at_is_an_error_not_a_record_of_nothing() {
+        // F7 of the #458 review. `Path::exists` is `false` for `EACCES`, so an index under a
+        // directory this user cannot search read as "records nothing" — and a held pair's retry
+        // took that as the hold being lifted. Only "not found" is `None`.
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempdir().expect("tempdir");
+        let state = directory.path().join("state");
+        fs::create_dir(&state).expect("state directory");
+        let db_path = state.join("sync_index.db");
+        {
+            let connection = open_database(&db_path).expect("open");
+            connection
+                .execute(
+                    "INSERT INTO file_index (file_path, file_size, mtime, sha1_hash, sync_status) \
+                     VALUES (x'612e747874', 1, 1, 'h', 'synced')",
+                    [],
+                )
+                .expect("a row");
+            record_remote_root_of_baseline(&connection, Path::new("Drive/Old")).expect("record");
+        }
+        assert_eq!(
+            load_existing_recorded_remote_root(&db_path).expect("readable"),
+            Some(PathBuf::from("Drive/Old")),
+            "precondition: it records a folder when it can be looked at"
+        );
+
+        fs::set_permissions(&state, fs::Permissions::from_mode(0o000)).expect("chmod");
+        let enforced = fs::metadata(&db_path).is_err();
+        let answer = load_existing_recorded_remote_root(&db_path);
+        fs::set_permissions(&state, fs::Permissions::from_mode(0o755)).expect("restore");
+        if !enforced {
+            // Root, or a filesystem that ignores modes: nothing to examine.
+            return;
+        }
+
+        assert!(
+            answer.is_err(),
+            "an index nobody can look at said {answer:?} instead of failing"
         );
     }
 
