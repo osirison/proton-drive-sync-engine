@@ -18,7 +18,7 @@
 //! HTTP `GET` via `curl`, matching the crate's existing shell-out style — used with any
 //! session provider, not just the reuse one.
 
-use crate::events::{HttpResponse, HttpTransport, SessionProvider};
+use crate::events::{HttpResponse, HttpTransport, SessionProvider, TransientFetchError};
 use crate::{AppResult, boxed_error};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -125,15 +125,65 @@ fn parse_session_secret(json: &str) -> AppResult<SessionTokens> {
     Ok(SessionTokens { uid, access_token })
 }
 
+/// How long curl may spend **making the connection** (name lookup, TCP connect and the TLS
+/// handshake together), before `--max-time` counts the whole request. A healthy connection takes
+/// well under a second, so ten seconds is slack, and a dead one — packets going nowhere — now costs
+/// ten seconds of the daemon's one loop instead of the full request timeout. It does not shorten a
+/// connection that was made and then stalls: that is still [`REQUEST_TIMEOUT_SECS`].
+const CONNECT_TIMEOUT_SECS: u64 = 10;
+
+/// The whole-request timeout. Unchanged at thirty seconds: the journal records the timeout firing
+/// but not which phase it fired in (curl ran silent, so its stderr was empty — it now runs with
+/// `-S`), so it gives no evidence that a shorter limit is safe for a slow page that was going to
+/// arrive.
+const REQUEST_TIMEOUT_SECS: u64 = 30;
+
+/// What a curl exit code says about **whether asking again is expected to work** — `Some(what
+/// happened)` for the codes that mean the request got no answer, `None` for every other code.
+///
+/// In, and why: a name that would not resolve (6) and a connection that would not open (7) are a
+/// network or a resolver that is down right now; a handshake that failed (35) and a transfer cut
+/// off — an empty reply (52), a failed send (55) or receive (56), a transfer closed early (18), an
+/// HTTP/2 stream the peer reset (92) — are a connection that dropped; and a timeout (28) is the
+/// request that got nothing back in time, the code the journal records most. None of them tells us
+/// anything about the feed, so none is evidence that the cursor or the tree is wrong.
+///
+/// Out, and why: bad usage or build (1 unsupported protocol, 2 init failed, 3 malformed URL, 4, 53
+/// and 54 missing features), which are the same on every attempt; a proxy that cannot be resolved
+/// (5), a configuration state rather than a moment; a failed write to our own pipe (23) or read of
+/// our own input (26), which are this machine; too many redirects (47), the server's answer; and
+/// every certificate and cipher refusal (51, 58, 59, 60, 77, 82, 83, 90, 91), which stay until a
+/// person changes something — they fall back to the walk, which the CLI can still do. A process
+/// killed by a signal has no exit code at all and is not classified either.
+fn transient_curl_exit(code: i32) -> Option<&'static str> {
+    Some(match code {
+        6 => "could not resolve host",
+        7 => "could not connect",
+        18 => "transfer closed early",
+        28 => "timed out",
+        35 => "TLS handshake failed",
+        52 => "empty reply",
+        55 => "failed sending",
+        56 => "failed receiving",
+        92 => "HTTP/2 stream reset",
+        _ => return None,
+    })
+}
+
 /// A dependency-free [`HttpTransport`] that performs a `GET` by shelling `curl`. Time-bounded
 /// so a network hang cannot stall a caller (e.g. the daemon's reconcile loop).
+///
+/// A failure that says nothing about the feed — see [`transient_curl_exit`], and an HTTP status of
+/// `000` — is returned as a [`TransientFetchError`]; any other failure is a plain error.
 pub struct CurlHttpTransport {
     curl: PathBuf,
     timeout_secs: u64,
+    connect_timeout_secs: u64,
 }
 
 impl CurlHttpTransport {
-    /// A transport using `curl` on `PATH` with a 30s per-request timeout.
+    /// A transport using `curl` on `PATH` with a 30s per-request timeout and a 10s connect
+    /// timeout.
     pub fn new() -> Self {
         Self::with_curl("curl")
     }
@@ -142,7 +192,8 @@ impl CurlHttpTransport {
     pub fn with_curl(curl: impl Into<PathBuf>) -> Self {
         Self {
             curl: curl.into(),
-            timeout_secs: 30,
+            timeout_secs: REQUEST_TIMEOUT_SECS,
+            connect_timeout_secs: CONNECT_TIMEOUT_SECS,
         }
     }
 
@@ -164,8 +215,16 @@ impl HttpTransport for CurlHttpTransport {
         // Headers carry the bearer token, so they must never appear on the argv (visible to
         // every local process via /proc/*/cmdline). `-H @-` (curl >= 7.55.0) reads the header
         // lines from stdin instead; only the URL and fixed flags stay on the command line.
+        //
+        // `-s` keeps the progress meter off and `-S` puts the error message back, so a failure
+        // says which timeout fired ("Connection timed out", "Resolving timed out", "Operation
+        // timed out after 30001 ms with 0 bytes received") instead of leaving the log with only an
+        // exit code.
         let mut child = Command::new(&self.curl)
             .arg("-s")
+            .arg("-S")
+            .arg("--connect-timeout")
+            .arg(self.connect_timeout_secs.to_string())
             .arg("--max-time")
             .arg(self.timeout_secs.to_string())
             .arg("-w")
@@ -203,11 +262,23 @@ impl HttpTransport for CurlHttpTransport {
             .map_err(|error| boxed_error(format!("failed to run curl: {error}")))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(boxed_error(format!(
+            let detail = format!(
                 "curl failed ({status}): {stderr}",
                 status = output.status,
                 stderr = stderr.trim(),
-            )));
+            );
+            // A killed process has no exit code and is not classified.
+            let transient = output
+                .status
+                .code()
+                .and_then(|code| transient_curl_exit(code).map(|what| (code, what)));
+            return Err(match transient {
+                Some((code, what)) => Box::new(TransientFetchError::new(
+                    format!("curl exit {code} ({what})"),
+                    detail,
+                )),
+                None => boxed_error(detail),
+            });
         }
         let combined = String::from_utf8_lossy(&output.stdout);
         // `-w '\n%{http_code}'` appends the status on its own trailing line.
@@ -219,11 +290,13 @@ impl HttpTransport for CurlHttpTransport {
         })?;
         if status == 0 {
             // curl writes `000` when no HTTP response was received; that is a transport
-            // failure, not a response the caller should interpret.
-            return Err(boxed_error(
+            // failure, not a response the caller should interpret — and, like a timeout, says
+            // nothing about the feed.
+            return Err(Box::new(TransientFetchError::new(
+                "no response received",
                 "curl reported HTTP status 000 (no response received); treating as a \
                  transport failure",
-            ));
+            )));
         }
         Ok(HttpResponse {
             status,
@@ -389,6 +462,137 @@ exit 7
         );
     }
 
+    /// curl is asked for a connect timeout beside the whole-request one, and for its error message
+    /// (`-S`): a dead connection must cost ten seconds of the daemon's loop rather than thirty, and
+    /// the journal's "curl failed (exit status: 28):" must say which timeout it was.
+    #[cfg(unix)]
+    #[test]
+    fn curl_gets_a_connect_timeout_a_request_timeout_and_its_error_message() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let argv_capture = directory.path().join("argv.txt");
+        let script = write_script(
+            directory.path(),
+            "fake-curl",
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"{argv}\"\ncat > /dev/null\nprintf 'b\\n200'\n",
+                argv = argv_capture.display(),
+            ),
+        );
+        let transport = CurlHttpTransport::with_curl(&script);
+
+        get_via_fake_curl(&transport, "https://example.invalid/events", &[]).expect("get");
+
+        let argv: Vec<String> = std::fs::read_to_string(&argv_capture)
+            .expect("argv capture")
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        let value_after = |flag: &str| {
+            let at = argv.iter().position(|arg| arg == flag);
+            at.and_then(|at| argv.get(at + 1)).cloned()
+        };
+        assert_eq!(value_after("--connect-timeout").as_deref(), Some("10"));
+        assert_eq!(value_after("--max-time").as_deref(), Some("30"));
+        assert!(argv.iter().any(|arg| arg == "-S"), "{argv:?}");
+        assert!(argv.iter().any(|arg| arg == "-s"), "{argv:?}");
+    }
+
+    /// The set of curl exit codes that mean "no answer, ask again", pinned both ways: a code added
+    /// to the set sends a failure the daemon used to answer with a full-tree walk to a wait instead,
+    /// and a code taken out does the reverse.
+    #[test]
+    fn exactly_these_curl_exit_codes_are_transient() {
+        let transient: Vec<i32> = (0..=255)
+            .filter(|code| transient_curl_exit(*code).is_some())
+            .collect();
+        assert_eq!(transient, [6, 7, 18, 28, 35, 52, 55, 56, 92]);
+        for code in [
+            0, 1, 2, 3, 4, 5, 22, 23, 26, 47, 51, 53, 54, 58, 59, 60, 77, 82, 83, 90, 91, 126, 127,
+        ] {
+            assert_eq!(transient_curl_exit(code), None, "curl exit {code}");
+        }
+    }
+
+    /// Through the real `get`: each exit code in the set is a typed transient error whose message is
+    /// what it was before the type existed; any other code is a plain error.
+    #[cfg(unix)]
+    #[test]
+    fn a_curl_exit_in_the_set_is_typed_transient_and_any_other_is_not() {
+        use crate::events::transient_fetch_cause;
+
+        let directory = tempfile::tempdir().expect("tempdir");
+        for (code, transient) in [
+            (6, true),
+            (7, true),
+            (18, true),
+            (28, true),
+            (35, true),
+            (52, true),
+            (55, true),
+            (56, true),
+            (92, true),
+            (1, false),
+            (3, false),
+            (5, false),
+            (22, false),
+            (47, false),
+            (60, false),
+            (127, false),
+        ] {
+            let script = write_script(
+                directory.path(),
+                &format!("fake-curl-{code}"),
+                &format!(
+                    "#!/bin/sh\ncat > /dev/null\necho 'curl: ({code}) stand-in' >&2\nexit {code}\n"
+                ),
+            );
+            let transport = CurlHttpTransport::with_curl(&script);
+            let error = get_via_fake_curl(&transport, "https://example.invalid/events", &[])
+                .expect_err("a nonzero exit must error");
+            assert_eq!(
+                transient_fetch_cause(error.as_ref()).is_some(),
+                transient,
+                "curl exit {code}: {error}"
+            );
+            assert!(
+                error.to_string().starts_with(&format!(
+                    "curl failed (exit status: {code}): curl: ({code})"
+                )),
+                "the message is the one the journal has always shown: {error}"
+            );
+            if transient {
+                assert!(
+                    transient_fetch_cause(error.as_ref())
+                        .expect("typed")
+                        .starts_with(&format!("curl exit {code} (")),
+                    "{error}"
+                );
+            }
+        }
+    }
+
+    /// A curl killed by a signal has no exit code; nothing can be said about it, so it stays a plain
+    /// error and the daemon answers it as it always did.
+    #[cfg(unix)]
+    #[test]
+    fn a_curl_killed_by_a_signal_is_not_classified() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let script = write_script(
+            directory.path(),
+            "fake-curl",
+            "#!/bin/sh\ncat > /dev/null\nkill -KILL $$\n",
+        );
+        let transport = CurlHttpTransport::with_curl(&script);
+
+        let error = get_via_fake_curl(&transport, "https://example.invalid/events", &[])
+            .expect_err("a killed curl must error");
+
+        assert!(
+            !crate::events::is_transient_fetch_error(error.as_ref()),
+            "{error}"
+        );
+    }
+
     /// Issue #58 regression guard: a `%{http_code}` of 000 means no response was received;
     /// it must surface as a transport error, never as `HttpResponse { status: 0 }`.
     #[cfg(unix)]
@@ -411,6 +615,11 @@ printf '\n000'
         assert!(
             message.contains("000"),
             "error must mention the 000 status, got: {message}"
+        );
+        assert_eq!(
+            crate::events::transient_fetch_cause(error.as_ref()),
+            Some("no response received"),
+            "no response at all says nothing about the feed: asking again is expected to work"
         );
     }
 }
