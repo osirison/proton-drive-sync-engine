@@ -36556,6 +36556,18 @@ mod tests {
         guard: bool,
         pages: Vec<VolumeEventPage>,
     ) -> (Daemon<MultiRootClient>, MultiRootClient, Stepper) {
+        docs_daemon_with(directory, include_rule, !include_rule, guard, pages)
+    }
+
+    /// [`docs_daemon`] with the folder row's fate chosen: `drop_docs_row` removes it from the index
+    /// (the shape of an index older than folder rows), and without it the tree is fully named.
+    fn docs_daemon_with(
+        directory: &Path,
+        include_rule: bool,
+        drop_docs_row: bool,
+        guard: bool,
+        pages: Vec<VolumeEventPage>,
+    ) -> (Daemon<MultiRootClient>, MultiRootClient, Stepper) {
         let mut configs = pair_configs(directory, &["a"]);
         configs[0].events_driven = true;
         if include_rule {
@@ -36583,7 +36595,7 @@ mod tests {
         let mut stepper = Stepper::new(&mut daemon);
         assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
         let connection = &daemon.runtime(0).expect("ready").connection;
-        if !include_rule {
+        if drop_docs_row {
             purge_record(connection, Path::new("docs")).expect("drop the folder row");
         }
         assert!(
@@ -36592,11 +36604,12 @@ mod tests {
                 .is_some(),
             "precondition: the file is synced"
         );
-        assert!(
+        assert_eq!(
             get_record(connection, Path::new("docs"))
                 .expect("read")
                 .is_none(),
-            "precondition: its folder has no row"
+            include_rule || drop_docs_row,
+            "precondition: its folder has a row unless a rule or the test took it away"
         );
         client.clear_walks();
         client.listings.lock().expect("listings lock").clear();
@@ -36750,6 +36763,81 @@ mod tests {
             b"downloaded"
         );
         assert!(client.deletes().is_empty());
+    }
+
+    #[test]
+    fn a_synced_file_moved_into_a_folder_the_index_holds_no_row_for_is_not_deleted_locally() {
+        // Round 2 of the review of #461, the destructive form. The tree is fully named, and the
+        // other client makes `empty` and moves `docs/x.md` into it: the event names a parent the
+        // pair has no row for, which was read as a move out of the tree. The file left the remote
+        // map, the planner saw it deleted remotely, and with the guard off the local copy went.
+        let directory = tempdir().expect("tempdir");
+        let page = one_page(
+            "cursor-1",
+            vec![change(RemoteChangeKind::Updated, "x", Some("empty"), false)],
+        );
+        let (mut daemon, client, mut stepper) =
+            docs_daemon_with(directory.path(), false, false, false, vec![page]);
+        let local = daemon.runtime(0).expect("ready").config.local_root.clone();
+        {
+            let mut trees = client.trees.lock().expect("trees lock");
+            let tree = trees.get_mut(&remote_root_of("a")).expect("a tree");
+            tree.remove(Path::new("docs/x.md"));
+            tree.insert(PathBuf::from("empty"), remote_dir("empty", "vol~empty"));
+            tree.insert(
+                PathBuf::from("empty/x.md"),
+                remote_file_entity("empty/x.md", "vol~x", &sha1_bytes(b"x")),
+            );
+        }
+
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(
+            local.join("empty/x.md").exists(),
+            "the file is where the other client put it, not deleted (walks {:?}, deletes {:?})",
+            client.walks(),
+            client.deletes()
+        );
+        assert_eq!(
+            client.walks(),
+            [remote_root_of("a")],
+            "the pair cannot tell a move out from a move into a folder it has no row for, so it walks"
+        );
+    }
+
+    #[test]
+    fn a_file_restored_into_a_synced_folder_by_an_event_with_no_parent_is_downloaded() {
+        // Round 2 of the review of #461: an event that names no parent said nothing about where its
+        // node is, and a tree fully named read it as somewhere else on the volume. The pass was
+        // idle, the cursor moved, and the file was never asked for again.
+        let directory = tempdir().expect("tempdir");
+        let page = one_page(
+            "cursor-1",
+            vec![change(RemoteChangeKind::Updated, "back", None, false)],
+        );
+        let (mut daemon, client, mut stepper) = docs_daemon_with(
+            directory.path(),
+            false,
+            false,
+            true,
+            vec![page, empty_page("cursor-2")],
+        );
+        let local = daemon.runtime(0).expect("ready").config.local_root.clone();
+        remote_gains(
+            &client,
+            &remote_root_of("a"),
+            remote_file_entity("docs/back.md", "vol~back", &sha1_bytes(b"back")),
+        );
+
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(
+            local.join("docs/back.md").exists(),
+            "the restored file is in the folder (walks {:?})",
+            client.walks()
+        );
     }
 
     #[test]

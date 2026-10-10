@@ -7,9 +7,11 @@
 //! 1. the root uid can be learned: `proton-drive filesystem list --json` names the folder, either on
 //!    its own wrapper node or as the entry for it in its parent's listing, and the id is the
 //!    composed `volumeId~nodeId` of the volume the event stream is scoped to;
-//! 2. an event for a node created directly in the folder names **that same uid** as its parent
-//!    (`node_uid(volume, ParentLinkID) == root uid`), which is what makes a direct child placeable
-//!    and every other parent foreign.
+//! 2. an event for a node that is directly in the folder names **that same uid** as its parent
+//!    (`node_uid(volume, ParentLinkID) == root uid`), whether the event is the node's creation or a
+//!    later change to it (a rename is the one a delta carries most). That is what makes a direct
+//!    child placeable and every other parent foreign. An event that names no parent, or another
+//!    one, would be read as news about somebody else's node.
 //!
 //! **This is the gate before the skip is relied on**, as `events_identity_live.rs` was for
 //! `events_driven`: if the first fails the pair never learns its root and nothing is skipped (the
@@ -21,22 +23,42 @@
 //! 1. **Read-only** (default): learns the root uid through the client and checks its shape and its
 //!    volume; names which source answered, and checks the other source agrees when both can.
 //!
-//! 2. **Write round-trip** (opt-in, `PROTON_SYNC_LIVE_WRITE=1`): uploads a probe at the root, polls
-//!    the stream for its `Created` event, asserts the event's parent is the root uid, and reports
-//!    whether the root itself received any event for the upload (it would make every upload a
-//!    "the folder's own node changed" full walk). Deletes the probe.
+//! 2. **Write round-trip** (opt-in, `PROTON_SYNC_LIVE_WRITE=1`): uploads a small probe file at the
+//!    root and polls the stream for its `Created` event; renames the probe within the root and
+//!    polls for the `Updated` event that follows; asserts that **both** name the root uid as their
+//!    parent; and reports whether the root itself received any event for either (that would make
+//!    every upload or rename a "the folder's own node changed" full walk). The probe is trashed at
+//!    the end, **and also when an assertion fails** (a drop guard, best effort), so a failed run
+//!    does not leave the account dirty. The client's only delete is a trash, so the probe ends in
+//!    the account's trash; nothing is restored from it and it is not emptied.
+//!
+//! Nothing here prints an id (an id is account data): every assertion message is a constant and the
+//! checks compare ids without echoing them. The probe is named `proton-sync-scope-probe-<pid>.txt`
+//! (renamed to `...-renamed.txt`), and the test refuses to start if that name already exists.
+//!
+//! Run it on a real account, with the desktop keyring unlocked (the events session is the logged-in
+//! CLI's, read from the OS keyring) and `DBUS_SESSION_BUS_ADDRESS` set:
 //!
 //! ```bash
 //! PROTON_SYNC_EVENTS_VOLUME=<volumeId> \
-//! PROTON_SYNC_LIVE_REMOTE_ROOT=/Drive/RemoteFolder \
+//! PROTON_SYNC_LIVE_REMOTE_ROOT=/my-files/Videos \
+//! PROTON_SYNC_LIVE_WRITE=1 \
 //!   cargo test --test events_scope_live -- --ignored --nocapture
-//! # add PROTON_SYNC_LIVE_WRITE=1 to also run the write round-trip
-//! # set PROTON_SYNC_LIVE_CLI=/path/to/proton-drive if not on PATH
 //! ```
+//!
+//! | variable | for | meaning |
+//! | --- | --- | --- |
+//! | `PROTON_SYNC_EVENTS_VOLUME` | both checks | the volume id: a key under `"drive"` in `~/.local/share/proton-drive-cli/events.json` |
+//! | `PROTON_SYNC_LIVE_REMOTE_ROOT` | both checks | the folder to test in, as the pair's `remote_root` spells it (here `/my-files/Videos`) |
+//! | `PROTON_SYNC_LIVE_WRITE` | write check | `1` to run it; without it the check prints a line and passes |
+//! | `PROTON_SYNC_LIVE_CLI` | optional | path of `proton-drive` when it is not on `PATH` |
+//!
+//! Leave `PROTON_SYNC_LIVE_WRITE` out for the read-only check alone.
 #![cfg(unix)]
 
 use proton_drive_sync_engine::events::{
-    EventsClient, RemoteChangeKind, node_uid, volume_id_from_proton_id,
+    EventsClient, HttpTransport, RemoteChange, RemoteChangeKind, SessionProvider, node_uid,
+    volume_id_from_proton_id,
 };
 use proton_drive_sync_engine::proton::{ProtonClient, ProtonDriveClient, RemoteEntity};
 use proton_drive_sync_engine::session::{CliKeyringSession, CurlHttpTransport};
@@ -106,9 +128,68 @@ fn live_the_remote_root_names_itself_with_a_composed_uid_of_the_events_volume() 
     }
 }
 
+/// The probe on the remote. Dropping it trashes every name it has had, best effort, so a failed
+/// assertion never leaves the account dirty. Errors are ignored on purpose: a name that no longer
+/// exists is the normal case for all but one of them.
+struct Probe<'a> {
+    client: &'a ProtonDriveClient,
+    remote_root: PathBuf,
+    /// Every name the probe has had or may have, relative to the root.
+    names: Vec<PathBuf>,
+    scratch: PathBuf,
+}
+
+impl Probe<'_> {
+    fn trash_every_name(&mut self) {
+        for name in self.names.drain(..) {
+            let _ = self.client.delete(&self.remote_root.join(name));
+        }
+    }
+}
+
+impl Drop for Probe<'_> {
+    fn drop(&mut self) {
+        self.trash_every_name();
+        let _ = std::fs::remove_file(&self.scratch);
+    }
+}
+
+/// Polls the stream from `cursor` until `wanted` accepts an event, for up to 45 s (events lag a few
+/// seconds). Every event naming the root's own node is noted in `root_events` on the way, kind
+/// only: the root appearing among them matters.
+fn await_event<T: HttpTransport, S: SessionProvider>(
+    events: &EventsClient<T, S>,
+    volume: &str,
+    root_uid: &str,
+    cursor: &str,
+    root_events: &mut Vec<String>,
+    wanted: impl Fn(&RemoteChange) -> bool,
+) -> Option<RemoteChange> {
+    let deadline = Instant::now() + Duration::from_secs(45);
+    let mut cursor = cursor.to_owned();
+    while Instant::now() < deadline {
+        let page = events
+            .events_since(volume, &cursor)
+            .expect("fetch the events delta");
+        for change in &page.changes {
+            if node_uid(volume, &change.node_id) == root_uid {
+                root_events.push(format!("{:?} trashed={}", change.kind, change.trashed));
+            }
+            if wanted(change) {
+                return Some(change.clone());
+            }
+        }
+        cursor = page.latest_event_id;
+        if !page.more {
+            std::thread::sleep(Duration::from_secs(3));
+        }
+    }
+    None
+}
+
 #[test]
-#[ignore = "opt-in write round-trip: also set PROTON_SYNC_LIVE_WRITE=1 (uploads then deletes a probe file)"]
-fn live_a_node_created_in_the_root_names_the_root_uid_as_its_parent() {
+#[ignore = "opt-in write round-trip: also set PROTON_SYNC_LIVE_WRITE=1 (uploads, renames then trashes a probe file)"]
+fn live_events_for_a_node_in_the_root_name_the_root_uid_as_their_parent() {
     if std::env::var("PROTON_SYNC_LIVE_WRITE").ok().as_deref() != Some("1") {
         eprintln!("skipping write round-trip: set PROTON_SYNC_LIVE_WRITE=1 to enable");
         return;
@@ -123,70 +204,124 @@ fn live_a_node_created_in_the_root_names_the_root_uid_as_its_parent() {
 
     let session = CliKeyringSession::from_cli_keyring().expect("read the reused CLI session");
     let events = EventsClient::new(CurlHttpTransport::new(), session, APP_VERSION);
+
+    let stem = format!("proton-sync-scope-probe-{}", std::process::id());
+    let probe_rel = PathBuf::from(format!("{stem}.txt"));
+    let renamed_rel = PathBuf::from(format!("{stem}-renamed.txt"));
+    let in_root = client
+        .list_directory(&remote_root, Path::new(""))
+        .expect("list the remote root before the probe");
+    assert!(
+        !in_root.contains_key(&probe_rel) && !in_root.contains_key(&renamed_rel),
+        "a file with the probe's name is already in the folder; refusing to touch it"
+    );
+
     // Before the mutation, so the create event is guaranteed to be in the delta.
     let cursor0 = events
         .latest_cursor(&volume)
         .expect("latest cursor before the probe upload");
 
-    let probe_rel = PathBuf::from("proton-sync-scope-probe.txt");
-    let scratch = std::env::temp_dir().join("proton-sync-scope-probe.txt");
+    let scratch = std::env::temp_dir().join(format!("{stem}.txt"));
     std::fs::write(&scratch, b"scope probe").expect("write probe scratch file");
+    let mut probe = Probe {
+        client: &client,
+        remote_root: remote_root.clone(),
+        // Set before the call that makes it: a call that fails halfway may still have made it.
+        names: vec![probe_rel.clone()],
+        scratch,
+    };
     client
-        .upload(&scratch, &remote_root, &probe_rel)
+        .upload(&probe.scratch, &remote_root, &probe_rel)
         .expect("upload the probe file");
     let probe_uid = client
-        .list_entities(&remote_root)
-        .expect("list after upload")
+        .list_directory(&remote_root, Path::new(""))
+        .expect("list the remote root after the upload")
         .get(&probe_rel)
-        .and_then(|entity| entity.remote_id())
+        .and_then(RemoteEntity::remote_id)
         .expect("the uploaded probe must appear in the listing with an id");
 
-    // Poll until the probe's Created event arrives (events can lag a few seconds), keeping every
-    // event seen on the way: the root's own node appearing among them matters.
-    let deadline = Instant::now() + Duration::from_secs(45);
-    let mut parent_of_probe = None;
     let mut root_events = Vec::new();
-    let mut cursor = cursor0;
-    'poll: while Instant::now() < deadline {
-        let page = events
-            .events_since(&volume, &cursor)
-            .expect("fetch the events delta");
-        for change in &page.changes {
-            let uid = node_uid(&volume, &change.node_id);
-            if uid == root_uid {
-                root_events.push(format!("{:?} trashed={}", change.kind, change.trashed));
-            }
-            if matches!(change.kind, RemoteChangeKind::Created) && uid == probe_uid {
-                parent_of_probe = change.parent_id.clone();
-                break 'poll;
-            }
-        }
-        cursor = page.latest_event_id;
-        if !page.more {
-            std::thread::sleep(Duration::from_secs(3));
-        }
-    }
 
-    // Clean up the probe before asserting, so a failure never leaves the account dirty.
-    let _ = client.delete(&remote_root.join(&probe_rel));
-    let _ = std::fs::remove_file(&scratch);
-
-    let parent = parent_of_probe.expect(
+    // 1. Its creation.
+    let created = await_event(
+        &events,
+        &volume,
+        &root_uid,
+        &cursor0,
+        &mut root_events,
+        |change| {
+            matches!(change.kind, RemoteChangeKind::Created)
+                && node_uid(&volume, &change.node_id) == probe_uid
+        },
+    )
+    .expect(
         "no Created event for the probe arrived: the stream does not report a node created in the \
          folder, and the skip cannot be relied on",
     );
     assert!(
-        node_uid(&volume, &parent) == root_uid,
+        created
+            .parent_id
+            .as_deref()
+            .is_some_and(|parent| node_uid(&volume, parent) == root_uid),
         "a node created directly in the folder must name the folder's own uid as its parent — \
          otherwise a direct child would read as foreign and be skipped"
     );
+
+    // 2. A later change to it: renamed within the root, which is what an edit or a move looks
+    // like to a pair that already holds the node. From a cursor taken now, so the creation (and
+    // anything the upload itself produced before this point) is not read as the rename.
+    let cursor1 = events
+        .latest_cursor(&volume)
+        .expect("latest cursor before the rename");
+    probe.names.push(renamed_rel.clone());
+    client
+        .rename_or_move(&remote_root, &probe_rel, &renamed_rel)
+        .expect("rename the probe within the root");
+    probe.names.retain(|name| name != &probe_rel);
+    let updated = await_event(
+        &events,
+        &volume,
+        &root_uid,
+        &cursor1,
+        &mut root_events,
+        |change| {
+            matches!(change.kind, RemoteChangeKind::Updated)
+                && !change.trashed
+                && node_uid(&volume, &change.node_id) == probe_uid
+        },
+    )
+    .expect(
+        "no Updated event for the renamed probe arrived: a change to a node in the folder is not \
+         reported, and the pair would never see an edit",
+    );
+    assert!(
+        updated
+            .parent_id
+            .as_deref()
+            .is_some_and(|parent| node_uid(&volume, parent) == root_uid),
+        "an update to a node directly in the folder must name the folder's own uid as its parent — \
+         otherwise an edit of a file already synced would read as foreign and be skipped"
+    );
+
+    // Trash the probe now rather than leave it to the guard, so a failure to do it is a failure of
+    // the run; the guard still tries every name if an assertion above had failed first.
+    client
+        .delete(&remote_root.join(&renamed_rel))
+        .expect("trash the probe");
+    probe.names.retain(|name| name != &renamed_rel);
+
     if root_events.is_empty() {
-        eprintln!("scope round-trip OK: the parent is the root uid; the root itself got no event");
+        eprintln!(
+            "scope round-trip OK: create and rename both name the root uid as their parent; the \
+             root itself got no event"
+        );
     } else {
         eprintln!(
-            "scope round-trip OK: the parent is the root uid, BUT the root itself received events \
-             for the upload: {root_events:?}. Every upload would then be read as \"the folder's \
-             own node changed\" and walk: the root-event rule needs narrowing before this ships"
+            "scope round-trip OK: create and rename both name the root uid as their parent, BUT \
+             the root itself received {} event(s) {root_events:?} while the probe was made and \
+             renamed. Every upload would then be read as \"the folder's own node changed\" and \
+             walk: the root-event rule needs narrowing before this ships",
+            root_events.len()
         );
     }
 }

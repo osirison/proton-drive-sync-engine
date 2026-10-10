@@ -63,38 +63,71 @@ moved into the pure `reconstruct_remote`.
    always falls back: it is never skipped and never placed. **A pair with include rules has no root
    uid for this purpose**: the folders between the root and a matching file are not sync entities and
    have no index row, so the index does not hold the tree's folders and "not any folder I know" says
-   nothing. Such a pair is decided exactly as before this change (the daemon does not even ask the
-   client which node the root is).
-3. **The in-pass map comes before the index.** A parent created or moved earlier in the same delta
-   is placed, which fixes the second instance for any pair.
-4. **An event whose parent is unknown is deferred, and decided at the end of the delta.** It is
-   dropped as "outside" only under **condition S**, which has three parts: the root uid is known
-   (and the pair has no include rules); every directory in the final map carries a composed uid of
-   this volume; and **every record sits directly in the root or in a directory of the map**, read
-   over the baseline as well as the final map. The third part is what makes "the tree's folders are
-   the directories I hold" true: a record under a folder with no row (an index written before
-   folders were rows, or a folder an exclude rule has since hidden) could be sitting in exactly the
-   folder the event names. Otherwise the pass falls back to a snapshot and the reason names the
-   record that blocked it ("`docs` has no composed id", "`docs/x.md` is in a folder the index has no
-   record of").
+   nothing. Such a pair is decided as before this change (the daemon does not even ask the client
+   which node the root is); point 8 says exactly how.
+3. **The in-pass map comes before the index, for a pair that knows its root.** A parent created or
+   moved earlier in the same delta is placed, which fixes the second instance. A pair that does not
+   know its root does not ask the in-pass map at all. The map places a node from the end-state
+   listing, so it can hold a path that a later event of the delta takes away: the first version
+   asked it for every pair, and a folder made outside the tree, a file made in it, the old holder
+   of the name trashed and the folder moved in came out `Complete` without the file (found by the
+   second review, 233 in 1.9 million small histories; before this change the same history walked).
+   Such a pair keeps the old order, the index and then the root listing, so a create under a folder
+   created in the same delta still walks for it. The map is still asked one thing: a parent it holds
+   at a path the index does not say (the delta placed it, or moved it) cannot be looked up through the
+   index, whose path for it is stale and may belong to another folder by now, so that child walks.
+   The model test found it under an include rule, one history in 3 million; the old code had the same
+   stale lookup.
+4. **An event whose parent is unknown is deferred, and decided at the end of the delta, if its node
+   is not one the pair holds.** It is dropped as "outside" only under **condition S**, which has
+   four parts: the root uid is known (and the pair has no include rules); every directory in the
+   final map carries a composed uid of this volume; **no record of the baseline carries a real id
+   that is not one of this volume's** (a raw id from an older index, another volume's id: such a
+   record can be the node the event is about, moved out, and it is read from the baseline because a
+   different node may have taken its path since); and **every record sits directly in the root or
+   in a directory of the map**, read over the baseline as well as the final map. The last part is
+   what makes "the tree's folders are the directories I hold" true: a record under a folder with no
+   row (an index written before folders were rows, or a folder an exclude rule has since hidden)
+   could be sitting in exactly the folder the event names. Otherwise the pass falls back to a
+   snapshot and the reason names the record that blocked it ("`docs` has no composed id",
+   "`docs/x.md` is in a folder the index has no record of"). A record with **no** id yet (`None` or
+   empty: the daemon uploaded it last pass) does not block a file's event: its own `Created` event
+   names it, and an event of a node that left cannot come before that one. A directory with no id
+   does block, because it can be the unknown parent itself.
+   **An event that names no parent is never deferred**: nothing says where its node is (a node
+   restored from the trash can arrive that way), so the pass walks.
 5. **A removal of a node the pair does not track** is deferred the same way and dropped under the
-   same rule extended to files (every record carries a composed uid). It needs no root uid: the
-   removed node could only have been one of the records that lack an id.
-6. **A tracked node whose event names an unknown parent** left the tree if S holds. It is taken out
-   of the map **at once**, with its subtree, and S is checked at the end of the delta: if S fails the
-   whole result is thrown away, and if it holds the removal was right. Removing it at the end, by the
-   path it had, removed whatever another event had put at that path since (a different node that took
-   the name). A later event for the same node that is applied (it moved back) is its final word; a
-   directory that moves back in is `Updated` while untracked, so it falls back (point 7). A tracked
-   node whose event names *no* parent falls back: that cannot be a move.
+   same rule extended to files (every record carries a composed uid, and no baseline record has an
+   older id). It needs no root uid: the removed node could only have been one of the records that
+   lack an id.
+6. **A tracked node whose event names a parent the pair does not hold walks.** It left the tree, or
+   it went into a folder the pair cannot see into (no row, nothing recorded beneath it), and the
+   event does not say which. The first version read it as "left": the node was taken out of the map,
+   and a file moved into such a folder came out of the next plan as deleted remotely, with the
+   local copy removed when the guard was off. A real move out of the tree therefore costs one walk;
+   that was accepted, because the other reading loses a file. "Tracked" includes a node an earlier
+   event of the same delta took out of the map (an update the end-state listing could not find where
+   it said, a node the listing put over its record): its next event is the one that says where it
+   went. The same walk covers an event whose parent was taken out of the map earlier in the delta:
+   the index still holds that parent's old path, and the path may belong to another folder by now
+   (found by the second review's fuzz, one in 8 million histories). An update whose node is absent
+   from its parent's listing drops the node **with what was beneath it**: events are per link, so
+   nothing else says its children went with it. A directory that moves back in is `Updated` while
+   untracked, so it falls back (point 7).
 7. **A directory that appears by an `Updated` event while untracked** (moved in from elsewhere, or
    restored from the trash) falls back, because volume events are per link and nothing describes
    what is inside it. This also closes a gap that existed before this change. The exception is a
    directory record that already exists at that very path without an id: that is the daemon's own
    folder being given its id, not a newcomer.
-8. **Without a root uid, nothing changes.** Placement is the old rule (the index, then the root
-   listing, then the error), the removal rule still skips when every record has an id, and the
-   reason strings are the old ones. That is also the whole of what an include-rule pair does.
+8. **Without a root uid, placement is the old rule.** The index, then the root listing, then the
+   error; the in-pass map is not asked (point 3); the removal rule still skips when every record has
+   an id; the reason strings are the old ones. That is also the whole of what an include-rule pair
+   does. Three things differ from the code before this change. Two can only add a walk: a directory
+   that appears by an update falls back (point 7), and a parent that an earlier event of the same
+   delta took out of the map, placed or moved is not resolved through its stale index path (points 3
+   and 6). The third removes the entries beneath a folder whose update cannot find it (point 6),
+   which the old code left in the map. A delta of nothing but dropped removals is also an idle pass for such a pair
+   (point 12): it drops untracked removals as outside, as it always did.
 9. **Learning the root uid.** `ProtonClient::remote_root_uid` returns it from the root listing's
    wrapper node when the CLI prints an id there, otherwise from the root's entry in its parent's
    listing. At most two listings. A full walk that leaves a cursor asks every time (a root that was
@@ -138,6 +171,16 @@ An event dropped under S is never a change inside the pair's tree that nothing l
 root or a directory Q of the tree. (The argument is for a pair without include rules; a pair with
 them skips nothing.)
 
+First, the event is only deferred if N is not a node the pair holds. The ways N could be one without
+the map saying so, and what closes each: the event names **no** parent (it walks, point 4); N is
+tracked and names a parent the pair does not hold (it walks, point 6); N is a record held under an
+id no event can carry, such as a raw id of an older index or another volume's id (S fails, point 4,
+read from the baseline); N is a record the daemon uploaded last pass and that has no id yet (its own
+`Created` event names it, and by in-order delivery an event of a node that left comes after that one,
+so at the end of the delta the record is named or the event was not about it).
+
+Then:
+
 - P is the root: the root uid is known, so P is a known parent and the event was not deferred.
 - P is a directory Q of the tree: under S every directory in the final map has its uid in the
   in-pass map, so if Q is in the final map the event was not deferred. So Q is not in the final map.
@@ -152,12 +195,14 @@ them skips nothing.)
 | 4 | Q was moved in from elsewhere, or restored from the trash | in this delta: its `Updated` event falls back (point 7). In an earlier delta: that pass fell back and walked, so Q and its subtree are indexed |
 | 5 | Q is a descendant of a moved-in directory | no events exist for it; the fallback in 4 walks them |
 | 6 | the root itself was renamed, moved or trashed | an event about the root falls back |
-| 7 | the index is incomplete for another reason | after a full walk **under rules without include patterns** every inside, non-excluded directory has a row with a composed id (listings are all-or-nothing, #59). `Keep` and `reset-index` latch a full walk, a partial pass holds the cursor, and a legacy raw id or an empty placeholder counts as missing, so S fails. A folder with no row but a record beneath it (an index older than folder rows, or a rule changed since the walk) fails S's third part. **Not closed:** a folder with no row *and nothing beneath it* is invisible to the index; it arises only when rules were loosened or the index predates folder rows, and no walk has run since. An event inside it is dropped. `resync` heals it, and the old code healed it by accident, with a walk for any unknown parent |
+| 7 | the index is incomplete for another reason | after a full walk **under rules without include patterns** every inside, non-excluded directory has a row with a composed id (listings are all-or-nothing, #59). `Keep` and `reset-index` latch a full walk, a partial pass holds the cursor, and a legacy raw id or an empty placeholder counts as missing, so S fails. A folder with no row but a record beneath it (an index older than folder rows, or a rule changed since the walk) fails S's last part. A folder with no row *and nothing beneath it* is invisible to the index: **see row 11** |
 | 8 | another client creates something inside a folder this pair just created | that folder is case 1 or 2 |
-| 9 | Q was removed or moved out earlier in the delta | N left with it; a later event for N describes an outside node |
-| 10 | Q's name is taken by another node later in the delta | a move out is applied when it is read, not at the end by the stale path, so the later node is not removed with it |
+| 9 | Q was removed or moved out earlier in the delta | N left with it. An event that names Q as its parent after that walks (point 6): the index's old path for Q is not asked, because it may belong to another folder by now |
+| 10 | Q's name is taken by another node later in the delta | a tracked node's move out is a walk (point 6), so nothing is removed by a stale path |
+| 11 | Q has no row and nothing recorded beneath it (it arises only when rules were loosened or the index predates folder rows, and no walk has run since) | **Closed:** a node the pair holds that moves *into* Q names a parent the pair does not hold, so it walks (point 6); before, it was read as having left, and its local copy was deleted. **Not closed:** a node the pair does *not* hold that is created in Q, restored into Q or moved into Q from elsewhere, and an update to a node already inside Q. Those events name a parent the pair has never heard of and are dropped as elsewhere on the volume. `resync` heals it, and the old code healed it by accident, with a walk for any unknown parent |
 
-Each row contradicts "deferred and dropped", ends in a fallback, or is the one named as not closed.
+Each row contradicts "deferred and dropped", ends in a fallback, or is the one named as not closed
+(the second half of row 11).
 
 The assumption the whole argument uses, and ADR 0001's cascade already used: **events arrive in the
 order things happened**. A foreign event can sit before the event that names the daemon's own folder;
@@ -166,6 +211,14 @@ that is why the decision waits for the end of the delta.
 Not claimed: descendants of a directory renamed *within* the tree keep their old paths in the
 reconstructed map. That was already true and this change neither fixes nor depends on it. A pinning
 test is listed under follow-ups.
+
+Also not claimed, and older than this change: the listing a pass reads is the tree as it is *now*,
+which can be ahead of the delta. If it places a node at a path whose previous holder is only trashed
+by an event after the delta ends, the holder's record is overwritten, the next pass reads its trash as
+news about someone else's node, and the holder's children stay in the map until the next walk. The
+planner's view is then a stale file, not a lost one, so nothing is deleted in the meantime. The model
+test finds it once in about 190,000 two-pass histories (seed 215742) and skips that shape on purpose;
+the code before this change overwrote the record the same way.
 
 Also older than this change and equally true without a root uid, found by the model test and left
 alone because an include-rule pair is decided as it was: with include rules, a folder that has no row
@@ -183,12 +236,17 @@ into the event delta, hands `reconstruct_remote` the baseline from before it and
 lists the tree as it is at the end, and compares a `Complete` map with the tree a filtered full walk
 would list. A fallback is always acceptable; a complete and different map is a change the pass would
 lose. It runs with no rules, an exclude rule, three include rule sets, and an index with some folder
-rows missing, and once more with the history cut into two passes. Seeded and deterministic: a few
-seconds by default, more with `RECONSTRUCT_FUZZ_SCENARIOS=300000 cargo test --lib
-reconstruct::model_tests -- --nocapture`. At the review of the first version, it found the two
-defects fixed here (include rules, and a move out applied by a stale path): 281 wrong maps in 60,000
-scenarios without rules, thousands with include rules. It now reports none in 200,000 scenarios per
-configuration. What the generator leaves out is listed at the top of the file.
+rows missing, and once more with the history cut into two passes. Four further shapes came with the
+second review: names that another node takes at once, trashes undone at once and nodes deleted
+without a trash; events that lose their parent id; records held under the ids of an older index; and
+folders with no row and nothing beneath them. Seeded and deterministic: a few seconds by default,
+more with `RECONSTRUCT_FUZZ_SCENARIOS=300000 cargo test --lib reconstruct::model_tests --
+--nocapture` (`RECONSTRUCT_FUZZ_FROM=<seed>` starts at a seed, to replay one). At the review of the
+first version, it found the two defects fixed then (include rules, and a move out applied by a stale
+path): 281 wrong maps in 60,000 scenarios without rules, thousands with include rules. Against the
+first fixes the new shapes found 338 wrong maps in 10,000 histories with lost parent ids, 247 in
+20,000 with older ids and 28 in 20,000 with folders that have no row; it reports none in 300,000
+scenarios per configuration now. What the generator leaves out is listed at the top of the file.
 
 ## Consequences
 
@@ -202,11 +260,14 @@ configuration. What the generator leaves out is listed at the top of the file.
   anchoring (#294, #303), selective sync and the plan pass (which still full-walks and learns
   nothing) are untouched.
 - **What still walks.** A fetch error or a server refresh; a `Created` node absent from its known
-  parent's listing (#30); an event about the pair's own root; a directory moved in or restored, and
-  one that moved out and back in one delta; a duplicate id in the baseline; a tree with a directory
-  that has no composed id (the window between the daemon making a folder and its own event
-  arriving); a record in a folder with no row; a pair that cannot learn its root uid; **every
-  foreign event of a pair with include rules**, as before.
+  parent's listing (#30); an event about the pair's own root; a directory moved in or restored; a
+  duplicate id in the baseline; a tree with a directory that has no composed id (the window between
+  the daemon making a folder and its own event arriving); a record in a folder with no row; a
+  baseline record under an older id; an event that names no parent; **a node the pair holds that
+  moves out of the tree** (one walk per move out: the same event is a move into a folder the pair
+  has no row for, and the pair cannot tell them apart); an event naming a parent that an earlier
+  event of the same delta took out; a pair that cannot learn its root uid; **every foreign event of
+  a pair with include rules**, as before.
 - **A new invariant** for CLAUDE.md: an event the pair cannot place is skipped only when the pair's
   tree is fully named and fully held (point 4), and never for a pair with include rules.
 - **What to watch on the live log** after the upgrade: zero "not under any indexed parent" lines for
@@ -254,9 +315,20 @@ configuration. What the generator leaves out is listed at the top of the file.
 
 1. read only: the client learns the root uid, it is a composed uid, and its volume half is the
    events volume; the two sources agree when both can answer;
-2. opt-in write (`PROTON_SYNC_LIVE_WRITE=1`): upload a probe at the root, read its `Created` event,
-   assert `node_uid(volume, ParentLinkID)` is the root uid, and report whether the root itself got an
-   event. The probe is deleted.
+2. opt-in write (`PROTON_SYNC_LIVE_WRITE=1`): upload a probe at the root, read its `Created` event
+   and assert `node_uid(volume, ParentLinkID)` is the root uid; rename the probe within the root,
+   read the `Updated` event that follows and assert the same of it (a pair that already holds the
+   node meets an edit or a rename far more often than a creation, and an event with a missing or
+   different parent would be dropped as foreign); and report whether the root itself got an event for
+   either. The probe is trashed at the end and also when an assertion fails (a drop guard). It is
+   never restored from the trash, and the trash is not emptied. The run prints no ids.
+
+```bash
+PROTON_SYNC_EVENTS_VOLUME=<volumeId> \
+PROTON_SYNC_LIVE_REMOTE_ROOT=/my-files/Videos \
+PROTON_SYNC_LIVE_WRITE=1 \
+  cargo test --test events_scope_live -- --ignored --nocapture
+```
 
 The skip is relied on once this has passed on a real account. If the first check fails a pair never
 learns its root and nothing is skipped (the old behaviour); if the second fails, do not ship.

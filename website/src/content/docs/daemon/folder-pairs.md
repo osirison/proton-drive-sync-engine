@@ -159,7 +159,9 @@ resume it, and `proton-sync reset-index` does not clear it. One case is not cove
   its tree has an id, and every file it has recorded sits in a folder it has recorded too. A folder
   the daemon has just made has no id until Proton's event for it arrives, normally within one
   30-second poll; if a change elsewhere arrives in that gap, the pair re-scans once, as before. A
-  pair that cannot tell which Drive folder is its own also re-scans, as before. **A pair with an
+  pair that cannot tell which Drive folder is its own also re-scans, as before, and so does one
+  that meets an event naming no folder, or a file it has recorded moving to a folder it does not
+  know (a move out of the synced folder costs one re-scan). **A pair with an
   `include` rule always re-scans for an event it cannot place**, as before: the folders on the way
   to an included file are not recorded, so it cannot tell that the event is about another folder. To see how often it still happens, run at `RUST_LOG=info` and count the
   `event-driven pass fell back to a full-tree snapshot` lines per pair — every line carries its

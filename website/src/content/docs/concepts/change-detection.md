@@ -68,12 +68,16 @@ reports may be about other folders — other devices, other synced folders, the 
 ignores an event about another folder, as long as it knows which Drive folder is its own, every
 folder in its tree has an id, and every file it has recorded sits in a folder it has recorded too.
 A poll in which every event was about other folders costs nothing: no scan of the remote tree and
-no scan of your local folder. The folder cannot tell in three cases, and then re-scans once, as it
+no scan of your local folder. The folder cannot tell in these cases, and then re-scans once, as it
 always did. The first is right after it has made a folder itself: that folder has no id until
 Proton's event for it arrives (normally within one poll), and a change elsewhere in that gap could
-be about it. The second is an index that records a file but not the folder it is in. The third is a
-change to the synced folder itself (renamed, moved, trashed), or a folder moved in from elsewhere,
-because the stream describes nothing inside them.
+be about it. The second is an index that records a file but not the folder it is in, or a file
+recorded under an id from an older version (the re-scan rewrites it). The third is a change to the
+synced folder itself (renamed, moved, trashed), or a folder moved in from elsewhere, because the
+stream describes nothing inside them. The fourth is an event that names no folder at all, because
+then nothing says where the file is. The fifth is a file or folder it has recorded that moves to a
+folder it does not know: that is either a move out of your synced folder or a move into an empty
+folder it has no record of, and the event cannot tell which, so it looks rather than guess.
 
 **A folder with an include rule ("only sync these") never ignores an event about another folder.**
 The folders on the way to an included file are not recorded, so it cannot tell where an event
