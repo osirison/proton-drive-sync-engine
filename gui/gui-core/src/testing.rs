@@ -65,6 +65,9 @@ pub struct FakePair {
     pub remote_root: PathBuf,
     pub db_path: PathBuf,
     pub paused: bool,
+    /// A pass is running for this pair right now. The daemon serializes passes, so a test names at
+    /// most one pair in this state.
+    pub syncing: bool,
     pub pending_deletions: usize,
     /// When the pair last synced. `None` is a pair that never has — and, since a fake reply's
     /// status history is always empty, the state a full reply derives `FirstRun` from.
@@ -98,6 +101,7 @@ impl FakePair {
             remote_root: remote_root.to_owned(),
             db_path: db_path.to_owned(),
             paused: false,
+            syncing: false,
             pending_deletions: 0,
             last_sync: Some(FAKE_LAST_SYNC),
             last_error: None,
@@ -111,6 +115,13 @@ impl FakePair {
     /// state a full reply derives `FirstRun` from.
     pub fn never_synced(mut self) -> Self {
         self.last_sync = None;
+        self
+    }
+
+    /// A pair with a pass running: its summary (and its own reply) says `syncing`, and every folder
+    /// that has not had its turn waits for it.
+    pub fn syncing(mut self) -> Self {
+        self.syncing = true;
         self
     }
 
@@ -133,7 +144,7 @@ impl FakePair {
             remote_root: self.remote_root.clone(),
             db_path: self.db_path.clone(),
             paused: self.paused,
-            syncing: false,
+            syncing: self.syncing,
             reconcile_seq: 0,
             last_sync_epoch_secs: self.last_sync,
             last_error: self.last_error.clone(),
@@ -428,7 +439,7 @@ fn reply_for(shape: Shape, pairs: &[FakePair], index: usize) -> ControlResponse 
     ControlResponse {
         status: if pair.paused { "paused" } else { "running" }.to_owned(),
         paused: pair.paused,
-        syncing: false,
+        syncing: pair.syncing,
         reconcile_seq: 0,
         pending_changes: 0,
         message: "fake daemon".to_owned(),
@@ -656,7 +667,8 @@ mod tests {
         .start();
         let state_of = |name| derive_state(Ok(&status(&daemon, Target::named(name))));
         assert_eq!(state_of("a"), DaemonState::Idle);
-        assert_eq!(state_of("b"), DaemonState::FirstRun);
+        // Beside other folders a pair with no pass is waiting for its turn, not on its first run.
+        assert_eq!(state_of("b"), DaemonState::Queued);
         assert_eq!(state_of("c"), DaemonState::Failed);
         let listed = status(&daemon, Target::DEFAULT).pairs;
         assert_eq!(listed[1].last_sync_epoch_secs, None);

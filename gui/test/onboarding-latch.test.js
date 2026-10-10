@@ -69,7 +69,7 @@ test("the release set has exactly one definition, and app.js asks for it", () =>
   assert.doesNotMatch(line, /===\s*"/, "a hand-written state list is back in app.js");
 
   // And the export itself, so a caller has something to ask.
-  for (const state of ["idle", "running", "paused", "authExpired", "failed"]) {
+  for (const state of ["idle", "running", "queued", "paused", "authExpired", "failed"]) {
     assert.equal(releasesOnboarding(state), true, `${state} should release`);
   }
   for (const state of ["firstRun", "unreachable"]) {

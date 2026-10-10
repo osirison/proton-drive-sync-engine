@@ -61,6 +61,29 @@ test("every select answers for the selected pair's slice", () => {
   assert.equal(store.select.pairStates().length, 2);
 });
 
+test("who the folder on screen waits for is read from the payload its state came in", () => {
+  store.configure({ follows: "selection" });
+  store.setStatus(
+    {
+      ...payload(["documents", "photos"], "photos", "photos"),
+      state: "queued",
+      waiting_for: "documents",
+    },
+    next(),
+  );
+  assert.equal(store.select.daemonState(), "queued");
+  assert.equal(store.select.waitingFor(), "documents");
+  // The next payload for the folder says nothing is waiting any more: nothing is remembered.
+  store.setStatus({ ...payload(["documents", "photos"], "photos", "photos"), state: "idle" }, next());
+  assert.equal(store.select.waitingFor(), null);
+  // Another folder's payload is not this folder's wait.
+  store.setStatus(
+    { ...payload(["documents", "photos"], "documents", "photos"), state: "queued", waiting_for: "photos" },
+    next(),
+  );
+  assert.equal(store.select.waitingFor(), null, "photos is selected, and its own payload said nothing");
+});
+
 test("a scan is filed under the pair it was issued for, whatever is selected when it lands", () => {
   store.configure({ follows: "selection" });
   store.setStatus(payload(["docs", "photos"], "docs", "docs"), next());

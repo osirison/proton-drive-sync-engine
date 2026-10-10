@@ -8,7 +8,7 @@
 use crate::ipc::IpcError;
 use crate::wire::{AuthState, ControlResponse, PairSummary};
 
-/// The seven reachable UI states (design §6). `Running` is primarily the daemon's own `syncing`
+/// The eight reachable UI states (design §6). `Running` is primarily the daemon's own `syncing`
 /// flag (a reconcile pass is in flight); `pending_changes > 0` is kept as a secondary signal so
 /// replies from older daemons (whose `syncing` deserializes to `false`) still derive usefully.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -16,8 +16,19 @@ use crate::wire::{AuthState, ControlResponse, PairSummary};
 pub enum DaemonState {
     /// Reconciling / has outstanding work (`pending_changes > 0`). Design: "Syncing N of M".
     Running,
-    /// Reachable, paused=false, nothing pending. Design: "Everything is up to date".
+    /// Reachable, paused=false, nothing pending, and a pass has finished for this folder. Design:
+    /// "Everything is up to date". **Never for a folder with no finished pass** — see `Queued`.
     Idle,
+    /// Two folders or more, and this one has not finished a pass since the daemon started (a daemon
+    /// starts every folder with no last sync; only a finished pass sets it), is not running one, and
+    /// is not paused or failed. Its turn is coming: passes are serialized, so either another folder's
+    /// pass is running (`PairState::waiting_for` names it) or the daemon has not reached this one
+    /// yet. The daemon starts it by itself when it does — every folder is due at start-up, and one
+    /// resumed from a pause is reached at its next turn — so waiting never needs the person.
+    ///
+    /// This is the state `Idle` used to be for it: a summary has no history, so a folder waiting
+    /// behind a 25 minute pass read `up to date` beside one that had never copied a file.
+    Queued,
     /// The daemon reports `paused = true`.
     Paused,
     /// The Proton session is gone and the user has to sign in again. Design: "Proton sign-in
@@ -38,6 +49,8 @@ pub enum DaemonState {
     /// em-dashes and the ledger as explicitly empty — never zeroes.
     Unreachable,
     /// Reachable but nothing has ever synced (no `last_sync`, empty history). Design: first run.
+    /// **Only for the one folder** (or a daemon that lists none): it is the first-folder wizard's
+    /// state, and with two folders or more the same facts are `Queued`.
     FirstRun,
 }
 
@@ -112,10 +125,52 @@ pub struct PairFacts<'a> {
     pub history_empty: Option<bool>,
     /// Daemon-wide: the session is per user, so every pair's facts carry the one verdict.
     pub auth: AuthState,
+    /// What the other folders are doing. The one fact about the rest of the app a folder's state
+    /// depends on: whether it has had its turn only means something when there are other folders
+    /// to take it.
+    pub peers: Peers<'a>,
+}
+
+/// What the folders other than this one are doing, as the reply that lists them says.
+///
+/// Passes are serialized (one gate, one pass at a time, ADR 0005 §5 — `ControlShared::active_pair`
+/// in the engine reads at most one `syncing`), so a folder that has not had its turn is either
+/// waiting for the one pass that is running or about to be popped; `Busy` names the first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Peers<'a> {
+    /// No other folder: one folder, or a reply that lists none (a daemon older than the selector).
+    /// State derives exactly as it did before folders.
+    Alone,
+    /// Other folders, and none of them is running a pass right now.
+    Resting,
+    /// Another folder is running a pass right now.
+    Busy(&'a str),
+}
+
+/// The peers of the folder named `me` in `pairs`. `me` is `None` when the reply names no folder
+/// (an unresolved selector), in which case nobody is excluded.
+fn peers_of<'a>(pairs: &'a [PairSummary], me: Option<&str>) -> Peers<'a> {
+    if pairs.len() < 2 {
+        return Peers::Alone;
+    }
+    pairs
+        .iter()
+        .find(|pair| pair.syncing && Some(pair.name.as_str()) != me)
+        .map_or(Peers::Resting, |pair| Peers::Busy(&pair.name))
+}
+
+impl<'a> PairFacts<'a> {
+    /// The folder this one is waiting for: the one running a pass, when there is one.
+    pub fn waiting_for(&self) -> Option<&'a str> {
+        match self.peers {
+            Peers::Busy(name) => Some(name),
+            Peers::Alone | Peers::Resting => None,
+        }
+    }
 }
 
 impl<'a> From<&'a ControlResponse> for PairFacts<'a> {
-    /// A full reply: history is known, so `FirstRun` is reachable.
+    /// A full reply: history is known, so `FirstRun` is reachable (for a folder that is alone).
     fn from(response: &'a ControlResponse) -> Self {
         Self {
             paused: response.paused,
@@ -125,18 +180,24 @@ impl<'a> From<&'a ControlResponse> for PairFacts<'a> {
             last_sync: response.last_sync_epoch_secs,
             history_empty: Some(response.status_history.is_empty()),
             auth: response.auth,
+            peers: peers_of(&response.pairs, response.pair.as_deref()),
         }
     }
 }
 
 /// A pair known only by its summary. `auth` is the daemon-wide verdict from the reply the summary
-/// arrived in (a summary has none of its own).
+/// arrived in (a summary has none of its own), and `pairs` is that reply's list, which is where its
+/// peers are read.
 ///
 /// **`history_empty` is `None`, not `Some(true)`** (`a_summary_can_never_derive_first_run`), and
 /// **`last_error` is carried** (`an_unavailable_pair_derives_failed_from_its_summary`): a pair whose
 /// folder is missing publishes its reason there (phase 4b), and dropping it would draw an unplugged
 /// drive as `Idle`.
-pub fn facts_of(summary: &PairSummary, auth: AuthState) -> PairFacts<'_> {
+pub fn facts_of<'a>(
+    summary: &'a PairSummary,
+    auth: AuthState,
+    pairs: &'a [PairSummary],
+) -> PairFacts<'a> {
     PairFacts {
         paused: summary.paused,
         syncing: summary.syncing,
@@ -145,6 +206,7 @@ pub fn facts_of(summary: &PairSummary, auth: AuthState) -> PairFacts<'_> {
         last_sync: summary.last_sync_epoch_secs,
         history_empty: None,
         auth,
+        peers: peers_of(pairs, Some(summary.name.as_str())),
     }
 }
 
@@ -158,6 +220,10 @@ pub struct PairState {
     /// carried so the webview can order folders worst-first and pick the worst without a rank table
     /// of its own (two places computing the same thing is how they come to disagree).
     pub rank: u8,
+    /// For a `Queued` folder: the folder whose pass it is waiting for. Absent when nothing is running
+    /// (the daemon has not reached it yet) and for every other state.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waiting_for: Option<String>,
 }
 
 /// How bad a state is when folders disagree and the tray can show only one glyph — **higher is worse**
@@ -165,23 +231,25 @@ pub struct PairState {
 ///
 /// | rank | state | why it sits there |
 /// |---|---|---|
-/// | 6 | `Unreachable` | the control socket: process-wide, there are no per-pair answers to rank |
-/// | 5 | `AuthExpired` | the session is per user, so every unpaused pair says it at once |
-/// | 4 | `Failed` | one folder's last pass failed (or its folder is gone); never hidden behind a healthy one |
-/// | 3 | `FirstRun` | only from a full reply, so only for the pair the reply describes |
-/// | 2 | `Running` | something is moving; a folder the person paused does not outrank it |
-/// | 1 | `Paused` | above `Idle`, because an all-clear glyph over a folder that is not syncing is the lie to avoid; below `Running`, because the person did it on purpose and the title names which |
+/// | 7 | `Unreachable` | the control socket: process-wide, there are no per-pair answers to rank |
+/// | 6 | `AuthExpired` | the session is per user, so every unpaused pair says it at once |
+/// | 5 | `Failed` | one folder's last pass failed (or its folder is gone); never hidden behind a healthy one |
+/// | 4 | `FirstRun` | only for a folder that is alone, so never beside others |
+/// | 3 | `Running` | something is moving; a folder the person paused does not outrank it |
+/// | 2 | `Queued` | a folder that has not had its turn: below `Running`, because the pass that is moving is the news; above `Paused`, because it is about to move and a pause is the person's own doing. It wears the syncing glyph, as `Running` does (something is syncing or about to start), and ranks below every state that asks something of the person |
+/// | 1 | `Paused` | above `Idle`, because an all-clear glyph over a folder that is not syncing is the lie to avoid; below `Queued`, because the person did it on purpose and the title names which |
 /// | 0 | `Idle` | only when every folder is |
 ///
 /// An exhaustive `match` with no `_` arm: a new `DaemonState` cannot be added without answering where
 /// it ranks, which is the same guarantee `ConfigKey::scope` gives the engine.
 pub fn severity(state: DaemonState) -> u8 {
     match state {
-        DaemonState::Unreachable => 6,
-        DaemonState::AuthExpired => 5,
-        DaemonState::Failed => 4,
-        DaemonState::FirstRun => 3,
-        DaemonState::Running => 2,
+        DaemonState::Unreachable => 7,
+        DaemonState::AuthExpired => 6,
+        DaemonState::Failed => 5,
+        DaemonState::FirstRun => 4,
+        DaemonState::Running => 3,
+        DaemonState::Queued => 2,
         DaemonState::Paused => 1,
         DaemonState::Idle => 0,
     }
@@ -201,26 +269,45 @@ pub fn aggregate_state(described: DaemonState, states: &[PairState]) -> DaemonSt
 /// The state of every pair a reply lists.
 ///
 /// **The pair the reply is about gets `described`, the state derived from the full reply**: its
-/// history is known, so it is the only one that can be `FirstRun`. Every other pair is derived from
-/// its summary ([`facts_of`]), which is the safe direction (see [`PairFacts::history_empty`]). A
-/// reply that lists no pairs (a daemon older than the selector) lists none here.
+/// history is known, so it is the only one that can be `FirstRun` (and only when it is alone). Every
+/// other pair is derived from its summary ([`facts_of`]), which is the safe direction (see
+/// [`PairFacts::history_empty`]). A reply that lists no pairs (a daemon older than the selector)
+/// lists none here.
 pub fn pair_states(response: &ControlResponse, described: DaemonState) -> Vec<PairState> {
     response
         .pairs
         .iter()
         .map(|summary| {
+            let facts = facts_of(summary, response.auth, &response.pairs);
             let state = if response.pair.as_deref() == Some(summary.name.as_str()) {
                 described
             } else {
-                derive(&facts_of(summary, response.auth))
+                derive(&facts)
             };
             PairState {
                 name: summary.name.clone(),
                 state,
                 rank: severity(state),
+                waiting_for: waiting_for_of(state, &facts),
             }
         })
         .collect()
+}
+
+/// The folder a pair in `state` is waiting for: set only for `Queued`, and only while another folder
+/// is running a pass. `None` for a `Queued` folder means nothing is running yet — the daemon has not
+/// reached it — which is a different sentence, not a missing one.
+pub fn waiting_for_of(state: DaemonState, facts: &PairFacts<'_>) -> Option<String> {
+    (state == DaemonState::Queued)
+        .then(|| facts.waiting_for())
+        .flatten()
+        .map(str::to_owned)
+}
+
+/// [`waiting_for_of`] for the pair a full reply describes — what the status payload carries beside
+/// its `state`.
+pub fn described_waiting_for(response: &ControlResponse, state: DaemonState) -> Option<String> {
+    waiting_for_of(state, &PairFacts::from(response))
 }
 
 /// Derive the UI state from a status round trip. Pass `Ok(&response)` on success or `Err(&error)`
@@ -269,8 +356,13 @@ pub fn derive(facts: &PairFacts<'_>) -> DaemonState {
     if facts.syncing {
         return DaemonState::Running;
     }
-    // `Some(true)` and no other value: see `PairFacts::history_empty`.
-    if facts.last_sync.is_none() && facts.history_empty == Some(true) {
+    // `Some(true)` and no other value: see `PairFacts::history_empty`. And ONLY FOR A FOLDER THAT IS
+    // ALONE: this is the first-folder wizard's state, and beside other folders the same facts are a
+    // folder waiting for its turn (`Queued`, below). Before that it was the only way a never-synced
+    // folder was not `Idle`, and it needed a full reply — so the folders the window was not about
+    // read `up to date` while the one it was about read `nothing synced yet`.
+    if facts.peers == Peers::Alone && facts.last_sync.is_none() && facts.history_empty == Some(true)
+    {
         return DaemonState::FirstRun;
     }
     // AFTER `syncing` and `FirstRun`, BEFORE the queue and the settled fall-through, and every one
@@ -286,6 +378,19 @@ pub fn derive(facts: &PairFacts<'_>) -> DaemonState {
     //     queue is why it matters, not a reason to call it `Running`.
     if facts.last_error.is_some() {
         return DaemonState::Failed;
+    }
+    // A FOLDER WITH NO FINISHED PASS IS NOT SETTLED, and not syncing either (#455 and the live report).
+    // `last_sync` is set by a pass that finished and by nothing else, and a daemon starts every folder
+    // without one, so `None` here means this folder has not had its turn in this run — whether it has
+    // never synced or synced last week. Passes are serialized, so it is waiting for the pass that is
+    // running (`Busy`) or for the daemon to reach it (`Resting`).
+    //
+    // After `Failed`, so an unavailable folder or a failed first pass keeps saying so; before the
+    // queue, because `pending_changes` is the watcher's count and a folder that has had no pass is
+    // not syncing it. Only beside other folders: alone, there is no other folder's pass to wait for,
+    // and the answer stays what it was before folders existed (a one-folder app sees nothing new).
+    if facts.peers != Peers::Alone && facts.last_sync.is_none() {
+        return DaemonState::Queued;
     }
     if facts.pending_changes > 0 {
         DaemonState::Running
@@ -536,6 +641,7 @@ mod tests {
         assert_eq!(name(DaemonState::AuthExpired), "\"authExpired\"");
         assert_eq!(name(DaemonState::FirstRun), "\"firstRun\"");
         assert_eq!(name(DaemonState::Idle), "\"idle\"");
+        assert_eq!(name(DaemonState::Queued), "\"queued\"");
     }
 
     // ---- one derivation, two adapters (#102 phase 5a-2) ----
@@ -638,7 +744,7 @@ mod tests {
         let mut first_runs = 0;
         for r in corpus() {
             let full = derive_state(Ok(&r));
-            let from_summary = derive(&facts_of(&summary_of(&r), r.auth));
+            let from_summary = derive(&facts_of(&summary_of(&r), r.auth, &[]));
             if full == DaemonState::FirstRun {
                 first_runs += 1;
                 assert_ne!(from_summary, DaemonState::FirstRun);
@@ -659,7 +765,7 @@ mod tests {
         r.last_sync_epoch_secs = None;
         r.status_history = vec![];
         let summary = summary_of(&r);
-        let facts = facts_of(&summary, AuthState::SignedIn);
+        let facts = facts_of(&summary, AuthState::SignedIn, &[]);
         assert_eq!(
             facts.history_empty, None,
             "a summary has no history to read"
@@ -675,7 +781,7 @@ mod tests {
                 s.pending_changes = pending;
                 s.last_error = error;
                 assert_ne!(
-                    derive(&facts_of(&s, AuthState::Unknown)),
+                    derive(&facts_of(&s, AuthState::Unknown, &[])),
                     DaemonState::FirstRun
                 );
             }
@@ -702,7 +808,7 @@ mod tests {
             pending_deletions: 0,
         };
         assert_eq!(
-            derive(&facts_of(&summary, AuthState::SignedIn)),
+            derive(&facts_of(&summary, AuthState::SignedIn, &[])),
             DaemonState::Failed
         );
         // With no carried last sync too (a pair that was unavailable from the first boot): still
@@ -710,7 +816,7 @@ mod tests {
         let mut never = summary.clone();
         never.last_sync_epoch_secs = None;
         assert_eq!(
-            derive(&facts_of(&never, AuthState::SignedIn)),
+            derive(&facts_of(&never, AuthState::SignedIn, &[])),
             DaemonState::Failed
         );
     }
@@ -731,27 +837,31 @@ mod tests {
         c.name = "c".to_owned();
         c.paused = true;
         r.pairs = vec![a, b, c];
+        // Beside other folders the wizard's state does not exist: the same facts are a folder that has
+        // not had its turn, for the described folder and for the one known by its summary alike.
         let described = derive_state(Ok(&r));
-        assert_eq!(described, DaemonState::FirstRun);
+        assert_eq!(described, DaemonState::Queued);
         let states = pair_states(&r, described);
         let named = |name: &str| states.iter().find(|s| s.name == name).unwrap().state;
-        assert_eq!(named("a"), DaemonState::FirstRun);
-        assert_eq!(named("b"), DaemonState::Idle);
+        assert_eq!(named("a"), DaemonState::Queued);
+        assert_eq!(named("b"), DaemonState::Queued);
         assert_eq!(named("c"), DaemonState::Paused);
-        // A legacy-shaped reply lists nothing.
+        // A legacy-shaped reply lists nothing, and the same facts are then the wizard's.
         r.pairs.clear();
         assert!(pair_states(&r, described).is_empty());
+        assert_eq!(derive_state(Ok(&r)), DaemonState::FirstRun);
     }
 
     /// The brief's table (section 4.3), worst first, written out here as its own object: the property
     /// below compares `aggregate_state` against THIS, so a rank that was reordered in the function and
     /// not here is a failure, not a pair of agreeing mistakes.
-    const WORST_FIRST: [DaemonState; 7] = [
+    const WORST_FIRST: [DaemonState; 8] = [
         DaemonState::Unreachable,
         DaemonState::AuthExpired,
         DaemonState::Failed,
         DaemonState::FirstRun,
         DaemonState::Running,
+        DaemonState::Queued,
         DaemonState::Paused,
         DaemonState::Idle,
     ];
@@ -764,6 +874,7 @@ mod tests {
                 name: format!("p{at}"),
                 state: *state,
                 rank: severity(*state),
+                waiting_for: None,
             })
             .collect()
     }
@@ -794,8 +905,8 @@ mod tests {
                 checked += 1;
             }
         }
-        // 7 + 49 + 343 + 2401: the loop really did walk them all.
-        assert_eq!(checked, 2800);
+        // 8 + 64 + 512 + 4096: the loop really did walk them all.
+        assert_eq!(checked, 4680);
     }
 
     /// The three cases the brief calls out by name, so a reader sees the rule without decoding the
@@ -866,5 +977,311 @@ mod tests {
         assert!(!looks_like_auth_error("sync completed"));
         assert!(!looks_like_auth_error("uploaded 12 files"));
         assert!(!looks_like_auth_error("author.txt could not be read"));
+    }
+
+    // ---- a folder that has not had its turn (#455 and the live report) ----
+
+    /// A summary as the daemon lists it: `last_sync` set unless the folder has not completed a pass
+    /// in this run (a daemon starts every folder at `None`, and only a finished pass sets it).
+    fn folder(name: &str, syncing: bool, last_sync: Option<u64>) -> PairSummary {
+        PairSummary {
+            name: name.to_owned(),
+            local_root: format!("/l/{name}").into(),
+            remote_root: format!("/Drive/{name}").into(),
+            db_path: format!("/l/{name}/.sync/i.db").into(),
+            paused: false,
+            syncing,
+            reconcile_seq: 0,
+            last_sync_epoch_secs: last_sync,
+            last_error: None,
+            pending_changes: 0,
+            pending_deletions: 0,
+        }
+    }
+
+    /// The live report, as the daemon sent it: the default folder is mid-pass (a 25 minute full
+    /// walk), the other two have not had a turn. `photos` is the folder the window shows, so its
+    /// reply is the full one, with an empty history.
+    fn three_folders() -> ControlResponse {
+        let mut r = response();
+        r.pair = Some("photos".to_owned());
+        r.last_sync_epoch_secs = None;
+        r.status_history = vec![];
+        r.pairs = vec![
+            folder("documents", true, None),
+            folder("photos", false, None),
+            folder("videos", false, None),
+        ];
+        r
+    }
+
+    #[test]
+    fn a_folder_that_has_not_synced_is_never_up_to_date_beside_one_that_is_syncing() {
+        let r = three_folders();
+        let described = derive_state(Ok(&r));
+        let states = pair_states(&r, described);
+        let state_of = |name: &str| states.iter().find(|s| s.name == name).unwrap().state;
+        assert_eq!(state_of("documents"), DaemonState::Running);
+        for name in ["photos", "videos"] {
+            assert_ne!(state_of(name), DaemonState::Idle, "{name} reads up to date");
+        }
+        assert_ne!(described, DaemonState::Idle);
+    }
+
+    #[test]
+    fn the_wire_form_of_a_waiting_folder_says_it_is_waiting_and_for_whom() {
+        let r = three_folders();
+        let described = derive_state(Ok(&r));
+        let wire = serde_json::to_value(pair_states(&r, described)).expect("serializes");
+        for at in [1, 2] {
+            assert_eq!(wire[at]["state"], "queued", "{wire}");
+            assert_eq!(wire[at]["waiting_for"], "documents", "{wire}");
+        }
+        assert!(
+            wire[0].get("waiting_for").is_none(),
+            "a folder that is not waiting names nothing: {wire}"
+        );
+    }
+
+    fn state_in(r: &ControlResponse, name: &str) -> PairState {
+        pair_states(r, derive_state(Ok(r)))
+            .into_iter()
+            .find(|s| s.name == name)
+            .unwrap_or_else(|| panic!("{name} is not listed"))
+    }
+
+    #[test]
+    fn a_folder_waits_for_the_one_that_is_running_a_pass_and_says_which() {
+        let r = three_folders();
+        let photos = state_in(&r, "photos");
+        assert_eq!(photos.state, DaemonState::Queued);
+        assert_eq!(photos.waiting_for.as_deref(), Some("documents"));
+        // The described folder and a folder known by its summary say the same thing.
+        let videos = state_in(&r, "videos");
+        assert_eq!(videos.state, DaemonState::Queued);
+        assert_eq!(videos.waiting_for.as_deref(), Some("documents"));
+        assert_eq!(derive_state(Ok(&r)), DaemonState::Queued);
+        assert_eq!(
+            described_waiting_for(&r, DaemonState::Queued).as_deref(),
+            Some("documents")
+        );
+        // The folder that is running is not waiting for anything, least of all itself.
+        let documents = state_in(&r, "documents");
+        assert_eq!(documents.state, DaemonState::Running);
+        assert_eq!(documents.waiting_for, None);
+    }
+
+    #[test]
+    fn with_nothing_running_a_folder_that_has_not_had_its_turn_is_starting_and_names_nobody() {
+        // The daemon has just started: every folder is due and none has been popped yet.
+        let mut r = three_folders();
+        r.pairs[0].syncing = false;
+        for name in ["documents", "photos", "videos"] {
+            let state = state_in(&r, name);
+            assert_eq!(state.state, DaemonState::Queued, "{name}");
+            assert_eq!(state.waiting_for, None, "{name} has nobody to wait for");
+        }
+        assert_eq!(described_waiting_for(&r, DaemonState::Queued), None);
+    }
+
+    /// WHY a folder that HAS synced and waits behind another may stay `up to date`: it finished a pass
+    /// in this run with no error, nothing the daemon has said since contradicts that, and its last
+    /// sync is on the hero. Calling every settled folder `waiting` for as long as another folder's
+    /// pass runs would flip the whole list on each pass and say nothing true about the files.
+    #[test]
+    fn a_folder_that_has_finished_a_pass_stays_up_to_date_behind_another_folders_pass() {
+        let mut r = three_folders();
+        r.pairs[1].last_sync_epoch_secs = Some(1_750_000_000);
+        r.pairs[2].last_sync_epoch_secs = Some(1_750_000_000);
+        r.last_sync_epoch_secs = Some(1_750_000_000);
+        let states = pair_states(&r, derive_state(Ok(&r)));
+        let word = |name: &str| states.iter().find(|s| s.name == name).unwrap();
+        assert_eq!(word("photos").state, DaemonState::Idle);
+        assert_eq!(word("videos").state, DaemonState::Idle);
+        assert_eq!(word("photos").waiting_for, None);
+    }
+
+    #[test]
+    fn a_folder_that_was_never_synced_keeps_paused_failed_signed_out_and_syncing_beside_others() {
+        // Each of these outranked everything below it before, and must go on doing so.
+        let mut r = three_folders();
+        r.pairs[2].paused = true;
+        assert_eq!(state_in(&r, "videos").state, DaemonState::Paused);
+
+        let mut r = three_folders();
+        r.pairs[2].last_error = Some("the sync folder is not available".to_owned());
+        assert_eq!(state_in(&r, "videos").state, DaemonState::Failed);
+
+        let mut r = three_folders();
+        r.auth = AuthState::SignedOut;
+        assert_eq!(state_in(&r, "videos").state, DaemonState::AuthExpired);
+        assert_eq!(state_in(&r, "photos").state, DaemonState::AuthExpired);
+
+        let mut r = three_folders();
+        r.pairs[2].syncing = true;
+        r.pairs[0].syncing = false;
+        assert_eq!(state_in(&r, "videos").state, DaemonState::Running);
+        assert_eq!(state_in(&r, "videos").waiting_for, None);
+        // ... and the others now wait for it.
+        assert_eq!(
+            state_in(&r, "photos").waiting_for.as_deref(),
+            Some("videos")
+        );
+    }
+
+    #[test]
+    fn a_failed_first_pass_on_the_described_folder_is_failed_and_not_nothing_synced_yet() {
+        // Beside other folders a never-synced folder's error used to be hidden by the wizard's state.
+        let mut r = three_folders();
+        r.last_error = Some("proton-drive list failed: timed out".to_owned());
+        r.pairs[1].last_error = r.last_error.clone();
+        assert_eq!(derive_state(Ok(&r)), DaemonState::Failed);
+    }
+
+    #[test]
+    fn a_queue_of_watcher_changes_does_not_make_a_folder_without_a_pass_syncing() {
+        // `pending_changes` is the watcher's count. A folder that has not been popped is not syncing
+        // them, and `Syncing 3 changes` over it is the same untruth `Idle` was.
+        let mut r = three_folders();
+        r.pending_changes = 3;
+        r.pairs[2].pending_changes = 3;
+        assert_eq!(state_in(&r, "videos").state, DaemonState::Queued);
+        assert_eq!(derive_state(Ok(&r)), DaemonState::Queued);
+    }
+
+    /// Acceptance: one folder is byte for byte what it was. For every reply the corpus reaches,
+    /// listing the folder as the only one changes nothing, and nothing is ever `Queued`.
+    #[test]
+    fn one_folder_derives_exactly_as_before_and_is_never_queued() {
+        for r in corpus() {
+            let before = derive_state(Ok(&r));
+            assert_ne!(before, DaemonState::Queued, "{r:?}");
+            let mut one = r.clone();
+            let mut only = summary_of(&one);
+            only.name = "default".to_owned();
+            one.pair = Some("default".to_owned());
+            one.pairs = vec![only];
+            assert_eq!(derive_state(Ok(&one)), before, "{r:?}");
+            let states = pair_states(&one, before);
+            assert_eq!(states[0].state, before);
+            assert_eq!(states[0].waiting_for, None);
+        }
+    }
+
+    /// The property behind the whole change: beside other folders, no folder without a finished pass
+    /// is ever `Idle` — whatever the others are doing — and a folder with one is never `Queued`.
+    #[test]
+    fn beside_other_folders_up_to_date_needs_a_finished_pass() {
+        let mut checked = 0;
+        for mine in 0..16u32 {
+            for other in 0..16u32 {
+                let flags =
+                    |bits: u32| (bits & 1 != 0, bits & 2 != 0, bits & 4 != 0, bits & 8 != 0);
+                let (syncing, paused, errored, synced) = flags(mine);
+                let (o_syncing, o_paused, o_errored, o_synced) = flags(other);
+                let build = |name: &str, s: bool, p: bool, e: bool, done: bool| {
+                    let mut f = folder(name, s, done.then_some(1_750_000_000));
+                    f.paused = p;
+                    f.last_error = e.then(|| "the remote listing timed out".to_owned());
+                    f
+                };
+                let mut r = response();
+                r.pair = Some("mine".to_owned());
+                r.pairs = vec![
+                    build("other", o_syncing, o_paused, o_errored, o_synced),
+                    build("mine", syncing, paused, errored, synced),
+                ];
+                let me = &r.pairs[1];
+                r.paused = me.paused;
+                r.syncing = me.syncing;
+                r.last_error = me.last_error.clone();
+                r.last_sync_epoch_secs = me.last_sync_epoch_secs;
+                r.status_history = vec![];
+                let state = state_in(&r, "mine").state;
+                assert_eq!(derive_state(Ok(&r)), state, "reply and list agree");
+                if !synced {
+                    assert_ne!(state, DaemonState::Idle, "mine={mine} other={other}");
+                }
+                if synced {
+                    assert_ne!(state, DaemonState::Queued, "mine={mine} other={other}");
+                }
+                if state == DaemonState::Queued {
+                    assert!(!syncing && !paused && !errored && !synced);
+                }
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 256);
+    }
+
+    /// The peers of a folder are the OTHER folders. A folder that is running a pass is not waiting for
+    /// itself, and its peers are at rest when nothing else runs — this is what `waiting_for` reads.
+    #[test]
+    fn a_folder_is_not_its_own_peer() {
+        let r = three_folders();
+        let documents = &r.pairs[0];
+        assert!(
+            documents.syncing,
+            "the premise: documents is the one running"
+        );
+        assert_eq!(
+            facts_of(documents, r.auth, &r.pairs).peers,
+            Peers::Resting,
+            "nothing else is running"
+        );
+        assert_eq!(
+            facts_of(&r.pairs[1], r.auth, &r.pairs).peers,
+            Peers::Busy("documents")
+        );
+        assert_eq!(facts_of(documents, r.auth, &[]).peers, Peers::Alone);
+    }
+
+    #[test]
+    fn a_reply_that_names_no_folder_excludes_nobody_from_its_peers() {
+        // An unresolved selector answers `pair: None` with `pairs` populated.
+        let mut r = three_folders();
+        r.pair = None;
+        r.pairs[0].syncing = false;
+        r.pairs[1].syncing = true;
+        let facts = PairFacts::from(&r);
+        assert_eq!(facts.peers, Peers::Busy("photos"));
+    }
+
+    #[test]
+    fn queued_ranks_between_running_and_paused() {
+        assert!(severity(DaemonState::Running) > severity(DaemonState::Queued));
+        assert!(severity(DaemonState::Queued) > severity(DaemonState::Paused));
+        // Beside a running folder the glyph is the running one, whichever is listed first.
+        for states in [
+            [DaemonState::Queued, DaemonState::Running],
+            [DaemonState::Running, DaemonState::Queued],
+        ] {
+            assert_eq!(
+                aggregate_state(DaemonState::Idle, &listed(&states)),
+                DaemonState::Running
+            );
+        }
+        assert!(!DaemonState::Queued.counters_unknown());
+    }
+
+    /// Waiting asks nothing of the person, so it never hides a state that does (or one that is
+    /// wrong): beside any of these the glyph is theirs, whichever folder is listed first.
+    #[test]
+    fn a_waiting_folder_never_outranks_a_state_that_needs_the_person() {
+        for worse in [
+            DaemonState::FirstRun,
+            DaemonState::Failed,
+            DaemonState::AuthExpired,
+            DaemonState::Unreachable,
+        ] {
+            assert!(severity(worse) > severity(DaemonState::Queued), "{worse:?}");
+            for states in [[DaemonState::Queued, worse], [worse, DaemonState::Queued]] {
+                assert_eq!(
+                    aggregate_state(DaemonState::Idle, &listed(&states)),
+                    worse,
+                    "{states:?}"
+                );
+            }
+        }
     }
 }

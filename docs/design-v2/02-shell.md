@@ -67,7 +67,10 @@ chip, the attention band, Deletions, Conflicts, Plan, Activity and Settings all 
   `2a Two folders failed` and the two open-list frames carry it, `2a Two folders` does not.
 - **The list.** A popover hung under the pill: `min-width:280px`, `padding:6px`, `border-radius:12px`,
   the `⋯` menu's surface. One row per folder, in the daemon's order: a check for the chosen one, its name
-  in mono 12px, a word for its state (`up to date`, `syncing`, `paused`, `sync failed`) and a neutral
+  in mono 12px, a word for its state (`up to date`, `syncing`, `paused`, `sync failed`; and for a folder
+  that has not had its turn, `waiting` while another folder's pass runs — the row's tooltip carries the
+  whole, `waiting for documents`, because the 280px list leaves a folder's own name no room for it — or
+  `starting` while none does; DEVIATIONS §111) and a neutral
   count of what is waiting in it (`2 waiting`, nothing when it is nothing), both mono 11px `#6D7783`.
   There is no pause control in it — one place per surface: the hero's button and the tray's row.
 - **Keyboard.** The pill is a button; Down (or a press) opens the list on the chosen folder, the arrows,

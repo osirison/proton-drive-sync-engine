@@ -14,20 +14,20 @@ npm run fidelity:pairs      # the pair-routing gate on its own
 
 ## The twelve gates
 
-| Gate                               | Compares                                                                        | Runs today?                          |
-| ---------------------------------- | ------------------------------------------------------------------------------- | ------------------------------------ |
-| **style** `assert.mjs`             | every mapped app node's computed styles against the drawn node                  | on whatever carries a `data-fid`     |
-| **unstamped** `assert.mjs`         | a frame's declared fid slots against the ones the app stamped                   | yes, every declared slot             |
-| **unclaimed** `assert.mjs`         | every drawn node against the slots that name it — the mirror of the row above   | yes, 268 declared in 29 entries      |
-| **collision** `assert.mjs`         | two elements carrying one `data-fid` — a duplication no per-node gate counts    | yes, every stamped node              |
-| **fit** `assert.mjs`               | every full window renders at exactly 1040×764, nothing painting over the footer | yes                                  |
-| **hue** `assert.mjs`               | a settled surface contains no saturated colour anywhere                         | yes, all 8 settled frames            |
-| **squeeze** `assert.mjs`           | a compact panel keeps its drawn height in a window too short for it             | yes, all 15 compact frames           |
-| **copy** `copy-gate.mjs`           | every fixed string in `ui/copy.js` appears verbatim in the frames               | yes, every string and 103 templates  |
-| **contrast** `check-contrast.mjs`  | every text node is legible against what is actually behind it, in both themes   | yes, 1,696 nodes across 68 frames    |
-| **fixtures** `check-fixtures.mjs`  | every in-scope frame has a dataset, of the shape its class implies              | yes, all 68                          |
-| **n1** `check-n1-identity.mjs`     | every frame renders the same bytes when the daemon lists one folder pair        | yes, 55 of 68 — see its reach below  |
-| **pairs** `check-pair-routing.mjs` | a write acts on the pair it was drawn for, not the one selected when it runs    | yes, 101 scenarios (#102 5a-2 to 5e) |
+| Gate                               | Compares                                                                        | Runs today?                                                                    |
+| ---------------------------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| **style** `assert.mjs`             | every mapped app node's computed styles against the drawn node                  | on whatever carries a `data-fid`                                               |
+| **unstamped** `assert.mjs`         | a frame's declared fid slots against the ones the app stamped                   | yes, every declared slot                                                       |
+| **unclaimed** `assert.mjs`         | every drawn node against the slots that name it — the mirror of the row above   | yes, 268 declared in 29 entries                                                |
+| **collision** `assert.mjs`         | two elements carrying one `data-fid` — a duplication no per-node gate counts    | yes, every stamped node                                                        |
+| **fit** `assert.mjs`               | every full window renders at exactly 1040×764, nothing painting over the footer | yes                                                                            |
+| **hue** `assert.mjs`               | a settled surface contains no saturated colour anywhere                         | yes, all 8 settled frames                                                      |
+| **squeeze** `assert.mjs`           | a compact panel keeps its drawn height in a window too short for it             | yes, all 15 compact frames                                                     |
+| **copy** `copy-gate.mjs`           | every fixed string in `ui/copy.js` appears verbatim in the frames               | yes, every string and 103 templates                                            |
+| **contrast** `check-contrast.mjs`  | every text node is legible against what is actually behind it, in both themes   | yes, 1,696 nodes across 68 frames                                              |
+| **fixtures** `check-fixtures.mjs`  | every in-scope frame has a dataset, of the shape its class implies              | yes, all 68                                                                    |
+| **n1** `check-n1-identity.mjs`     | every frame renders the same bytes when the daemon lists one folder pair        | yes, 55 of 68 — see its reach below                                            |
+| **pairs** `check-pair-routing.mjs` | a write acts on the pair it was drawn for, not the one selected when it runs    | yes, 108 scenarios (#102 5a-2 to 5e, and the folder that has not had its turn) |
 
 Seven of the twelve are `assert.mjs` and need a browser. **contrast**, **n1** and **pairs** need one
 too. **copy** does
@@ -92,7 +92,7 @@ rendering of one drawing at one instant cannot make.
 - **pairs.** `app.js` cannot be imported, so this runs the real page against a scripted stand-in for the
   Tauri bridge that answers each command and can hold a reply open — for a named pair, so two reads of one
   command for two folders can be released in either order — which is what makes the gap between a press and
-  the daemon's answer something a test can stand in. A hundred and one scenarios in six groups: the first sixteen (#102 phases 5a-2, 5d, 5b-1), the forty-three of phase 5c-1, the fifteen of phase 5e, the fifteen of phase 5c-2, the ten its review added and the two of that review's final round.
+  the daemon's answer something a test can stand in. A hundred and five scenarios in seven groups: the first sixteen (#102 phases 5a-2, 5d, 5b-1), the forty-three of phase 5c-1, the fifteen of phase 5e, the fifteen of phase 5c-2, the ten its review added, the two of that review's final round, and the four of the folder that has not had its turn (the live report and #455), which replay the payloads the real Rust sends (`gui/test/never-synced-payloads.json`).
   **The first sixteen:** the follow-up to an approval; the press
   of `Run this sync` (pair and token are committed at the press); a switch between two folders that draw
   identical cards; the hero's buttons after a switch that patches the hero in place; a never-synced pair at

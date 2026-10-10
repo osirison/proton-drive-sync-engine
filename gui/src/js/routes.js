@@ -271,6 +271,9 @@ export function releasesOnboarding(daemonState) {
   return (
     daemonState === "idle" ||
     daemonState === "running" ||
+    // Only ever derived beside other folders, where the latch never arms (`nextOnboardingLatch`); listed so
+    // that a state is not a reachable one the list forgot.
+    daemonState === "queued" ||
     daemonState === "paused" ||
     daemonState === "authExpired" ||
     daemonState === "failed"

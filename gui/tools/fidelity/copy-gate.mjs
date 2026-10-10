@@ -56,8 +56,24 @@ const NOT_DRAWN = new Map([
   ["CHROME.pair.states.unreachable", "a daemon-wide state: every row would say it at once"],
   [
     "CHROME.pair.states.firstRun",
-    "only ever derived for the one folder a full reply describes, which the window draws as a hero",
+    "the one-folder wizard's state: it is not derived beside other folders, so no row of a list of two says it",
   ],
+  // A FOLDER THAT HAS NOT HAD ITS TURN (the live report, #455). Beside other folders every folder starts
+  // without a finished pass and passes run one at a time, so for the seconds or minutes before its turn
+  // a folder is `starting` (nothing is running yet) or `waiting for <the folder that is>`. No frame holds
+  // a daemon still for that: every drawn frame is a folder that has finished a pass.
+  //
+  // `CHROME.chips.queued` reads `waiting`, which the gate would find in other frames' text (`4 waiting`,
+  // `waiting on you`) and call drawn. It is not: none draws THIS chip. Listed here so the gate does not
+  // agree with itself by coincidence.
+  ["CHROME.pair.states.queued", "no frame draws a folder that has not had its turn"],
+  ["CHROME.chips.queued", "no frame draws the chip beside a folder that has not had its turn"],
+  ["CHROME.chips.starting", "no frame draws the chip beside a folder that has not had its turn"],
+  ["CHROME.pair.waiting", "no frame draws a folder that has not had its turn"],
+  ["TRAY.startingTitle", "no frame draws a folder that has not had its turn — written, not measured (§82g)"],
+  // #455: the window's sub-line under `Nothing has synced yet`, reachable only when the app knows of two
+  // folders and the daemon lists fewer — the same undrawn state as the headline above it.
+  ["MAIN.firstRunSub", "no frame draws the window's never-synced hero, at one folder or at two"],
   // THE TWO BUTTON STATES OF `Restart syncing`. Transient by construction: `restarting` is on screen for
   // the seconds `systemctl` blocks, and `restartFailed` for as long as the reason under it is — neither
   // is a state a frame can be drawn in without a daemon that is mid-restart or refuses one.
@@ -411,6 +427,50 @@ const UNGATED_PROBE_ARGS = [
 ];
 
 const UNGATED_TEMPLATES = new Map([
+  // A FOLDER THAT HAS NOT HAD ITS TURN (the live report, #455) — the four templates of the one state
+  // above (`CHROME.pair.states.queued` and its siblings), which no frame can draw because it holds no
+  // daemon still for the seconds before a folder's first pass of the run. Written, not measured (§82g).
+  [
+    "CHROME.pair.waitingFor",
+    {
+      why:
+        "The row word for a folder waiting for the pass that is running. `2a Two folders open` draws four " +
+        "rows, in `up to date`, `syncing`, `paused` and `sync failed` \u2014 none for a folder that has " +
+        "not had its turn, which no frame holds still. Called from `ui/selector.js`'s `stateWordOf`, for " +
+        "the popover and the Settings list alike. It has no fixed run longer than its own words, and " +
+        "`9a Consent` contains `waiting for ` in another sentence, so a DRAWN row would go green by " +
+        "pointing the row's word at the consent dialog's.",
+      absent: null,
+    },
+  ],
+  [
+    "TRAY.waitingTitle",
+    {
+      why:
+        "The hero and the panel for the same folder (`screens/main.js` `headlineOf`, `screens/tray.js` " +
+        "`copyFor`). Every drawn hero is a folder that has finished a pass; the nearest sentence a frame " +
+        "carries, `2a Needs you`'s, is about a person.",
+      absent: "Waiting for ",
+    },
+  ],
+  [
+    "TRAY.waitingSub",
+    {
+      why:
+        "The reason a folder waits, said before the folder (voice rule 3). No frame draws a second folder " +
+        "waiting behind a first.",
+      absent: "Folders sync one at a time.",
+    },
+  ],
+  [
+    "TRAY.startingSub",
+    {
+      why:
+        "A folder the daemon has not reached yet, in the moment between the start and its first pass. " +
+        "No frame draws that moment.",
+      absent: " starts on its own.",
+    },
+  ],
   [
     "ACTIVITY.lookup.capped",
     {

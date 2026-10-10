@@ -108,20 +108,27 @@ first, with why each sits where it does:
 | 1 | Can't reach (the daemon) | the control socket; there are no per-folder answers to rank |
 | 2 | Signed out | the session is per user, so every unpaused folder says it at once |
 | 3 | Last sync failed | one folder's pass failed, or its folder is not there; never hidden behind a healthy one |
-| 4 | Never synced | only from a full reply, so only for the folder the reply is about |
+| 4 | Never synced | the first-folder wizard's state: only for a folder that is alone, never beside others |
 | 5 | Syncing | something is moving; a folder you paused does not outrank it |
-| 6 | Paused | above up to date: an all-clear glyph over a folder that is not syncing is the lie to avoid; below syncing: you did it on purpose, and the title says which |
-| 7 | Up to date | only when every folder is |
+| 6 | Waiting for its turn | a folder with no finished pass since the daemon started, beside others: below syncing, because the pass that is moving is the news; above paused, because it is about to move and a pause is your own doing. It wears the syncing glyph, as syncing does: nothing is asked of you, and it ranks below every state that does ask |
+| 7 | Paused | above up to date: an all-clear glyph over a folder that is not syncing is the lie to avoid; below waiting: you did it on purpose, and the title says which |
+| 8 | Up to date | only when every folder is |
 
 So: one folder paused and the other up to date shows the paused glyph; one paused and the other
-syncing shows the syncing glyph; one failed and anything else shows the can't-reach glyph — which means
+syncing shows the syncing glyph; one waiting and the other up to date shows the syncing glyph too (a
+folder that has not synced anything in this run is not the all-clear, and the attention glyph is for a
+thing that needs you); one failed and anything else shows the can't-reach glyph — which means
 "this folder's last sync failed", not "Proton is out of reach", and **the title is where the
 difference is said**.
 
 ### The title says what the glyph cannot
 
 When the folders are not all in the glyph's state, the title names them, worst first: `Proton Drive
-Sync — documents paused, photos up to date`. At most three are named, then `+n more`, and the whole
+Sync — documents paused, photos up to date`. A folder that has not had its turn is `waiting` while
+another folder's pass runs and `starting` while none does (`documents syncing, photos waiting, videos
+waiting`); the title does not say for whom, because it already names the folder that is syncing and a
+phrase carrying another folder's name could not be bounded by this folder's budget. At most three are
+named, then `+n more`, and the whole
 title stays under 140 characters: a name that does not fit is cut with `…`, the state beside it never
 is (a folder may be named with 64 characters). When they all are in the glyph's state, it is the
 one-folder title.
@@ -170,8 +177,9 @@ Quit           stops syncing
 - **The panel draws pause rows for five folders**, worst first, then one row — `2 more folders` — that
   does what `Open Drive Sync` does. The native menus draw every folder.
 - The set that is `Can't reach` while the daemon answers (`Try again now`) gains the same group
-  between rules. An expired session, a folder that has never synced and a stopped daemon keep their
-  sets: there is nothing to pause, or nobody to send it to.
+  between rules. An expired session, a lone folder that has never synced and a stopped daemon keep
+  their sets: there is nothing to pause, or nobody to send it to. **A folder waiting for its turn is not
+  one of them**: it keeps the group, because a person can still pause any folder while it waits.
 - A row's action names its folder, and a click on a menu drawn earlier acts on **the folder its label
   named**, or on nothing if that folder is gone — never on whichever folder stands in that place now.
   The name is written on the request **for the default folder too**: the default is addressed by
@@ -179,6 +187,22 @@ Quit           stops syncing
   folder stands first, would otherwise pause the new default.
 
 The frames: `10a Two folders`, `10a Two folders paused`, `10a Two folders failed`, `10a Many folders`.
+
+### A folder that has not had its turn
+
+No frame draws it (DEVIATIONS §82g, and the entry that follows it for this state). The panel is the
+syncing mark in the settled panel's column — no seam, no side labels, no number and no button. The mark is
+the existing syncing glyph, not the needs-you form: a waiting folder needs nothing from you, and the
+needs-you form is a first run's, a decision's and a conflict's. There is nothing to decide, and the button
+the lone first-run panel has (`Open Drive Sync`, "choose your two folders") is addressed to someone who has
+not chosen any. Its sentences are the window's: `Waiting for documents` over `Folders sync one at a time.
+photos is waiting for documents to finish.`, or `Starting to sync` over `photos starts on its own.`
+
+**A thing that needs you outranks it.** The panel shows the worst folder's own, but a folder that is up to
+date or waiting and holds a withheld deletion or a conflict is shown ahead of one that is only waiting, with
+`Review them`: a waiting folder lasts as long as another folder's pass, and a deletion hidden for that long
+is the failure the panel exists to prevent. A failed pass, a lapsed session and a pass in flight still come
+first, as at one folder.
 
 ## In situ — the GNOME top bar
 

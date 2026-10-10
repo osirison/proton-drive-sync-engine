@@ -53,7 +53,7 @@ const GLYPHS: &[(&str, &str)] = &[
 ///
 /// **The same five and no more.** `10-tray.md`: "Only five forms exist. A solid filled hexagon is
 /// not a state — it was drawn that way by mistake during design and corrected." The frontend's
-/// `TRAY_GLYPH_STATES` names the same five, and `derive_state`'s seven variants collapse onto them
+/// `TRAY_GLYPH_STATES` names the same five, and `derive_state`'s eight variants collapse onto them
 /// here exactly as `screens/tray.js` collapses them for the panel: an expired session shares the
 /// struck mark with an unreachable daemon (11-notifications.md puts an outage and an expired session
 /// behind one icon), and a daemon that has never synced wears the needs-you form rather than the
@@ -63,10 +63,15 @@ const GLYPHS: &[(&str, &str)] = &[
 /// `11-notifications.md` puts "an outage, expired session, or full disk" behind ONE icon, and a
 /// failed pass is the third of those. `14-behaviour-and-state.md` says as much in its own state
 /// diagram — "unreachable is entered after a failed pass and retry".
+///
+/// A folder that has not had its turn (`Queued`) wears the syncing form, the pass in flight's own. It
+/// has not synced anything in this run, so the settled form would say it had; and it is not asking
+/// the person for anything, so the needs-you form would say that. Something is syncing, or is about to
+/// start, which is what the moving form says. No sixth form.
 pub fn glyph_for(state: gui_core::state::DaemonState) -> &'static str {
     use gui_core::state::DaemonState::*;
     match state {
-        Running => "proton-sync-syncing-symbolic",
+        Running | Queued => "proton-sync-syncing-symbolic",
         Idle => "proton-sync-uptodate-symbolic",
         Paused => "proton-sync-paused-symbolic",
         AuthExpired | Unreachable | Failed => "proton-sync-offline-symbolic",
@@ -142,6 +147,33 @@ mod tests {
         assert_ne!(
             glyph_for(DaemonState::FirstRun),
             glyph_for(DaemonState::Idle)
+        );
+    }
+
+    #[test]
+    fn a_folder_waiting_for_its_turn_does_not_wear_the_settled_glyph() {
+        // The same false all-clear, one folder at a time: a hollow hexagon over a folder that has not
+        // had a pass says the files match, and nobody has looked.
+        assert_ne!(glyph_for(DaemonState::Queued), glyph_for(DaemonState::Idle));
+    }
+
+    /// A waiting folder needs nothing from the person, and the needs-you form says it does: that form
+    /// is the one a first run, a decision and a conflict wear. Something is syncing, or is about to
+    /// start, and that is the form that says so — the same file as a pass in flight.
+    #[test]
+    fn a_folder_waiting_for_its_turn_wears_the_syncing_glyph_not_the_needs_you_one() {
+        assert_eq!(
+            glyph_for(DaemonState::Queued),
+            "proton-sync-syncing-symbolic"
+        );
+        assert_eq!(
+            glyph_for(DaemonState::Queued),
+            glyph_for(DaemonState::Running)
+        );
+        assert_ne!(
+            glyph_for(DaemonState::Queued),
+            glyph_for(DaemonState::FirstRun),
+            "the needs-you form is a first run's, and a waiting folder is not asking for anything"
         );
     }
 

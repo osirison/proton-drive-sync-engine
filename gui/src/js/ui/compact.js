@@ -45,12 +45,18 @@ import { fid } from "../fixtures/frames.js";
 // ------------------------------------------------------------------------------ the states ----
 
 /**
- * Six arrangements, not five. `02-shell.md` names five states — settled, syncing, needs-you, paused,
+ * Seven arrangements, not five. `02-shell.md` names five states — settled, syncing, needs-you, paused,
  * can't-reach-Proton — and `4a Compact` draws a sixth arrangement for the deletion queue: a smaller
  * mark, a 16px headline, two deletion rows and a `Review them` button. It is not any of the five at
  * different data, so it is its own key rather than a flag on `needsYou`.
+ *
+ * The seventh is `waiting`: a folder that has not had its turn (#455). No frame draws it. It is the
+ * MOVING mark — the syncing glyph itself, which says something is syncing or about to start — in the
+ * settled panel's column, with no seam, no side labels and no count: nothing is in flight to put either
+ * side of a line, and a seam behind the sentences under the mark showed through them. The glyph is the
+ * existing one; what is new is that it is drawn where the seam is not.
  */
-const STATES = ["settled", "syncing", "needsYou", "paused", "unreachable", "deletions"];
+const STATES = ["settled", "syncing", "waiting", "needsYou", "paused", "unreachable", "deletions"];
 
 /**
  * Hero padding, per state and per family.
@@ -64,6 +70,8 @@ const STATES = ["settled", "syncing", "needsYou", "paused", "unreachable", "dele
 const HERO_PAD = {
   settled: { panel: "28px 22px 22px", tray: "26px 22px 20px" },
   syncing: { panel: "22px 20px 16px", tray: "22px 20px 14px" },
+  // The settled column's, because it is that column with a different mark in it.
+  waiting: { panel: "28px 22px 22px", tray: "26px 22px 20px" },
   // The tray's needs-you hero is 2px tighter at the top than the panel's — measured on
   // `10a In situ`, which is the only frame that draws this state in the tray family. Before it was
   // mapped this fell back to the panel's 28 and nothing could see the difference, which is exactly
@@ -79,6 +87,7 @@ const HERO_PAD = {
 const HEADLINE = {
   settled: { size: "17px", top: "15px" },
   syncing: { size: "15px", top: "13px" },
+  waiting: { size: "17px", top: "15px" },
   needsYou: { size: "17px", top: "15px" },
   paused: { size: "17px", top: "15px" },
   unreachable: { size: "17px", top: "15px" },
@@ -112,6 +121,10 @@ function heroMark(state, family, count) {
       // Masked, and this one is required rather than tidy: the seam runs the full height of the hero
       // and would otherwise show through the middle of the mark. DEVIATIONS.md §1.3 conflict 5.
       return renderHexagon({ ...common, state: "syncing", masked: true, numeral: count });
+    case "waiting":
+      // The moving form, unmasked (it is not over a seam) and with no numeral (nothing is moving yet, and a
+      // `0` would be a count of nothing). The two animated segments are the ones `syncing` has.
+      return renderHexagon({ ...common, state: "syncing" });
     case "needsYou":
     case "deletions":
       return renderHexagon({

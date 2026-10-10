@@ -95,17 +95,116 @@ test("a_surface_that_does_not_ask_for_the_never_synced_hero_gets_what_it_always_
   assert.equal(legacy.hero, "settled", "a view written before pairs existed is the one-pair case");
 });
 
-test("the never-synced hero says the tray's two sentences, with no numeral and the generic buttons", () => {
+test("the never-synced hero says the tray's headline and its own sub-line, with no numeral and the generic buttons", () => {
   const v = mainView({ daemonState: "firstRun", response: { pending_changes: 0 }, pairCount: 2 });
   assert.equal(v.hero, "firstRun");
   assert.equal(headlineOf(v), TRAY.nothingSyncedYet);
-  assert.equal(subOf(v), TRAY.nothingSyncedYetSub);
+  // #455. The tray's second sentence sends a person to the window to choose their folders, and this
+  // IS the window: with two folders or more they have chosen them already.
+  assert.equal(subOf(v), MAIN.firstRunSub);
+  assert.notEqual(subOf(v), TRAY.nothingSyncedYetSub);
   assert.equal(v.numeral, null, "a count inside the mark would be a queue of zero things");
   assert.deepEqual(
     heroActionsOf(v).map((action) => action.on),
     ["onSyncNow", "onPause"],
     "a pair that has not synced can be synced now, or paused — it is not a state with nothing to do",
   );
+});
+
+test("a_folder_that_has_not_had_its_turn_is_never_drawn_as_settled", () => {
+  // The live report: three folders, the default one in a 25 minute pass, and the folder the window
+  // shows (or any other) has not been reached. It had no hero of its own and fell to `settled` —
+  // `Everything is up to date` over a folder nothing has looked at, the false all-clear of #246 again.
+  const queued = (over = {}) => state({ daemonState: "queued", ...over });
+  assert.equal(heroStateOf(queued()), "queued");
+  assert.notEqual(heroStateOf(queued()), "settled");
+  // It needs no surface to opt in: it is only ever derived beside other folders, so there is no
+  // takeover for it to hide behind and no one-folder rendering for it to change (`drawsFirstRun`).
+  assert.equal(heroStateOf(queued({ drawsFirstRun: false })), "queued");
+  // Ahead of the watch queue, as Rust decides it: an edit in a folder that has had no pass is not that
+  // folder syncing.
+  assert.equal(heroStateOf(queued({ pending: 5 })), "queued");
+  // But a conflict or a withheld deletion in it is a thing that needs the person, and waiting does not:
+  // "needs you" outranks "waiting" (review of #459), as it outranks an up to date folder.
+  assert.equal(heroStateOf(queued({ waiting: 2 })), "decision");
+  assert.equal(heroStateOf(queued({ waiting: 0 })), "queued");
+  // Below the states that outrank it.
+  assert.equal(heroStateOf(queued({ daemonState: "unreachable" })), "unreachable");
+  assert.equal(heroStateOf(queued({ daemonState: "authExpired" })), "authExpired");
+  assert.equal(heroStateOf(queued({ daemonState: "failed" })), "failed");
+  assert.equal(heroStateOf(queued({ daemonState: "paused" })), "paused");
+});
+
+test("a_waiting_folder_wears_the_syncing_mark_not_the_needs_you_one", () => {
+  // Waiting asks nothing of the person. The crimson needs-you form is a decision's and a first run's;
+  // something is syncing, or is about to start, and the moving form is the one that says so.
+  assert.equal(MARK_STATE.queued, "syncing");
+  assert.notEqual(MARK_STATE.queued, MARK_STATE.decision);
+  assert.notEqual(MARK_STATE.queued, MARK_STATE.firstRun);
+  assert.equal(MARK_STATE.firstRun, "needsNumeral", "the one-folder wizard's form is untouched");
+  // A decision in it IS the needs-you form, with its count.
+  const v = mainView({
+    daemonState: "queued",
+    response: { pending_changes: 0 },
+    conflicts: [{}],
+    pairCount: 2,
+  });
+  assert.equal(v.hero, "decision");
+  assert.equal(MARK_STATE[v.hero], "needsNumeral");
+  assert.equal(v.numeral, 1);
+});
+
+test("the_waiting_hero_names_the_folder_it_waits_for_and_why", () => {
+  const v = mainView({
+    daemonState: "queued",
+    waitingFor: "documents",
+    pair: "photos",
+    response: { pending_changes: 0 },
+    pairCount: 3,
+  });
+  assert.equal(v.hero, "queued");
+  assert.equal(headlineOf(v), "Waiting for documents");
+  assert.equal(subOf(v), "Folders sync one at a time. photos is waiting for documents to finish.");
+  assert.equal(v.numeral, null, "a count inside the mark would be a queue of zero things");
+  assert.deepEqual(
+    heroActionsOf(v).map((action) => [action.label, action.on]),
+    [
+      ["Sync now", "onSyncNow"],
+      ["Pause photos", "onPause"],
+    ],
+    "a folder that is waiting can be synced now, or paused",
+  );
+});
+
+test("with_nothing_running_the_hero_says_the_folder_is_starting_and_that_it_starts_on_its_own", () => {
+  const v = mainView({
+    daemonState: "queued",
+    waitingFor: null,
+    pair: "photos",
+    response: { pending_changes: 0 },
+    pairCount: 3,
+  });
+  assert.equal(v.hero, "queued");
+  assert.equal(headlineOf(v), "Starting to sync");
+  assert.equal(subOf(v), "photos starts on its own.");
+  // The one-folder panel has no folder to name; the sentence still reads.
+  const nameless = mainView({ daemonState: "queued", response: { pending_changes: 0 }, pairCount: 3 });
+  assert.equal(subOf(nameless), "This folder starts on its own.");
+});
+
+test("the_window_never_sends_a_person_to_choose_folders_they_have_chosen_(455)", () => {
+  const views = [
+    mainView({ daemonState: "queued", waitingFor: "documents", pair: "photos", pairCount: 2 }),
+    mainView({ daemonState: "queued", pair: "photos", pairCount: 2 }),
+    mainView({ daemonState: "firstRun", response: { pending_changes: 0 }, pairCount: 2 }),
+  ];
+  for (const v of views) {
+    const said = `${headlineOf(v)} ${subOf(v)}`;
+    assert.doesNotMatch(said, /choose your two folders/i, said);
+    assert.doesNotMatch(said, /Open Drive Sync/, said);
+  }
+  // The tray keeps its sentence: there it is addressed to a person who has not opened the window.
+  assert.equal(TRAY.nothingSyncedYetSub, "Open Drive Sync to choose your two folders.");
 });
 
 test("every hero the screen can be in has a mark measured for it", () => {
@@ -119,6 +218,7 @@ test("every hero the screen can be in has a mark measured for it", () => {
     "failed",
     "unreachable",
     "firstRun",
+    "queued",
   ]) {
     for (const syncing of [false, true]) {
       for (const waiting of [0, 2]) {
@@ -131,6 +231,7 @@ test("every hero the screen can be in has a mark measured for it", () => {
     }
   }
   assert.ok(reachable.has("firstRun"), "the premise: the sweep reaches the new hero");
+  assert.ok(reachable.has("queued"), "the premise: and the waiting one");
   for (const hero of reachable) assert.ok(MARK_STATE[hero], `no mark for the "${hero}" hero`);
 });
 

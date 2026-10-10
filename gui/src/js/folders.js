@@ -232,7 +232,9 @@ export function listRows({
     const summary = summaries.get(entry.name);
     const listed = summaries.has(entry.name);
     const word =
-      reachable && pairs.length > 0 && !listed ? FOLDERS.list.notRunning : stateWordOf(states[index].state);
+      reachable && pairs.length > 0 && !listed
+        ? FOLDERS.list.notRunning
+        : stateWordOf(states[index].state, states[index].waitingFor);
     return {
       name: entry.name,
       local: entry.local_root ?? summary?.local_root ?? "",

@@ -46,7 +46,16 @@ test("a_state_is_one_word_and_an_unknown_state_is_none", () => {
   assert.equal(stateWordOf("paused"), "paused");
   assert.equal(stateWordOf("failed"), "sync failed");
   // Exhaustive over what Rust serialises: nothing the deck has a word for is left without one.
-  for (const state of ["idle", "running", "paused", "failed", "authExpired", "unreachable", "firstRun"]) {
+  for (const state of [
+    "idle",
+    "running",
+    "queued",
+    "paused",
+    "failed",
+    "authExpired",
+    "unreachable",
+    "firstRun",
+  ]) {
     assert.ok(stateWordOf(state), `${state} has a word`);
   }
   // A state this build was never told about says NOTHING — not `up to date` (#246), not a made-up word.
@@ -55,11 +64,60 @@ test("a_state_is_one_word_and_an_unknown_state_is_none", () => {
   }
 });
 
+test("a_folder_waiting_for_its_turn_says_so_and_names_the_folder_it_waits_for", () => {
+  assert.equal(stateWordOf("queued", "documents"), "waiting for documents");
+  // Nothing is running: nobody to name, and not `waiting for ` with a hole in it.
+  assert.equal(stateWordOf("queued", null), "starting");
+  assert.equal(stateWordOf("queued"), "starting");
+  assert.equal(stateWordOf("queued", ""), "starting");
+  // Never the settled word, whoever it waits for.
+  assert.notEqual(stateWordOf("queued", "documents"), stateWordOf("idle"));
+  assert.notEqual(stateWordOf("queued"), stateWordOf("idle"));
+  // Only a queued folder waits: the name a row carries for any other state is not spoken.
+  assert.equal(stateWordOf("idle", "documents"), "up to date");
+  assert.equal(stateWordOf("running", "documents"), "syncing");
+  // The header's list has no room for the folder: its rows spend the width on their own names.
+  assert.equal(stateWordOf("queued", "documents", { short: true }), "waiting");
+  assert.equal(stateWordOf("queued", null, { short: true }), "starting");
+  assert.equal(stateWordOf("idle", "documents", { short: true }), "up to date");
+  // A folder may be called anything up to 64 characters, and the row has room for a word.
+  const long = stateWordOf("queued", "x".repeat(64));
+  assert.ok(long.length <= 32, long);
+  assert.ok(long.startsWith("waiting for xxx") && long.endsWith("…"), long);
+});
+
+test("the_rows_carry_who_a_folder_waits_for_by_name", () => {
+  const rows = selectorRows({
+    pairs: [summary("documents"), summary("photos"), summary("constructor")],
+    pairStates: [
+      { name: "documents", state: "running", rank: 3 },
+      { name: "photos", state: "queued", rank: 2, waiting_for: "documents" },
+      { name: "constructor", state: "queued", rank: 2 },
+    ],
+    selected: "documents",
+  });
+  assert.deepEqual(
+    rows.map((row) => [row.name, row.state, row.waitingFor]),
+    [
+      ["documents", "running", null],
+      ["photos", "queued", "documents"],
+      ["constructor", "queued", null],
+    ],
+  );
+  assert.deepEqual(
+    rows.map((row) => stateWordOf(row.state, row.waitingFor)),
+    ["syncing", "waiting for documents", "starting"],
+  );
+  // A stopped daemon says what the chip says, and names nobody.
+  const stopped = selectorRows({ pairs: [summary("photos")], pairStates: [], reachable: false });
+  assert.equal(stopped[0].waitingFor, null);
+});
+
 test("the_rows_are_the_daemons_folders_in_its_order_each_with_the_state_rust_derived", () => {
   const rows = selectorRows({
     pairs: [summary("documents"), summary("photos"), summary("music")],
     pairStates: [
-      { name: "photos", state: "running", rank: 2 },
+      { name: "photos", state: "running", rank: 3 },
       { name: "documents", state: "idle", rank: 0 },
     ],
     selected: "photos",
@@ -150,7 +208,7 @@ test("a_folder_that_is_unavailable_marks_the_pill_like_one_that_failed", () => {
     pairs: [summary("documents"), unavailable],
     pairStates: [
       { name: "documents", state: "idle", rank: 0 },
-      { name: "drive", state: "failed", rank: 4 },
+      { name: "drive", state: "failed", rank: 5 },
     ],
     selected: "documents",
   });
@@ -169,7 +227,16 @@ test("the_folder_on_screen_never_marks_its_own_pill_and_the_process_wide_states_
   // The selected folder's failure is the chip and the hero, already. Signed out and unreachable are
   // process-wide: every row would say it at once, so there is no "other" folder to point at.
   assert.equal(markerOf(rowsOf(["documents", "failed"], ["photos", "idle"])), null);
-  for (const state of ["authExpired", "unreachable", "firstRun", "running", "idle", "paused", null]) {
+  for (const state of [
+    "authExpired",
+    "unreachable",
+    "firstRun",
+    "running",
+    "queued",
+    "idle",
+    "paused",
+    null,
+  ]) {
     assert.equal(markerOf(rowsOf(["documents", "idle"], ["photos", state])), null, String(state));
   }
   assert.equal(markerOf([]), null);
@@ -184,6 +251,22 @@ test("when_a_decision_waits_in_one_folder_and_another_has_failed_the_problem_for
   assert.equal(markerOf(rowsOf(["documents", "idle"], ["photos", "idle", 2])), "decision");
 });
 
+test("a_waiting_folder_marks_nothing_and_hides_no_marker_that_is_due", () => {
+  // Waiting asks nothing of the person: it draws no ring and no dot (neither needs-you form), and a folder
+  // that does need them is still marked beside it, whichever of the two is on screen (review of #459).
+  assert.equal(markerOf(rowsOf(["documents", "idle"], ["photos", "queued", 0])), null);
+  assert.equal(markerOf(rowsOf(["photos", "queued"], ["documents", "idle", 1])), "decision");
+  assert.equal(
+    markerOf(rowsOf(["documents", "idle"], ["photos", "queued"], ["archive", "idle", 1])),
+    "decision",
+  );
+  assert.equal(markerOf(rowsOf(["photos", "queued"], ["documents", "failed"])), "problem");
+  assert.equal(
+    markerOf(rowsOf(["photos", "queued"], ["documents", "failed"], ["archive", "idle", 1])),
+    "problem",
+  );
+});
+
 // ---- the list when the daemon stopped answering (the review of #447) ----
 
 test("a_stopped_daemon_leaves_no_row_saying_up_to_date_and_nothing_to_ring_about", () => {
@@ -194,7 +277,7 @@ test("a_stopped_daemon_leaves_no_row_saying_up_to_date_and_nothing_to_ring_about
     pairStates: [
       { name: "documents", state: "idle", rank: 0 },
       { name: "photos", state: "idle", rank: 0 },
-      { name: "archive", state: "failed", rank: 4 },
+      { name: "archive", state: "failed", rank: 5 },
     ],
     selected: "documents",
     waiting: (name) => (name === "photos" ? 2 : 0),
@@ -418,6 +501,6 @@ test("another_folders_queue_is_known_only_once_a_reply_has_filled_it", () => {
 test("the_deck_has_a_word_for_every_state_the_selector_can_draw", () => {
   assert.deepEqual(
     Object.keys(CHROME.pair.states).sort(),
-    ["authExpired", "failed", "firstRun", "idle", "paused", "running", "unreachable"].sort(),
+    ["authExpired", "failed", "firstRun", "idle", "paused", "queued", "running", "unreachable"].sort(),
   );
 });

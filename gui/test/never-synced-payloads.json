@@ -1,0 +1,824 @@
+{
+  "running": {
+    "documents": {
+      "pair_states": [
+        {
+          "name": "documents",
+          "rank": 3,
+          "state": "running"
+        },
+        {
+          "name": "photos",
+          "rank": 2,
+          "state": "queued",
+          "waiting_for": "documents"
+        },
+        {
+          "name": "videos",
+          "rank": 2,
+          "state": "queued",
+          "waiting_for": "documents"
+        }
+      ],
+      "pairs": [
+        {
+          "db_path": "/fake/documents/local/.sync/sync_index.db",
+          "last_error": null,
+          "last_sync_epoch_secs": null,
+          "local_root": "/fake/documents/local",
+          "name": "documents",
+          "paused": false,
+          "pending_changes": 0,
+          "pending_deletions": 0,
+          "reconcile_seq": 0,
+          "remote_root": "/Drive/documents",
+          "syncing": true
+        },
+        {
+          "db_path": "/fake/photos/local/.sync/sync_index.db",
+          "last_error": null,
+          "last_sync_epoch_secs": null,
+          "local_root": "/fake/photos/local",
+          "name": "photos",
+          "paused": false,
+          "pending_changes": 0,
+          "pending_deletions": 0,
+          "reconcile_seq": 0,
+          "remote_root": "/Drive/photos",
+          "syncing": false
+        },
+        {
+          "db_path": "/fake/videos/local/.sync/sync_index.db",
+          "last_error": null,
+          "last_sync_epoch_secs": null,
+          "local_root": "/fake/videos/local",
+          "name": "videos",
+          "paused": false,
+          "pending_changes": 0,
+          "pending_deletions": 0,
+          "reconcile_seq": 0,
+          "remote_root": "/Drive/videos",
+          "syncing": false
+        }
+      ],
+      "response": {
+        "activity": null,
+        "apply": null,
+        "auth": "unknown",
+        "config": {
+          "db_path": "/fake/documents/local/.sync/sync_index.db",
+          "local_root": "/fake/documents/local",
+          "remote_root": "/Drive/documents"
+        },
+        "failed_item_count": 0,
+        "failed_items": [],
+        "file_history": null,
+        "history": null,
+        "index_totals": null,
+        "last_error": null,
+        "last_plan_summary": null,
+        "last_successful_sync_summary": null,
+        "last_sync_epoch_secs": null,
+        "listing": null,
+        "message": "fake daemon",
+        "pair": "documents",
+        "pairs": [
+          {
+            "db_path": "/fake/documents/local/.sync/sync_index.db",
+            "last_error": null,
+            "last_sync_epoch_secs": null,
+            "local_root": "/fake/documents/local",
+            "name": "documents",
+            "paused": false,
+            "pending_changes": 0,
+            "pending_deletions": 0,
+            "reconcile_seq": 0,
+            "remote_root": "/Drive/documents",
+            "syncing": true
+          },
+          {
+            "db_path": "/fake/photos/local/.sync/sync_index.db",
+            "last_error": null,
+            "last_sync_epoch_secs": null,
+            "local_root": "/fake/photos/local",
+            "name": "photos",
+            "paused": false,
+            "pending_changes": 0,
+            "pending_deletions": 0,
+            "reconcile_seq": 0,
+            "remote_root": "/Drive/photos",
+            "syncing": false
+          },
+          {
+            "db_path": "/fake/videos/local/.sync/sync_index.db",
+            "last_error": null,
+            "last_sync_epoch_secs": null,
+            "local_root": "/fake/videos/local",
+            "name": "videos",
+            "paused": false,
+            "pending_changes": 0,
+            "pending_deletions": 0,
+            "reconcile_seq": 0,
+            "remote_root": "/Drive/videos",
+            "syncing": false
+          }
+        ],
+        "pause_unsaved": null,
+        "paused": false,
+        "pending_changes": 0,
+        "pending_deletions": [],
+        "plan": null,
+        "reconcile_seq": 0,
+        "status": "running",
+        "status_history": [],
+        "syncing": true,
+        "unsyncable": []
+      },
+      "selected": "documents",
+      "state": "running"
+    },
+    "photos": {
+      "pair_states": [
+        {
+          "name": "documents",
+          "rank": 3,
+          "state": "running"
+        },
+        {
+          "name": "photos",
+          "rank": 2,
+          "state": "queued",
+          "waiting_for": "documents"
+        },
+        {
+          "name": "videos",
+          "rank": 2,
+          "state": "queued",
+          "waiting_for": "documents"
+        }
+      ],
+      "pairs": [
+        {
+          "db_path": "/fake/documents/local/.sync/sync_index.db",
+          "last_error": null,
+          "last_sync_epoch_secs": null,
+          "local_root": "/fake/documents/local",
+          "name": "documents",
+          "paused": false,
+          "pending_changes": 0,
+          "pending_deletions": 0,
+          "reconcile_seq": 0,
+          "remote_root": "/Drive/documents",
+          "syncing": true
+        },
+        {
+          "db_path": "/fake/photos/local/.sync/sync_index.db",
+          "last_error": null,
+          "last_sync_epoch_secs": null,
+          "local_root": "/fake/photos/local",
+          "name": "photos",
+          "paused": false,
+          "pending_changes": 0,
+          "pending_deletions": 0,
+          "reconcile_seq": 0,
+          "remote_root": "/Drive/photos",
+          "syncing": false
+        },
+        {
+          "db_path": "/fake/videos/local/.sync/sync_index.db",
+          "last_error": null,
+          "last_sync_epoch_secs": null,
+          "local_root": "/fake/videos/local",
+          "name": "videos",
+          "paused": false,
+          "pending_changes": 0,
+          "pending_deletions": 0,
+          "reconcile_seq": 0,
+          "remote_root": "/Drive/videos",
+          "syncing": false
+        }
+      ],
+      "response": {
+        "activity": null,
+        "apply": null,
+        "auth": "unknown",
+        "config": {
+          "db_path": "/fake/photos/local/.sync/sync_index.db",
+          "local_root": "/fake/photos/local",
+          "remote_root": "/Drive/photos"
+        },
+        "failed_item_count": 0,
+        "failed_items": [],
+        "file_history": null,
+        "history": null,
+        "index_totals": null,
+        "last_error": null,
+        "last_plan_summary": null,
+        "last_successful_sync_summary": null,
+        "last_sync_epoch_secs": null,
+        "listing": null,
+        "message": "fake daemon",
+        "pair": "photos",
+        "pairs": [
+          {
+            "db_path": "/fake/documents/local/.sync/sync_index.db",
+            "last_error": null,
+            "last_sync_epoch_secs": null,
+            "local_root": "/fake/documents/local",
+            "name": "documents",
+            "paused": false,
+            "pending_changes": 0,
+            "pending_deletions": 0,
+            "reconcile_seq": 0,
+            "remote_root": "/Drive/documents",
+            "syncing": true
+          },
+          {
+            "db_path": "/fake/photos/local/.sync/sync_index.db",
+            "last_error": null,
+            "last_sync_epoch_secs": null,
+            "local_root": "/fake/photos/local",
+            "name": "photos",
+            "paused": false,
+            "pending_changes": 0,
+            "pending_deletions": 0,
+            "reconcile_seq": 0,
+            "remote_root": "/Drive/photos",
+            "syncing": false
+          },
+          {
+            "db_path": "/fake/videos/local/.sync/sync_index.db",
+            "last_error": null,
+            "last_sync_epoch_secs": null,
+            "local_root": "/fake/videos/local",
+            "name": "videos",
+            "paused": false,
+            "pending_changes": 0,
+            "pending_deletions": 0,
+            "reconcile_seq": 0,
+            "remote_root": "/Drive/videos",
+            "syncing": false
+          }
+        ],
+        "pause_unsaved": null,
+        "paused": false,
+        "pending_changes": 0,
+        "pending_deletions": [],
+        "plan": null,
+        "reconcile_seq": 0,
+        "status": "running",
+        "status_history": [],
+        "syncing": false,
+        "unsyncable": []
+      },
+      "selected": "documents",
+      "state": "queued",
+      "waiting_for": "documents"
+    },
+    "videos": {
+      "pair_states": [
+        {
+          "name": "documents",
+          "rank": 3,
+          "state": "running"
+        },
+        {
+          "name": "photos",
+          "rank": 2,
+          "state": "queued",
+          "waiting_for": "documents"
+        },
+        {
+          "name": "videos",
+          "rank": 2,
+          "state": "queued",
+          "waiting_for": "documents"
+        }
+      ],
+      "pairs": [
+        {
+          "db_path": "/fake/documents/local/.sync/sync_index.db",
+          "last_error": null,
+          "last_sync_epoch_secs": null,
+          "local_root": "/fake/documents/local",
+          "name": "documents",
+          "paused": false,
+          "pending_changes": 0,
+          "pending_deletions": 0,
+          "reconcile_seq": 0,
+          "remote_root": "/Drive/documents",
+          "syncing": true
+        },
+        {
+          "db_path": "/fake/photos/local/.sync/sync_index.db",
+          "last_error": null,
+          "last_sync_epoch_secs": null,
+          "local_root": "/fake/photos/local",
+          "name": "photos",
+          "paused": false,
+          "pending_changes": 0,
+          "pending_deletions": 0,
+          "reconcile_seq": 0,
+          "remote_root": "/Drive/photos",
+          "syncing": false
+        },
+        {
+          "db_path": "/fake/videos/local/.sync/sync_index.db",
+          "last_error": null,
+          "last_sync_epoch_secs": null,
+          "local_root": "/fake/videos/local",
+          "name": "videos",
+          "paused": false,
+          "pending_changes": 0,
+          "pending_deletions": 0,
+          "reconcile_seq": 0,
+          "remote_root": "/Drive/videos",
+          "syncing": false
+        }
+      ],
+      "response": {
+        "activity": null,
+        "apply": null,
+        "auth": "unknown",
+        "config": {
+          "db_path": "/fake/videos/local/.sync/sync_index.db",
+          "local_root": "/fake/videos/local",
+          "remote_root": "/Drive/videos"
+        },
+        "failed_item_count": 0,
+        "failed_items": [],
+        "file_history": null,
+        "history": null,
+        "index_totals": null,
+        "last_error": null,
+        "last_plan_summary": null,
+        "last_successful_sync_summary": null,
+        "last_sync_epoch_secs": null,
+        "listing": null,
+        "message": "fake daemon",
+        "pair": "videos",
+        "pairs": [
+          {
+            "db_path": "/fake/documents/local/.sync/sync_index.db",
+            "last_error": null,
+            "last_sync_epoch_secs": null,
+            "local_root": "/fake/documents/local",
+            "name": "documents",
+            "paused": false,
+            "pending_changes": 0,
+            "pending_deletions": 0,
+            "reconcile_seq": 0,
+            "remote_root": "/Drive/documents",
+            "syncing": true
+          },
+          {
+            "db_path": "/fake/photos/local/.sync/sync_index.db",
+            "last_error": null,
+            "last_sync_epoch_secs": null,
+            "local_root": "/fake/photos/local",
+            "name": "photos",
+            "paused": false,
+            "pending_changes": 0,
+            "pending_deletions": 0,
+            "reconcile_seq": 0,
+            "remote_root": "/Drive/photos",
+            "syncing": false
+          },
+          {
+            "db_path": "/fake/videos/local/.sync/sync_index.db",
+            "last_error": null,
+            "last_sync_epoch_secs": null,
+            "local_root": "/fake/videos/local",
+            "name": "videos",
+            "paused": false,
+            "pending_changes": 0,
+            "pending_deletions": 0,
+            "reconcile_seq": 0,
+            "remote_root": "/Drive/videos",
+            "syncing": false
+          }
+        ],
+        "pause_unsaved": null,
+        "paused": false,
+        "pending_changes": 0,
+        "pending_deletions": [],
+        "plan": null,
+        "reconcile_seq": 0,
+        "status": "running",
+        "status_history": [],
+        "syncing": false,
+        "unsyncable": []
+      },
+      "selected": "documents",
+      "state": "queued",
+      "waiting_for": "documents"
+    }
+  },
+  "starting": {
+    "documents": {
+      "pair_states": [
+        {
+          "name": "documents",
+          "rank": 2,
+          "state": "queued"
+        },
+        {
+          "name": "photos",
+          "rank": 2,
+          "state": "queued"
+        },
+        {
+          "name": "videos",
+          "rank": 2,
+          "state": "queued"
+        }
+      ],
+      "pairs": [
+        {
+          "db_path": "/fake/documents/local/.sync/sync_index.db",
+          "last_error": null,
+          "last_sync_epoch_secs": null,
+          "local_root": "/fake/documents/local",
+          "name": "documents",
+          "paused": false,
+          "pending_changes": 0,
+          "pending_deletions": 0,
+          "reconcile_seq": 0,
+          "remote_root": "/Drive/documents",
+          "syncing": false
+        },
+        {
+          "db_path": "/fake/photos/local/.sync/sync_index.db",
+          "last_error": null,
+          "last_sync_epoch_secs": null,
+          "local_root": "/fake/photos/local",
+          "name": "photos",
+          "paused": false,
+          "pending_changes": 0,
+          "pending_deletions": 0,
+          "reconcile_seq": 0,
+          "remote_root": "/Drive/photos",
+          "syncing": false
+        },
+        {
+          "db_path": "/fake/videos/local/.sync/sync_index.db",
+          "last_error": null,
+          "last_sync_epoch_secs": null,
+          "local_root": "/fake/videos/local",
+          "name": "videos",
+          "paused": false,
+          "pending_changes": 0,
+          "pending_deletions": 0,
+          "reconcile_seq": 0,
+          "remote_root": "/Drive/videos",
+          "syncing": false
+        }
+      ],
+      "response": {
+        "activity": null,
+        "apply": null,
+        "auth": "unknown",
+        "config": {
+          "db_path": "/fake/documents/local/.sync/sync_index.db",
+          "local_root": "/fake/documents/local",
+          "remote_root": "/Drive/documents"
+        },
+        "failed_item_count": 0,
+        "failed_items": [],
+        "file_history": null,
+        "history": null,
+        "index_totals": null,
+        "last_error": null,
+        "last_plan_summary": null,
+        "last_successful_sync_summary": null,
+        "last_sync_epoch_secs": null,
+        "listing": null,
+        "message": "fake daemon",
+        "pair": "documents",
+        "pairs": [
+          {
+            "db_path": "/fake/documents/local/.sync/sync_index.db",
+            "last_error": null,
+            "last_sync_epoch_secs": null,
+            "local_root": "/fake/documents/local",
+            "name": "documents",
+            "paused": false,
+            "pending_changes": 0,
+            "pending_deletions": 0,
+            "reconcile_seq": 0,
+            "remote_root": "/Drive/documents",
+            "syncing": false
+          },
+          {
+            "db_path": "/fake/photos/local/.sync/sync_index.db",
+            "last_error": null,
+            "last_sync_epoch_secs": null,
+            "local_root": "/fake/photos/local",
+            "name": "photos",
+            "paused": false,
+            "pending_changes": 0,
+            "pending_deletions": 0,
+            "reconcile_seq": 0,
+            "remote_root": "/Drive/photos",
+            "syncing": false
+          },
+          {
+            "db_path": "/fake/videos/local/.sync/sync_index.db",
+            "last_error": null,
+            "last_sync_epoch_secs": null,
+            "local_root": "/fake/videos/local",
+            "name": "videos",
+            "paused": false,
+            "pending_changes": 0,
+            "pending_deletions": 0,
+            "reconcile_seq": 0,
+            "remote_root": "/Drive/videos",
+            "syncing": false
+          }
+        ],
+        "pause_unsaved": null,
+        "paused": false,
+        "pending_changes": 0,
+        "pending_deletions": [],
+        "plan": null,
+        "reconcile_seq": 0,
+        "status": "running",
+        "status_history": [],
+        "syncing": false,
+        "unsyncable": []
+      },
+      "selected": "documents",
+      "state": "queued"
+    },
+    "photos": {
+      "pair_states": [
+        {
+          "name": "documents",
+          "rank": 2,
+          "state": "queued"
+        },
+        {
+          "name": "photos",
+          "rank": 2,
+          "state": "queued"
+        },
+        {
+          "name": "videos",
+          "rank": 2,
+          "state": "queued"
+        }
+      ],
+      "pairs": [
+        {
+          "db_path": "/fake/documents/local/.sync/sync_index.db",
+          "last_error": null,
+          "last_sync_epoch_secs": null,
+          "local_root": "/fake/documents/local",
+          "name": "documents",
+          "paused": false,
+          "pending_changes": 0,
+          "pending_deletions": 0,
+          "reconcile_seq": 0,
+          "remote_root": "/Drive/documents",
+          "syncing": false
+        },
+        {
+          "db_path": "/fake/photos/local/.sync/sync_index.db",
+          "last_error": null,
+          "last_sync_epoch_secs": null,
+          "local_root": "/fake/photos/local",
+          "name": "photos",
+          "paused": false,
+          "pending_changes": 0,
+          "pending_deletions": 0,
+          "reconcile_seq": 0,
+          "remote_root": "/Drive/photos",
+          "syncing": false
+        },
+        {
+          "db_path": "/fake/videos/local/.sync/sync_index.db",
+          "last_error": null,
+          "last_sync_epoch_secs": null,
+          "local_root": "/fake/videos/local",
+          "name": "videos",
+          "paused": false,
+          "pending_changes": 0,
+          "pending_deletions": 0,
+          "reconcile_seq": 0,
+          "remote_root": "/Drive/videos",
+          "syncing": false
+        }
+      ],
+      "response": {
+        "activity": null,
+        "apply": null,
+        "auth": "unknown",
+        "config": {
+          "db_path": "/fake/photos/local/.sync/sync_index.db",
+          "local_root": "/fake/photos/local",
+          "remote_root": "/Drive/photos"
+        },
+        "failed_item_count": 0,
+        "failed_items": [],
+        "file_history": null,
+        "history": null,
+        "index_totals": null,
+        "last_error": null,
+        "last_plan_summary": null,
+        "last_successful_sync_summary": null,
+        "last_sync_epoch_secs": null,
+        "listing": null,
+        "message": "fake daemon",
+        "pair": "photos",
+        "pairs": [
+          {
+            "db_path": "/fake/documents/local/.sync/sync_index.db",
+            "last_error": null,
+            "last_sync_epoch_secs": null,
+            "local_root": "/fake/documents/local",
+            "name": "documents",
+            "paused": false,
+            "pending_changes": 0,
+            "pending_deletions": 0,
+            "reconcile_seq": 0,
+            "remote_root": "/Drive/documents",
+            "syncing": false
+          },
+          {
+            "db_path": "/fake/photos/local/.sync/sync_index.db",
+            "last_error": null,
+            "last_sync_epoch_secs": null,
+            "local_root": "/fake/photos/local",
+            "name": "photos",
+            "paused": false,
+            "pending_changes": 0,
+            "pending_deletions": 0,
+            "reconcile_seq": 0,
+            "remote_root": "/Drive/photos",
+            "syncing": false
+          },
+          {
+            "db_path": "/fake/videos/local/.sync/sync_index.db",
+            "last_error": null,
+            "last_sync_epoch_secs": null,
+            "local_root": "/fake/videos/local",
+            "name": "videos",
+            "paused": false,
+            "pending_changes": 0,
+            "pending_deletions": 0,
+            "reconcile_seq": 0,
+            "remote_root": "/Drive/videos",
+            "syncing": false
+          }
+        ],
+        "pause_unsaved": null,
+        "paused": false,
+        "pending_changes": 0,
+        "pending_deletions": [],
+        "plan": null,
+        "reconcile_seq": 0,
+        "status": "running",
+        "status_history": [],
+        "syncing": false,
+        "unsyncable": []
+      },
+      "selected": "documents",
+      "state": "queued"
+    },
+    "videos": {
+      "pair_states": [
+        {
+          "name": "documents",
+          "rank": 2,
+          "state": "queued"
+        },
+        {
+          "name": "photos",
+          "rank": 2,
+          "state": "queued"
+        },
+        {
+          "name": "videos",
+          "rank": 2,
+          "state": "queued"
+        }
+      ],
+      "pairs": [
+        {
+          "db_path": "/fake/documents/local/.sync/sync_index.db",
+          "last_error": null,
+          "last_sync_epoch_secs": null,
+          "local_root": "/fake/documents/local",
+          "name": "documents",
+          "paused": false,
+          "pending_changes": 0,
+          "pending_deletions": 0,
+          "reconcile_seq": 0,
+          "remote_root": "/Drive/documents",
+          "syncing": false
+        },
+        {
+          "db_path": "/fake/photos/local/.sync/sync_index.db",
+          "last_error": null,
+          "last_sync_epoch_secs": null,
+          "local_root": "/fake/photos/local",
+          "name": "photos",
+          "paused": false,
+          "pending_changes": 0,
+          "pending_deletions": 0,
+          "reconcile_seq": 0,
+          "remote_root": "/Drive/photos",
+          "syncing": false
+        },
+        {
+          "db_path": "/fake/videos/local/.sync/sync_index.db",
+          "last_error": null,
+          "last_sync_epoch_secs": null,
+          "local_root": "/fake/videos/local",
+          "name": "videos",
+          "paused": false,
+          "pending_changes": 0,
+          "pending_deletions": 0,
+          "reconcile_seq": 0,
+          "remote_root": "/Drive/videos",
+          "syncing": false
+        }
+      ],
+      "response": {
+        "activity": null,
+        "apply": null,
+        "auth": "unknown",
+        "config": {
+          "db_path": "/fake/videos/local/.sync/sync_index.db",
+          "local_root": "/fake/videos/local",
+          "remote_root": "/Drive/videos"
+        },
+        "failed_item_count": 0,
+        "failed_items": [],
+        "file_history": null,
+        "history": null,
+        "index_totals": null,
+        "last_error": null,
+        "last_plan_summary": null,
+        "last_successful_sync_summary": null,
+        "last_sync_epoch_secs": null,
+        "listing": null,
+        "message": "fake daemon",
+        "pair": "videos",
+        "pairs": [
+          {
+            "db_path": "/fake/documents/local/.sync/sync_index.db",
+            "last_error": null,
+            "last_sync_epoch_secs": null,
+            "local_root": "/fake/documents/local",
+            "name": "documents",
+            "paused": false,
+            "pending_changes": 0,
+            "pending_deletions": 0,
+            "reconcile_seq": 0,
+            "remote_root": "/Drive/documents",
+            "syncing": false
+          },
+          {
+            "db_path": "/fake/photos/local/.sync/sync_index.db",
+            "last_error": null,
+            "last_sync_epoch_secs": null,
+            "local_root": "/fake/photos/local",
+            "name": "photos",
+            "paused": false,
+            "pending_changes": 0,
+            "pending_deletions": 0,
+            "reconcile_seq": 0,
+            "remote_root": "/Drive/photos",
+            "syncing": false
+          },
+          {
+            "db_path": "/fake/videos/local/.sync/sync_index.db",
+            "last_error": null,
+            "last_sync_epoch_secs": null,
+            "local_root": "/fake/videos/local",
+            "name": "videos",
+            "paused": false,
+            "pending_changes": 0,
+            "pending_deletions": 0,
+            "reconcile_seq": 0,
+            "remote_root": "/Drive/videos",
+            "syncing": false
+          }
+        ],
+        "pause_unsaved": null,
+        "paused": false,
+        "pending_changes": 0,
+        "pending_deletions": [],
+        "plan": null,
+        "reconcile_seq": 0,
+        "status": "running",
+        "status_history": [],
+        "syncing": false,
+        "unsyncable": []
+      },
+      "selected": "documents",
+      "state": "queued"
+    }
+  }
+}

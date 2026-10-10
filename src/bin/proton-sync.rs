@@ -1034,6 +1034,14 @@ fn headline(response: &ControlResponse, style: &Style) -> (String, &'static str,
             "the last sync failed; details below".to_owned(),
         );
     }
+    // A PAIR WITH NO FINISHED PASS IS NOT UP TO DATE (#455 and the live report). `last_sync_epoch_secs`
+    // is set by a pass that finished and by nothing else, and a daemon starts every pair without one,
+    // so `None` here means this pair has not had its turn in this run: it printed `idle — everything
+    // is up to date` over `last sync never`. After the error arms, so a failed first pass keeps saying
+    // so; before the watch queue, which is not the pair syncing. The GUI's `derive` has the same order.
+    if response.last_sync_epoch_secs.is_none() {
+        return not_yet_synced(response, style);
+    }
     if response.pending_changes > 0 {
         return (
             style.green("●"),
@@ -1049,6 +1057,35 @@ fn headline(response: &ControlResponse, style: &Style) -> (String, &'static str,
         "idle",
         "everything is up to date".to_owned(),
     )
+}
+
+/// The headline of a pair that is not paused, not syncing and has not failed, and has not finished a
+/// pass since the daemon started. Passes are serialized, so either another pair's pass is running
+/// (`waiting`, naming it) or the daemon has not reached this one yet (`starting`). The daemon starts a
+/// pair's first pass by itself when it does, so nothing here needs the person.
+///
+/// The folder to wait for is read from the reply's own pair list, as the GUI reads it, and a pair is
+/// never its own peer.
+fn not_yet_synced(response: &ControlResponse, style: &Style) -> (String, &'static str, String) {
+    let busy = response
+        .pairs
+        .iter()
+        .find(|pair| pair.syncing && Some(pair.name.as_str()) != response.pair.as_deref());
+    match busy {
+        Some(other) => (
+            style.cyan("●"),
+            "waiting",
+            format!(
+                "waiting for {} to finish — folders sync one at a time",
+                other.name
+            ),
+        ),
+        None => (
+            style.cyan("●"),
+            "starting",
+            "no sync has finished yet; the first one starts on its own".to_owned(),
+        ),
+    }
 }
 
 /// The headline's printed line (decision #14, ADR 0005 §4): the pair is named only when more than
@@ -3046,8 +3083,119 @@ mod tests {
         let mut failed = blank_response();
         failed.last_error = Some("list failed".to_owned());
         assert_eq!(headline(&failed, &style).1, "error");
-        // ...and a clean one is not dragged into either.
-        assert_eq!(headline(&blank_response(), &style).1, "idle");
+        // ...and a clean one is not dragged into either: one that has FINISHED a pass reads as before.
+        assert_eq!(headline(&synced_response(), &style).1, "idle");
+    }
+
+    /// A pair that has finished a pass since the daemon started: the only kind that may read `idle`.
+    fn synced_response() -> ControlResponse {
+        ControlResponse {
+            last_sync_epoch_secs: Some(1_800_000_000),
+            ..blank_response()
+        }
+    }
+
+    /// Two pairs as the reply lists them, the reply being about `me`; `running` is the one in a pass.
+    fn two_pairs(
+        me: &str,
+        running: Option<&str>,
+        mut response: ControlResponse,
+    ) -> ControlResponse {
+        response.pair = Some(me.to_owned());
+        response.pairs = ["documents", "photos"]
+            .into_iter()
+            .map(|name| PairSummary {
+                syncing: running == Some(name),
+                ..pair_summary(name)
+            })
+            .collect();
+        response
+    }
+
+    #[test]
+    fn a_pair_with_no_finished_pass_never_reads_idle_or_up_to_date() {
+        // The live report, from the command line: three folders, the default one deep in a pass, and
+        // `proton-sync status --pair photos` printed `idle — everything is up to date` for a folder
+        // nothing had looked at, over `last sync never` two lines below. `last_sync_epoch_secs` is
+        // set by a finished pass and by nothing else, and a daemon starts every pair without one.
+        let style = Style { enabled: false };
+
+        // Another folder is in its pass: this one waits for it, by name.
+        let waiting = two_pairs("photos", Some("documents"), blank_response());
+        let (_, state, detail) = headline(&waiting, &style);
+        assert_eq!(state, "waiting");
+        assert!(
+            detail.contains("waiting for documents"),
+            "unexpected: {detail}"
+        );
+        assert!(!detail.contains("up to date"), "unexpected: {detail}");
+
+        // Nothing is running yet: the daemon has not reached it, and says that rather than idle.
+        let starting = two_pairs("photos", None, blank_response());
+        let (_, state, detail) = headline(&starting, &style);
+        assert_eq!(state, "starting");
+        assert!(!detail.contains("up to date"), "unexpected: {detail}");
+
+        // A lone folder (or a daemon that lists none) is the same fact with nobody to wait for.
+        assert_eq!(headline(&blank_response(), &style).1, "starting");
+
+        // The named line says which folder, in both shapes.
+        let line = status_headline_line(&waiting, &style);
+        assert!(
+            line.contains("photos") && line.contains("waiting"),
+            "{line}"
+        );
+        assert!(!line.contains("up to date"), "{line}");
+    }
+
+    #[test]
+    fn a_pair_is_never_the_one_it_is_waiting_for() {
+        // The flat `syncing` and the pair list are read a moment apart, so a pass that starts between the
+        // two reads leaves this pair syncing in the list and not yet in the flat field. It must not be
+        // told to wait for itself.
+        let style = Style { enabled: false };
+        let racing = two_pairs("photos", Some("photos"), blank_response());
+        assert!(
+            !racing.syncing,
+            "the premise: the flat field has not caught up"
+        );
+        let (_, state, detail) = headline(&racing, &style);
+        assert_eq!(state, "starting");
+        assert!(!detail.contains("photos"), "unexpected: {detail}");
+    }
+
+    #[test]
+    fn a_pair_that_has_synced_keeps_reading_idle_whatever_the_others_are_doing() {
+        // It completed a pass in this run with nothing known since to contradict it; flipping every
+        // finished folder to `waiting` on each other folder's pass would be noise (as in the GUI).
+        let style = Style { enabled: false };
+        let beside = two_pairs("photos", Some("documents"), synced_response());
+        assert_eq!(headline(&beside, &style).1, "idle");
+        let line = status_headline_line(&beside, &style);
+        assert!(line.contains("everything is up to date"), "{line}");
+    }
+
+    #[test]
+    fn what_outranks_the_wait_still_outranks_it() {
+        // The same order as the GUI's `derive`: paused, syncing and a failed pass come before a folder
+        // with no finished pass is called queued — and a watch queue is not the folder syncing.
+        let style = Style { enabled: false };
+
+        let mut paused = two_pairs("photos", Some("documents"), blank_response());
+        paused.paused = true;
+        assert_eq!(headline(&paused, &style).1, "paused");
+
+        let mut mine = two_pairs("photos", Some("photos"), blank_response());
+        mine.syncing = true;
+        assert_eq!(headline(&mine, &style).1, "syncing");
+
+        let mut failed = two_pairs("photos", Some("documents"), blank_response());
+        failed.last_error = Some("list failed".to_owned());
+        assert_eq!(headline(&failed, &style).1, "error");
+
+        let mut queue = two_pairs("photos", Some("documents"), blank_response());
+        queue.pending_changes = 4;
+        assert_eq!(headline(&queue, &style).1, "waiting");
     }
 
     fn pair_summary(name: &str) -> PairSummary {

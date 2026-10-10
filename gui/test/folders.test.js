@@ -260,6 +260,46 @@ test("a_list_without_a_roster_falls_back_to_the_daemons_folders", () => {
   });
 });
 
+test("a_folder_that_has_not_had_its_turn_never_reads_up_to_date_in_the_list", () => {
+  // The live report: three folders, the default one deep in a pass, the other two not yet reached. The
+  // list used to say `up to date` for the one the window was not about, and `nothing synced yet` for
+  // the other. Rust now derives `queued` for both, and says who they wait for.
+  const roster = [
+    { name: "documents", local_root: "~/Documents", remote_root: "/Drive/Documents" },
+    { name: "photos", local_root: "~/Photos", remote_root: "/Drive/Photos" },
+    { name: "videos", local_root: "~/videos", remote_root: "/Drive/videos" },
+  ];
+  const pairs = roster.map((entry) => ({ name: entry.name }));
+  const rows = listRows({
+    roster,
+    pairs,
+    pairStates: [
+      { name: "documents", state: "running", rank: 3 },
+      { name: "photos", state: "queued", rank: 2, waiting_for: "documents" },
+      { name: "videos", state: "queued", rank: 2, waiting_for: "documents" },
+    ],
+    selected: "photos",
+  });
+  assert.deepEqual(
+    rows.map((row) => row.word),
+    ["syncing", "waiting for documents", "waiting for documents"],
+  );
+  assert.ok(!rows.some((row) => row.name !== "documents" && row.word === "up to date"));
+});
+
+test("with_nothing_running_a_folder_without_a_pass_says_it_is_starting", () => {
+  const rows = listRows({
+    roster: ROSTER,
+    pairs: ROSTER.map((entry) => ({ name: entry.name })),
+    pairStates: ROSTER.map((entry) => ({ name: entry.name, state: "queued", rank: 2 })),
+    selected: "docs",
+  });
+  assert.deepEqual(
+    rows.map((row) => row.word),
+    ["starting", "starting", "starting"],
+  );
+});
+
 // ---- the removal confirmation --------------------------------------------------------------------------
 
 test("removing_the_first_folder_names_the_new_default", () => {
