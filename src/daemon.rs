@@ -1,21 +1,21 @@
 use crate::ancestor::{LineSummary, MAX_SUMMARY_BYTES};
 use crate::dirconfig::{DirectoryConfigResolver, EffectiveSettings};
 use crate::due_queue::{Cause, DueQueue, Job, JobKind};
-use crate::events::{EventSource, EventsClient, RemoteChange, node_uid, volume_id_from_proton_id};
+use crate::events::{EventSource, EventsClient, RemoteChange, volume_id_from_proton_id};
 use crate::index::{
     EntityKind, EventCursor, FileEvent, FileRecord, HistoryRetention, IndexTotals,
     LocalEntityState, LocalFileState, LocalScan, PassKind, PassOutcomeKind, ScanOptions,
     SyncStatus, UnsyncableEntry, WithheldDeletion, begin_pass, byte_totals_since,
-    delete_delete_approval, file_events, finish_pass, get_record, index_totals, insert_file_events,
-    last_full_sweep, load_event_cursor, load_existing_index, load_forced_delete_approval,
-    load_index, load_pair_paused, load_sole_event_cursor, load_unsyncable_items,
-    load_warm_start_count, load_withheld_deletions, local_directory_state, local_file_state,
-    local_tree_holds_syncable_entry, mark_modified, matching_delete_approval, open_database,
-    path_for_proton_id, prune_agreed_summaries, prune_history, purge_record, purge_subtree_records,
-    recent_passes, replace_unsyncable_items, replace_withheld_deletions, reset_index_state,
-    scan_local_tree, sha1_hex, store_agreed_summary, store_event_cursor,
-    store_forced_delete_approval, store_pair_paused, store_warm_start_count,
-    upsert_delete_approval, upsert_record,
+    clear_remote_root_uid, delete_delete_approval, file_events, finish_pass, get_record,
+    index_totals, insert_file_events, last_full_sweep, load_event_cursor, load_existing_index,
+    load_forced_delete_approval, load_index, load_pair_paused, load_remote_root_uid,
+    load_sole_event_cursor, load_unsyncable_items, load_warm_start_count, load_withheld_deletions,
+    local_directory_state, local_file_state, local_tree_holds_syncable_entry, mark_modified,
+    matching_delete_approval, open_database, path_for_proton_id, prune_agreed_summaries,
+    prune_history, purge_record, purge_subtree_records, recent_passes, replace_unsyncable_items,
+    replace_withheld_deletions, reset_index_state, scan_local_tree, sha1_hex, store_agreed_summary,
+    store_event_cursor, store_forced_delete_approval, store_pair_paused, store_remote_root_uid,
+    store_warm_start_count, upsert_delete_approval, upsert_record,
 };
 use crate::ipc::{
     ACTIVITY_EVENTS_DEFAULT_LIMIT, ACTIVITY_EVENTS_MAX_LIMIT, ApplyOutcome, AuthState,
@@ -425,6 +425,12 @@ struct PairRuntime {
     /// full walk (`warm_start.full_walk_every`). Distinct from the in-run
     /// `incremental_passes_since_full_scan`.
     warm_starts_since_full_walk: u64,
+    /// Whether a pass of **this run** has already tried to learn the node the pair's remote root
+    /// names (#456), so a client that cannot tell is asked once, not on every pass. Set by the
+    /// attempt, whatever it answered; reset by a bootstrap, which always asks again (a root that
+    /// was recreated is a different node). The answer itself lives in the index
+    /// (`index::load_remote_root_uid`), written in a pass's final commit.
+    remote_root_uid_asked: bool,
     /// The last reported reason **this pair** could not resolve a volume + cursor, so a standing
     /// decline is logged once instead of every pass (and re-logged if the cause changes). `None`
     /// while the scope resolves. Diagnostic only — see `PairPass::resolve_event_scope`.
@@ -5101,6 +5107,7 @@ impl PairRuntime {
             incremental_passes_since_full_scan,
             is_first_reconcile: true,
             warm_starts_since_full_walk,
+            remote_root_uid_asked: false,
             event_scope_declined: None,
             seen_event_source_generation: 0,
             root_watch: RootWatch::Unregistered,
@@ -6432,6 +6439,10 @@ impl<C: ProtonClient> PairPass<'_, C> {
         let local_files = local_files_from_entities(&local_scan.entities);
         let base_index = filter_base_index(base_records.clone(), &self.pair.scan_options);
 
+        // Which node this pair's folder is: what lets an event about something else on the volume
+        // be told from one inside the folder (#456). Asked for only when there are events to place.
+        let (remote_root_uid, root_node) = self.remote_root_node_for_incremental(&delta.changes);
+
         let remote_entities = {
             // Built here and dropped at the end of this block: its listing memo lives exactly as
             // long as the pass.
@@ -6439,17 +6450,25 @@ impl<C: ProtonClient> PairPass<'_, C> {
                 proton: self.proton.as_ref(),
                 connection: &self.pair.connection,
                 remote_root: &self.pair.config.remote_root,
-                volume_id: &volume,
                 listings: RefCell::new(HashMap::new()),
             };
             match reconstruct_remote(
                 &base_index,
                 &delta.changes,
                 &volume,
+                remote_root_uid.as_deref(),
                 &self.pair.scan_options,
                 &resolver,
             ) {
-                Reconstruction::Complete(map) => map,
+                Reconstruction::Complete { remote, outside } => {
+                    if outside > 0 {
+                        info!(
+                            outside,
+                            "event-driven pass skipped changes outside this folder"
+                        );
+                    }
+                    remote
+                }
                 Reconstruction::FallbackToSnapshot(reason) => {
                     return Ok(IncrementalOutcome::Fallback(reason));
                 }
@@ -6469,12 +6488,66 @@ impl<C: ProtonClient> PairPass<'_, C> {
                 scope_id: volume,
                 last_event_id: delta.latest_event_id,
             }),
+            root_node,
         )?;
         self.pair.incremental_passes_since_full_scan = self
             .pair
             .incremental_passes_since_full_scan
             .saturating_add(1);
         Ok(IncrementalOutcome::Committed(outcome))
+    }
+
+    /// The composed uid of the node this pair's remote root names, for an incremental pass to tell
+    /// events inside the folder from events elsewhere on the volume (#456), and what the pass should
+    /// record about it in its final commit.
+    ///
+    /// Read from the index. When none is recorded, **and the delta has something to place**, the
+    /// pass asks the client once for this run ([`PairRuntime::remote_root_uid_asked`]): that is how
+    /// an index written before the table existed, or one whose bootstrap could not name the root,
+    /// learns it without a full walk. An answer that does not come (the client cannot tell, a
+    /// listing failed) leaves the root unknown, and an unknown root never skips an event.
+    fn remote_root_node_for_incremental(
+        &mut self,
+        changes: &[RemoteChange],
+    ) -> (Option<String>, RootNodeUpdate) {
+        match load_remote_root_uid(&self.pair.connection) {
+            Ok(Some(uid)) => return (Some(uid), RootNodeUpdate::Keep),
+            Ok(None) => {}
+            Err(error) => {
+                warn!(%error, "could not read the recorded remote root node; no change is skipped as outside this folder");
+                return (None, RootNodeUpdate::Keep);
+            }
+        }
+        if changes.is_empty() || self.pair.remote_root_uid_asked {
+            return (None, RootNodeUpdate::Keep);
+        }
+        self.pair.remote_root_uid_asked = true;
+        match self.learn_remote_root_uid() {
+            Some(uid) => {
+                info!(%uid, "learned which node this folder's remote root is");
+                (Some(uid.clone()), RootNodeUpdate::Set(uid))
+            }
+            None => {
+                info!(
+                    "could not tell which node this folder's remote root is; changes elsewhere on \
+                     the volume can still make this pair re-walk its tree"
+                );
+                (None, RootNodeUpdate::Keep)
+            }
+        }
+    }
+
+    /// Asks the client which node `remote_root` names. `None` for every failure: the answer is an
+    /// optimisation's input, never a reason for a pass to fail.
+    fn learn_remote_root_uid(&self) -> Option<String> {
+        match self.proton.remote_root_uid(&self.pair.config.remote_root) {
+            Ok(Some(uid)) if uid.contains('~') => Some(uid),
+            Ok(_) => None,
+            Err(error) => {
+                debug!(%error, "could not list the remote root to learn which node it is");
+                None
+            }
+        }
     }
 
     /// Fetches and concatenates the volume event delta from `from_cursor`, following `more`
@@ -6589,6 +6662,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
             &remote_entities,
             remote_root_missing,
         );
+        let root_node = self.remote_root_node_after_a_walk(remote_root_missing);
 
         let outcome = self.execute_plan_and_commit(
             &local_scan,
@@ -6600,6 +6674,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
                 full_snapshot: true,
             },
             cursor_update,
+            root_node,
         )?;
         self.pair.incremental_passes_since_full_scan = 0;
         // A full walk is the self-healing event warm starts count toward: reset the across-restart
@@ -6612,6 +6687,33 @@ impl<C: ProtonClient> PairPass<'_, C> {
             }
         }
         Ok(outcome)
+    }
+
+    /// What a full walk concludes about the node the pair's remote root names (#456): it asks again
+    /// every time, because a root that was deleted and made again is a different node and the
+    /// recorded one would then name a folder that is gone.
+    ///
+    /// * the root was **missing**: whatever is recorded is cleared (the pass makes a new node), and
+    ///   the next incremental pass that has events to place asks;
+    /// * events are in use and the client **names** it: record it;
+    /// * events are in use and it **cannot be named**: clear what was recorded — a uid that may no
+    ///   longer be the folder would let an event inside it read as outside;
+    /// * events are not in use (off, or no session): leave it, nothing reads it.
+    ///
+    /// Costs at most two single-directory listings, on a pass that just spent a whole-tree walk.
+    fn remote_root_node_after_a_walk(&mut self, remote_root_missing: bool) -> RootNodeUpdate {
+        if remote_root_missing {
+            self.pair.remote_root_uid_asked = false;
+            return RootNodeUpdate::Clear;
+        }
+        if !self.pair.config.events_driven || self.event_source.is_none() {
+            return RootNodeUpdate::Keep;
+        }
+        self.pair.remote_root_uid_asked = true;
+        match self.learn_remote_root_uid() {
+            Some(uid) => RootNodeUpdate::Set(uid),
+            None => RootNodeUpdate::Clear,
+        }
     }
 
     /// Reads the current latest cursor before a snapshot, when event-driven and the volume can be
@@ -6902,6 +7004,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
     /// poisoned file starves every action ordered after it, on every pass, forever. Such a pass
     /// returns [`PassOutcome::Partial`]. This is not a retry: the action is attempted once per
     /// pass, exactly as before, and is never re-attempted within one.
+    #[allow(clippy::too_many_arguments)]
     fn execute_plan_and_commit(
         &mut self,
         local_scan: &LocalScan,
@@ -6910,6 +7013,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
         base_index: &HashMap<PathBuf, FileRecord>,
         remote_map: RemoteMapShape,
         cursor_update: Option<CursorUpdate>,
+        root_node: RootNodeUpdate,
     ) -> AppResult<PassOutcome> {
         let local_entities = &local_scan.entities;
         let remote_root_missing = remote_map.remote_root_missing;
@@ -7962,6 +8066,15 @@ impl<C: ProtonClient> PairPass<'_, C> {
                 &cursor_update.last_event_id,
                 current_epoch_secs() as i64,
             )?;
+        }
+        // What the pass learned about its remote root rides the same commit as the cursor: a pass
+        // that did not finish leaves what was recorded before it (#456).
+        match &root_node {
+            RootNodeUpdate::Keep => {}
+            RootNodeUpdate::Set(uid) => {
+                store_remote_root_uid(&transaction, uid, current_epoch_secs() as i64)?;
+            }
+            RootNodeUpdate::Clear => clear_remote_root_uid(&transaction)?,
         }
         for (path, direction) in &pending_approval_consumptions {
             delete_delete_approval(&transaction, path, *direction)?;
@@ -9210,9 +9323,17 @@ async fn handle_control_connection<C: ProtonClient + 'static>(
             response
         }
         ControlCommand::Resume => {
+            let was_paused = pair.is_paused();
             let saved = set_paused_through(plane_pair, pair, false).await;
             info!(pair = %pair.name, "sync resumed");
             persist_pause_state(shared, pair, &plane_pair.metrics_path);
+            // A pair that was paused has been waiting — a latched resync, edits made meanwhile —
+            // so its pass is queued now, as a `syncnow` would, instead of at its next timer (on a
+            // 300 s `scan_interval` that is minutes; in the live log it was 20 s). Only a real
+            // paused-to-running change queues one: resuming a running pair stays a no-op. An
+            // unavailable pair gets its retry at once, which is what a person who just fixed the
+            // folder and pressed resume is waiting for.
+            let scheduled = was_paused && loop_tx.send(LoopCommand::SyncNow(pair_index)).is_ok();
             let mut response = shared.response(pair, "sync resumed");
             if let Err(reason) = saved {
                 response.message = format!(
@@ -9220,6 +9341,9 @@ async fn handle_control_connection<C: ProtonClient + 'static>(
                      paused: {reason}"
                 );
                 response.pause_unsaved = Some(reason);
+            }
+            if scheduled {
+                response.message.push_str("; a pass is scheduled");
             }
             response
         }
@@ -10814,6 +10938,19 @@ struct CursorUpdate {
     last_event_id: String,
 }
 
+/// What a pass concluded about the node its remote root names, for the final commit to record
+/// beside the cursor (#456).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RootNodeUpdate {
+    /// Nothing was learned; whatever is recorded stays.
+    Keep,
+    /// The root is this node (a composed `volumeId~nodeId`).
+    Set(String),
+    /// What is recorded may no longer be the folder (the root was missing, or a walk could not name
+    /// it): forget it, so that an unknown root skips nothing.
+    Clear,
+}
+
 /// Why [`PairPass::volume_id_for_scope`] could not name the event volume. Callers that only log
 /// take [`Self::into_reason`]; the bootstrap cursor is the one caller the distinction matters to.
 enum VolumeScopeError {
@@ -10848,36 +10985,32 @@ enum PreSnapshotCursor {
     Unavailable,
 }
 
-/// Resolves a created/updated node to its current `(relative path, entity)` by listing just the
-/// node's parent directory (an O(1) call), the targeted alternative to a full-tree walk.
+/// The two remote questions a reconstruction asks, answered from the index and from
+/// single-directory listings (an O(1) call each), the targeted alternative to a full-tree walk.
+/// Which of them answers a given event is [`reconstruct_remote`]'s decision, not this type's.
 struct TargetedResolver<'a, C: ProtonClient> {
     proton: &'a C,
     connection: &'a Connection,
     remote_root: &'a Path,
-    volume_id: &'a str,
-    /// Parent listings already fetched **during this pass**, keyed by composed parent uid
-    /// ([`ROOT_LISTING_KEY`] for the remote root). N events in one folder — a bulk copy, or N
-    /// revisions of one file — then cost one `proton-drive` subprocess instead of N (#70).
+    /// Directory listings already fetched **during this pass**, keyed by root-relative directory
+    /// (the empty path is the remote root). N events in one folder — a bulk copy, or N revisions
+    /// of one file — then cost one `proton-drive` subprocess instead of N (#70).
     ///
     /// Deliberately pass-scoped: the resolver is built inside `try_incremental_reconcile` and
     /// dropped with it, so a listing can never outlive the pass that read it. Resolution reads
     /// *current* remote state, so a listing carried into a later pass would plan against a folder
     /// that has since changed.
-    listings: RefCell<HashMap<String, Rc<HashMap<PathBuf, RemoteEntity>>>>,
+    listings: RefCell<HashMap<PathBuf, Rc<HashMap<PathBuf, RemoteEntity>>>>,
 }
 
-/// Memo key for the remote-root listing. Never collides with a composed uid (`volumeId~nodeId`).
-const ROOT_LISTING_KEY: &str = "";
+impl<C: ProtonClient> RemoteChangeResolver for TargetedResolver<'_, C> {
+    fn indexed_path(&self, uid: &str) -> AppResult<Option<PathBuf>> {
+        path_for_proton_id(self.connection, uid)
+    }
 
-impl<C: ProtonClient> TargetedResolver<'_, C> {
-    /// This pass's listing of `relative_directory`, fetched once and memoized under `key`.
-    fn listing(
-        &self,
-        key: &str,
-        relative_directory: &Path,
-    ) -> AppResult<Rc<HashMap<PathBuf, RemoteEntity>>> {
+    fn list(&self, relative_directory: &Path) -> AppResult<Rc<HashMap<PathBuf, RemoteEntity>>> {
         // Read the memo through a borrow that ends before the (possibly long) CLI call below.
-        let cached = self.listings.borrow().get(key).cloned();
+        let cached = self.listings.borrow().get(relative_directory).cloned();
         if let Some(listing) = cached {
             return Ok(listing);
         }
@@ -10887,48 +11020,9 @@ impl<C: ProtonClient> TargetedResolver<'_, C> {
         );
         self.listings
             .borrow_mut()
-            .insert(key.to_owned(), Rc::clone(&listing));
+            .insert(relative_directory.to_path_buf(), Rc::clone(&listing));
         Ok(listing)
     }
-}
-
-impl<C: ProtonClient> RemoteChangeResolver for TargetedResolver<'_, C> {
-    fn resolve(&self, change: &RemoteChange) -> AppResult<Option<(PathBuf, RemoteEntity)>> {
-        let target_uid = node_uid(self.volume_id, &change.node_id);
-
-        // Prefer listing the event's parent directory when it is indexed (the common nested case).
-        if let Some(parent_id) = change.parent_id.as_deref() {
-            let parent_uid = node_uid(self.volume_id, parent_id);
-            if let Some(parent_path) = path_for_proton_id(self.connection, &parent_uid)? {
-                let listing = self.listing(&parent_uid, &parent_path)?;
-                // Absent from its stated parent → the reconstruction drops any stale location
-                // (an update) or re-anchors with a full walk (a create whose listing lags).
-                return Ok(find_entity_by_uid(&listing, &target_uid));
-            }
-        }
-
-        // The parent is not indexed (e.g. a top-level node whose parent is the remote root, which
-        // has no index record). Fall back to listing the root; if the node is not there either we
-        // cannot place it without a full walk, so signal a snapshot.
-        let root_listing = self.listing(ROOT_LISTING_KEY, Path::new(""))?;
-        match find_entity_by_uid(&root_listing, &target_uid) {
-            Some(resolved) => Ok(Some(resolved)),
-            None => Err(boxed_error(format!(
-                "changed node {} is not under any indexed parent or the remote root",
-                change.node_id
-            ))),
-        }
-    }
-}
-
-fn find_entity_by_uid(
-    listing: &HashMap<PathBuf, RemoteEntity>,
-    target_uid: &str,
-) -> Option<(PathBuf, RemoteEntity)> {
-    listing
-        .iter()
-        .find(|(_, entity)| entity.remote_id().as_deref() == Some(target_uid))
-        .map(|(path, entity)| (path.clone(), entity.clone()))
 }
 
 /// The periodic full-scan cadence to compare the pass counter against, translating the
@@ -24707,6 +24801,13 @@ mod tests {
         downloads: Arc<Mutex<Vec<PathBuf>>>,
         /// Every remote path a pass asked to delete.
         deletes: Arc<Mutex<Vec<PathBuf>>>,
+        /// Every targeted single-directory listing, `(remote root, relative directory)`.
+        listings: Arc<Mutex<Vec<(PathBuf, PathBuf)>>>,
+        /// The node each remote root names, as `remote_root_uid` answers it (#456). A root absent
+        /// here is one the client cannot name.
+        root_uids: Arc<Mutex<HashMap<PathBuf, String>>>,
+        /// Every root `remote_root_uid` was asked about, in order.
+        root_uid_asks: Arc<Mutex<Vec<PathBuf>>>,
         /// Each of these roots' next walk fails, once.
         fail_walk_once: Arc<Mutex<BTreeSet<PathBuf>>>,
         /// An upload under this root sets the installed cancel flag: a shutdown landing mid-pass.
@@ -24770,6 +24871,26 @@ mod tests {
             self.directories.lock().expect("directories lock").clone()
         }
 
+        fn listings(&self) -> Vec<(PathBuf, PathBuf)> {
+            self.listings.lock().expect("listings lock").clone()
+        }
+
+        /// Names the node `remote_root` is, as the real client would after listing it.
+        fn with_root_uid(self, remote_root: impl AsRef<Path>, uid: &str) -> Self {
+            self.root_uids
+                .lock()
+                .expect("root uids lock")
+                .insert(remote_root.as_ref().to_path_buf(), uid.to_owned());
+            self
+        }
+
+        fn root_uid_asks(&self) -> Vec<PathBuf> {
+            self.root_uid_asks
+                .lock()
+                .expect("root uid asks lock")
+                .clone()
+        }
+
         fn moves(&self) -> Vec<(PathBuf, PathBuf)> {
             self.moves.lock().expect("moves lock").clone()
         }
@@ -24819,6 +24940,10 @@ mod tests {
             remote_root: &Path,
             relative_directory: &Path,
         ) -> AppResult<HashMap<PathBuf, RemoteEntity>> {
+            self.listings
+                .lock()
+                .expect("listings lock")
+                .push((remote_root.to_path_buf(), relative_directory.to_path_buf()));
             if let Some(hook) = self.on_list_directory.lock().expect("hook lock").as_mut() {
                 hook(remote_root);
             }
@@ -24827,6 +24952,19 @@ mod tests {
                 .into_iter()
                 .filter(|(path, _)| path.parent() == Some(relative_directory))
                 .collect())
+        }
+
+        fn remote_root_uid(&self, remote_root: &Path) -> AppResult<Option<String>> {
+            self.root_uid_asks
+                .lock()
+                .expect("root uid asks lock")
+                .push(remote_root.to_path_buf());
+            Ok(self
+                .root_uids
+                .lock()
+                .expect("root uids lock")
+                .get(remote_root)
+                .cloned())
         }
 
         fn ensure_root_directory(&self, _remote_root: &Path) -> AppResult<()> {
@@ -25004,6 +25142,67 @@ mod tests {
             );
         }
         client.clear_walks();
+        (daemon, client, stepper)
+    }
+
+    /// Two events-driven pairs (`a`, `b`) on **one volume** (`vol`), the usual shape of a Proton
+    /// user's "My files", past boot on one live session with one scripted event stream. Each has one
+    /// file in step on both sides and no folder. `pages` are the stream's next pages in the order
+    /// the passes will fetch them; boot's two bootstraps fetch none (they only read the latest
+    /// cursor). The walks and listings the boot made are forgotten, so what a test reads is what
+    /// its own passes asked of the remote.
+    fn steady_shared_volume_daemon(
+        directory: &Path,
+        pages: Vec<VolumeEventPage>,
+    ) -> (Daemon<MultiRootClient>, MultiRootClient, Stepper) {
+        steady_shared_volume_daemon_with(directory, pages, |_| {})
+    }
+
+    /// [`steady_shared_volume_daemon`] with the pairs' configs adjusted before boot.
+    fn steady_shared_volume_daemon_with(
+        directory: &Path,
+        pages: Vec<VolumeEventPage>,
+        configure: impl FnOnce(&mut [DaemonConfig]),
+    ) -> (Daemon<MultiRootClient>, MultiRootClient, Stepper) {
+        let mut configs = pair_configs(directory, &["a", "b"]);
+        configure(&mut configs);
+        let mut client = MultiRootClient::default();
+        for config in &mut configs {
+            config.events_driven = true;
+            let name = config.name.clone();
+            fs::write(
+                config.local_root.join(format!("{name}.txt")),
+                name.as_bytes(),
+            )
+            .expect("local file");
+            client = client.with_tree(
+                &config.remote_root,
+                vec![remote_file_entity(
+                    &format!("{name}.txt"),
+                    &format!("vol~n{name}"),
+                    &sha1_bytes(name.as_bytes()),
+                )],
+            );
+            client = client.with_root_uid(&config.remote_root, &format!("vol~root-{name}"));
+        }
+        let mut daemon = multi_pair_daemon(
+            configs,
+            client.clone(),
+            Some(Box::new(FakeEventSource::with_pages("cursor-0", pages))),
+        );
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        for pair in 0..2 {
+            let runtime = daemon.runtime(pair).expect("ready");
+            assert!(
+                load_event_cursor(&runtime.connection, "vol")
+                    .expect("cursor read")
+                    .is_some(),
+                "precondition: pair {pair} streams from here on"
+            );
+        }
+        client.clear_walks();
+        client.listings.lock().expect("listings lock").clear();
         (daemon, client, stepper)
     }
 
@@ -25506,7 +25705,7 @@ mod tests {
             send_pause(&plane, ControlCommand::Pause, name).await;
         }
         let reply = send_pause(&plane, ControlCommand::Resume, "a").await;
-        assert_eq!(reply.message, "sync resumed");
+        assert_eq!(reply.message, "sync resumed; a pass is scheduled");
         drop(plane);
         drop(daemon);
 
@@ -35388,5 +35587,821 @@ mod tests {
             .expect("baseline")
             .len();
         assert!((40..100).contains(&adopted), "{adopted}");
+    }
+
+    // --- #456: a change anywhere else on the volume is not a reason to walk ---------------------
+
+    #[test]
+    fn a_change_in_pair_b_costs_pair_a_no_walk_and_no_listing() {
+        // The report: two pairs on one Proton volume, one event stream for the volume. Pair B
+        // uploads a file; pair A's next pass fetches the volume's delta, finds a created node whose
+        // parent is B's folder, which A has never indexed, and used to re-walk its whole remote
+        // tree for it (28 minutes, for the 957-folder pair on the live account).
+        let directory = tempdir().expect("tempdir");
+        let foreign = one_page(
+            "cursor-1",
+            vec![change(
+                RemoteChangeKind::Created,
+                "nb-new",
+                Some("root-b"),
+                false,
+            )],
+        );
+        let (mut daemon, client, mut stepper) =
+            steady_shared_volume_daemon(directory.path(), vec![foreign]);
+
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(
+            client.walks().is_empty(),
+            "pair A did not walk its tree for a node in pair B's folder: {:?}",
+            client.walks()
+        );
+        assert!(
+            client.listings().is_empty(),
+            "and did not list anything to look for it: {:?}",
+            client.listings()
+        );
+        let runtime = daemon.runtime(0).expect("ready");
+        assert_eq!(
+            load_event_cursor(&runtime.connection, "vol")
+                .expect("cursor read")
+                .map(|cursor| cursor.last_event_id),
+            Some("cursor-1".to_owned()),
+            "the cursor moved past the event: nothing in A's folder is waiting on it"
+        );
+        assert_eq!(
+            daemon.shared.pairs[0].reconcile_seq.load(Ordering::SeqCst),
+            2,
+            "pass 2 of pair A ran, and ended"
+        );
+    }
+
+    fn empty_page(latest: &str) -> VolumeEventPage {
+        one_page(latest, Vec::new())
+    }
+
+    fn foreign_page(latest: &str) -> VolumeEventPage {
+        one_page(
+            latest,
+            vec![change(
+                RemoteChangeKind::Created,
+                "nb-new",
+                Some("root-b"),
+                false,
+            )],
+        )
+    }
+
+    /// What the CLI would list for `remote_root` once the event stream has caught up with `entity`.
+    fn remote_gains(client: &MultiRootClient, remote_root: &Path, entity: RemoteEntity) {
+        let path = match &entity {
+            RemoteEntity::File(file) => file.path.clone(),
+            RemoteEntity::Directory(directory) => directory.path.clone(),
+        };
+        client
+            .trees
+            .lock()
+            .expect("trees lock")
+            .get_mut(remote_root)
+            .expect("a tree for the root")
+            .insert(path, entity);
+    }
+
+    fn cursor_of(daemon: &Daemon<MultiRootClient>, pair: usize) -> Option<String> {
+        load_event_cursor(&daemon.runtime(pair).expect("ready").connection, "vol")
+            .expect("cursor read")
+            .map(|cursor| cursor.last_event_id)
+    }
+
+    fn root_uid_of(daemon: &Daemon<MultiRootClient>, pair: usize) -> Option<String> {
+        load_remote_root_uid(&daemon.runtime(pair).expect("ready").connection)
+            .expect("root uid read")
+    }
+
+    #[test]
+    fn a_pair_that_cannot_name_its_root_walks_for_a_foreign_event_as_before() {
+        // No regression: a pair that does not know which node its folder is cannot tell an event
+        // elsewhere from one inside it, and does what it always did. This is also every index
+        // written before the table existed, until a pass learns the node.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) =
+            steady_shared_volume_daemon(directory.path(), vec![foreign_page("cursor-1")]);
+        clear_remote_root_uid(&daemon.runtime(0).expect("ready").connection).expect("forget it");
+        client.root_uids.lock().expect("root uids lock").clear();
+        daemon.runtime_mut(0).expect("ready").remote_root_uid_asked = true;
+
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert_eq!(
+            client.walks(),
+            [remote_root_of("a")],
+            "the old behaviour, exactly: the root was listed, the node was not in it, the pair walked"
+        );
+        assert_eq!(client.listings(), [(remote_root_of("a"), PathBuf::new())]);
+    }
+
+    #[test]
+    fn the_root_uid_is_learned_by_a_bootstrap_and_persisted() {
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) =
+            steady_shared_volume_daemon(directory.path(), vec![empty_page("cursor-1")]);
+        assert_eq!(root_uid_of(&daemon, 0), Some("vol~root-a".to_owned()));
+        assert_eq!(root_uid_of(&daemon, 1), Some("vol~root-b".to_owned()));
+        assert_eq!(
+            client.root_uid_asks(),
+            [remote_root_of("a"), remote_root_of("b")],
+            "each pair asked once, on its bootstrap"
+        );
+
+        // Steady passes read the index and ask nothing, whether or not they have events. (That the
+        // record survives the process is `the_warm_start_after_a_restart_…`'s to show.)
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(client.root_uid_asks().len(), 2);
+    }
+
+    #[test]
+    fn a_pair_with_no_recorded_root_learns_it_on_the_first_pass_that_has_events_to_place() {
+        // The upgrade path, and the one that matters for the report: the daemon restarts, warm
+        // starts, and the delta holds a node it cannot place. The node is learned from one listing,
+        // used at once, and recorded — without the full walk that would otherwise follow.
+        let directory = tempdir().expect("tempdir");
+        let pages = vec![
+            empty_page("cursor-1"),
+            foreign_page("cursor-2"),
+            foreign_page("cursor-3"),
+        ];
+        let (mut daemon, client, mut stepper) =
+            steady_shared_volume_daemon(directory.path(), pages);
+        clear_remote_root_uid(&daemon.runtime(0).expect("ready").connection).expect("forget it");
+        daemon.runtime_mut(0).expect("ready").remote_root_uid_asked = false;
+        let asked_at_boot = client.root_uid_asks().len();
+
+        // A pass with nothing to place does not ask. (Forced past the idle fast path, which would
+        // return before the question could be put.)
+        daemon.runtime_mut(0).expect("ready").force_local_rescan = true;
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(client.root_uid_asks().len(), asked_at_boot);
+        assert_eq!(root_uid_of(&daemon, 0), None);
+
+        // One with a foreign event asks once, and skips it.
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(client.root_uid_asks().len(), asked_at_boot + 1);
+        assert_eq!(root_uid_of(&daemon, 0), Some("vol~root-a".to_owned()));
+        assert!(client.walks().is_empty(), "{:?}", client.walks());
+        assert_eq!(cursor_of(&daemon, 0), Some("cursor-2".to_owned()));
+
+        // The next reads it from the index.
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(client.root_uid_asks().len(), asked_at_boot + 1);
+        assert!(client.walks().is_empty());
+    }
+
+    #[test]
+    fn a_pair_that_cannot_be_told_its_root_asks_once_per_run_not_once_per_pass() {
+        let directory = tempdir().expect("tempdir");
+        let pages = vec![
+            foreign_page("cursor-1"),
+            foreign_page("cursor-2"),
+            foreign_page("cursor-3"),
+        ];
+        let (mut daemon, client, mut stepper) =
+            steady_shared_volume_daemon(directory.path(), pages);
+        clear_remote_root_uid(&daemon.runtime(0).expect("ready").connection).expect("forget it");
+        client.root_uids.lock().expect("root uids lock").clear();
+        daemon.runtime_mut(0).expect("ready").remote_root_uid_asked = false;
+        let asked_at_boot = client.root_uid_asks().len();
+
+        for _ in 0..3 {
+            stepper.send(LoopCommand::SyncNow(0));
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        }
+
+        // Each of the three passes had a foreign event it could not place and walked for it (a
+        // walk is a bootstrap, and a bootstrap asks again), but no pass asked on its own account.
+        let walked = client.walks().len();
+        assert_eq!(walked, 3, "{:?}", client.walks());
+        assert_eq!(
+            client.root_uid_asks().len(),
+            asked_at_boot + 1 + walked,
+            "one ask on the first incremental pass, then one per bootstrap it fell back to"
+        );
+    }
+
+    #[test]
+    fn a_bootstrap_replaces_a_recorded_root_uid_that_is_no_longer_the_folder() {
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) =
+            steady_shared_volume_daemon(directory.path(), Vec::new());
+        // Someone deleted the folder in Drive and made it again: same path, a different node.
+        client
+            .root_uids
+            .lock()
+            .expect("root uids lock")
+            .insert(remote_root_of("a"), "vol~root-a-again".to_owned());
+        daemon.shared.pairs[0]
+            .force_full_walk
+            .store(true, Ordering::SeqCst);
+
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert_eq!(client.walks(), [remote_root_of("a")]);
+        assert_eq!(root_uid_of(&daemon, 0), Some("vol~root-a-again".to_owned()));
+    }
+
+    #[test]
+    fn a_walk_that_cannot_name_the_root_forgets_the_one_it_had() {
+        // A uid that may no longer be the folder would let an event inside the folder read as
+        // outside it. Unknown skips nothing; a stale guess could skip a create.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) =
+            steady_shared_volume_daemon(directory.path(), Vec::new());
+        assert!(root_uid_of(&daemon, 0).is_some(), "precondition");
+        client.root_uids.lock().expect("root uids lock").clear();
+        daemon.shared.pairs[0]
+            .force_full_walk
+            .store(true, Ordering::SeqCst);
+
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert_eq!(root_uid_of(&daemon, 0), None);
+    }
+
+    #[test]
+    fn a_start_over_forgets_the_root_uid_and_the_bootstrap_after_it_learns_it_again() {
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) =
+            steady_shared_volume_daemon(directory.path(), Vec::new());
+        client
+            .root_uids
+            .lock()
+            .expect("root uids lock")
+            .insert(remote_root_of("a"), "vol~root-a-new".to_owned());
+        daemon.shared.pairs[0]
+            .reset_index
+            .store(true, Ordering::SeqCst);
+
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert_eq!(root_uid_of(&daemon, 0), Some("vol~root-a-new".to_owned()));
+        assert_eq!(client.walks(), [remote_root_of("a")]);
+    }
+
+    #[test]
+    fn a_missing_remote_root_forgets_the_root_uid() {
+        // The pass makes the folder again, and it will be a new node.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, _client, _stepper) =
+            steady_shared_volume_daemon(directory.path(), Vec::new());
+        daemon.runtime_mut(0).expect("ready").remote_root_uid_asked = true;
+
+        let update = daemon
+            .pass_for(0)
+            .expect("ready")
+            .remote_root_node_after_a_walk(true);
+
+        assert_eq!(update, RootNodeUpdate::Clear);
+        assert!(
+            !daemon.runtime(0).expect("ready").remote_root_uid_asked,
+            "and the next pass with events to place may ask again"
+        );
+    }
+
+    #[test]
+    fn a_client_that_names_the_root_with_a_raw_id_is_not_believed() {
+        // A raw id cannot be compared with an event's composed `volumeId~nodeId`; recording one
+        // would make every parent unknown.
+        let directory = tempdir().expect("tempdir");
+        let mut configs = pair_configs(directory.path(), &["a"]);
+        configs[0].events_driven = true;
+        let client = MultiRootClient::default().with_root_uid(remote_root_of("a"), "raw-root-id");
+        let mut daemon = multi_pair_daemon(
+            configs,
+            client.clone(),
+            Some(Box::new(FakeEventSource::new("cursor-0"))),
+        );
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(client.root_uid_asks().len(), 1, "it was asked");
+        assert_eq!(root_uid_of(&daemon, 0), None, "and not believed");
+    }
+
+    #[test]
+    fn a_pair_that_does_not_stream_never_asks_which_node_its_root_is() {
+        let directory = tempdir().expect("tempdir");
+        let configs = pair_configs(directory.path(), &["a"]);
+        let client = MultiRootClient::default().with_root_uid(remote_root_of("a"), "vol~root-a");
+        let mut daemon = multi_pair_daemon(configs, client.clone(), None);
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(client.root_uid_asks().is_empty());
+        assert_eq!(root_uid_of(&daemon, 0), None);
+    }
+
+    #[test]
+    fn a_plan_pass_still_full_walks_and_learns_nothing() {
+        // A plan observes and consumes nothing: it learns no root and records none.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) =
+            steady_shared_volume_daemon(directory.path(), Vec::new());
+        clear_remote_root_uid(&daemon.runtime(0).expect("ready").connection).expect("forget it");
+        daemon.runtime_mut(0).expect("ready").remote_root_uid_asked = false;
+        let asked_at_boot = client.root_uid_asks().len();
+
+        daemon.shared.pairs[0].book_plan_request();
+        stepper.send(LoopCommand::PlanNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert_eq!(client.walks(), [remote_root_of("a")], "a plan always walks");
+        assert_eq!(client.root_uid_asks().len(), asked_at_boot);
+        assert_eq!(root_uid_of(&daemon, 0), None);
+    }
+
+    #[test]
+    fn the_pairs_own_root_changing_still_walks() {
+        // A rename, move or trash of the folder itself is never "somewhere else on the volume".
+        for event in [
+            change(
+                RemoteChangeKind::Updated,
+                "root-a",
+                Some("elsewhere"),
+                false,
+            ),
+            change(RemoteChangeKind::Updated, "root-a", Some("elsewhere"), true),
+            change(RemoteChangeKind::Deleted, "root-a", None, false),
+        ] {
+            let directory = tempdir().expect("tempdir");
+            let (mut daemon, client, mut stepper) = steady_shared_volume_daemon(
+                directory.path(),
+                vec![one_page("cursor-1", vec![event])],
+            );
+
+            stepper.send(LoopCommand::SyncNow(0));
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+            assert_eq!(client.walks(), [remote_root_of("a")]);
+        }
+    }
+
+    #[test]
+    fn a_skipped_event_lets_the_cursor_advance_while_a_withheld_delete_still_holds_it() {
+        // The one cursor policy has five causes for holding it, and skipping an event is not one.
+        // A withheld deletion still is: the same pass both skips a foreign event and holds.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) = steady_shared_volume_daemon_with(
+            directory.path(),
+            vec![foreign_page("cursor-1")],
+            |configs| configs[0].delete_approval_remote = true,
+        );
+        let root = daemon.runtime(0).expect("ready").config.local_root.clone();
+        fs::remove_file(root.join("a.txt")).expect("the user deletes a.txt");
+        daemon.runtime_mut(0).expect("ready").force_local_rescan = true;
+
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(client.walks().is_empty(), "{:?}", client.walks());
+        assert!(
+            client.deletes().is_empty(),
+            "the deletion waits for approval"
+        );
+        assert_eq!(
+            daemon.runtime(0).expect("ready").pending_deletions.len(),
+            1,
+            "and is pending"
+        );
+        assert_eq!(
+            cursor_of(&daemon, 0),
+            Some("cursor-0".to_owned()),
+            "so the cursor is held, whatever else the pass skipped"
+        );
+    }
+
+    #[test]
+    fn a_folder_the_daemon_created_last_pass_does_not_make_a_foreign_event_walk() {
+        // The hole the issue names: a folder the daemon just made has no id until its own Created
+        // event is read, so a foreign event arriving first could be about that folder. Read as one
+        // delta, the foreign event is dropped only once the folder has been named by its event.
+        let directory = tempdir().expect("tempdir");
+        let pages = vec![
+            empty_page("cursor-1"),
+            one_page(
+                "cursor-2",
+                vec![
+                    change(RemoteChangeKind::Created, "nb-new", Some("root-b"), false),
+                    change(
+                        RemoteChangeKind::Created,
+                        "docs-node",
+                        Some("root-a"),
+                        false,
+                    ),
+                ],
+            ),
+        ];
+        let (mut daemon, client, mut stepper) =
+            steady_shared_volume_daemon(directory.path(), pages);
+        let root = daemon.runtime(0).expect("ready").config.local_root.clone();
+        fs::create_dir(root.join("docs")).expect("the user's new folder");
+        daemon.runtime_mut(0).expect("ready").force_local_rescan = true;
+
+        // Pass N: the daemon makes it remotely. Nothing it runs returns an id.
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(
+            client.directories(),
+            [(remote_root_of("a"), PathBuf::from("docs"))]
+        );
+        let record = get_record(
+            &daemon.runtime(0).expect("ready").connection,
+            Path::new("docs"),
+        )
+        .expect("get record")
+        .expect("recorded");
+        assert_eq!(record.proton_id, None, "the hole: the folder has no id yet");
+
+        // Pass N+1: the stream delivers a foreign event, then the folder's own.
+        remote_gains(
+            &client,
+            &remote_root_of("a"),
+            remote_dir("docs", "vol~docs-node"),
+        );
+        client.clear_walks();
+        client.listings.lock().expect("listings lock").clear();
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(client.walks().is_empty(), "{:?}", client.walks());
+        assert_eq!(
+            client.listings(),
+            [(remote_root_of("a"), PathBuf::new())],
+            "one listing, of the root, to place the folder's own event; none for the foreign one"
+        );
+        let record = get_record(
+            &daemon.runtime(0).expect("ready").connection,
+            Path::new("docs"),
+        )
+        .expect("get record")
+        .expect("recorded");
+        assert_eq!(
+            record.proton_id.as_deref(),
+            Some("vol~docs-node"),
+            "and the folder now carries its id"
+        );
+        assert_eq!(cursor_of(&daemon, 0), Some("cursor-2".to_owned()));
+    }
+
+    #[test]
+    fn a_foreign_event_while_the_daemons_folder_event_has_not_arrived_falls_back_and_says_which() {
+        // The same folder, but the stream has not delivered its Created event yet: the foreign
+        // event may be about it, so nothing can be dropped. The log names the record that blocked.
+        let directory = tempdir().expect("tempdir");
+        let pages = vec![empty_page("cursor-1"), foreign_page("cursor-2")];
+        let (mut daemon, client, mut stepper) =
+            steady_shared_volume_daemon(directory.path(), pages);
+        let root = daemon.runtime(0).expect("ready").config.local_root.clone();
+        fs::create_dir(root.join("docs")).expect("the user's new folder");
+        daemon.runtime_mut(0).expect("ready").force_local_rescan = true;
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        remote_gains(
+            &client,
+            &remote_root_of("a"),
+            remote_dir("docs", "vol~docs-node"),
+        );
+
+        stepper.send(LoopCommand::SyncNow(0));
+        let log = capture_log("info", || {
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        });
+
+        assert_eq!(client.walks(), [remote_root_of("a")], "{log}");
+        let fallback = log
+            .lines()
+            .find(|line| line.contains("fell back to a full-tree snapshot"))
+            .unwrap_or_else(|| panic!("the fallback is logged: {log}"));
+        assert!(
+            fallback.contains("pair{name=a}")
+                && fallback.contains("docs has no composed id")
+                && fallback.contains("nb-new"),
+            "{fallback}"
+        );
+    }
+
+    #[test]
+    fn a_just_uploaded_file_with_no_id_makes_a_foreign_removal_walk_until_its_own_event_is_read() {
+        // The removal arm's version of the hole: the removed node could be the file the daemon just
+        // uploaded. Read together with the file's own Created event, it is not.
+        let directory = tempdir().expect("tempdir");
+        let pages = vec![
+            empty_page("cursor-1"),
+            one_page(
+                "cursor-2",
+                vec![
+                    change(RemoteChangeKind::Deleted, "somebody-elses", None, false),
+                    change(RemoteChangeKind::Created, "n-node", Some("root-a"), false),
+                ],
+            ),
+            one_page(
+                "cursor-3",
+                vec![change(
+                    RemoteChangeKind::Deleted,
+                    "somebody-elses-2",
+                    None,
+                    false,
+                )],
+            ),
+        ];
+        let (mut daemon, client, mut stepper) =
+            steady_shared_volume_daemon(directory.path(), pages);
+        let root = daemon.runtime(0).expect("ready").config.local_root.clone();
+        fs::write(root.join("n.txt"), b"new").expect("the user's new file");
+        daemon.runtime_mut(0).expect("ready").force_local_rescan = true;
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(
+            client.uploads(),
+            [(remote_root_of("a"), PathBuf::from("n.txt"))]
+        );
+        remote_gains(
+            &client,
+            &remote_root_of("a"),
+            remote_file_entity("n.txt", "vol~n-node", &sha1_bytes(b"new")),
+        );
+
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(
+            client.walks().is_empty(),
+            "the foreign removal was read with the file's own event: {:?}",
+            client.walks()
+        );
+        let record = get_record(
+            &daemon.runtime(0).expect("ready").connection,
+            Path::new("n.txt"),
+        )
+        .expect("get record")
+        .expect("recorded");
+        assert_eq!(record.proton_id.as_deref(), Some("vol~n-node"));
+
+        // A later foreign removal, with every record named, is dropped.
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(client.walks().is_empty(), "{:?}", client.walks());
+        assert_eq!(cursor_of(&daemon, 0), Some("cursor-3".to_owned()));
+    }
+
+    #[test]
+    fn a_folder_and_its_files_created_in_one_delta_are_placed_without_a_walk() {
+        // The issue's second instance, inside one pair: `mkdir` then copy files in. The new folder
+        // has no index row until the pass commits, so only the in-pass map can place its children.
+        let directory = tempdir().expect("tempdir");
+        let page = one_page(
+            "cursor-1",
+            vec![
+                change(RemoteChangeKind::Created, "newdir", Some("root-a"), false),
+                change(RemoteChangeKind::Created, "f1", Some("newdir"), false),
+                change(RemoteChangeKind::Created, "f2", Some("newdir"), false),
+            ],
+        );
+        let (mut daemon, client, mut stepper) =
+            steady_shared_volume_daemon(directory.path(), vec![page]);
+        let a = remote_root_of("a");
+        remote_gains(&client, &a, remote_dir("newdir", "vol~newdir"));
+        remote_gains(
+            &client,
+            &a,
+            remote_file_entity("newdir/f1.txt", "vol~f1", &sha1_bytes(b"1")),
+        );
+        remote_gains(
+            &client,
+            &a,
+            remote_file_entity("newdir/f2.txt", "vol~f2", &sha1_bytes(b"2")),
+        );
+
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(client.walks().is_empty(), "{:?}", client.walks());
+        assert_eq!(
+            client.listings(),
+            [(a.clone(), PathBuf::new()), (a, PathBuf::from("newdir"))],
+            "the root once, the new folder once, however many files it holds"
+        );
+        let local = daemon.runtime(0).expect("ready").config.local_root.clone();
+        assert!(local.join("newdir/f1.txt").exists());
+        assert!(local.join("newdir/f2.txt").exists());
+    }
+
+    #[test]
+    fn the_warm_start_after_a_restart_does_not_walk_for_a_foreign_event() {
+        // The shape in the live log: the daemon restarts (a GUI add), warm-starts, and the delta
+        // since the stored cursor holds only things that happened in other folders. It used to walk
+        // the 957-folder tree for them, on every boot, because the walk never got to finish.
+        let directory = tempdir().expect("tempdir");
+        let mut configs = pair_configs(directory.path(), &["a", "b"]);
+        let mut client = MultiRootClient::default();
+        for config in &mut configs {
+            config.events_driven = true;
+            config.warm_start.enabled = true;
+            let name = config.name.clone();
+            fs::write(
+                config.local_root.join(format!("{name}.txt")),
+                name.as_bytes(),
+            )
+            .expect("local file");
+            client = client
+                .with_tree(
+                    &config.remote_root,
+                    vec![remote_file_entity(
+                        &format!("{name}.txt"),
+                        &format!("vol~n{name}"),
+                        &sha1_bytes(name.as_bytes()),
+                    )],
+                )
+                .with_root_uid(&config.remote_root, &format!("vol~root-{name}"));
+        }
+        {
+            let mut daemon = multi_pair_daemon(
+                configs.clone(),
+                client.clone(),
+                Some(Box::new(FakeEventSource::new("cursor-0"))),
+            );
+            let mut stepper = Stepper::new(&mut daemon);
+            assert_eq!(stepper.step(&mut daemon), Step::Idle, "the first run");
+        }
+        client.clear_walks();
+        client.listings.lock().expect("listings lock").clear();
+        client.root_uid_asks.lock().expect("asks lock").clear();
+
+        // The second run: each pair's first pass replays what happened while it was down. Pair A
+        // meets a node in B's folder, and B one in A's.
+        let in_a = one_page(
+            "cursor-1",
+            vec![change(
+                RemoteChangeKind::Created,
+                "na-new",
+                Some("root-a"),
+                false,
+            )],
+        );
+        let mut daemon = multi_pair_daemon(
+            configs,
+            client.clone(),
+            Some(Box::new(FakeEventSource::with_pages(
+                "cursor-0",
+                vec![foreign_page("cursor-1"), in_a],
+            ))),
+        );
+        let mut stepper = Stepper::new(&mut daemon);
+        let log = capture_log("info", || {
+            assert_eq!(stepper.step(&mut daemon), Step::Idle, "the restart");
+        });
+
+        assert!(client.walks().is_empty(), "{:?}\n{log}", client.walks());
+        assert!(client.listings().is_empty(), "{:?}", client.listings());
+        assert!(
+            client.root_uid_asks().is_empty(),
+            "the node came from the index, which survived the restart"
+        );
+        for pair in 0..2 {
+            assert_eq!(
+                daemon
+                    .runtime(pair)
+                    .expect("ready")
+                    .warm_starts_since_full_walk,
+                1,
+                "pair {pair} warm-started"
+            );
+        }
+        assert_eq!(log.matches("warm start completed").count(), 2, "{log}");
+        assert!(
+            log.contains("skipped changes outside this folder"),
+            "the skip is said: {log}"
+        );
+    }
+
+    // ---- resuming a paused pair queues its pass (#456) -----------------------------------------
+
+    /// [`plane_over`] feeding the stepper's own channel, so what `resume` queues is what the next
+    /// step pops.
+    fn plane_feeding(
+        daemon: &Daemon<MultiRootClient>,
+        stepper: &Stepper,
+    ) -> ControlPlane<MultiRootClient> {
+        let (mut plane, _unused_rx) = plane_over(daemon);
+        plane.loop_tx = stepper.loop_tx.clone();
+        plane
+    }
+
+    /// Two idle pairs past boot with timers an hour out, so nothing runs unless it was asked for.
+    fn parked_two_pair_daemon(
+        directory: &Path,
+    ) -> (Daemon<MultiRootClient>, MultiRootClient, Stepper) {
+        let mut configs = pair_configs(directory, &["a", "b"]);
+        for config in &mut configs {
+            config.scan_interval = Duration::from_secs(3600);
+        }
+        let client = MultiRootClient::default();
+        let mut daemon = multi_pair_daemon(configs, client.clone(), None);
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        client.clear_walks();
+        (daemon, client, stepper)
+    }
+
+    #[tokio::test]
+    async fn resuming_a_paused_pair_queues_an_immediate_pass_for_it_alone() {
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) = parked_two_pair_daemon(directory.path());
+        let plane = plane_feeding(&daemon, &stepper);
+        send_pause(&plane, ControlCommand::Pause, "b").await;
+
+        let reply = send_pause(&plane, ControlCommand::Resume, "b").await;
+        assert_eq!(reply.message, "sync resumed; a pass is scheduled");
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert_eq!(
+            client.walks(),
+            [remote_root_of("b")],
+            "`b` ran, and only `b`"
+        );
+        assert_eq!(
+            daemon.shared.pairs[1].reconcile_seq.load(Ordering::SeqCst),
+            2
+        );
+        assert_eq!(
+            daemon.shared.pairs[0].reconcile_seq.load(Ordering::SeqCst),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn resuming_a_pair_that_is_not_paused_queues_nothing() {
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) = parked_two_pair_daemon(directory.path());
+        let plane = plane_feeding(&daemon, &stepper);
+
+        let reply = send_pause(&plane, ControlCommand::Resume, "b").await;
+        assert_eq!(reply.message, "sync resumed", "nothing was waiting");
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(client.walks().is_empty(), "{:?}", client.walks());
+    }
+
+    #[tokio::test]
+    async fn a_pause_before_the_resumed_job_pops_runs_nothing() {
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) = parked_two_pair_daemon(directory.path());
+        let plane = plane_feeding(&daemon, &stepper);
+        send_pause(&plane, ControlCommand::Pause, "b").await;
+        send_pause(&plane, ControlCommand::Resume, "b").await;
+
+        send_pause(&plane, ControlCommand::Pause, "b").await;
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(
+            client.walks().is_empty(),
+            "paused again: {:?}",
+            client.walks()
+        );
+        assert_eq!(
+            daemon.shared.pairs[1].reconcile_seq.load(Ordering::SeqCst),
+            1,
+            "and no pass was counted"
+        );
+    }
+
+    #[tokio::test]
+    async fn resuming_an_unavailable_pair_retries_its_preparation_at_once() {
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, _client, mut stepper) = parked_two_pair_daemon(directory.path());
+        make_unavailable(&mut daemon, 1);
+        let plane = plane_feeding(&daemon, &stepper);
+        send_pause(&plane, ControlCommand::Pause, "b").await;
+        // The person fixes the folder, then presses resume.
+        fs::create_dir_all(&daemon.pair_config(1).local_root).expect("the folder returns");
+
+        let reply = send_pause(&plane, ControlCommand::Resume, "b").await;
+        assert!(
+            reply.message.contains("a pass is scheduled"),
+            "{}",
+            reply.message
+        );
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert_eq!(
+            daemon.slot_state(1),
+            SlotState::Ready,
+            "retried, and promoted"
+        );
     }
 }

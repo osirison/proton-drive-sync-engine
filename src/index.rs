@@ -43,6 +43,11 @@ CREATE TABLE IF NOT EXISTS forced_delete_approval (
     id INTEGER PRIMARY KEY CHECK (id = 0),
     active INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS remote_root_node (
+    id INTEGER PRIMARY KEY CHECK (id = 0),
+    uid TEXT NOT NULL,
+    learned_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS pair_pause (
     id INTEGER PRIMARY KEY CHECK (id = 0),
     paused INTEGER NOT NULL DEFAULT 0
@@ -1015,6 +1020,9 @@ pub fn reset_index_state(connection: &Connection) -> AppResult<()> {
         // for a forced approval to withhold; one left standing would outlive the replacement it
         // was for (ADR 0005, the 4b note, item 14).
         "forced_delete_approval",
+        // The pair's own remote root node is learned state like the baseline it is read beside: a
+        // start-over bootstraps, and the bootstrap learns it again (#456).
+        "remote_root_node",
         // NOT `pair_pause`: it is the user's standing request, not learned state (see
         // `load_pair_paused`).
         "delete_approvals",
@@ -1093,6 +1101,45 @@ pub fn store_forced_delete_approval(connection: &Connection, active: bool) -> Ap
         "#,
         params![i64::from(active)],
     )?;
+    Ok(())
+}
+
+/// The composed uid (`volumeId~nodeId`) of the node this pair's remote root names, as last learned
+/// from a listing, or `None` when none is recorded (#456).
+///
+/// What it is for: the volume event stream is per volume, so a delta describes every folder on the
+/// volume, and a pair can only tell "somewhere else" from "inside my folder" if it knows which node
+/// its own folder is — an event naming the root as parent is inside, an event whose parent is
+/// neither the root nor any folder of the tree is not. Unknown means no event is ever skipped as
+/// outside. A single-row table (`id = 0`) like `warm_start_state`; an index written before the table
+/// existed answers `None`.
+pub fn load_remote_root_uid(connection: &Connection) -> AppResult<Option<String>> {
+    Ok(connection
+        .query_row("SELECT uid FROM remote_root_node WHERE id = 0", [], |row| {
+            row.get(0)
+        })
+        .optional()?)
+}
+
+/// Records [`load_remote_root_uid`]'s answer. Written in the final commit of the pass that learned
+/// it, beside the event cursor, so a pass that did not finish leaves what was recorded before it.
+pub fn store_remote_root_uid(connection: &Connection, uid: &str, learned_at: i64) -> AppResult<()> {
+    connection.execute(
+        r#"
+        INSERT INTO remote_root_node (id, uid, learned_at)
+        VALUES (0, ?1, ?2)
+        ON CONFLICT(id) DO UPDATE SET uid = excluded.uid, learned_at = excluded.learned_at
+        "#,
+        params![uid, learned_at],
+    )?;
+    Ok(())
+}
+
+/// Forgets [`load_remote_root_uid`]'s answer: the root was found missing (it will be a new node
+/// when it is made again) or a bootstrap could not name it, and a uid that no longer says which
+/// node is the folder would let an event inside it read as outside.
+pub fn clear_remote_root_uid(connection: &Connection) -> AppResult<()> {
+    connection.execute("DELETE FROM remote_root_node", [])?;
     Ok(())
 }
 
@@ -2612,6 +2659,7 @@ mod tests {
         upsert_record(&connection, &known_file_record("keep.txt", 1, 1, "hash")).expect("record");
         store_event_cursor(&connection, "vol", "cursor-0", 1).expect("cursor");
         store_warm_start_count(&connection, 7).expect("warm start count");
+        store_remote_root_uid(&connection, "vol~root", 1).expect("root uid");
         upsert_delete_approval(
             &connection,
             Path::new("keep.txt"),
@@ -2624,6 +2672,7 @@ mod tests {
         reset_index_state(&connection).expect("reset");
 
         assert!(load_index(&connection).expect("index").is_empty());
+        assert_eq!(load_remote_root_uid(&connection).expect("root uid"), None);
         assert!(
             load_event_cursor(&connection, "vol")
                 .expect("cursor")
@@ -4631,6 +4680,65 @@ mod tests {
         reset_index_state(&connection).expect("reset");
 
         assert!(!load_forced_delete_approval(&connection).expect("cleared"));
+    }
+
+    #[test]
+    fn remote_root_node_is_added_to_a_preexisting_database_and_reads_as_unknown() {
+        // The upgrade path for every existing user: an index written before #456 has no such table,
+        // opens cleanly, and reads as "the root is not known" — which is what keeps every event
+        // placed the way it was until a pass learns the node.
+        let directory = tempdir().expect("tempdir");
+        let db_path = directory.path().join("sync_index.db");
+        {
+            let connection = Connection::open(&db_path).expect("open");
+            connection
+                .execute_batch(
+                    "CREATE TABLE file_index (
+                        file_path TEXT PRIMARY KEY,
+                        entity_kind TEXT NOT NULL DEFAULT 'file',
+                        file_size INTEGER NOT NULL,
+                        mtime INTEGER NOT NULL,
+                        sha1_hash TEXT,
+                        proton_id TEXT,
+                        sync_status TEXT NOT NULL
+                    );",
+                )
+                .expect("preexisting schema");
+        }
+        let connection = open_database(&db_path).expect("open database upgrades cleanly");
+        assert_eq!(load_remote_root_uid(&connection).expect("load"), None);
+
+        store_remote_root_uid(&connection, "vol~root", 10).expect("store");
+        assert_eq!(
+            load_remote_root_uid(&connection).expect("reload"),
+            Some("vol~root".to_owned())
+        );
+        // A second store replaces the one row: a recreated root is a different node.
+        store_remote_root_uid(&connection, "vol~root-2", 20).expect("store again");
+        assert_eq!(
+            load_remote_root_uid(&connection).expect("reload"),
+            Some("vol~root-2".to_owned())
+        );
+        clear_remote_root_uid(&connection).expect("clear");
+        assert_eq!(load_remote_root_uid(&connection).expect("cleared"), None);
+    }
+
+    #[test]
+    fn a_reset_clears_the_root_uid() {
+        // The root's uid is learned state like the baseline beside it. A start-over bootstraps and
+        // learns it again; one left standing could name a node the new baseline knows nothing of.
+        let connection = Connection::open_in_memory().expect("open");
+        connection.execute_batch(SCHEMA).expect("schema");
+        store_remote_root_uid(&connection, "vol~root", 1).expect("store");
+        assert!(
+            load_remote_root_uid(&connection)
+                .expect("precondition")
+                .is_some()
+        );
+
+        reset_index_state(&connection).expect("reset");
+
+        assert_eq!(load_remote_root_uid(&connection).expect("cleared"), None);
     }
 
     #[test]
