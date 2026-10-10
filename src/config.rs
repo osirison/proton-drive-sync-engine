@@ -1644,7 +1644,7 @@ fn local_comparison_key(path: &Path) -> PathBuf {
 /// `proton::clean_remote_root_path` refuses any path carrying a `..`, so resolving one
 /// here would be this layer alone deciding that two Drive locations are one while nothing
 /// downstream agrees, for a value that is refused either way.
-fn remote_root_comparison_key(remote_root: &Path) -> PathBuf {
+pub(crate) fn remote_root_comparison_key(remote_root: &Path) -> PathBuf {
     remote_root
         .components()
         .filter(|component| !matches!(component, Component::RootDir | Component::CurDir))

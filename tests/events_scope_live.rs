@@ -81,13 +81,14 @@ fn live_the_remote_root_names_itself_with_a_composed_uid_of_the_events_volume() 
              composed uid — a pair would never learn its root and would skip nothing",
         );
 
+    // No id is ever printed: an id is account data, and a failing live run says which check failed
+    // without it. The checks compare; they do not echo.
     assert!(
         uid.contains('~'),
-        "the root uid must be the composed volumeId~nodeId (got {uid:?})"
+        "the root uid must be the composed volumeId~nodeId, and this one has no `~`"
     );
-    assert_eq!(
-        volume_id_from_proton_id(&uid),
-        Some(volume.as_str()),
+    assert!(
+        volume_id_from_proton_id(&uid) == Some(volume.as_str()),
         "the root uid's volume half must be the events volume"
     );
 
@@ -95,12 +96,12 @@ fn live_the_remote_root_names_itself_with_a_composed_uid_of_the_events_volume() 
     // prints for the wrapper. When it can answer, it must agree with the client.
     match root_uid_by_parent_listing(&client, &remote_root) {
         Some(by_parent) => {
-            assert_eq!(by_parent, uid, "the two sources must name one node");
-            eprintln!("root uid OK: {uid} (the parent listing names it too)");
+            assert!(by_parent == uid, "the two sources must name one node");
+            eprintln!("root uid OK (the parent listing names the same node)");
         }
         None => eprintln!(
-            "root uid OK: {uid} (from the root listing's wrapper; the parent listing cannot name \
-             the root here)"
+            "root uid OK (from the root listing's wrapper; the parent listing cannot name the \
+             root here)"
         ),
     }
 }
@@ -174,22 +175,18 @@ fn live_a_node_created_in_the_root_names_the_root_uid_as_its_parent() {
         "no Created event for the probe arrived: the stream does not report a node created in the \
          folder, and the skip cannot be relied on",
     );
-    assert_eq!(
-        node_uid(&volume, &parent),
-        root_uid,
+    assert!(
+        node_uid(&volume, &parent) == root_uid,
         "a node created directly in the folder must name the folder's own uid as its parent — \
          otherwise a direct child would read as foreign and be skipped"
     );
     if root_events.is_empty() {
-        eprintln!(
-            "scope round-trip OK: parent {parent} is the root uid {root_uid}; the root itself got no event"
-        );
+        eprintln!("scope round-trip OK: the parent is the root uid; the root itself got no event");
     } else {
         eprintln!(
-            "scope round-trip OK: parent {parent} is the root uid {root_uid}, BUT the root itself \
-             received events for the upload: {root_events:?}. Every upload would then be read as \
-             \"the folder's own node changed\" and walk: the root-event rule needs narrowing before \
-             this ships"
+            "scope round-trip OK: the parent is the root uid, BUT the root itself received events \
+             for the upload: {root_events:?}. Every upload would then be read as \"the folder's \
+             own node changed\" and walk: the root-event rule needs narrowing before this ships"
         );
     }
 }
