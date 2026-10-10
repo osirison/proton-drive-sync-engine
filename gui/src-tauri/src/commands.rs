@@ -37,7 +37,7 @@
 use crate::config_path::{Ask, PairRef, RuntimePaths};
 use gui_core::conflicts::{self, Conflict, Resolution};
 use gui_core::pairs::{PairCapability, Target};
-use gui_core::state::{derive_state, pair_states, PairState};
+use gui_core::state::{derive_state, described_waiting_for, pair_states, PairState};
 use gui_core::wire::{
     ApplyOutcome, ControlCommand, ControlRequest, ControlResponse, DeleteDirection, DryRunReport,
     LocalDisposal, PairSummary, PendingDeletion, PlanOutcome, PLAN_ACTIONS_MAX_LIMIT,
@@ -78,6 +78,11 @@ pub struct StatusPayload {
     /// own (`gui_core::state::pair_states`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pair_states: Vec<PairState>,
+    /// For a `queued` `state`: the folder whose pass the described pair is waiting for
+    /// (`gui_core::state::described_waiting_for`). Absent when nothing is running yet, and for every
+    /// other state — the sentence for "starting" and the one for "waiting for photos" differ.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    waiting_for: Option<String>,
     /// The name this request was addressed to that **no pair has** — the daemon read the selector
     /// and found nothing, or this app already knew better. **It is not an outage**: the daemon is
     /// there and answered. A selection read that hits this falls back to the default pair and says
@@ -97,6 +102,7 @@ fn status_payload(result: Result<ControlResponse, ipc::IpcError>) -> StatusPaylo
                 selected: None,
                 pairs: response.pairs.clone(),
                 pair_states: pair_states(&response, state),
+                waiting_for: described_waiting_for(&response, state),
                 response: Some(response),
                 error: None,
                 pair_unknown: None,
@@ -109,6 +115,7 @@ fn status_payload(result: Result<ControlResponse, ipc::IpcError>) -> StatusPaylo
             selected: None,
             pairs: Vec::new(),
             pair_states: Vec::new(),
+            waiting_for: None,
             pair_unknown: None,
         },
     }
@@ -250,6 +257,7 @@ impl Refusal {
             selected: Some(selected),
             pairs: Vec::new(),
             pair_states: Vec::new(),
+            waiting_for: None,
             pair_unknown: self.unknown_pair,
         }
     }

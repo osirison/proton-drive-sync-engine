@@ -28,7 +28,7 @@
   {
     "case": "one folder, syncing: no Sync now, as today",
     "state": "running",
-    "pairs": [{ "name": "docs", "paused": false, "syncing": true, "rank": 2 }],
+    "pairs": [{ "name": "docs", "paused": false, "syncing": true, "rank": 3 }],
     "rows": [
       ["open", "Open Drive Sync", null],
       ["pause", "Pause syncing", null],
@@ -40,7 +40,7 @@
   {
     "case": "one folder, syncing-by-queue (not syncing yet): still no Sync now at one folder",
     "state": "running",
-    "pairs": [{ "name": "docs", "paused": false, "syncing": false, "rank": 2 }],
+    "pairs": [{ "name": "docs", "paused": false, "syncing": false, "rank": 3 }],
     "rows": [
       ["open", "Open Drive Sync", null],
       ["pause", "Pause syncing", null],
@@ -63,7 +63,7 @@
   {
     "case": "one folder, failed: today's outage rows, no pause row",
     "state": "failed",
-    "pairs": [{ "name": "docs", "paused": false, "syncing": false, "rank": 4 }],
+    "pairs": [{ "name": "docs", "paused": false, "syncing": false, "rank": 5 }],
     "rows": [
       ["tryAgain", "Try again now", null],
       ["open", "Open Drive Sync", null],
@@ -85,13 +85,13 @@
   {
     "case": "an expired session at one folder",
     "state": "authExpired",
-    "pairs": [{ "name": "docs", "paused": false, "syncing": false, "rank": 5 }],
+    "pairs": [{ "name": "docs", "paused": false, "syncing": false, "rank": 6 }],
     "rows": [["open", "Open Drive Sync", null], "-", ["quit", "Quit", "stops syncing"]]
   },
   {
     "case": "never synced at one folder",
     "state": "firstRun",
-    "pairs": [{ "name": "docs", "paused": false, "syncing": false, "rank": 3 }],
+    "pairs": [{ "name": "docs", "paused": false, "syncing": false, "rank": 4 }],
     "rows": [["open", "Open Drive Sync", null], "-", ["quit", "Quit", "stops syncing"]]
   },
   {
@@ -168,7 +168,7 @@
     "case": "two folders, documents syncing and photos idle: Sync now is for photos",
     "state": "running",
     "pairs": [
-      { "name": "documents", "paused": false, "syncing": true, "rank": 2 },
+      { "name": "documents", "paused": false, "syncing": true, "rank": 3 },
       { "name": "photos", "paused": false, "syncing": false, "rank": 0 }
     ],
     "rows": [
@@ -186,8 +186,8 @@
     "case": "two folders, both syncing: every unpaused folder is already syncing, so no Sync now",
     "state": "running",
     "pairs": [
-      { "name": "documents", "paused": false, "syncing": true, "rank": 2 },
-      { "name": "photos", "paused": false, "syncing": true, "rank": 2 }
+      { "name": "documents", "paused": false, "syncing": true, "rank": 3 },
+      { "name": "photos", "paused": false, "syncing": true, "rank": 3 }
     ],
     "rows": [
       ["open", "Open Drive Sync", null],
@@ -203,7 +203,7 @@
     "case": "two folders, one syncing and the other paused: the paused one is not Sync now's to wake",
     "state": "running",
     "pairs": [
-      { "name": "documents", "paused": false, "syncing": true, "rank": 2 },
+      { "name": "documents", "paused": false, "syncing": true, "rank": 3 },
       { "name": "photos", "paused": true, "syncing": false, "rank": 1 }
     ],
     "rows": [
@@ -221,7 +221,7 @@
     "state": "failed",
     "pairs": [
       { "name": "documents", "paused": false, "syncing": false, "rank": 0 },
-      { "name": "photos", "paused": false, "syncing": false, "rank": 4 }
+      { "name": "photos", "paused": false, "syncing": false, "rank": 5 }
     ],
     "rows": [
       ["tryAgain", "Try again now", null],
@@ -237,19 +237,75 @@
     "case": "two folders, an expired session: nothing to pause, so no folder group",
     "state": "authExpired",
     "pairs": [
-      { "name": "documents", "paused": false, "syncing": false, "rank": 5 },
-      { "name": "photos", "paused": false, "syncing": false, "rank": 5 }
+      { "name": "documents", "paused": false, "syncing": false, "rank": 6 },
+      { "name": "photos", "paused": false, "syncing": false, "rank": 6 }
     ],
     "rows": [["open", "Open Drive Sync", null], "-", ["quit", "Quit", "stops syncing"]]
   },
   {
-    "case": "two folders, one never synced: nothing to pause yet, so no folder group",
+    "case": "two folders listed beside the wizard's state (no longer derived at two folders, kept so the two sides cannot drift): no folder group",
     "state": "firstRun",
     "pairs": [
-      { "name": "documents", "paused": false, "syncing": false, "rank": 3 },
+      { "name": "documents", "paused": false, "syncing": false, "rank": 4 },
       { "name": "photos", "paused": false, "syncing": false, "rank": 0 }
     ],
     "rows": [["open", "Open Drive Sync", null], "-", ["quit", "Quit", "stops syncing"]]
+  },
+  {
+    "case": "two folders, nothing has had its turn yet: every folder can be paused, and Sync now has somebody to wake",
+    "state": "queued",
+    "pairs": [
+      { "name": "documents", "paused": false, "syncing": false, "rank": 2 },
+      { "name": "photos", "paused": false, "syncing": false, "rank": 2 }
+    ],
+    "rows": [
+      ["open", "Open Drive Sync", null],
+      ["syncNow", "Sync now", null],
+      "-",
+      ["pause@documents", "Pause documents", null],
+      ["pause@photos", "Pause photos", null],
+      "-",
+      ["closeWindow", "Close window", "keeps syncing"],
+      ["quit", "Quit", "stops syncing"]
+    ]
+  },
+  {
+    "case": "two folders, documents syncing and photos waiting for it: the waiting folder keeps its pause row, behind the running one",
+    "state": "running",
+    "pairs": [
+      { "name": "documents", "paused": false, "syncing": true, "rank": 3 },
+      { "name": "photos", "paused": false, "syncing": false, "rank": 2 }
+    ],
+    "rows": [
+      ["open", "Open Drive Sync", null],
+      ["syncNow", "Sync now", null],
+      "-",
+      ["pause@documents", "Pause documents", null],
+      ["pause@photos", "Pause photos", null],
+      "-",
+      ["closeWindow", "Close window", "keeps syncing"],
+      ["quit", "Quit", "stops syncing"]
+    ]
+  },
+  {
+    "case": "three folders, one syncing and two waiting: worst first, and the order the daemon lists them within a rank",
+    "state": "running",
+    "pairs": [
+      { "name": "photos", "paused": false, "syncing": false, "rank": 2 },
+      { "name": "documents", "paused": false, "syncing": true, "rank": 3 },
+      { "name": "videos", "paused": false, "syncing": false, "rank": 2 }
+    ],
+    "rows": [
+      ["open", "Open Drive Sync", null],
+      ["syncNow", "Sync now", null],
+      "-",
+      ["pause@documents", "Pause documents", null],
+      ["pause@photos", "Pause photos", null],
+      ["pause@videos", "Pause videos", null],
+      "-",
+      ["closeWindow", "Close window", "keeps syncing"],
+      ["quit", "Quit", "stops syncing"]
+    ]
   },
   {
     "case": "two folders, no daemon: the start row, never a pause row",
@@ -270,7 +326,7 @@
     "state": "failed",
     "pairs": [
       { "name": "a", "paused": false, "syncing": false, "rank": 0 },
-      { "name": "b", "paused": false, "syncing": false, "rank": 4 },
+      { "name": "b", "paused": false, "syncing": false, "rank": 5 },
       { "name": "c", "paused": false, "syncing": false, "rank": 0 }
     ],
     "rows": [

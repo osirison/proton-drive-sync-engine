@@ -133,10 +133,17 @@ fn shorten(name: &str, budget: usize) -> String {
 }
 
 /// What a folder's state is called in the title.
-fn phrase(state: DaemonState) -> &'static str {
-    match state {
+///
+/// A folder that has not had its turn is `waiting` while another folder's pass runs and `starting`
+/// while none does. The title already names the folder that is syncing, so it does not say `for
+/// documents` again — and a phrase that carried another folder's name could not be bounded by this
+/// folder's own budget (`folders_title`). The panel and the window name it.
+fn phrase(pair: &PairState) -> &'static str {
+    match pair.state {
         DaemonState::Running => "syncing",
         DaemonState::Idle => "up to date",
+        DaemonState::Queued if pair.waiting_for.is_some() => "waiting",
+        DaemonState::Queued => "starting",
         DaemonState::Paused => "paused",
         DaemonState::AuthExpired => "sign-in expired",
         DaemonState::FirstRun => "nothing synced yet",
@@ -164,7 +171,7 @@ fn folders_title(pairs: &[PairState]) -> String {
 
     let fixed = TITLE_PREFIX.chars().count()
         // ` {state}` after each name,
-        + named.iter().map(|pair| 1 + phrase(pair.state).chars().count()).sum::<usize>()
+        + named.iter().map(|pair| 1 + phrase(pair).chars().count()).sum::<usize>()
         // `, ` between clauses (the tail is one),
         + 2 * named.len().saturating_sub(1)
         + tail.as_ref().map_or(0, |tail| 2 + tail.chars().count());
@@ -172,7 +179,7 @@ fn folders_title(pairs: &[PairState]) -> String {
 
     let mut clauses: Vec<String> = named
         .iter()
-        .map(|pair| format!("{} {}", shorten(&pair.name, budget), phrase(pair.state)))
+        .map(|pair| format!("{} {}", shorten(&pair.name, budget), phrase(pair)))
         .collect();
     clauses.extend(tail);
     format!("{TITLE_PREFIX}{}", clauses.join(", "))
@@ -284,6 +291,8 @@ fn title_for(
             }
         }
         DaemonState::Idle => "Proton Drive Sync — up to date".into(),
+        // Every folder has yet to have its turn and none is running one (a mix is the folders title's).
+        DaemonState::Queued => "Proton Drive Sync — starting".into(),
         DaemonState::Paused => "Proton Drive Sync — paused".into(),
         DaemonState::AuthExpired => "Proton Drive Sync — sign-in expired".into(),
         // NOT "0 pending". `counters_unknown()` is true here and 14-behaviour-and-state.md's rule is
@@ -724,6 +733,15 @@ mod tests {
             name: name.to_owned(),
             state,
             rank: gui_core::state::severity(state),
+            waiting_for: None,
+        }
+    }
+
+    /// A folder that has not had its turn, waiting for `behind` (or, with none, not yet reached).
+    fn queued_of(name: &str, behind: Option<&str>) -> PairState {
+        PairState {
+            waiting_for: behind.map(str::to_owned),
+            ..state_of(name, DaemonState::Queued)
         }
     }
 
@@ -778,6 +796,47 @@ mod tests {
         assert_eq!(
             title_for(DaemonState::Failed, None, &states[..3]),
             "Proton Drive Sync — b last sync failed, c paused, a up to date"
+        );
+    }
+
+    /// The live report: the default folder is in a long pass, the other two have not had their turn.
+    /// The title must not say either of them is up to date, and the glyph is the syncing one.
+    #[test]
+    fn the_title_says_a_folder_without_a_turn_is_waiting_and_never_up_to_date() {
+        let states = [
+            state_of("documents", DaemonState::Running),
+            queued_of("photos", Some("documents")),
+            queued_of("videos", Some("documents")),
+        ];
+        let state = aggregate_state(DaemonState::Idle, &states);
+        assert_eq!(state, DaemonState::Running);
+        assert_eq!(glyph_for(state), "proton-sync-syncing-symbolic");
+        let title = title_for(state, None, &states);
+        assert_eq!(
+            title,
+            "Proton Drive Sync — documents syncing, photos waiting, videos waiting"
+        );
+        assert!(!title.contains("up to date"), "{title}");
+    }
+
+    #[test]
+    fn with_nothing_running_the_title_says_starting() {
+        // Every folder is due the moment the daemon starts, and none has been popped yet.
+        let all = [queued_of("documents", None), queued_of("photos", None)];
+        let state = aggregate_state(DaemonState::Idle, &all);
+        assert_eq!(state, DaemonState::Queued);
+        assert_eq!(title_for(state, None, &all), "Proton Drive Sync — starting");
+        // Beside one that has finished, the folders are named and the glyph is not the settled one.
+        let mixed = [
+            state_of("documents", DaemonState::Idle),
+            queued_of("photos", None),
+        ];
+        let state = aggregate_state(DaemonState::Idle, &mixed);
+        assert_eq!(state, DaemonState::Queued);
+        assert_ne!(glyph_for(state), glyph_for(DaemonState::Idle));
+        assert_eq!(
+            title_for(state, None, &mixed),
+            "Proton Drive Sync — photos starting, documents up to date"
         );
     }
 

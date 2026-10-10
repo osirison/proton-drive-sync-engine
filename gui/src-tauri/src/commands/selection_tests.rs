@@ -656,10 +656,12 @@ fn a_legacy_payload_carries_no_pair_fields_but_the_selection() {
     assert_eq!(keys, ["response", "selected", "state"], "{json}");
 }
 
-/// The state of every pair rides on the payload, and only the pair the reply is about can be
-/// first-run: the rest are derived from summaries (F-B).
+/// The state of every pair rides on the payload. Beside other folders a pair that has not finished a
+/// pass is `Queued` — the described one and the ones known by their summaries alike; `FirstRun` is
+/// the one-folder wizard's and is not derived here (it used to be, for the described pair alone, which
+/// is how a folder the window was not about read `up to date` beside one that read `nothing synced`).
 #[test]
-fn every_pairs_state_rides_on_the_payload_and_only_the_described_one_can_be_first_run() {
+fn every_pairs_state_rides_on_the_payload_and_a_pair_without_a_pass_is_queued() {
     let daemon = FakeDaemon::multi_pair(vec![
         FakePair::new("docs").never_synced(),
         FakePair::new("photos").never_synced(),
@@ -683,25 +685,170 @@ fn every_pairs_state_rides_on_the_payload_and_only_the_described_one_can_be_firs
     assert_eq!(
         states(&about_docs),
         [
-            ("docs".to_owned(), DaemonState::FirstRun),
-            ("photos".to_owned(), DaemonState::Idle),
+            ("docs".to_owned(), DaemonState::Queued),
+            ("photos".to_owned(), DaemonState::Queued),
             ("drive".to_owned(), DaemonState::Failed),
         ],
-        "docs is the pair the reply describes; photos has never synced as far as its summary says, \
-         and a summary cannot say first run"
+        "neither has finished a pass, whichever the reply describes; the third is unavailable"
     );
-    // The headline state is the described pair's, exactly the one `pair_states` gives it.
-    assert_eq!(about_docs.state, DaemonState::FirstRun);
+    // The headline state is the described pair's, exactly the one `pair_states` gives it. Nothing is
+    // running, so there is nobody to name.
+    assert_eq!(about_docs.state, DaemonState::Queued);
+    assert_eq!(about_docs.waiting_for, None);
 
     run!(select_pair(handle(), "photos".to_owned())).unwrap();
     let about_photos = run!(get_status(handle(), None));
     assert_eq!(
         states(&about_photos),
         [
-            ("docs".to_owned(), DaemonState::Idle),
-            ("photos".to_owned(), DaemonState::FirstRun),
+            ("docs".to_owned(), DaemonState::Queued),
+            ("photos".to_owned(), DaemonState::Queued),
             ("drive".to_owned(), DaemonState::Failed),
         ]
+    );
+}
+
+/// The payloads the window of the live report was drawn from, as THIS build sends them — checked in as
+/// `gui/test/never-synced-payloads.json`, and replayed into the real page by `fidelity:pairs` (the
+/// scenarios about three folders that have not had their turn). The page scripts a stand-in for this
+/// side of the bridge, so without this file what the page is shown is a guess at what Rust says; with
+/// it, a change to the derivation moves this test and the page scenario reads the new bytes.
+///
+/// Two moments of the same three folders (`documents`, `photos`, `videos`), none of which has finished
+/// a pass in this run: `running`, where the default folder is mid-pass (the 25 minute walk), and
+/// `starting`, where the daemon has just started and has popped nothing. Each is the payload for each
+/// folder in turn — `get_status` answers about the folder it is asked about. To regenerate after an
+/// intended change: `UPDATE_GOLDEN=1 cargo test -p proton-sync-gui never_synced_payloads`.
+#[test]
+fn never_synced_payloads_are_what_the_page_scenarios_replay() {
+    let names = ["documents", "photos", "videos"];
+    let file = "[[pair]]\nname = \"documents\"\nlocal_root = \"/a\"\nremote_root = \"/Drive/a\"\n\
+                [[pair]]\nname = \"photos\"\nlocal_root = \"/b\"\nremote_root = \"/Drive/b\"\n\
+                [[pair]]\nname = \"videos\"\nlocal_root = \"/c\"\nremote_root = \"/Drive/c\"\n";
+    let mut moments = serde_json::Map::new();
+    for (moment, mid_pass) in [("running", true), ("starting", false)] {
+        let mut documents = FakePair::new("documents").never_synced();
+        if mid_pass {
+            documents = documents.syncing();
+        }
+        let daemon = FakeDaemon::multi_pair(vec![
+            documents,
+            FakePair::new("photos").never_synced(),
+            FakePair::new("videos").never_synced(),
+        ])
+        .start();
+        let h = harness(daemon, Some(file));
+        let mut payloads = serde_json::Map::new();
+        for name in names {
+            let payload = run!(get_status(h.app.handle().clone(), Some(name.to_owned())));
+            payloads.insert(name.to_owned(), serde_json::to_value(&payload).unwrap());
+        }
+        moments.insert(moment.to_owned(), Value::Object(payloads));
+    }
+    let now = Value::Object(moments);
+
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../test/never-synced-payloads.json");
+    if std::env::var_os("UPDATE_GOLDEN").is_some() {
+        std::fs::write(&path, serde_json::to_string_pretty(&now).unwrap() + "\n").unwrap();
+    }
+    let golden: Value = serde_json::from_str(
+        &std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display())),
+    )
+    .expect("the golden file parses");
+    assert_eq!(
+        now, golden,
+        "this build sends different payloads than gui/test/never-synced-payloads.json holds; \
+         regenerate with UPDATE_GOLDEN=1 and read the diff"
+    );
+
+    // And the file says what the page scenarios rely on, so a regeneration that lost it cannot pass.
+    let states = |moment: &str, about: &str| -> Vec<(String, String, Option<String>)> {
+        golden[moment][about]["pair_states"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| {
+                (
+                    s["name"].as_str().unwrap().to_owned(),
+                    s["state"].as_str().unwrap().to_owned(),
+                    s["waiting_for"].as_str().map(str::to_owned),
+                )
+            })
+            .collect()
+    };
+    let owned = |name: &str, state: &str, behind: Option<&str>| {
+        (name.to_owned(), state.to_owned(), behind.map(str::to_owned))
+    };
+    for about in names {
+        assert_eq!(
+            states("running", about),
+            [
+                owned("documents", "running", None),
+                owned("photos", "queued", Some("documents")),
+                owned("videos", "queued", Some("documents")),
+            ],
+            "while documents is mid-pass, as the reply about {about} lists it"
+        );
+        assert_eq!(
+            states("starting", about),
+            [
+                owned("documents", "queued", None),
+                owned("photos", "queued", None),
+                owned("videos", "queued", None),
+            ],
+            "with nothing popped yet, as the reply about {about} lists it"
+        );
+    }
+    assert_eq!(golden["running"]["photos"]["state"], "queued");
+    assert_eq!(golden["running"]["photos"]["waiting_for"], "documents");
+    assert_eq!(golden["starting"]["photos"]["state"], "queued");
+    assert!(golden["starting"]["photos"].get("waiting_for").is_none());
+}
+
+/// The live report on the payload: the default folder is in a long pass; the folder the window shows
+/// and the one it does not have both not had their turn. Both say they are waiting, and for whom, and
+/// neither says `idle` — which is what the second one said.
+#[test]
+fn a_folder_behind_a_running_pass_says_what_it_waits_for_on_the_payload() {
+    let daemon = FakeDaemon::multi_pair(vec![
+        FakePair::new("documents").syncing(),
+        FakePair::new("photos").never_synced(),
+        FakePair::new("videos").never_synced(),
+    ])
+    .start();
+    let file = "[[pair]]\nname = \"documents\"\nlocal_root = \"/a\"\nremote_root = \"/Drive/a\"\n\
+                [[pair]]\nname = \"photos\"\nlocal_root = \"/b\"\nremote_root = \"/Drive/b\"\n\
+                [[pair]]\nname = \"videos\"\nlocal_root = \"/c\"\nremote_root = \"/Drive/c\"\n";
+    let h = harness(daemon, Some(file));
+    let handle = || h.app.handle().clone();
+
+    run!(select_pair(handle(), "photos".to_owned())).unwrap();
+    let payload = run!(get_status(handle(), None));
+    assert_eq!(payload.state, DaemonState::Queued, "the folder on screen");
+    assert_eq!(payload.waiting_for.as_deref(), Some("documents"));
+    let json = serde_json::to_value(&payload).unwrap();
+    let listed: Vec<(&str, &str, Option<&str>)> = json["pair_states"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| {
+            (
+                s["name"].as_str().unwrap(),
+                s["state"].as_str().unwrap(),
+                s["waiting_for"].as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            ("documents", "running", None),
+            ("photos", "queued", Some("documents")),
+            ("videos", "queued", Some("documents")),
+        ],
+        "{json}"
     );
 }
 

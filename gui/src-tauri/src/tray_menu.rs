@@ -347,7 +347,9 @@ fn defer_to_window() -> Vec<Entry> {
 /// menu has always had**, ids and labels included (`n1_rows_are_todays_rows`).
 fn single_folder_rows(state: DaemonState) -> Vec<Entry> {
     match state {
-        DaemonState::Idle => settled(),
+        // `Queued` is only derived beside other folders, so this arm is for completeness; it takes
+        // the rows of the state it replaces (an idle folder), which is what a lone folder would have.
+        DaemonState::Idle | DaemonState::Queued => settled(),
         DaemonState::Running => syncing(),
         DaemonState::Paused => paused(),
         // THESE TWO WERE ONE ARM, and splitting them is the fix. `Try again now` is unambiguously
@@ -388,7 +390,9 @@ pub fn rows_for(state: DaemonState, pairs: &[TrayPair]) -> Vec<Entry> {
         return single_folder_rows(state);
     }
     match state {
-        DaemonState::Idle | DaemonState::Running | DaemonState::Paused => {
+        // A folder waiting for its turn has all the controls an idle one has: it can be paused, and
+        // `Sync now` has somebody to wake.
+        DaemonState::Idle | DaemonState::Running | DaemonState::Queued | DaemonState::Paused => {
             let mut rows = vec![OPEN];
             // Some unpaused folder is idle: `Sync now` has somebody to wake. Not the aggregate state,
             // which says only that SOMETHING is syncing.
@@ -474,6 +478,7 @@ pub fn action_for_dbus_id(dbus_id: i32) -> Option<String> {
 pub const ALL_STATES: &[DaemonState] = &[
     DaemonState::Idle,
     DaemonState::Running,
+    DaemonState::Queued,
     DaemonState::Paused,
     DaemonState::Unreachable,
     DaemonState::AuthExpired,
@@ -496,6 +501,8 @@ pub(crate) mod fixtures {
         pub syncing: bool,
         pub failed: bool,
         pub queued: usize,
+        /// No finished pass in this run: the daemon starts every folder so, and only a pass sets it.
+        pub unsynced: bool,
     }
 
     impl Folder {
@@ -506,7 +513,12 @@ pub(crate) mod fixtures {
                 syncing: false,
                 failed: false,
                 queued: 0,
+                unsynced: false,
             }
+        }
+        pub fn unsynced(mut self) -> Self {
+            self.unsynced = true;
+            self
         }
         pub fn paused(mut self) -> Self {
             self.paused = true;
@@ -531,7 +543,7 @@ pub(crate) mod fixtures {
             paused: folder.paused,
             syncing: folder.syncing,
             reconcile_seq: 1,
-            last_sync_epoch_secs: Some(1),
+            last_sync_epoch_secs: (!folder.unsynced).then_some(1),
             last_error: folder.failed.then(|| "boom".to_owned()),
             pending_changes: folder.queued,
             pending_deletions: 0,
@@ -550,7 +562,7 @@ pub(crate) mod fixtures {
             pending_changes: first.queued,
             message: String::new(),
             pause_unsaved: None,
-            last_sync_epoch_secs: Some(1),
+            last_sync_epoch_secs: (!first.unsynced).then_some(1),
             last_error: first.failed.then(|| "boom".to_owned()),
             last_plan_summary: None,
             last_successful_sync_summary: None,
@@ -614,7 +626,8 @@ mod tests {
         fn next(state: DaemonState) -> Option<DaemonState> {
             match state {
                 DaemonState::Idle => Some(DaemonState::Running),
-                DaemonState::Running => Some(DaemonState::Paused),
+                DaemonState::Running => Some(DaemonState::Queued),
+                DaemonState::Queued => Some(DaemonState::Paused),
                 DaemonState::Paused => Some(DaemonState::Unreachable),
                 DaemonState::Unreachable => Some(DaemonState::AuthExpired),
                 DaemonState::AuthExpired => Some(DaemonState::FirstRun),
@@ -842,7 +855,8 @@ mod tests {
         const QUIT: Wanted = ("quit", 7, "Quit", Some("stops syncing"));
         let some = Some;
         match state {
-            DaemonState::Idle => vec![
+            // `Queued` is never derived at one folder; it is given the rows of the state it replaces.
+            DaemonState::Idle | DaemonState::Queued => vec![
                 some(OPEN),
                 some(SYNC_NOW),
                 some(PAUSE),
@@ -1245,6 +1259,7 @@ mod tests {
             let state = match case["state"].as_str().expect("a state") {
                 "idle" => DaemonState::Idle,
                 "running" => DaemonState::Running,
+                "queued" => DaemonState::Queued,
                 "paused" => DaemonState::Paused,
                 "unreachable" => DaemonState::Unreachable,
                 "authExpired" => DaemonState::AuthExpired,
@@ -1345,7 +1360,7 @@ mod tests {
     // glue reads wrongly. These start one step earlier, at the raw per-folder facts on the wire.
 
     /// What each folder in a reply is, as `pairs_of` hands it to the menu: its own flags and its own
-    /// rank — written as literals (1 paused, 2 syncing, 4 failed, 0 idle), not read back from
+    /// rank — written as literals (1 paused, 2 queued, 3 syncing, 5 failed, 0 idle), not read back from
     /// `severity`, so a rank that stops following the state is a failure here and not an agreement.
     ///
     /// Reverts: `paused` forced `false`; `syncing` forced `false`; `rank` forced `0`.
@@ -1356,6 +1371,7 @@ mod tests {
             Folder::new("b").syncing(),
             Folder::new("c").failed(),
             Folder::new("d"),
+            Folder::new("e").unsynced(),
         ]);
         let described = gui_core::state::derive_state(Ok(&response));
         let want = |name: &str, paused, syncing, rank| TrayPair {
@@ -1368,10 +1384,56 @@ mod tests {
             pairs_of(&response, described),
             vec![
                 want("a", true, false, 1),
-                want("b", false, true, 2),
-                want("c", false, false, 4),
+                want("b", false, true, 3),
+                want("c", false, false, 5),
                 want("d", false, false, 0),
+                want("e", false, false, 2),
             ]
+        );
+    }
+
+    /// The live report, through the whole path: the default folder is in a long pass and the other two
+    /// have not had their turn. They are `Queued`, which is not `FirstRun`, so the menu keeps its
+    /// folder group — a person can still pause any of the three while they wait.
+    #[test]
+    fn folders_waiting_for_their_turn_keep_their_pause_rows() {
+        let wanted = |rest: &[&str]| -> Vec<String> {
+            ["open", "syncNow", "—"]
+                .into_iter()
+                .chain(rest.iter().copied())
+                .chain(["—", "closeWindow", "quit"])
+                .map(String::from)
+                .collect()
+        };
+        let group = ["pause@documents", "pause@photos", "pause@videos"];
+
+        let response = reply(&[
+            Folder::new("documents").syncing(),
+            Folder::new("photos").unsynced(),
+            Folder::new("videos").unsynced(),
+        ]);
+        let described = gui_core::state::derive_state(Ok(&response));
+        let states = pair_states(&response, described);
+        let aggregate = gui_core::state::aggregate_state(described, &states);
+        assert_eq!(aggregate, DaemonState::Running);
+        assert_eq!(
+            ids(&rows_for(aggregate, &pairs_of(&response, described))),
+            wanted(&group)
+        );
+
+        // And at start-up, with nothing running yet: all three wait, and the group is still there.
+        let response = reply(&[
+            Folder::new("documents").unsynced(),
+            Folder::new("photos").unsynced(),
+            Folder::new("videos").unsynced(),
+        ]);
+        let described = gui_core::state::derive_state(Ok(&response));
+        let states = pair_states(&response, described);
+        let aggregate = gui_core::state::aggregate_state(described, &states);
+        assert_eq!(aggregate, DaemonState::Queued);
+        assert_eq!(
+            ids(&rows_for(aggregate, &pairs_of(&response, described))),
+            wanted(&group)
         );
     }
 
@@ -1389,15 +1451,15 @@ mod tests {
     /// sharing no code with them. 16 × 16 = 256 replies.
     #[test]
     fn two_folders_draw_the_rows_their_facts_call_for() {
-        // (paused, syncing, failed, queued): 0 idle .. 4 failed; the rank is the brief's, in order
-        // failed 4 > running 2 > paused 1 > idle 0, and `paused` beats `syncing` and `failed`.
+        // (paused, syncing, failed, queued): 0 idle .. 5 failed; the rank is the brief's, in order
+        // failed 5 > running 3 > paused 1 > idle 0, and `paused` beats `syncing` and `failed`.
         fn oracle(paused: bool, syncing: bool, failed: bool, queued: bool) -> (&'static str, u8) {
             if paused {
                 ("paused", 1)
             } else if syncing || (!failed && queued) {
-                ("running", 2)
+                ("running", 3)
             } else if failed {
-                ("failed", 4)
+                ("failed", 5)
             } else {
                 ("idle", 0)
             }

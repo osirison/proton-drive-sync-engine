@@ -27,6 +27,7 @@ const CORPUS = JSON.parse(
 const MENU_KEY = {
   idle: "settled",
   running: "syncing",
+  queued: "settled",
   paused: "paused",
   unreachable: "notRunning",
   authExpired: "deferToWindow",

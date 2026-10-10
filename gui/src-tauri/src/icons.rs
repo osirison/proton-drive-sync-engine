@@ -53,7 +53,7 @@ const GLYPHS: &[(&str, &str)] = &[
 ///
 /// **The same five and no more.** `10-tray.md`: "Only five forms exist. A solid filled hexagon is
 /// not a state — it was drawn that way by mistake during design and corrected." The frontend's
-/// `TRAY_GLYPH_STATES` names the same five, and `derive_state`'s seven variants collapse onto them
+/// `TRAY_GLYPH_STATES` names the same five, and `derive_state`'s eight variants collapse onto them
 /// here exactly as `screens/tray.js` collapses them for the panel: an expired session shares the
 /// struck mark with an unreachable daemon (11-notifications.md puts an outage and an expired session
 /// behind one icon), and a daemon that has never synced wears the needs-you form rather than the
@@ -63,6 +63,9 @@ const GLYPHS: &[(&str, &str)] = &[
 /// `11-notifications.md` puts "an outage, expired session, or full disk" behind ONE icon, and a
 /// failed pass is the third of those. `14-behaviour-and-state.md` says as much in its own state
 /// diagram — "unreachable is entered after a failed pass and retry".
+///
+/// A folder that has not had its turn (`Queued`) wears the needs-you form beside the first-run one,
+/// for the same reason: it has not synced anything in this run, and the settled form would say it had.
 pub fn glyph_for(state: gui_core::state::DaemonState) -> &'static str {
     use gui_core::state::DaemonState::*;
     match state {
@@ -70,7 +73,7 @@ pub fn glyph_for(state: gui_core::state::DaemonState) -> &'static str {
         Idle => "proton-sync-uptodate-symbolic",
         Paused => "proton-sync-paused-symbolic",
         AuthExpired | Unreachable | Failed => "proton-sync-offline-symbolic",
-        FirstRun => "proton-sync-attention-symbolic",
+        FirstRun | Queued => "proton-sync-attention-symbolic",
     }
 }
 
@@ -143,6 +146,13 @@ mod tests {
             glyph_for(DaemonState::FirstRun),
             glyph_for(DaemonState::Idle)
         );
+    }
+
+    #[test]
+    fn a_folder_waiting_for_its_turn_does_not_wear_the_settled_glyph() {
+        // The same false all-clear, one folder at a time: a hollow hexagon over a folder that has not
+        // had a pass says the files match, and nobody has looked.
+        assert_ne!(glyph_for(DaemonState::Queued), glyph_for(DaemonState::Idle));
     }
 
     #[test]
