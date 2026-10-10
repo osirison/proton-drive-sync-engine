@@ -2,7 +2,10 @@ use crate::ancestor::{LineSummary, MAX_SUMMARY_BYTES};
 use crate::config::remote_root_comparison_key;
 use crate::dirconfig::{DirectoryConfigResolver, EffectiveSettings};
 use crate::due_queue::{Cause, DueQueue, Job, JobKind};
-use crate::events::{EventSource, EventsClient, RemoteChange, volume_id_from_proton_id};
+use crate::events::{
+    EventSource, EventsClient, RemoteChange, is_transient_fetch_error, transient_fetch_cause,
+    volume_id_from_proton_id,
+};
 use crate::index::{
     EntityKind, EventCursor, FileEvent, FileRecord, HistoryRetention, IndexTotals,
     LocalEntityState, LocalFileState, LocalScan, PassKind, PassOutcomeKind, ScanOptions,
@@ -434,6 +437,14 @@ struct PairRuntime {
     /// was recreated is a different node). The answer itself lives in the index
     /// (`index::load_remote_root_uid`), written in a pass's final commit.
     remote_root_uid_asked: bool,
+    /// This pair's wait on a change feed that is not answering, `None` while it is (see
+    /// [`FeedOutage`]). Per pair, like the cursor it protects: each pair fetches on its own
+    /// cadence, and what it has to decide — wait or walk — is about its own tree. In memory only: a
+    /// restart starts a fresh wait, which is the safe direction (a walk later, never sooner).
+    feed_outage: Option<FeedOutage>,
+    /// How long [`Self::feed_outage`] may last before the pair walks. [`FEED_OUTAGE_BOUND`]; a field
+    /// so a test can shrink it, as the daemon's cadences are.
+    feed_outage_bound: Duration,
     /// The last reported reason **this pair** could not resolve a volume + cursor, so a standing
     /// decline is logged once instead of every pass (and re-logged if the cause changes). `None`
     /// while the scope resolves. Diagnostic only — see `PairPass::resolve_event_scope`.
@@ -947,6 +958,80 @@ impl std::error::Error for RootUnavailable {}
 
 fn is_root_unavailable_error(error: &(dyn std::error::Error + 'static)) -> bool {
     error.downcast_ref::<RootUnavailable>().is_some()
+}
+
+/// How long Proton's change feed may go unanswered, **for one pair**, before that pair walks its tree
+/// instead (see [`PairPass::wait_for_the_feed_or_walk`]).
+///
+/// Ten minutes, from the journal (2026-09-15 to 2026-10-10, ten episodes of a fetch that got no
+/// answer). In seven the walk that followed the first failure replaced the polling, so the journal
+/// cannot say how long the feed would have stayed silent. In the other three the walk failed too and
+/// the fetch kept failing: for 2.6, 8.9 and 32.6 minutes from the first failure to the last. A walk
+/// of the largest folder takes 25 to 31 minutes (11 completed walks, 1474 to 1872 s), so waiting ten
+/// minutes costs less than the walk it avoids — and still bounds how long a pair can go without
+/// syncing, because the CLI may work when the feed does not.
+const FEED_OUTAGE_BOUND: Duration = Duration::from_secs(10 * 60);
+
+/// One pair's wait on a change feed that is not answering. Present from the first failed fetch until
+/// a fetch gets an answer of any kind.
+struct FeedOutage {
+    /// When this wait began. Monotonic, so the time a laptop spent suspended is not counted as time
+    /// the feed was down. Restarts when the pair walks: a feed that stays down walks at most once per
+    /// [`FEED_OUTAGE_BOUND`], not once per poll.
+    since: Instant,
+    /// When the feed last failed to answer. A failure more than a bound after this one is not "in
+    /// a row" with it: the pair was paused, or walking, and was not asking — so the earlier failure
+    /// says nothing about now and the wait starts over.
+    last_failure: Instant,
+    /// The cause as last logged, so a standing cause is one line and a changed one speaks again.
+    reported: Option<String>,
+    /// Set once the bound passed and the pair walked: the sentence `last_error` carries until the
+    /// feed answers again. A walk that ends clean does not clear it — syncing is working, the feed
+    /// is not, and the person is owed both facts.
+    degraded: Option<String>,
+}
+
+/// A pass that ended because the change feed did not answer and the wait is still within its bound.
+/// **Not a failed pass, and not a completed one**: nothing was scanned, planned or written, no
+/// cursor moved and no latch was cleared, so the pair is exactly where it was and the poll asks
+/// again. Downcast with [`is_feed_unanswered_error`], the way [`RootUnavailable`] is.
+///
+/// It leaves out everything a pass leaves behind — `last_sync`, `last_error`, a history row, a
+/// status-history entry and, above all, a bump of `reconcile_seq`: the desktop app's first-sync
+/// dialog and `proton-sync syncnow` both read that bump as "the attempt finished", and a held pass
+/// would be reported to them as a sync that completed.
+#[derive(Debug)]
+struct FeedUnanswered {
+    cause: String,
+}
+
+impl std::fmt::Display for FeedUnanswered {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "Proton's change feed did not answer ({}); nothing was synced this time, and the next \
+             poll asks again",
+            self.cause
+        )
+    }
+}
+
+impl std::error::Error for FeedUnanswered {}
+
+fn is_feed_unanswered_error(error: &(dyn std::error::Error + 'static)) -> bool {
+    error.downcast_ref::<FeedUnanswered>().is_some()
+}
+
+/// A wait in the words a log line and `last_error` use: whole seconds under two minutes, whole
+/// minutes (rounded) from there.
+fn describe_wait(waited: Duration) -> String {
+    let seconds = waited.as_secs();
+    let (count, unit) = if seconds < 120 {
+        (seconds, "second")
+    } else {
+        ((seconds + 30) / 60, "minute")
+    };
+    format!("{count} {unit}{}", if count == 1 { "" } else { "s" })
 }
 
 /// Whether a directory is at `root` right now — **the one definition**, with the one message, read
@@ -4507,6 +4592,9 @@ impl<C: ProtonClient> Daemon<C> {
             // A missing folder is reported once per cause by the pass itself; an `error!` per
             // attempt would be the same line every 30 seconds for as long as it stays gone.
             Err(error) if is_root_unavailable_error(error.as_ref()) => {}
+            // The same, for a change feed that did not answer: said once per cause by the pass
+            // itself, and an `error!` every 30 s for a timeout would be noise about nothing broken.
+            Err(error) if is_feed_unanswered_error(error.as_ref()) => {}
             Err(error) => error!(%error, "scheduled reconciliation failed"),
         }
     }
@@ -5352,6 +5440,8 @@ impl PairRuntime {
             is_first_reconcile: true,
             warm_starts_since_full_walk,
             remote_root_uid_asked: false,
+            feed_outage: None,
+            feed_outage_bound: FEED_OUTAGE_BOUND,
             event_scope_declined: None,
             seen_event_source_generation: 0,
             root_watch: RootWatch::Unregistered,
@@ -6020,13 +6110,34 @@ impl<C: ProtonClient> PairPass<'_, C> {
             }
             Err(_) => {}
         }
+        // **A pass that was held is neither a completed pass nor a failed one** ([`FeedUnanswered`]):
+        // the change feed did not answer, so nothing was scanned, planned or written. It leaves
+        // none of the marks a pass leaves — no `last_sync`, no `last_error`, no history row, no
+        // status-history entry — and above all **does not bump `reconcile_seq`**, which the desktop
+        // app's first-sync dialog (`mergeOutcomeOf`) and `proton-sync syncnow` both read as "the
+        // attempt finished" and then report as a sync that completed. A client waiting on one simply
+        // keeps waiting for the pass that does run, within the bound. Its only duty is the request it
+        // consumed: a booked apply is sealed `Failed` with the reason, as for any pass that dies
+        // before deciding. Handled here, ahead of the three arms below, rather than inside one of
+        // them: absorbing it into "failed" would publish an error nobody must act on, and into
+        // "clean" would claim a sync (#246).
+        if matches!(&result, Err(error) if is_feed_unanswered_error(error.as_ref())) {
+            self.seal_apply_outcome(&result);
+            return result;
+        }
         // Three outcomes, three arms, no fall-through: a pass that landed most of its plan and
         // failed some of it is neither of the other two, and absorbing it into either is how a
         // failed pass came to render as "everything is up to date" (#246). The history record
         // takes its outcome from the same three arms, so it can never disagree with the message.
         let message = match &result {
             Ok(PassOutcome::Clean) => {
-                self.pair.last_error = None;
+                // The one error a clean pass keeps: the feed is still being worked around. Syncing
+                // is working and the feed is not, and the person is owed both facts.
+                self.pair.last_error = self
+                    .pair
+                    .feed_outage
+                    .as_ref()
+                    .and_then(|outage| outage.degraded.clone());
                 self.finalize_pass_record(PassOutcomeKind::Clean, 0, None);
                 "sync completed".to_owned()
             }
@@ -6156,8 +6267,13 @@ impl<C: ProtonClient> PairPass<'_, C> {
         // This pass's failures start empty (#136), and they are cleared HERE rather than in the
         // executor so a pass that dies before planning — a failed scan, a failed listing — cannot
         // publish the previous pass's items beside its own "sync failed".
-        self.pair.last_failed_items.clear();
-        self.pair.last_failed_item_count = 0;
+        //
+        // Kept aside rather than dropped: a pass that is held for the change feed did nothing, and
+        // what the last real pass could not do is still true and still shown.
+        let previous_failures = (
+            std::mem::take(&mut self.pair.last_failed_items),
+            std::mem::take(&mut self.pair.last_failed_item_count),
+        );
         // A runtime `resync` forces this pass to a full-tree walk, overriding both the warm start
         // and the steady-state incremental path. Consume it exactly once (a `swap`), so a later
         // pass is not also forced. (The startup `--full-walk` flag is separate — see below.)
@@ -6177,6 +6293,12 @@ impl<C: ProtonClient> PairPass<'_, C> {
             self.pair_shared
                 .force_full_walk
                 .store(true, Ordering::SeqCst);
+        }
+        if matches!(&result, Err(error) if is_feed_unanswered_error(error.as_ref())) {
+            (
+                self.pair.last_failed_items,
+                self.pair.last_failed_item_count,
+            ) = previous_failures;
         }
         result
     }
@@ -6629,8 +6751,21 @@ impl<C: ProtonClient> PairPass<'_, C> {
         self.pair_shared
             .begin_activity(new_activity(PHASE_FETCHING_EVENTS));
         let delta = match self.fetch_event_delta(&volume, &cursor.last_event_id) {
-            Ok(delta) => delta,
+            Ok(delta) => {
+                self.note_feed_answered();
+                delta
+            }
+            // No answer, and asking again is expected to work (a timeout, a dropped connection, a
+            // 429 or a 5xx): wait, or — once the wait has gone on for `feed_outage_bound` — walk, as
+            // every failure of the fetch used to. A walk of a large folder takes ~25 minutes, which
+            // is a poor reply to one request that timed out.
+            Err(error) if is_transient_fetch_error(error.as_ref()) => {
+                return self.wait_for_the_feed_or_walk(error.as_ref());
+            }
+            // An answer, and a wrong one (a rejected cursor, a reply that does not parse, a 4xx):
+            // the feed is up, asking again would be told the same, and the tree is walked.
             Err(error) => {
+                self.note_feed_answered();
                 return Ok(IncrementalOutcome::Fallback(format!(
                     "events fetch failed: {error}"
                 )));
@@ -6851,6 +6986,90 @@ impl<C: ProtonClient> PairPass<'_, C> {
                 debug!(%error, "could not list the remote root to learn which node it is");
                 None
             }
+        }
+    }
+
+    /// The fetch got no answer ([`crate::events::TransientFetchError`]): hold this pass, or — when
+    /// the feed has now been silent for [`PairRuntime::feed_outage_bound`] — walk the tree.
+    ///
+    /// **Holding** returns [`FeedUnanswered`] and touches nothing: not the cursor, not a latch
+    /// (`is_first_reconcile`, `force_local_rescan`, the pending changes and deletions are all still
+    /// owed), not `last_sync`, `last_error` or a history row. Planning against a remote view that is
+    /// not current could upload over a newer remote edit, so the pass does nothing and the pair's own
+    /// poll asks again in 30 s — one lost request costs one poll, not a walk. The cause is said once
+    /// at `warn` (a changed cause speaks again) and is **not** published as `last_error`: a single
+    /// timeout is not something a person must act on.
+    ///
+    /// **Walking** is the old behaviour, taken only after a bound of failures in a row: the CLI may
+    /// work when the feed does not. It does say so — `last_error` carries the sentence until the feed
+    /// answers — and it restarts the wait, so a feed that stays down walks at most once per bound
+    /// instead of once per poll.
+    fn wait_for_the_feed_or_walk(
+        &mut self,
+        error: &(dyn std::error::Error + 'static),
+    ) -> AppResult<IncrementalOutcome> {
+        let cause = transient_fetch_cause(error)
+            .unwrap_or("no answer")
+            .to_owned();
+        let now = Instant::now();
+        let bound = self.pair.feed_outage_bound;
+        let outage = self.pair.feed_outage.get_or_insert(FeedOutage {
+            since: now,
+            last_failure: now,
+            reported: None,
+            degraded: None,
+        });
+        // "In a row" is measured between the failures: a pair that was paused for an hour, or
+        // that spent twenty minutes walking, did not ask the feed in between. Only the wait
+        // starts over; what was reported and the walk's `degraded` note stand until the feed answers.
+        if now.saturating_duration_since(outage.last_failure) > bound {
+            outage.since = now;
+        }
+        outage.last_failure = now;
+        let waited = now.saturating_duration_since(outage.since);
+        if waited >= bound {
+            outage.since = now;
+            let said = format!(
+                "Proton's change feed has not answered for {} ({cause}), so this folder is \
+                 synced by walking the whole tree instead; it goes back to following changes \
+                 once the feed answers",
+                describe_wait(waited)
+            );
+            outage.degraded = Some(said.clone());
+            warn!(
+                %cause,
+                waited = %describe_wait(waited),
+                "Proton's change feed stayed silent past its bound; walking the tree instead, and \
+                 asking the feed again afterwards"
+            );
+            // Visible from the moment the walk starts, not only when it ends.
+            self.pair.last_error = Some(said);
+            self.publish_status();
+            return Ok(IncrementalOutcome::Fallback(format!(
+                "events fetch failed: {error}; the change feed has not answered for {}",
+                describe_wait(waited)
+            )));
+        }
+        if outage.reported.as_deref() != Some(cause.as_str()) {
+            warn!(
+                %cause,
+                %error,
+                bound = %describe_wait(bound),
+                "Proton's change feed did not answer; this pass is skipped and the next poll asks \
+                 again (the tree is walked instead if it stays silent for the bound)"
+            );
+            outage.reported = Some(cause.clone());
+        }
+        Err(Box::new(FeedUnanswered { cause }))
+    }
+
+    /// The fetch got an answer — a delta, or a refusal; either way the feed is up. Ends the wait and,
+    /// if it had been reported, says so once.
+    fn note_feed_answered(&mut self) {
+        if let Some(outage) = self.pair.feed_outage.take()
+            && outage.reported.is_some()
+        {
+            info!("Proton's change feed answers again");
         }
     }
 
@@ -12674,9 +12893,23 @@ mod tests {
         fn expect_clean(self, context: &str);
         /// The counterpart: the pass ran to the end with exactly `failed` item failures.
         fn expect_partial(self, failed: usize, context: &str);
+        /// The pass did not run: the change feed did not answer, and the wait is within its bound
+        /// ([`FeedUnanswered`]). Not a clean pass and not a failed one — the third thing.
+        fn expect_held(self, context: &str);
     }
 
     impl ExpectCleanPass for AppResult<PassOutcome> {
+        #[track_caller]
+        fn expect_held(self, context: &str) {
+            match self {
+                Err(error) if is_feed_unanswered_error(error.as_ref()) => {}
+                Err(error) => panic!("{context}: expected a held pass, got the error: {error}"),
+                Ok(outcome) => {
+                    panic!("{context}: expected a held pass, the pass ran to the end: {outcome:?}")
+                }
+            }
+        }
+
         #[track_caller]
         fn expect_clean(self, context: &str) {
             match self.unwrap_or_else(|error| panic!("{context}: {error}")) {
@@ -20504,9 +20737,70 @@ mod tests {
         /// Runs at the start of every `events_since`: how something happens between the check at
         /// the top of an event-driven pass and its local scan.
         on_events_since: EventsSinceHook,
+        /// What the next `events_since` calls do, ahead of `fail_since` and the pages.
+        since_script: SinceScript,
+    }
+
+    /// One scripted answer of [`FakeEventSource::events_since`].
+    enum SinceStep {
+        /// Answers as the source was built to (a page, or "no changes").
+        Answer,
+        /// Fails as a request that got no answer does: a [`crate::events::TransientFetchError`]
+        /// carrying this cause label.
+        Transient(&'static str),
+        /// Fails as an answer that is wrong does: a plain error, which the daemon must still treat
+        /// as a reason to walk.
+        Definitive,
+    }
+
+    /// The scripted answers of a [`FakeEventSource`], consumed front-first; once drained every call
+    /// answers normally. A handle: clone it before the source is boxed, then script and read it
+    /// from the test.
+    #[derive(Clone, Default)]
+    struct SinceScript {
+        steps: Arc<Mutex<Vec<SinceStep>>>,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl SinceScript {
+        fn fail_transiently(&self, times: usize, cause: &'static str) {
+            let mut steps = self.steps.lock().expect("script lock");
+            steps.extend((0..times).map(|_| SinceStep::Transient(cause)));
+        }
+
+        fn fail_definitively(&self, times: usize) {
+            let mut steps = self.steps.lock().expect("script lock");
+            steps.extend((0..times).map(|_| SinceStep::Definitive));
+        }
+
+        fn answer(&self, times: usize) {
+            let mut steps = self.steps.lock().expect("script lock");
+            steps.extend((0..times).map(|_| SinceStep::Answer));
+        }
+
+        /// How many times `events_since` was asked, scripted or not.
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+
+        fn next(&self) -> SinceStep {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let mut steps = self.steps.lock().expect("script lock");
+            if steps.is_empty() {
+                SinceStep::Answer
+            } else {
+                steps.remove(0)
+            }
+        }
     }
 
     impl FakeEventSource {
+        /// The handle that scripts this source's `events_since`, for a test to keep after the source
+        /// is boxed.
+        fn since_script(&self) -> SinceScript {
+            self.since_script.clone()
+        }
+
         fn new(latest: &str) -> Self {
             Self {
                 pages: Mutex::new(Vec::new()),
@@ -20514,6 +20808,7 @@ mod tests {
                 scripted_latest: Mutex::new(Vec::new()),
                 fail_since: false,
                 on_events_since: Arc::new(Mutex::new(None)),
+                since_script: SinceScript::default(),
             }
         }
 
@@ -20524,6 +20819,7 @@ mod tests {
                 scripted_latest: Mutex::new(Vec::new()),
                 fail_since: false,
                 on_events_since: Arc::new(Mutex::new(None)),
+                since_script: SinceScript::default(),
             }
         }
 
@@ -20536,6 +20832,7 @@ mod tests {
                 scripted_latest: Mutex::new(scripted),
                 fail_since: false,
                 on_events_since: Arc::new(Mutex::new(None)),
+                since_script: SinceScript::default(),
             }
         }
 
@@ -20546,6 +20843,7 @@ mod tests {
                 scripted_latest: Mutex::new(Vec::new()),
                 fail_since: true,
                 on_events_since: Arc::new(Mutex::new(None)),
+                since_script: SinceScript::default(),
             }
         }
 
@@ -20574,6 +20872,18 @@ mod tests {
         fn events_since(&self, _volume_id: &str, cursor: &str) -> AppResult<VolumeEventPage> {
             if let Some(hook) = self.on_events_since.lock().expect("hook lock").as_mut() {
                 hook();
+            }
+            match self.since_script.next() {
+                SinceStep::Answer => {}
+                SinceStep::Transient(cause) => {
+                    return Err(Box::new(crate::events::TransientFetchError::new(
+                        cause,
+                        format!("curl failed (exit status: 28): [{cause}]"),
+                    )));
+                }
+                SinceStep::Definitive => {
+                    return Err(boxed_error("events fetch definitively refused"));
+                }
             }
             if self.fail_since {
                 return Err(boxed_error("events fetch boom"));
@@ -22940,6 +23250,20 @@ mod tests {
         String,
         String,
     ) {
+        warm_start_fixture_with(directory, FakeEventSource::new("cursor-0"))
+    }
+
+    /// [`warm_start_fixture`] over a given event source, for a test that scripts what it answers.
+    fn warm_start_fixture_with(
+        directory: &tempfile::TempDir,
+        source: FakeEventSource,
+    ) -> (
+        Daemon<EventFakeClient>,
+        Arc<AtomicUsize>,
+        Arc<AtomicUsize>,
+        String,
+        String,
+    ) {
         let local_root = directory.path().join("local");
         fs::create_dir(&local_root).expect("local root");
         let old = sha1_bytes(b"keep");
@@ -22959,18 +23283,590 @@ mod tests {
         let mut config = event_config(directory.path(), &local_root);
         // The shared fixtures default warm start OFF; the warm-start tests opt in explicitly.
         config.warm_start.enabled = true;
-        let daemon = Daemon::with_client_and_event_source(
-            config,
-            client,
-            Some(Box::new(FakeEventSource::new("cursor-0"))),
-        )
-        .expect("daemon");
+        let daemon = Daemon::with_client_and_event_source(config, client, Some(Box::new(source)))
+            .expect("daemon");
         upsert_record(
             &daemon.pair().connection,
             &base_record("keep.txt", Some("vol~nk"), old.as_str()),
         )
         .expect("seed keep record");
         (daemon, full_walks, directory_lists, old, edited)
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // A change feed that does not answer. One lost request is not a reason to walk a tree for
+    // twenty-five minutes: the pass is held, the pair is exactly where it was, and the poll asks
+    // again. After a bounded time the walk comes back, because the CLI may work when the feed does
+    // not; a definitive answer (a rejected cursor, a malformed reply) walks at once, as before.
+    // ---------------------------------------------------------------------------------------
+
+    const TIMED_OUT: &str = "curl exit 28 (timed out)";
+
+    /// The event cursor row for the fixtures' volume, as `(last event id, updated_at)`.
+    fn cursor_row(daemon: &Daemon<EventFakeClient>) -> Option<(String, i64)> {
+        load_event_cursor(&daemon.pair().connection, "vol")
+            .expect("cursor read")
+            .map(|cursor| (cursor.last_event_id, cursor.updated_at))
+    }
+
+    fn recorded_digest(daemon: &Daemon<EventFakeClient>) -> Option<String> {
+        get_record(&daemon.pair().connection, Path::new("keep.txt"))
+            .expect("get record")
+            .expect("keep.txt is recorded")
+            .sha1_hash
+    }
+
+    /// A pair past its first pass (so its passes are steady-state incremental ones) with a stored
+    /// cursor, a local edit queued for upload, and a lost-event rescan pending — everything a held
+    /// pass must leave exactly as it found it.
+    fn steady_feed_fixture(
+        directory: &tempfile::TempDir,
+        source: FakeEventSource,
+    ) -> (
+        Daemon<EventFakeClient>,
+        Arc<AtomicUsize>,
+        Arc<AtomicUsize>,
+        String,
+    ) {
+        let (mut daemon, full_walks, directory_lists, old, edited) =
+            warm_start_fixture_with(directory, source);
+        store_event_cursor(
+            &daemon.pair().connection,
+            "vol",
+            "cursor-0",
+            current_epoch_secs() as i64,
+        )
+        .expect("seed cursor");
+        let pair = daemon.pair_mut();
+        pair.is_first_reconcile = false;
+        pair.incremental_passes_since_full_scan = 0;
+        pair.force_local_rescan = true;
+        pair.pending_changes.insert(PathBuf::from("keep.txt"));
+        assert_ne!(old, edited);
+        (daemon, full_walks, directory_lists, old)
+    }
+
+    /// Backdates the wait on the feed, so a test crosses the bound without sleeping through it.
+    fn age_feed_outage(daemon: &mut Daemon<EventFakeClient>, by: Duration) {
+        let outage = daemon
+            .pair_mut()
+            .feed_outage
+            .as_mut()
+            .expect("the feed is being waited on");
+        outage.since = outage
+            .since
+            .checked_sub(by)
+            .expect("the monotonic clock is older than the shift");
+    }
+
+    #[test]
+    fn a_transient_feed_failure_on_a_warm_start_holds_the_pass_and_changes_nothing() {
+        // The live failure (2026-10-10 23:33): a restart, a warm start, one fetch that timed out —
+        // and a 25-minute walk. The pass must end where it began instead.
+        let directory = tempdir().expect("tempdir");
+        let source = FakeEventSource::new("cursor-0");
+        let script = source.since_script();
+        let (mut daemon, full_walks, directory_lists, old, edited) =
+            warm_start_fixture_with(&directory, source);
+        store_event_cursor(
+            &daemon.pair().connection,
+            "vol",
+            "cursor-0",
+            current_epoch_secs() as i64,
+        )
+        .expect("seed fresh cursor");
+        let cursor_before = cursor_row(&daemon);
+        daemon
+            .pair_mut()
+            .pending_changes
+            .insert(PathBuf::from("keep.txt"));
+        script.fail_transiently(1, TIMED_OUT);
+
+        daemon
+            .reconcile_blocking()
+            .expect_held("the feed timed out on the warm start");
+
+        assert_eq!(full_walks.load(Ordering::SeqCst), 0, "no full walk");
+        assert_eq!(
+            directory_lists.load(Ordering::SeqCst),
+            0,
+            "no listing at all"
+        );
+        assert_eq!(
+            cursor_row(&daemon),
+            cursor_before,
+            "the cursor did not move"
+        );
+        assert!(
+            daemon.pair().is_first_reconcile,
+            "it is still a first pass, which is what forces the local scan"
+        );
+        assert!(
+            daemon
+                .pair()
+                .pending_changes
+                .contains(Path::new("keep.txt")),
+            "the queued change waits for the pass that can act on it"
+        );
+        assert_eq!(
+            recorded_digest(&daemon),
+            Some(old),
+            "nothing was planned or uploaded against a remote view that is not current"
+        );
+        assert_eq!(daemon.pair().warm_starts_since_full_walk, 0);
+        assert_eq!(
+            load_warm_start_count(&daemon.pair().connection).expect("count"),
+            0
+        );
+
+        // The next poll: the feed answers, and the warm start completes as it would have.
+        daemon
+            .reconcile_blocking()
+            .expect_clean("the retry completes the warm start");
+        assert_eq!(script.calls(), 2, "asked again, once");
+        assert!(!daemon.pair().is_first_reconcile);
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            0,
+            "and it is still a warm start: the walk was never needed"
+        );
+        assert_eq!(
+            recorded_digest(&daemon),
+            Some(edited),
+            "the forced local scan caught and uploaded the offline edit"
+        );
+        assert_eq!(daemon.pair().warm_starts_since_full_walk, 1);
+        assert!(
+            daemon.pair().feed_outage.is_none(),
+            "an answer ends the wait"
+        );
+    }
+
+    #[test]
+    fn a_transient_feed_failure_in_a_steady_state_pass_holds_it_and_changes_nothing() {
+        let directory = tempdir().expect("tempdir");
+        let source = FakeEventSource::new("cursor-0");
+        let script = source.since_script();
+        let (mut daemon, full_walks, directory_lists, old) =
+            steady_feed_fixture(&directory, source);
+        let cursor_before = cursor_row(&daemon);
+        script.fail_transiently(1, TIMED_OUT);
+
+        daemon
+            .reconcile_blocking()
+            .expect_held("the feed timed out in a steady-state pass");
+
+        assert_eq!(full_walks.load(Ordering::SeqCst), 0);
+        assert_eq!(directory_lists.load(Ordering::SeqCst), 0);
+        assert_eq!(cursor_row(&daemon), cursor_before);
+        assert!(
+            daemon.pair().force_local_rescan,
+            "a rescan that was owed is still owed"
+        );
+        assert!(
+            daemon
+                .pair()
+                .pending_changes
+                .contains(Path::new("keep.txt"))
+        );
+        assert_eq!(
+            daemon.pair().incremental_passes_since_full_scan,
+            0,
+            "a pass that did not run is not counted"
+        );
+        assert_eq!(recorded_digest(&daemon), Some(old), "nothing was uploaded");
+
+        daemon
+            .reconcile_blocking()
+            .expect_clean("the next poll goes through");
+        assert!(!daemon.pair().force_local_rescan, "and settles the rescan");
+        assert!(daemon.pair().pending_changes.is_empty());
+        assert_eq!(full_walks.load(Ordering::SeqCst), 0, "without a walk");
+        assert_eq!(daemon.pair().incremental_passes_since_full_scan, 1);
+    }
+
+    #[test]
+    fn a_held_pass_leaves_none_of_the_marks_of_a_pass() {
+        // Nothing ran, so nothing may say that something did: not a sync time, not an error, not a
+        // history row, and — because the desktop app's first-sync dialog and `proton-sync syncnow`
+        // both read it as "the attempt finished" — not a bump of the pass counter.
+        let directory = tempdir().expect("tempdir");
+        let source = FakeEventSource::new("cursor-0");
+        let script = source.since_script();
+        let (mut daemon, _walks, _lists, _old) = steady_feed_fixture(&directory, source);
+        daemon.pair_mut().last_failed_items = vec![FailedItem {
+            path: PathBuf::from("stuck.txt"),
+            action: SyncAction::Upload,
+            error: "earlier failure".to_owned(),
+        }];
+        daemon.pair_mut().last_failed_item_count = 3;
+        let history_before = daemon.pair().status_history.len();
+        let seq_before = daemon.shared.pair().reconcile_seq.load(Ordering::SeqCst);
+        script.fail_transiently(1, TIMED_OUT);
+
+        daemon.reconcile_blocking().expect_held("held");
+
+        assert!(daemon.pair().last_sync.is_none(), "no sync happened");
+        assert_eq!(daemon.pair().last_error, None, "and nothing failed");
+        assert_eq!(
+            daemon.pair().status_history.len(),
+            history_before,
+            "no status-history entry"
+        );
+        assert!(
+            recent_passes(&daemon.pair().connection, 10)
+                .expect("history")
+                .is_empty(),
+            "no sync_passes row"
+        );
+        assert_eq!(
+            daemon.shared.pair().reconcile_seq.load(Ordering::SeqCst),
+            seq_before,
+            "the pass counter did not move, so no client is told an attempt finished"
+        );
+        assert_eq!(
+            daemon.pair().last_failed_item_count,
+            3,
+            "what the last real pass could not do is still true, and still shown"
+        );
+        assert_eq!(daemon.pair().last_failed_items.len(), 1);
+        assert!(
+            !daemon.shared.pair().is_syncing(),
+            "and the pair is idle again"
+        );
+    }
+
+    #[test]
+    fn a_held_pass_seals_a_booked_apply_as_failed_with_the_reason() {
+        // An apply is a request a client polls with no deadline. A held pass consumed it, so it must
+        // answer it — and say the true thing, that nothing was applied.
+        let directory = tempdir().expect("tempdir");
+        let source = FakeEventSource::new("cursor-0");
+        let script = source.since_script();
+        let (mut daemon, _walks, _lists, _old) = steady_feed_fixture(&directory, source);
+        daemon.shared.pair().book_plan_request();
+        run_plan_pass(&mut daemon);
+        let token = computed_plan(&daemon.shared).token;
+        let apply_seq = daemon
+            .shared
+            .pair()
+            .book_apply_request(&token, false)
+            .expect("token accepted");
+        script.fail_transiently(1, TIMED_OUT);
+
+        daemon.reconcile_blocking().expect_held("held");
+
+        match daemon.shared.pair().apply_outcome().expect("a verdict") {
+            ApplyOutcome::Failed {
+                apply_seq: sealed,
+                error,
+            } => {
+                assert_eq!(sealed, apply_seq);
+                assert!(error.contains("change feed did not answer"), "{error}");
+            }
+            other => panic!("expected a failed verdict, got {other:?}"),
+        }
+        assert_eq!(daemon.pair().pass_intent, PassIntent::Sync);
+    }
+
+    #[test]
+    fn a_page_lost_part_way_through_a_fetch_applies_nothing() {
+        // The delta is all-or-nothing: a second page that never arrives must not leave the first
+        // one's changes applied to a map that is then planned against.
+        let directory = tempdir().expect("tempdir");
+        let first = VolumeEventPage {
+            more: true,
+            ..one_page(
+                "cursor-1",
+                vec![change(RemoteChangeKind::Created, "nnew", None, false)],
+            )
+        };
+        let source = FakeEventSource::with_pages("cursor-0", vec![first]);
+        let script = source.since_script();
+        let (mut daemon, full_walks, directory_lists, _old) =
+            steady_feed_fixture(&directory, source);
+        let cursor_before = cursor_row(&daemon);
+        script.answer(1);
+        script.fail_transiently(1, TIMED_OUT);
+
+        daemon
+            .reconcile_blocking()
+            .expect_held("page two timed out");
+
+        assert_eq!(script.calls(), 2, "both pages were asked for");
+        assert_eq!(cursor_row(&daemon), cursor_before);
+        assert_eq!(full_walks.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            directory_lists.load(Ordering::SeqCst),
+            0,
+            "nothing was resolved"
+        );
+    }
+
+    #[test]
+    fn a_feed_that_stays_down_past_the_bound_walks_and_says_so() {
+        let directory = tempdir().expect("tempdir");
+        let source = FakeEventSource::new("cursor-0");
+        let script = source.since_script();
+        let (mut daemon, full_walks, _lists, _old, edited) =
+            warm_start_fixture_with(&directory, source);
+        store_event_cursor(
+            &daemon.pair().connection,
+            "vol",
+            "cursor-0",
+            current_epoch_secs() as i64,
+        )
+        .expect("seed fresh cursor");
+        daemon.pair_mut().feed_outage_bound = Duration::from_secs(1);
+        script.fail_transiently(3, TIMED_OUT);
+
+        daemon.reconcile_blocking().expect_held("within the bound");
+        assert_eq!(full_walks.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            daemon.pair().last_error,
+            None,
+            "a first failure is not published"
+        );
+
+        // The bound passes: the CLI may work when the feed does not, so walk — as before.
+        age_feed_outage(&mut daemon, Duration::from_secs(5));
+        daemon
+            .reconcile_blocking()
+            .expect_clean("past the bound the pass walks");
+        assert_eq!(full_walks.load(Ordering::SeqCst), 1, "one walk");
+        assert!(
+            !daemon.pair().is_first_reconcile,
+            "the walk was the first pass"
+        );
+        assert_eq!(recorded_digest(&daemon), Some(edited), "and it synced");
+        let said = daemon
+            .pair()
+            .last_error
+            .clone()
+            .expect("the feed is reported");
+        assert!(
+            said.contains("change feed has not answered"),
+            "last_error says which thing is wrong: {said}"
+        );
+
+        // Still down: the clock restarted with the walk, so the next poll waits instead of walking
+        // again, and a held pass does not take the report away.
+        daemon.reconcile_blocking().expect_held("a new wait begins");
+        assert_eq!(full_walks.load(Ordering::SeqCst), 1, "no second walk");
+        assert_eq!(daemon.pair().last_error.as_deref(), Some(said.as_str()));
+
+        // The feed answers: the report goes with the pass that proves it.
+        daemon.reconcile_blocking().expect_clean("the feed is back");
+        assert_eq!(daemon.pair().last_error, None);
+        assert!(daemon.pair().feed_outage.is_none());
+        assert_eq!(full_walks.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_wait_spread_over_many_polls_still_reaches_the_bound() {
+        // Each failure is a poll after the last, so no gap between two of them is long; it is the
+        // sum that reaches the bound. A gap measured from the wrong failure resets the wait before it
+        // can, and a feed that stays down would then never walk.
+        let directory = tempdir().expect("tempdir");
+        let source = FakeEventSource::new("cursor-0");
+        let script = source.since_script();
+        let (mut daemon, full_walks, _lists, _old) = steady_feed_fixture(&directory, source);
+        daemon.pair_mut().feed_outage_bound = Duration::from_secs(1);
+        script.fail_transiently(3, TIMED_OUT);
+        let a_poll_passes = |daemon: &mut Daemon<EventFakeClient>| {
+            let outage = daemon.pair_mut().feed_outage.as_mut().expect("waiting");
+            let poll = Duration::from_millis(600);
+            outage.since = outage.since.checked_sub(poll).expect("clock");
+            outage.last_failure = outage.last_failure.checked_sub(poll).expect("clock");
+        };
+
+        daemon.reconcile_blocking().expect_held("the first failure");
+        a_poll_passes(&mut daemon);
+        daemon
+            .reconcile_blocking()
+            .expect_held("0.6 s into the wait");
+        a_poll_passes(&mut daemon);
+        assert_eq!(full_walks.load(Ordering::SeqCst), 0);
+
+        daemon
+            .reconcile_blocking()
+            .expect_clean("1.2 s of failures in a row, each only 0.6 s after the last");
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            1,
+            "so the tree is walked"
+        );
+    }
+
+    #[test]
+    fn failures_are_in_a_row_only_while_the_feed_is_being_asked() {
+        // A pair paused for an hour was not asking. Its last failure, an hour old, is no evidence
+        // about now: the first failure after the resume starts a wait, it does not end one.
+        let directory = tempdir().expect("tempdir");
+        let source = FakeEventSource::new("cursor-0");
+        let script = source.since_script();
+        let (mut daemon, full_walks, _lists, _old) = steady_feed_fixture(&directory, source);
+        daemon.pair_mut().feed_outage_bound = Duration::from_secs(1);
+        script.fail_transiently(2, TIMED_OUT);
+
+        daemon.reconcile_blocking().expect_held("the first failure");
+        let outage = daemon.pair_mut().feed_outage.as_mut().expect("waiting");
+        let hour = Duration::from_secs(3600);
+        outage.since = outage.since.checked_sub(hour).expect("clock");
+        outage.last_failure = outage.last_failure.checked_sub(hour).expect("clock");
+
+        daemon
+            .reconcile_blocking()
+            .expect_held("an hour of silence is not an hour of failures");
+        assert_eq!(full_walks.load(Ordering::SeqCst), 0);
+        assert_eq!(daemon.pair().last_error, None);
+    }
+
+    #[test]
+    fn a_definitive_feed_error_walks_at_once_even_while_the_feed_is_being_waited_on() {
+        // An answer, however unwelcome, means the feed is up: what it said is wrong, and asking
+        // again would be told the same.
+        let directory = tempdir().expect("tempdir");
+        let source = FakeEventSource::new("cursor-0");
+        let script = source.since_script();
+        let (mut daemon, full_walks, _lists, _old) = steady_feed_fixture(&directory, source);
+        script.fail_transiently(1, TIMED_OUT);
+        script.fail_definitively(1);
+
+        daemon
+            .reconcile_blocking()
+            .expect_held("first the feed is silent");
+        assert!(daemon.pair().feed_outage.is_some());
+        assert_eq!(full_walks.load(Ordering::SeqCst), 0);
+
+        daemon
+            .reconcile_blocking()
+            .expect_clean("then it answers, and refuses");
+        assert_eq!(
+            full_walks.load(Ordering::SeqCst),
+            1,
+            "so the tree is walked"
+        );
+        assert!(
+            daemon.pair().feed_outage.is_none(),
+            "a refusal is an answer: the wait is over"
+        );
+        assert_eq!(daemon.pair().last_error, None, "and the feed is not blamed");
+    }
+
+    #[test]
+    fn a_cause_is_logged_once_and_again_when_it_changes() {
+        let directory = tempdir().expect("tempdir");
+        let source = FakeEventSource::new("cursor-0");
+        let script = source.since_script();
+        let (mut daemon, _walks, _lists, _old) = steady_feed_fixture(&directory, source);
+        script.fail_transiently(3, TIMED_OUT);
+        script.fail_transiently(1, "HTTP 503");
+
+        let log = capture_log("info", || {
+            for _ in 0..4 {
+                daemon.reconcile_blocking().expect_held("held");
+            }
+            // Recovery is said once, and a later outage with the first cause is a new one.
+            daemon.reconcile_blocking().expect_clean("the feed is back");
+            script.fail_transiently(1, TIMED_OUT);
+            daemon
+                .pair_mut()
+                .pending_changes
+                .insert(PathBuf::from("keep.txt"));
+            daemon.reconcile_blocking().expect_held("down again");
+        });
+
+        let says = |needle: &str| {
+            log.lines()
+                .filter(|line| line.contains("change feed did not answer") && line.contains(needle))
+                .count()
+        };
+        assert_eq!(
+            says(TIMED_OUT),
+            2,
+            "three failures are one line; a new outage is another: {log}"
+        );
+        assert_eq!(says("HTTP 503"), 1, "a changed cause speaks again: {log}");
+        assert_eq!(log.matches("change feed answers again").count(), 1, "{log}");
+        assert!(
+            log.lines()
+                .filter(|line| line.contains("change feed did not answer"))
+                .all(|line| line.contains(" WARN ")),
+            "a held pass is a warning, not an error: {log}"
+        );
+    }
+
+    #[test]
+    fn a_pair_waiting_on_the_feed_does_not_delay_the_pair_behind_it() {
+        // Passes are serialized, so a pass that waited, retried or slept would hold up every pair
+        // behind it. The held pass ends, the pair is re-armed at its own cadence, and the next
+        // pair takes its turn in the same step.
+        let directory = tempdir().expect("tempdir");
+        let mut configs = pair_configs(directory.path(), &["a", "b"]);
+        configs[0].events_driven = true;
+        let mut client = MultiRootClient::default();
+        for config in &configs {
+            fs::write(config.local_root.join("f.txt"), b"f").expect("local file");
+            client = client.with_tree(
+                &config.remote_root,
+                vec![remote_file_entity(
+                    "f.txt",
+                    &format!("vol~n{}", config.name),
+                    &sha1_bytes(b"f"),
+                )],
+            );
+        }
+        let source = FakeEventSource::new("cursor-0");
+        let script = source.since_script();
+        let mut daemon = multi_pair_daemon(configs, client.clone(), Some(Box::new(source)));
+        let mut stepper = Stepper::new(&mut daemon);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "boot");
+        client.clear_walks();
+        let boot_seq = |daemon: &Daemon<MultiRootClient>, pair: usize| {
+            daemon.shared.pairs[pair]
+                .reconcile_seq
+                .load(Ordering::SeqCst)
+        };
+        assert_eq!((boot_seq(&daemon, 0), boot_seq(&daemon, 1)), (1, 1));
+        script.fail_transiently(1, TIMED_OUT);
+
+        // `a` polls every 30 s and `b` snapshots every 300 s: both are due, `a` first.
+        stepper.clock.advance(Duration::from_secs(301));
+        let log = capture_log("warn", || {
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        });
+
+        assert!(
+            !log.contains("scheduled reconciliation failed"),
+            "a held pass is not an error the loop reports every poll: {log}"
+        );
+        assert_eq!(
+            log.lines()
+                .filter(|line| line.contains("change feed did not answer")
+                    && line.contains("pair{name=a}"))
+                .count(),
+            1,
+            "and it is said once, naming its pair: {log}"
+        );
+        assert_eq!(script.calls(), 1, "a asked the feed once");
+        assert_eq!(
+            client.walks(),
+            [remote_root_of("b")],
+            "a did not walk, and b was not made to wait behind it"
+        );
+        assert_eq!(
+            (boot_seq(&daemon, 0), boot_seq(&daemon, 1)),
+            (1, 2),
+            "b finished a pass; a's was held, which is not one"
+        );
+
+        // `a` is re-armed at its poll: 30 s on, it asks again and gets through.
+        stepper.clock.advance(Duration::from_secs(30));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(script.calls(), 2);
+        assert_eq!(boot_seq(&daemon, 0), 2);
+        assert_eq!(client.walks(), [remote_root_of("b")], "still no walk of a");
     }
 
     #[test]

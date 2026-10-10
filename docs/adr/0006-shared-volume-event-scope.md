@@ -322,7 +322,9 @@ leaves out is listed at the top of the file.
   folder that vanished) still do, whatever else the pass skipped. #30, the bootstrap's pre-walk
   anchoring (#294, #303), selective sync and the plan pass (which still full-walks and learns
   nothing) are untouched.
-- **What still walks.** A fetch error or a server refresh; a `Created` node absent from its known
+- **What still walks.** A fetch the server answered with an error (a rejected cursor, a reply that
+  does not parse, a `4xx`) or a server refresh — a fetch that got no answer waits instead, and walks
+  only after ten minutes of silence (ADR 0004); a `Created` node absent from its known
   parent's listing (#30); an event about the pair's own root; a directory moved in or restored; a
   duplicate id in the baseline; a tree with a directory that has no composed id (the window between
   the daemon making a folder and its own event arriving); a record in a folder with no row; a

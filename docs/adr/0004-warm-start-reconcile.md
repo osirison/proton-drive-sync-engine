@@ -49,11 +49,41 @@ A warm start is attempted on the first pass only when **all** hold, else the pas
 4. The across-restart floor is not due — `warm_starts_since_full_walk < warm_start_full_walk_every`
    (default 30).
 
-Any doubt during the pass (no cursor, server refresh, events error, unresolvable node, a `Created`
-node its parent listing has not caught up with yet) falls back
+Any doubt during the pass (no cursor, server refresh, an events error the server answered,
+unresolvable node, a `Created` node its parent listing has not caught up with yet) falls back
 to a bootstrap exactly as a steady-state incremental pass does. (A node elsewhere on a shared
 volume is not doubt once the pair's own tree is fully named and held, for a pair without include rules: ADR 0006. Before that, a restart
 walked for every foreign node in the delta since the cursor.)
+
+**A fetch that gets no answer is not doubt about the cursor.** The live restart of 2026-10-10 is
+the case: the warm start's one events request timed out after 30 s, the pass read that as doubt and
+bootstrapped, and a 957-folder pair walked its tree for ~25 minutes while every other pair waited
+(passes are serialized). The journal holds eight such walks in three weeks, 3.8 hours. A request
+that timed out, was cut off or could not connect (curl exit 6, 7, 18, 28, 35, 52, 55, 56, 92), or that
+the server answered with `429` or `5xx`, says nothing about the cursor or the tree, so the pass is
+**held** instead:
+
+- It ends having touched nothing: no plan against a remote view that is not current (that could
+  upload over a newer remote edit), no cursor move, no latch cleared — `is_first_reconcile`,
+  `force_local_rescan` and the pending changes and deletions all stay owed — and no `last_sync`,
+  `last_error`, history row or bump of the pass counter (a client that waits on the counter keeps
+  waiting for the pass that runs, rather than being told a sync completed).
+- The pair is re-armed at its normal cadence, so the next attempt is the next 30 s poll, and a held
+  warm start completes as a warm start.
+- After **ten minutes** of failures in a row (`FEED_OUTAGE_BOUND`; monotonic, per pair) it walks as it
+  always did, because the CLI may work when the feed does not, and `last_error` says the feed has not
+  answered until it does. The walk restarts the wait, so a feed that stays down walks at most once
+  per bound. Ten minutes because a walk costs 25 to 31 minutes, and of the journal's ten episodes
+  seven were followed by a walk after the first failure (how long the feed would have stayed silent
+  is unknown) and three kept failing — for 2.6, 8.9 and 32.6 minutes — because the walk failed too.
+  These are mostly outages and not lost packets: in 20 of the 25 timeouts the very next request (the
+  bootstrap's cursor capture) failed as well. That is why the hold is a bounded wait and not a
+  single retry, and why the walk it ends in is kept: on 2026-10-07 at 15:20 the feed timed out
+  twice and the 28-minute walk through the CLI that followed completed. (From 18:02 to 18:34 the same
+  day the CLI failed too, which is why a feed that stays down walks at most once per bound.)
+- A definitive answer — a cursor the server rejects, a reply that does not parse, a `4xx` other than
+  `429` (a `401` is retried once with a fresh session first) — walks at once, as before. Any answer
+  ends the wait.
 
 Two safety bounds, both new surface:
 

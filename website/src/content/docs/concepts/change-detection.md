@@ -54,9 +54,26 @@ Concretely, the engine:
 A periodic full-tree scan can be re-enabled as a reconvergence backstop
 (`--events-full-scan-every N`), but it is **off by default** — after the mandatory startup
 snapshot the daemon stays purely event-driven until it is restarted or the event stream forces
-a fallback (no cursor, fetch error, a node it cannot place, …). The **first reconcile after the
-daemon starts is always a full scan** — a fresh process has no pending-change history, so it
-can't safely trust an incremental pass alone.
+a fallback (no cursor, an error the server answered with, a node it cannot place, …). The **first
+reconcile after the daemon starts is always a full scan** — a fresh process has no pending-change
+history, so it can't safely trust an incremental pass alone.
+
+#### When Proton's event stream does not answer
+
+A request that times out, is cut off, can't connect, or gets a "try again later" from the server
+(HTTP 429 or a 5xx) tells the engine nothing about what changed. Walking a large folder in reply
+takes about half an hour, so the engine doesn't: that sync pass is **skipped**, nothing is planned
+or changed, and the next poll — thirty seconds later — asks again. A skipped pass leaves nothing
+behind: no "last synced" time, no error, no history entry. A restart that was waiting to resume
+from its saved position still resumes from it on the next try.
+
+If the stream stays silent for **ten minutes in a row**, the engine syncs by walking the tree
+instead, because the `proton-drive` CLI may work when the event stream does not. It also says so:
+the folder's last error reads "Proton's change feed has not answered for …" until the stream
+answers again. While it stays down, that walk happens at most once every ten minutes.
+
+An answer that is *wrong* — the server rejects the saved position, or the reply can't be read —
+doesn't wait: asking again would get the same reply, so the engine walks at once, as before.
 
 Event-driven mode is **on by default**. Opt out with `--no-events-driven` (or
 `events_driven = false`), which restores the byte-identical snapshot-only path.
