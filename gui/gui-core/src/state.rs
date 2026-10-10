@@ -23,7 +23,8 @@ pub enum DaemonState {
     /// starts every folder with no last sync; only a finished pass sets it), is not running one, and
     /// is not paused or failed. Its turn is coming: passes are serialized, so either another folder's
     /// pass is running (`PairState::waiting_for` names it) or the daemon has not reached this one
-    /// yet — every folder's first pass is due the moment the daemon starts.
+    /// yet. The daemon starts it by itself when it does — every folder is due at start-up, and one
+    /// resumed from a pause is reached at its next turn — so waiting never needs the person.
     ///
     /// This is the state `Idle` used to be for it: a summary has no history, so a folder waiting
     /// behind a 25 minute pass read `up to date` beside one that had never copied a file.
@@ -235,7 +236,7 @@ pub struct PairState {
 /// | 5 | `Failed` | one folder's last pass failed (or its folder is gone); never hidden behind a healthy one |
 /// | 4 | `FirstRun` | only for a folder that is alone, so never beside others |
 /// | 3 | `Running` | something is moving; a folder the person paused does not outrank it |
-/// | 2 | `Queued` | a folder that has not had its turn: below `Running`, because the pass that is moving is the news; above `Paused`, because it is about to move and a pause is the person's own doing |
+/// | 2 | `Queued` | a folder that has not had its turn: below `Running`, because the pass that is moving is the news; above `Paused`, because it is about to move and a pause is the person's own doing. It wears the syncing glyph, as `Running` does (something is syncing or about to start), and ranks below every state that asks something of the person |
 /// | 1 | `Paused` | above `Idle`, because an all-clear glyph over a folder that is not syncing is the lie to avoid; below `Queued`, because the person did it on purpose and the title names which |
 /// | 0 | `Idle` | only when every folder is |
 ///
@@ -386,8 +387,8 @@ pub fn derive(facts: &PairFacts<'_>) -> DaemonState {
     //
     // After `Failed`, so an unavailable folder or a failed first pass keeps saying so; before the
     // queue, because `pending_changes` is the watcher's count and a folder that has had no pass is
-    // not syncing it. Only beside other folders: alone, the first pass is the very next thing the
-    // daemon does and the answer stays what it was before folders existed.
+    // not syncing it. Only beside other folders: alone, there is no other folder's pass to wait for,
+    // and the answer stays what it was before folders existed (a one-folder app sees nothing new).
     if facts.peers != Peers::Alone && facts.last_sync.is_none() {
         return DaemonState::Queued;
     }
@@ -1261,5 +1262,26 @@ mod tests {
             );
         }
         assert!(!DaemonState::Queued.counters_unknown());
+    }
+
+    /// Waiting asks nothing of the person, so it never hides a state that does (or one that is
+    /// wrong): beside any of these the glyph is theirs, whichever folder is listed first.
+    #[test]
+    fn a_waiting_folder_never_outranks_a_state_that_needs_the_person() {
+        for worse in [
+            DaemonState::FirstRun,
+            DaemonState::Failed,
+            DaemonState::AuthExpired,
+            DaemonState::Unreachable,
+        ] {
+            assert!(severity(worse) > severity(DaemonState::Queued), "{worse:?}");
+            for states in [[DaemonState::Queued, worse], [worse, DaemonState::Queued]] {
+                assert_eq!(
+                    aggregate_state(DaemonState::Idle, &listed(&states)),
+                    worse,
+                    "{states:?}"
+                );
+            }
+        }
     }
 }

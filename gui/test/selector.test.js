@@ -227,7 +227,16 @@ test("the_folder_on_screen_never_marks_its_own_pill_and_the_process_wide_states_
   // The selected folder's failure is the chip and the hero, already. Signed out and unreachable are
   // process-wide: every row would say it at once, so there is no "other" folder to point at.
   assert.equal(markerOf(rowsOf(["documents", "failed"], ["photos", "idle"])), null);
-  for (const state of ["authExpired", "unreachable", "firstRun", "running", "idle", "paused", null]) {
+  for (const state of [
+    "authExpired",
+    "unreachable",
+    "firstRun",
+    "running",
+    "queued",
+    "idle",
+    "paused",
+    null,
+  ]) {
     assert.equal(markerOf(rowsOf(["documents", "idle"], ["photos", state])), null, String(state));
   }
   assert.equal(markerOf([]), null);
@@ -240,6 +249,22 @@ test("when_a_decision_waits_in_one_folder_and_another_has_failed_the_problem_for
   assert.equal(markerOf(rows), "problem");
   // And the ring is still the ring when nothing has failed.
   assert.equal(markerOf(rowsOf(["documents", "idle"], ["photos", "idle", 2])), "decision");
+});
+
+test("a_waiting_folder_marks_nothing_and_hides_no_marker_that_is_due", () => {
+  // Waiting asks nothing of the person: it draws no ring and no dot (neither needs-you form), and a folder
+  // that does need them is still marked beside it, whichever of the two is on screen (review of #459).
+  assert.equal(markerOf(rowsOf(["documents", "idle"], ["photos", "queued", 0])), null);
+  assert.equal(markerOf(rowsOf(["photos", "queued"], ["documents", "idle", 1])), "decision");
+  assert.equal(
+    markerOf(rowsOf(["documents", "idle"], ["photos", "queued"], ["archive", "idle", 1])),
+    "decision",
+  );
+  assert.equal(markerOf(rowsOf(["photos", "queued"], ["documents", "failed"])), "problem");
+  assert.equal(
+    markerOf(rowsOf(["photos", "queued"], ["documents", "failed"], ["archive", "idle", 1])),
+    "problem",
+  );
 });
 
 // ---- the list when the daemon stopped answering (the review of #447) ----

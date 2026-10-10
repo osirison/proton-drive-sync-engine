@@ -6485,8 +6485,9 @@ wizard, and the window drew that state's tray sentence at two folders.
   `ControlShared::active_pair` in the engine documents that at most one folder's `syncing` is true), so a queued
   folder waits for the folder whose summary says `syncing`. `PairState.waiting_for` and `StatusPayload.waiting_for`
   carry the name, only for a `Queued` folder. A `Queued` folder with nobody syncing has no name to give: the daemon
-  seeds every folder due at start-up and has not popped it yet. That is `starting`, and it is true because the first
-  pass of every folder is due the moment the daemon starts.
+  seeds every folder due at start-up and has not popped it yet. That is `starting`, and it is true because the daemon
+  starts a folder's first pass of the run by itself when it reaches it: every folder is due at start-up, and a folder
+  resumed from a pause is reached at its next turn (a resume schedules no pass of its own).
 - **A folder that has finished a pass stays `up to date` while another folder's pass runs.** It did finish one in this
   run, nothing the daemon has said since contradicts that, and the hero carries `last synced`. Marking every settled
   folder `waiting` for as long as another folder's pass lasts would flip the whole list on each pass and say nothing
@@ -6501,8 +6502,9 @@ wizard, and the window drew that state's tray sentence at two folders.
 | Status chip | `idle`, or `first run` | `waiting`, or `starting` |
 | Window Home | `Nothing has synced yet` / `Open Drive Sync to choose your two folders.` | `Waiting for documents` / `Folders sync one at a time. photos is waiting for documents to finish.`, or `Starting to sync` / `photos starts on its own.` |
 | Window Home, daemon lists fewer folders than the file | the tray's second sentence | `Nothing has synced yet` / `It starts on its own.` (#455: the sub-line is the window's own) |
-| Tray panel | the first-run panel with an `Open Drive Sync` button, or the settled panel | the same two sentences as the window, the needs-you form with no number and no button |
-| Tray glyph | settled (summary) or attention (described) | attention, like a folder that has not synced anything |
+| Tray panel | the first-run panel with an `Open Drive Sync` button, or the settled panel | the same two sentences as the window, the syncing mark in the settled panel's column (no seam), no number and no button; a withheld deletion or conflict in another folder is shown ahead of it, with `Review them` |
+| Window mark | the settled or the needs-you mark | the syncing mark, unmasked, with no seam and no number |
+| Tray glyph | settled (summary) or attention (described) | syncing, the pass in flight's own: something is syncing or about to start, and nothing is asked of you |
 | Tray title | `photos up to date` or `photos nothing synced yet` | `photos waiting` or `photos starting` |
 | Tray menu | no folder group when the aggregate was first-run | the folder group stays: any folder can be paused while it waits |
 | Notifications (§109) | draw no per-folder state word | unchanged |
@@ -6518,10 +6520,13 @@ name it whole. The row carries the whole word as its tooltip, and `fidelity:pair
 
 - **Rank.** `Queued` ranks strictly between `Paused` and `Running`: below, because the pass that is moving is the news
   and its panel carries the transfer rows; above, because a queued folder is about to move and a pause is the person's
-  own doing. That renumbers the table (`Unreachable 7` down to `Idle 0`, `Running 3`, `Failed 5`); every literal rank in
+  own doing. It ranks below every state that asks something of the person (`FirstRun`, `Failed`, `AuthExpired`,
+  `Unreachable`), whichever order the folders are listed in (`a_waiting_folder_never_outranks_a_state_that_needs_the_person`). That renumbers the table (`Unreachable 7` down to `Idle 0`, `Running 3`, `Failed 5`); every literal rank in
   a fixture, a test and the menu corpus was moved with it, and the doc table in `10-tray.md` has a row.
-- **The mark.** The needs-you form with no numeral, the one a folder that has not synced already wore. A fifth hexagon
-  form for a state that lasts seconds to minutes would have been a sixth glyph, and `10-tray.md` says there are five.
+- **The mark.** The syncing glyph, with no numeral: something is syncing, or is about to start. It was first built in the
+  needs-you form, the one a lone folder that has not synced wears, and review moved it (§111f): waiting asks nothing of
+  the person, and the crimson form says it does. A sixth form for a state that lasts seconds to minutes would have been a
+  sixth glyph, and `10-tray.md` says there are five, so it is the existing one.
 - **No frame is drawn.** The state cannot be held still by a fixture of the daemon (it is the moment before a folder's
   first pass of the run), and every drawn frame is a folder that has finished one. The new strings are recorded in
   `copy-gate.mjs` (`NOT_DRAWN` for the constants, `UNGATED_TEMPLATES` for the templates, each with its reason) rather
@@ -6533,7 +6538,7 @@ name it whole. The row carries the whole word as its tooltip, and `fidelity:pair
   `queued` itself for the older scenarios, so the stand-in and the build agree.
 - **Left as it was.** A lone folder (`N = 1`) whose daemon has just restarted reads `up to date` for the moment before its
   first pass, because its last sync is gone from memory and its history is on disk; changing that would change the
-  one-folder app, which `fidelity:n1` and the D2 rule forbid, and its first pass is due as soon as the daemon starts. A summary still cannot tell
+  one-folder app, which `fidelity:n1` and the D2 rule forbid, and the daemon starts its first pass by itself. A summary still cannot tell
   a folder that has never synced from one that synced last week; `waiting` is true of both, which is why the state
   does not claim either.
 
@@ -6543,6 +6548,57 @@ No frame was added or changed: `assert.mjs` is still 68/68 with 125,981 assertio
 `fidelity:n1` 55/55 (nothing it renders lists a second folder, and the one-folder derivation is unchanged). The copy
 gate's drawn strings are 404/404 and its exemptions 99 became 105 (six constants no frame can draw, each with its
 reason in `copy-gate.mjs`), and its ungatable templates 27 became 31 (the four templates of the state). `fidelity:pairs`
-101 became 105 scenarios (four new, and two rewritten: the never-synced pair at two folders, and the tray panel's pin).
-The unit tests are 616, up from 600, and 19 Rust tests are new (13 in `state.rs`, 2 in `tray.rs`, one each in
-`tray_menu.rs` and `icons.rs`, two on the payload and one of them the golden file). The menu corpus gained three cases.
+101 became 108 scenarios (four new and two rewritten when the state was built, three more in review). The unit tests are
+623, up from 600, and 25 Rust tests are new (13 in `state.rs`, 2 in `tray.rs`, one each in `tray_menu.rs` and `icons.rs`,
+two on the payload and one of them the golden file, and in review one each in `state.rs` and `icons.rs` and four in
+`proton-sync`). The menu corpus gained three cases.
+
+### §111f · The review of #459
+
+Four findings and a decision. The order is the order they were found in.
+
+- **"Needs you" outranks "waiting."** The tray panel shows the worst folder's own, and a waiting folder ranks above an up
+  to date one. So `documents` (finished, one withheld deletion) beside `photos` (waiting) showed `photos`' `Starting to
+  sync` and lost `Review them` for as long as the other pass ran: 25 minutes in the live report, and the app restarts the
+  daemon after every settings save. The panel now gives way to a folder that holds a decision. An up to date or waiting
+  folder with a withheld deletion or a conflict is shown ahead of one that is only waiting, and a waiting folder with a
+  conflict of its own is a needs-you panel itself (the window's hero follows: a queued folder with something waiting is
+  `decision`). A paused folder's deletion still waits behind its pause, as at one folder, and a pass in flight, a failed
+  pass, a lapsed session and a stopped daemon still come first. The other aggregates were checked and need nothing: the
+  glyph, the title and the menu are Rust's and follow severity alone (decisions never entered them), and the pill's ring
+  and dot read each folder's own state and count, so a waiting folder neither draws nor hides either
+  (`a_waiting_folder_marks_nothing_and_hides_no_marker_that_is_due`).
+- **The mark is the syncing one** (the maintainer's decision, made on the review). Waiting asks nothing of the person,
+  and the crimson needs-you hexagon says it does; that form belongs to a first run, a decision and a conflict. A folder
+  that is waiting or starting wears the existing syncing glyph: something is syncing, or is about to start. No sixth
+  form, and the rank is unchanged (`Queued` below `Running`, and below every state that asks something of the person).
+  The tray glyph for `Queued` is the syncing file; the window draws the syncing mark unmasked, with no seam and no
+  numeral; the tray panel draws it in a new arrangement, `waiting` in `compact.js`, which is the settled panel's column
+  with that mark. A pass's own arrangement was tried first and rejected by rendering it: its seam runs behind the
+  sentences under the mark, and a tick of it showed through the sub-line.
+- **`proton-sync status` said `idle — everything is up to date`** for a pair with no finished pass, two lines above `last
+  sync never`. It follows the GUI's rule now: no finished pass, nothing paused, running or failed, is `waiting` (naming
+  the pair that is running) or `starting`, and a pair that has synced reads as before. It is the same function under
+  `--pair` and `--all-pairs`. Unlike the app it does not stop at a lone folder: the restart gap §111d left in the
+  one-folder app is the app's (`fidelity:n1` and the D2 rule), and a command line has no wizard to protect.
+- **Two sentences were wider than the facts.** The deck said no list row says `nothing synced yet`; one does, when the
+  settings file lists two folders and the daemon runs one. The overview said a folder is only Idle after a pass; a lone
+  folder is Idle for the moment after a restart. And "the first pass is due the moment the daemon starts" is true at
+  start-up and not after a resume (which schedules no pass of its own), so every place that said it now says the daemon
+  starts the pass by itself when it reaches the folder.
+- **A long name wrapped against the window's edge.** A 61 character folder name in the waiting headline wrapped, and a
+  wrapped line of a flex item is start-aligned in a box as wide as the hero, so the second line sat at `x = 0` while the
+  mark and the sentence under it were centred. The heroes that carry a folder's name (waiting, starting and the paused one
+  at two folders) get `.is-named`: centred, inside the 32px gutters the columns use, breaking anywhere if a name has no
+  place to break. It is a class and not a rule on `.main-headline`, because `text-align` is a compared property and every
+  drawn headline is one short line the frames draw as `start`. Measured on that name: the lines are at 46 to 994 and 443
+  to 597 in a 1,040px window, the sub-line at 44 to 996, and the page does not scroll sideways.
+
+What each surface shows now, for the three cases the review asked about:
+
+| Case | Tray glyph and title | Tray panel | Window, for the waiting folder | Lists and pill |
+| --- | --- | --- | --- | --- |
+| One running, one waiting | syncing glyph; `documents syncing, photos waiting` | the running folder's own syncing panel | `Waiting for documents`, syncing mark, chip `waiting` | `syncing` and `waiting` (`waiting for documents` in Settings); no marker |
+| One waiting, nothing running | syncing glyph; `starting` for all, or `photos starting, documents up to date` beside a finished one | `Starting to sync`, the syncing mark, no button | `Starting to sync`, syncing mark, chip `starting` | `starting`; no marker |
+| One waiting, one with a withheld deletion | syncing glyph; `photos starting, documents up to date` (decisions are not in the glyph or the title) | `1 thing needs you` and `Review them`, for the folder that holds it | `Starting to sync`; the other folder's hero is `1 thing needs you` | `starting` and `up to date`, `1 waiting`; the pill carries the decision ring |
+

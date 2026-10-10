@@ -116,6 +116,10 @@ one file's.
 The headline dot reflects the daemon state: **idle** (everything up to date), **syncing**
 (a pass is in flight, with the plan when known), **running** (changes queued for the next
 pass), **paused**, or **error** (the last pass failed; the error is shown on its own line).
+A folder is **idle** only once a pass has finished for it since the daemon started: until
+then it reads **waiting** (another folder's pass is running, and it is named) or **starting**
+(nothing is running yet; the first pass starts on its own). `--all-pairs` and `--pair` read
+the same way for each folder.
 Extra lines — queued changes, deletions awaiting approval, the last error — appear only
 when they apply.
 

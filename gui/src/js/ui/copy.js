@@ -114,7 +114,7 @@ export const MAIN = {
    * The window's sub-line under `Nothing has synced yet` (#455). The tray's own second sentence
    * (`TRAY.nothingSyncedYetSub`) sends a person to the window to choose their folders; this IS the
    * window, and with two folders or more they have chosen them. What is true of the folder instead is
-   * that nothing needs doing: the daemon starts a folder's first pass the moment it starts.
+   * that nothing needs doing: the daemon starts a folder's first pass by itself, when it reaches it.
    * Undrawn, like the headline above it (DEVIATIONS §82g).
    */
   firstRunSub: "It starts on its own.",
@@ -1614,7 +1614,7 @@ export const TRAY = {
    * A folder that has not had its turn (live report and #455), spoken by the window and the panel alike.
    * Beside other folders every folder starts without a finished pass, and passes run one at a time, so
    * such a folder is either WAITING for the pass that is running — named, because "waiting" alone reads
-   * as a crash — or about to START, which the daemon does by itself the moment it starts.
+   * as a crash — or about to START, which the daemon does by itself when it reaches the folder.
    *
    * The reassurance is the reason: `Folders sync one at a time.` is why it waits, said before the
    * folder (voice rule 3). It claims no order beyond that — a third folder may be behind a second, so

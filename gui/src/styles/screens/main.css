@@ -146,6 +146,24 @@
   color: var(--text-4);
 }
 
+/*
+ * A hero whose sentences carry a FOLDER'S NAME (`namesAFolder` in `screens/main.js`: waiting, starting and
+ * the paused one at two folders). A folder may be called 64 characters, so the headline can be wider than
+ * the window and wraps, and a wrapped line of a flex item is start-aligned inside a box as wide as the
+ * hero: the second line sat flush against the window's left edge, off the centre every other line of the
+ * hero keeps. Centred, inside the same 32px gutters the transfer columns use, and broken anywhere if a
+ * name has nowhere to break (`overflow-wrap`).
+ *
+ * ONLY under `.is-named`, never on `.main-headline` itself: `text-align` is a compared property, every
+ * drawn headline is one short line, and the frames draw it `start`. The class is what keeps the two apart.
+ */
+.main-hero.is-named .main-headline,
+.main-hero.is-named .main-sub {
+  max-width: calc(100% - 64px);
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
 .main-actions {
   margin-top: 28px;
   display: flex;

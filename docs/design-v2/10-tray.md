@@ -110,13 +110,14 @@ first, with why each sits where it does:
 | 3 | Last sync failed | one folder's pass failed, or its folder is not there; never hidden behind a healthy one |
 | 4 | Never synced | the first-folder wizard's state: only for a folder that is alone, never beside others |
 | 5 | Syncing | something is moving; a folder you paused does not outrank it |
-| 6 | Waiting for its turn | a folder with no finished pass since the daemon started, beside others: below syncing, because the pass that is moving is the news; above paused, because it is about to move and a pause is your own doing |
+| 6 | Waiting for its turn | a folder with no finished pass since the daemon started, beside others: below syncing, because the pass that is moving is the news; above paused, because it is about to move and a pause is your own doing. It wears the syncing glyph, as syncing does: nothing is asked of you, and it ranks below every state that does ask |
 | 7 | Paused | above up to date: an all-clear glyph over a folder that is not syncing is the lie to avoid; below waiting: you did it on purpose, and the title says which |
 | 8 | Up to date | only when every folder is |
 
 So: one folder paused and the other up to date shows the paused glyph; one paused and the other
-syncing shows the syncing glyph; one waiting and the other up to date shows the attention glyph (a
-folder that has not synced anything in this run is not the all-clear); one failed and anything else shows the can't-reach glyph — which means
+syncing shows the syncing glyph; one waiting and the other up to date shows the syncing glyph too (a
+folder that has not synced anything in this run is not the all-clear, and the attention glyph is for a
+thing that needs you); one failed and anything else shows the can't-reach glyph — which means
 "this folder's last sync failed", not "Proton is out of reach", and **the title is where the
 difference is said**.
 
@@ -190,11 +191,18 @@ The frames: `10a Two folders`, `10a Two folders paused`, `10a Two folders failed
 ### A folder that has not had its turn
 
 No frame draws it (DEVIATIONS §82g, and the entry that follows it for this state). The panel is the
-needs-you form without a number and without a button — there is nothing to decide, and the button the
-lone first-run panel has (`Open Drive Sync`, "choose your two folders") is addressed to someone who
-has not chosen any. Its sentences are the window's: `Waiting for documents` over `Folders sync one at a
-time. photos is waiting for documents to finish.`, or `Starting to sync` over `photos starts on its
-own.`
+syncing mark in the settled panel's column — no seam, no side labels, no number and no button. The mark is
+the existing syncing glyph, not the needs-you form: a waiting folder needs nothing from you, and the
+needs-you form is a first run's, a decision's and a conflict's. There is nothing to decide, and the button
+the lone first-run panel has (`Open Drive Sync`, "choose your two folders") is addressed to someone who has
+not chosen any. Its sentences are the window's: `Waiting for documents` over `Folders sync one at a time.
+photos is waiting for documents to finish.`, or `Starting to sync` over `photos starts on its own.`
+
+**A thing that needs you outranks it.** The panel shows the worst folder's own, but a folder that is up to
+date or waiting and holds a withheld deletion or a conflict is shown ahead of one that is only waiting, with
+`Review them`: a waiting folder lasts as long as another folder's pass, and a deletion hidden for that long
+is the failure the panel exists to prevent. A failed pass, a lapsed session and a pass in flight still come
+first, as at one folder.
 
 ## In situ — the GNOME top bar
 

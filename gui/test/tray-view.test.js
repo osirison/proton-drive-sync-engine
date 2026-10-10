@@ -641,7 +641,11 @@ test("a_folder_waiting_behind_a_paused_pass_is_a_panel_that_names_it_and_the_fol
   assert.equal(view.headline, "Waiting for documents");
   assert.equal(view.sub, "Folders sync one at a time. photos is waiting for documents to finish.");
   assert.notEqual(view.headline, MAIN.compact.upToDate);
-  assert.equal(view.state, "needsYou", "the form a folder with no pass has always had: it has not synced");
+  assert.equal(
+    view.state,
+    "waiting",
+    "the moving mark in its own column: waiting asks nothing of the person",
+  );
   assert.equal(view.count, null, "a count inside the mark would be a queue of zero things");
   assert.equal(view.action, undefined, "nothing to open the window for, and nothing to decide");
   // Every folder keeps its pause row.
@@ -686,4 +690,124 @@ test("a_queued_folder_beside_a_running_one_leaves_the_running_panel_in_front", (
   });
   assert.equal(view.pair, "documents");
   assert.equal(view.state, "syncing");
+});
+
+// ---- "needs you" outranks "waiting" (review of #459) ------------------------------------------------------
+//
+// A queued folder lasts for the whole of another folder's pass (25 minutes in the live report), and the GUI
+// restarts the daemon after every settings save. A folder that has finished and holds a withheld deletion
+// beside it used to lose its `Review them` panel for all of that time.
+
+test("a_withheld_deletion_beside_a_queued_folder_still_shows_one_thing_needs_you_and_review_them", () => {
+  const pairs = [
+    summary("documents", { pending_deletions: 1 }),
+    summary("photos", { last_sync_epoch_secs: null }),
+  ];
+  const pairStates = derivedWaiting(["documents", "idle", 0], ["photos", "queued", 2]);
+  // Whichever folder the reply happens to describe: the count is every folder's deletions, so the panel
+  // cannot depend on which of the two the window has selected.
+  for (const described of ["documents", "photos"]) {
+    const view = trayView({
+      daemonState: described === "documents" ? "idle" : "queued",
+      response: reply({
+        pair: described,
+        last_sync_epoch_secs: described === "documents" ? 1_800_000_000 : null,
+      }),
+      conflicts: [],
+      deletions: described === "documents" ? [{ path: "a" }] : [],
+      pairs,
+      pairStates,
+    });
+    assert.equal(view.pair, "documents", described);
+    assert.equal(view.headline, MAIN.compact.needYou(1), described);
+    assert.equal(view.state, "needsYou", described);
+    assert.equal(view.count, 1, described);
+    assert.equal(view.action.label, MAIN.compact.review, described);
+    assert.equal(view.action.id, "review@documents", described);
+  }
+});
+
+test("a_conflict_in_a_queued_folder_is_its_own_needs_you_panel_not_waiting", () => {
+  // The scanned (described) folder is a queued one and has a conflict copy on disk from before the
+  // restart. Another folder is queued too and is listed first, so on rank alone the panel would be its
+  // `Starting to sync`; the folder that needs the person is shown instead, and `Review them` is its.
+  const view = trayView({
+    daemonState: "queued",
+    response: reply({ pair: "photos", last_sync_epoch_secs: null }),
+    conflicts: [{ original: "x" }],
+    pairs: [
+      summary("documents", { last_sync_epoch_secs: null }),
+      summary("photos", { last_sync_epoch_secs: null }),
+    ],
+    pairStates: derivedWaiting(["documents", "queued", 2], ["photos", "queued", 2]),
+  });
+  assert.equal(view.pair, "photos");
+  assert.equal(view.state, "needsYou");
+  assert.equal(view.headline, MAIN.compact.needYou(1));
+  assert.equal(view.action.id, "review@photos");
+});
+
+test("a_queued_folder_is_not_given_a_decision_that_belongs_to_a_paused_one", () => {
+  // The paused folder's deletion waits behind its pause (the rule above), and the count is not a licence
+  // to draw `Review them` over a folder that holds nothing: the panel stays the waiting one.
+  const view = trayView({
+    daemonState: "paused",
+    response: reply({ pair: "documents", paused: true }),
+    deletions: [{ path: "a" }],
+    pairs: [
+      summary("documents", { paused: true, pending_deletions: 1 }),
+      summary("photos", { last_sync_epoch_secs: null }),
+    ],
+    pairStates: derivedWaiting(["documents", "paused", 1], ["photos", "queued", 2]),
+  });
+  assert.equal(view.pair, "photos");
+  assert.equal(view.headline, TRAY.startingTitle);
+  assert.equal(view.action, undefined);
+});
+
+test("a_failed_or_signed_out_folder_outranks_a_queued_one_and_so_does_a_running_one", () => {
+  for (const [state, rank, over, form] of [
+    ["running", 3, { syncing: true, pending_changes: 4 }, "syncing"],
+    ["failed", 5, { last_error: "boom", pending_changes: 4 }, "unreachable"],
+    ["authExpired", 6, {}, "unreachable"],
+  ]) {
+    for (const order of [0, 1]) {
+      const folders = [
+        [summary("documents", over), derivedWaiting(["documents", state, rank])[0]],
+        [summary("photos", { last_sync_epoch_secs: null }), derivedWaiting(["photos", "queued", 2])[0]],
+      ];
+      if (order) folders.reverse();
+      const view = trayView({
+        daemonState: "idle",
+        response: reply({ pair: "photos", last_sync_epoch_secs: null }),
+        pairs: folders.map(([pair]) => pair),
+        pairStates: folders.map(([, entry]) => entry),
+      });
+      assert.equal(view.pair, "documents", `${state} (listed ${order ? "second" : "first"})`);
+      assert.equal(view.state, form, state);
+    }
+  }
+});
+
+test("a_queued_folder_is_drawn_with_the_moving_mark_and_never_the_needs_you_one", () => {
+  // Waiting needs nothing from the person: the crimson needs-you hexagon is a decision's, a first run's
+  // and a conflict's. Something is syncing, or is about to start — the moving mark says that, drawn in
+  // a column of its own (`waiting`) because a pass's seam has nothing to run between.
+  const view = trayView({
+    daemonState: "queued",
+    response: reply({
+      pair: "documents",
+      last_sync_epoch_secs: null,
+      activity: { phase: "executing", transfer: { path: "stray.txt", direction: "upload" } },
+    }),
+    pairs: [
+      summary("documents", { last_sync_epoch_secs: null }),
+      summary("photos", { last_sync_epoch_secs: null }),
+    ],
+    pairStates: derivedWaiting(["documents", "queued", 2], ["photos", "queued", 2]),
+  });
+  assert.equal(view.state, "waiting");
+  assert.notEqual(view.state, "needsYou");
+  assert.equal(view.count, null, "no numeral: nothing is moving yet, and a 0 would be a count of nothing");
+  assert.deepEqual(view.transfers, [], "no rows: a folder that has not started has nothing in flight");
 });

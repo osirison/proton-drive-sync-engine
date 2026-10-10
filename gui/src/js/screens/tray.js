@@ -70,10 +70,12 @@ const PANEL_STATE = {
   // a failed pass and retry". #246.
   failed: "unreachable",
   firstRun: "needsYou",
-  // A folder that has not had its turn wears the form a folder that has not synced has always worn: it
-  // has not synced anything in this run, and the settled form says it has. It draws no button — there
-  // is nothing to decide and nothing to open the window for (#455).
-  queued: "needsYou",
+  // A folder that has not had its turn wears the MOVING mark (the syncing glyph, in the column the settled
+  // panel has and without its seam): it has not synced anything in this run, so the settled form would say
+  // it had, and it asks nothing of the person, so the needs-you form would say it did. Something is
+  // syncing, or is about to start. It draws no count, no rows and no button — there is nothing in flight,
+  // nothing to decide and nothing to open the window for (#455).
+  queued: "waiting",
 };
 
 /**
@@ -172,20 +174,36 @@ function decisionsIn(folder, scanned) {
 }
 
 /**
+ * What the panel gives up to a decision waiting elsewhere: a folder in one of these states has nothing
+ * moving or wrong in it. A paused one is the person's own doing, an up to date one has nothing to say, and
+ * a queued one is only waiting for its turn — which can last the whole of another folder's pass.
+ */
+const GIVES_WAY_TO_A_DECISION = new Set(["idle", "queued", "paused"]);
+
+/**
+ * The folders whose own decision the panel draws. Not a paused one: its deletions wait behind the pause,
+ * exactly as they do at one folder ("paused outranks a decision").
+ */
+const DRAWS_ITS_DECISION = new Set(["idle", "queued"]);
+
+/**
  * The folder whose panel is drawn: the worst by rank (Rust's, never recomputed here), ties to the
- * first the daemon lists — **except that a folder that is up to date and has a decision waiting
- * outranks one that is merely paused, or up to date with nothing to decide.**
+ * first the daemon lists — **except that a folder that is up to date or waiting for its turn and has a
+ * decision waiting outranks one that is merely paused, queued or up to date with nothing to decide.**
  *
  * Paused is what a person did on purpose, and the decision is the one thing the tray cannot do for
- * them; an all-clear or a "Paused" panel over a withheld deletion in another folder is how it goes
- * unseen. The glyph and the title are not touched by this — they follow `severity` alone — and what
- * does outrank a decision is still everything that is moving or wrong: syncing, a failed pass, a lapsed
- * session, a stopped daemon. Those panels have no `Review them`, at one folder as at several.
+ * them; an all-clear, a "Paused" or a "Waiting for documents" panel over a withheld deletion in another
+ * folder is how it goes unseen. "Needs you" outranks "waiting" (review of #459): a queued folder is
+ * ranked above an idle one, so without this a deletion held by a finished folder lost its `Review them`
+ * for as long as the other folder's pass ran. The glyph and the title are not touched by this — they
+ * follow `severity` alone — and what does outrank a decision is still everything that is moving or
+ * wrong: syncing, a failed pass, a lapsed session, a stopped daemon. Those panels have no `Review
+ * them`, at one folder as at several.
  */
 function panelFolderOf(folders, decisions) {
   const worst = folders.reduce((best, folder) => (folder.rank > best.rank ? folder : best));
-  if (worst.state !== "idle" && worst.state !== "paused") return worst;
-  const holder = folders.find((folder, i) => folder.state === "idle" && decisions[i] > 0);
+  if (!GIVES_WAY_TO_A_DECISION.has(worst.state)) return worst;
+  const holder = folders.find((folder, i) => DRAWS_ITS_DECISION.has(folder.state) && decisions[i] > 0);
   return holder ?? worst;
 }
 
@@ -238,9 +256,13 @@ export function trayView(props = {}) {
 
   const shown = panelFolderOf(folders, decisions);
   const described = scannedName === shown.name;
+  // The decisions are drawn only for a folder that holds one. Every state but a queued one ignores them
+  // (it is moving, wrong or paused first), so this changes nothing for them; a queued folder beside a
+  // paused folder's deletion must stay a waiting panel, not take a `Review them` that is not its own.
+  const decisive = decisions[folders.indexOf(shown)] > 0 ? waiting : 0;
   const panel = described
-    ? panelOf(daemonState, response, waiting, shown.name, shown.waitingFor)
-    : panelOf(shown.state, factsOfSummary(shown.summary), waiting, shown.name, shown.waitingFor);
+    ? panelOf(daemonState, response, decisive, shown.name, shown.waitingFor)
+    : panelOf(shown.state, factsOfSummary(shown.summary), decisive, shown.name, shown.waitingFor);
   const view = {
     ...panel,
     pair: shown.name,

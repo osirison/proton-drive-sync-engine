@@ -28,10 +28,10 @@ treatment — there is no separate iconography for the tray:
 
 | Icon | State | Tooltip |
 | --- | --- | --- |
-| **Syncing** — a faint hexagon with one solid arc drawn partway around it | Running — reachable, not paused, changes pending | "syncing (N changes)" |
+| **Syncing** — a faint hexagon with one solid arc drawn partway around it | Running — reachable, not paused, changes pending; or, with two or more folders, a folder that has not had its turn (nothing is asked of you: something is syncing, or is about to start) | "syncing (N changes)" / "waiting" / "starting" |
 | **Up to date** — a plain hollow hexagon | Idle — reachable, not paused, nothing pending | "up to date" |
 | **Paused** — a dashed hexagon outline | Paused | "paused" |
-| **Attention** — a hexagon with a solid dot at its centre | First run — nothing has ever synced; or, with two or more folders, a folder that has not had its turn | "nothing synced yet" / "waiting" / "starting" |
+| **Attention** — a hexagon with a solid dot at its centre | First run — nothing has ever synced, and there is one folder | "nothing synced yet" |
 | **Struck** — a hexagon crossed by a diagonal line | Auth expired, sync failed, **or** the control socket itself unreachable or untrusted — three different causes sharing one glyph | "sign-in expired" / "last sync failed" / "daemon unreachable" |
 
 The icon groups by **form**: Auth expired, Failed and Unreachable all draw the same struck
@@ -88,7 +88,8 @@ pause** — there is no *Pause all*:
 - **The icon shows the worst state any folder is in**, from the same five forms: a daemon that
   cannot be reached, then a signed-out session, then a folder whose last sync failed, then one that
   has never synced (a lone folder), then syncing, then a folder that has not had its turn, then
-  paused, then up to date. One folder paused and the other up
+  paused, then up to date. A folder that has not had its turn wears the syncing icon, the same as
+  a pass in flight, because it asks nothing of you. One folder paused and the other up
   to date shows the paused icon; one paused and the other syncing shows the syncing icon; one failed
   and anything else shows the struck icon — which then means *that folder's last sync failed*, not
   that Proton is out of reach.
@@ -106,8 +107,9 @@ pause** — there is no *Pause all*:
   first, then one row — *2 more folders* — that opens the window; the right-click menu lists every
   folder.
 - **A deletion waiting in any folder is counted on the panel**, not only in the folder it shows: an
-  up-to-date folder with a deletion waiting is shown ahead of a paused one, and *Review them* opens
-  the window with that folder selected. (Conflicts are counted for the one folder the tray scans.)
+  up-to-date folder with a deletion waiting is shown ahead of a paused one and ahead of a folder that
+  is only waiting for its turn (a thing that needs you outranks one that does not), and *Review them*
+  opens the window with that folder selected. (Conflicts are counted for the one folder the tray scans.)
 
 An expired session, a lone folder that has never synced and a stopped daemon keep their short menus:
 there is nothing to pause, or nobody to send it to. A folder waiting for its turn keeps its pause row

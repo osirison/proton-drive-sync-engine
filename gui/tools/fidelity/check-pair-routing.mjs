@@ -8,12 +8,13 @@
 // that answers each command and **holds a reply open when told to**, which is what makes the window
 // between "the person pressed it" and "the daemon answered" a thing a test can stand in.
 //
-// A hundred and five scenarios (the first sixteen are phases 5a-2, 5d and 5b-1's; forty-three are phase 5c-1's —
+// A hundred and eight scenarios (the first sixteen are phases 5a-2, 5d and 5b-1's; forty-three are phase 5c-1's —
 // twenty-one built with the selector, the nineteen its review added and the three its second review added — and the last fifteen
 // are phase 5e's, the notifications: the six it was built with and the nine its review added; both below the list —
 // the fifteen after them are phase 5c-2's, adding and removing folders, below the notifications', the ten after those
 // are its review's (84 to 93), and the last two are that review's final round (94 and 95), all at the end of the
-// file). The first four are each a way a write can land on a different pair than the one it was
+// file; the folder that has not had its turn (#455) added four, and its review three: the mark it wears, a withheld
+// deletion beside it, and a long folder name in its hero). The first four are each a way a write can land on a different pair than the one it was
 // drawn for — each was a bug before the capture existed or would be again if it were removed. The fifth
 // and sixth are the first-run rule at two pairs and at one. The next three are the rest of the capture:
 // a late READ, the decision on a conflict, and the tray panel's pin. The next two are the tray panel's
@@ -3780,6 +3781,160 @@ await scenario(
       }
     }
     await panel.close();
+  },
+);
+
+/**
+ * The mark a node draws, as far as a scenario can tell the five forms apart: how many of its paths are the
+ * moving form's animated segments, whether any stroke is the crimson decision tone, and its numeral.
+ */
+const markOf = (page, selector) =>
+  page.evaluate((sel) => {
+    const svg = document.querySelector(sel);
+    if (!svg) return null;
+    const paths = [...svg.querySelectorAll("path")];
+    return {
+      animated: paths.filter((path) => (path.getAttribute("style") ?? "").includes("animation")).length,
+      crimson: paths.some((path) => /decision/.test(path.getAttribute("stroke") ?? "")),
+      numeral: svg.querySelector("text")?.textContent ?? null,
+    };
+  }, selector);
+
+await scenario(
+  "a folder waiting for its turn is drawn with the moving mark, never the needs-you one, in the window and the tray",
+  async () => {
+    // THE WINDOW, for the folder it is about (photos, waiting for documents).
+    const page = await open(threeFolders("running"));
+    await until("the hero", async () => (await pageText(page)).includes(TRAY.waitingTitle("documents")));
+    const hero = await markOf(page, ".main-hero .main-mark");
+    if (!hero || hero.animated !== 2 || hero.crimson || hero.numeral != null) {
+      throw new Error(`the window's mark is not the moving form with no numeral: ${JSON.stringify(hero)}`);
+    }
+    // No seam and no side labels: nothing is in flight to put either side of a line.
+    const seamed = await page.evaluate(
+      () => document.querySelectorAll(".main-hero .seam, .main-hero .main-side").length,
+    );
+    if (seamed)
+      throw new Error(`a seam was drawn for a folder that is not moving anything (${seamed} nodes)`);
+    await page.close();
+
+    // THE TRAY PANEL, with nothing running yet (every folder waits).
+    const panel = await open(threeFolders("starting"), "?surface=tray");
+    await until("the panel", async () => (await pageText(panel)).includes(TRAY.startingTitle));
+    const form = await panel.evaluate(() => ({
+      state: document.querySelector(".compact-panel")?.dataset.state,
+      attention: document.querySelector(".compact-panel")?.classList.contains("is-attention"),
+      seamed: Boolean(document.querySelector(".compact-hero.is-seamed, .compact-labels")),
+    }));
+    if (form.state !== "waiting" || form.attention || form.seamed) {
+      throw new Error(`the panel is not the moving mark in its own column: ${JSON.stringify(form)}`);
+    }
+    const mark = await markOf(panel, ".compact-hero svg");
+    if (!mark || mark.animated !== 2 || mark.crimson || mark.numeral != null) {
+      throw new Error(`the panel's mark is not the moving form with no numeral: ${JSON.stringify(mark)}`);
+    }
+    await panel.close();
+  },
+);
+
+await scenario(
+  "a withheld deletion beside a waiting folder still gets its own panel and a Review them button",
+  async () => {
+    // The reviewer's case: `documents` has finished and holds a withheld deletion; `photos` has not had its
+    // turn. `photos` ranks above an up to date folder, so the panel used to be photos' `Starting to sync` and
+    // the deletion was hidden for as long as the other folder's pass ran. "Needs you" outranks "waiting".
+    const bridge = new Bridge(
+      { documents: [deletion("gone.txt")], photos: [] },
+      { names: ["documents", "photos"], selected: "photos", neverSynced: ["photos"] },
+    );
+    const panel = await open(bridge, "?surface=tray");
+    await until("the panel", async () => (await pageText(panel)).includes(MAIN.compact.needYou(1)));
+    const text = await pageText(panel);
+    if (text.includes(TRAY.startingTitle) || text.includes(TRAY.waitingTitle("documents"))) {
+      throw new Error(`the deletion is hidden behind a waiting panel: ${JSON.stringify(text)}`);
+    }
+    if (!(await hasButton(panel, MAIN.compact.review))) throw new Error("the panel has no Review button");
+    const pair = await panel.evaluate(() => document.querySelector(".compact-pair")?.textContent);
+    if (pair !== "documents") throw new Error(`the panel is about ${JSON.stringify(pair)}, not documents`);
+    // Whichever folder the window has selected, and the glyph's own state is the moving one (the title and
+    // the glyph follow severity alone): the folder that is waiting still says so in the lists.
+    await panel.close();
+
+    const page = await open(bridge);
+    await until("the hero", async () => (await pageText(page)).includes(TRAY.startingTitle));
+    await openList(page);
+    const words = await listRows(page);
+    if (words.photos?.[0] !== CHROME.pair.states.queued) {
+      throw new Error(`photos reads ${JSON.stringify(words.photos)}, not ${CHROME.pair.states.queued}`);
+    }
+    await page.close();
+  },
+);
+
+await scenario(
+  "a long folder name in the waiting hero wraps centred, inside the window's gutters",
+  async () => {
+    // 61 characters of hyphenated name: the headline wrapped, and a wrapped line of a flex item is start-aligned
+    // inside a box as wide as the hero, so the second line sat flush against x=0 while the sentence under it
+    // and the mark were centred.
+    const LONG = "photos-archive-2019-2024-family-and-friends-holiday-albums-ab";
+    const bridge = new Bridge(
+      { [LONG]: [], photos: [] },
+      {
+        names: [LONG, "photos"],
+        selected: "photos",
+        neverSynced: ["photos"],
+        states: { [LONG]: { state: "running", rank: 3, summary: { syncing: true } } },
+      },
+    );
+    const page = await open(bridge);
+    await until("the hero", async () => (await pageText(page)).includes(TRAY.waitingTitle(LONG)));
+    const measured = await page.evaluate(() => {
+      const out = {};
+      for (const name of ["headline", "sub"]) {
+        const node = document.querySelector(`.main-${name}`);
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        const rects = [...range.getClientRects()];
+        out[name] = {
+          align: getComputedStyle(node).textAlign,
+          left: Math.min(...rects.map((rect) => rect.left)),
+          right: Math.max(...rects.map((rect) => rect.right)),
+          // How far each line's middle is from the window's: centred lines are all within a pixel or two.
+          offCentre: Math.max(
+            ...rects.map((rect) => Math.abs((rect.left + rect.right) / 2 - window.innerWidth / 2)),
+          ),
+          lines: rects.length,
+        };
+      }
+      out.scrolls = document.documentElement.scrollWidth > window.innerWidth;
+      return out;
+    });
+    const { headline, sub } = measured;
+    if (headline.lines < 2) throw new Error("the premise: the headline should wrap at this length");
+    for (const [name, line] of [
+      ["headline", headline],
+      ["sub-line", sub],
+    ]) {
+      if (line.align !== "center") throw new Error(`the ${name} is aligned ${line.align}, not centred`);
+      if (line.left < 32 - 1 || line.right > 1040 - 32 + 1) {
+        throw new Error(`the ${name} runs to ${line.left}..${line.right}, outside the 32px gutters`);
+      }
+      if (line.offCentre > 4) throw new Error(`a line of the ${name} is ${line.offCentre}px off the centre`);
+    }
+    if (measured.scrolls) throw new Error("the page scrolls sideways");
+    // And the same folder when it is NOT waiting leaves the headline as the frames draw it: `start`, unclassed.
+    const settled = await open(
+      new Bridge({ docs: [], photos: [] }, { names: ["docs", "photos"], selected: "photos" }),
+    );
+    await until("the hero", async () => (await pageText(settled)).includes(MAIN.settled));
+    const align = await settled.evaluate(
+      () => getComputedStyle(document.querySelector(".main-headline")).textAlign,
+    );
+    if (align !== "start")
+      throw new Error(`a settled headline is aligned ${align}: the gate compares it as start`);
+    await settled.close();
+    await page.close();
   },
 );
 

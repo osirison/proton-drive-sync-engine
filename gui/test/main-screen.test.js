@@ -122,14 +122,36 @@ test("a_folder_that_has_not_had_its_turn_is_never_drawn_as_settled", () => {
   // takeover for it to hide behind and no one-folder rendering for it to change (`drawsFirstRun`).
   assert.equal(heroStateOf(queued({ drawsFirstRun: false })), "queued");
   // Ahead of the watch queue, as Rust decides it: an edit in a folder that has had no pass is not that
-  // folder syncing, and a decision elsewhere does not displace it.
+  // folder syncing.
   assert.equal(heroStateOf(queued({ pending: 5 })), "queued");
-  assert.equal(heroStateOf(queued({ waiting: 2 })), "queued");
+  // But a conflict or a withheld deletion in it is a thing that needs the person, and waiting does not:
+  // "needs you" outranks "waiting" (review of #459), as it outranks an up to date folder.
+  assert.equal(heroStateOf(queued({ waiting: 2 })), "decision");
+  assert.equal(heroStateOf(queued({ waiting: 0 })), "queued");
   // Below the states that outrank it.
   assert.equal(heroStateOf(queued({ daemonState: "unreachable" })), "unreachable");
   assert.equal(heroStateOf(queued({ daemonState: "authExpired" })), "authExpired");
   assert.equal(heroStateOf(queued({ daemonState: "failed" })), "failed");
   assert.equal(heroStateOf(queued({ daemonState: "paused" })), "paused");
+});
+
+test("a_waiting_folder_wears_the_syncing_mark_not_the_needs_you_one", () => {
+  // Waiting asks nothing of the person. The crimson needs-you form is a decision's and a first run's;
+  // something is syncing, or is about to start, and the moving form is the one that says so.
+  assert.equal(MARK_STATE.queued, "syncing");
+  assert.notEqual(MARK_STATE.queued, MARK_STATE.decision);
+  assert.notEqual(MARK_STATE.queued, MARK_STATE.firstRun);
+  assert.equal(MARK_STATE.firstRun, "needsNumeral", "the one-folder wizard's form is untouched");
+  // A decision in it IS the needs-you form, with its count.
+  const v = mainView({
+    daemonState: "queued",
+    response: { pending_changes: 0 },
+    conflicts: [{}],
+    pairCount: 2,
+  });
+  assert.equal(v.hero, "decision");
+  assert.equal(MARK_STATE[v.hero], "needsNumeral");
+  assert.equal(v.numeral, 1);
 });
 
 test("the_waiting_hero_names_the_folder_it_waits_for_and_why", () => {

@@ -32,8 +32,9 @@ chip's own template, `2 waiting`, drawn as nothing at zero.
 A folder that has not had its turn (no finished pass since the daemon started, beside other folders; no frame
 draws it, DEVIATIONS §82g and §111): the Settings list says `waiting for documents` while another folder's pass runs
 and `starting` while none does; the header's list says `waiting` (its tooltip, the whole) and `starting`; the chip says
-`waiting` / `starting`. `nothing synced yet` is the lone first folder's
-and no row says it. The window and the tray panel say `Waiting for documents` / `Folders sync one at a time.
+`waiting` / `starting`. `nothing synced yet` is the state of a folder that is alone, and a list row says it in one case only:
+the settings file lists two folders and the daemon has not yet restarted onto the second, so the daemon runs one (it
+reads `nothing synced yet`) and the other row reads `not running yet`. Beside folders the daemon runs, no row says it. The window and the tray panel say `Waiting for documents` / `Folders sync one at a time.
 photos is waiting for documents to finish.` and `Starting to sync` / `photos starts on its own.`; the window's own
 sub-line under `Nothing has synced yet` is `It starts on its own.` (the tray keeps `Open Drive Sync to choose your
 two folders.`, which is addressed to someone who has not chosen any).

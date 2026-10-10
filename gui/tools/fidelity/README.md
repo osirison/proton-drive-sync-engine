@@ -27,7 +27,7 @@ npm run fidelity:pairs      # the pair-routing gate on its own
 | **contrast** `check-contrast.mjs`  | every text node is legible against what is actually behind it, in both themes   | yes, 1,696 nodes across 68 frames                                              |
 | **fixtures** `check-fixtures.mjs`  | every in-scope frame has a dataset, of the shape its class implies              | yes, all 68                                                                    |
 | **n1** `check-n1-identity.mjs`     | every frame renders the same bytes when the daemon lists one folder pair        | yes, 55 of 68 — see its reach below                                            |
-| **pairs** `check-pair-routing.mjs` | a write acts on the pair it was drawn for, not the one selected when it runs    | yes, 105 scenarios (#102 5a-2 to 5e, and the folder that has not had its turn) |
+| **pairs** `check-pair-routing.mjs` | a write acts on the pair it was drawn for, not the one selected when it runs    | yes, 108 scenarios (#102 5a-2 to 5e, and the folder that has not had its turn) |
 
 Seven of the twelve are `assert.mjs` and need a browser. **contrast**, **n1** and **pairs** need one
 too. **copy** does

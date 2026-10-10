@@ -64,16 +64,18 @@ const GLYPHS: &[(&str, &str)] = &[
 /// failed pass is the third of those. `14-behaviour-and-state.md` says as much in its own state
 /// diagram — "unreachable is entered after a failed pass and retry".
 ///
-/// A folder that has not had its turn (`Queued`) wears the needs-you form beside the first-run one,
-/// for the same reason: it has not synced anything in this run, and the settled form would say it had.
+/// A folder that has not had its turn (`Queued`) wears the syncing form, the pass in flight's own. It
+/// has not synced anything in this run, so the settled form would say it had; and it is not asking
+/// the person for anything, so the needs-you form would say that. Something is syncing, or is about to
+/// start, which is what the moving form says. No sixth form.
 pub fn glyph_for(state: gui_core::state::DaemonState) -> &'static str {
     use gui_core::state::DaemonState::*;
     match state {
-        Running => "proton-sync-syncing-symbolic",
+        Running | Queued => "proton-sync-syncing-symbolic",
         Idle => "proton-sync-uptodate-symbolic",
         Paused => "proton-sync-paused-symbolic",
         AuthExpired | Unreachable | Failed => "proton-sync-offline-symbolic",
-        FirstRun | Queued => "proton-sync-attention-symbolic",
+        FirstRun => "proton-sync-attention-symbolic",
     }
 }
 
@@ -153,6 +155,26 @@ mod tests {
         // The same false all-clear, one folder at a time: a hollow hexagon over a folder that has not
         // had a pass says the files match, and nobody has looked.
         assert_ne!(glyph_for(DaemonState::Queued), glyph_for(DaemonState::Idle));
+    }
+
+    /// A waiting folder needs nothing from the person, and the needs-you form says it does: that form
+    /// is the one a first run, a decision and a conflict wear. Something is syncing, or is about to
+    /// start, and that is the form that says so — the same file as a pass in flight.
+    #[test]
+    fn a_folder_waiting_for_its_turn_wears_the_syncing_glyph_not_the_needs_you_one() {
+        assert_eq!(
+            glyph_for(DaemonState::Queued),
+            "proton-sync-syncing-symbolic"
+        );
+        assert_eq!(
+            glyph_for(DaemonState::Queued),
+            glyph_for(DaemonState::Running)
+        );
+        assert_ne!(
+            glyph_for(DaemonState::Queued),
+            glyph_for(DaemonState::FirstRun),
+            "the needs-you form is a first run's, and a waiting folder is not asking for anything"
+        );
     }
 
     #[test]

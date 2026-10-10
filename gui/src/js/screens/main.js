@@ -105,7 +105,11 @@ export function heroStateOf({ daemonState, syncing, waiting, pending = 0, drawsF
   // No `drawsFirstRun`-style opt-in: it is derived only beside other folders (Rust), so there is no
   // takeover for it to hide behind and no one-folder rendering for it to change. BEFORE the `pending`
   // rule, as Rust decides it: a watch event for a folder that has had no pass is not that folder syncing.
-  if (daemonState === "queued") return "queued";
+  //
+  // "NEEDS YOU" OUTRANKS "WAITING" (review of #459). A conflict or a withheld deletion in a folder that
+  // has not had its turn is a thing only the person can settle, and waiting is not: the wait can last the
+  // whole of another folder's pass. The caller passes `waiting` for the folder this hero is about.
+  if (daemonState === "queued") return waiting > 0 ? "decision" : "queued";
   // A REACHABLE DAEMON THAT HAS NEVER SYNCED THIS PAIR (#102 phase 5a-2, E14), for the surfaces that
   // have no takeover to hide behind: it used to fall through to `settled` below — `Everything is up to
   // date` over a folder nothing has copied, which is #246's false all-clear in a state the window
@@ -430,10 +434,13 @@ export const MARK_STATE = {
   authExpired: "unreachable",
   failed: "unreachable",
   // The tray's own pairing (`PANEL_STATE.firstRun`): the attention form with NO numeral. A count
-  // inside the mark would be a queue of zero things presented as a decision. A folder that has not had
-  // its turn wears the same: it has not synced anything in this run, and the settled form says it has.
+  // inside the mark would be a queue of zero things presented as a decision.
   firstRun: "needsNumeral",
-  queued: "needsNumeral",
+  // A folder that has not had its turn wears the MOVING form, with no numeral: it has not synced anything
+  // in this run, so the settled form would say it had, and it asks nothing of the person, so the crimson
+  // needs-you form would say it did. Something is syncing, or is about to start. Not over the seam (no
+  // seam is drawn for it), so it is not masked (`heroMark`).
+  queued: "syncing",
   settled: "settled",
 };
 
@@ -641,6 +648,7 @@ export function renderMain(props = {}) {
   const handlers = props.handlers ?? {};
 
   const hero = el("div", { class: "main-hero" });
+  hero.classList.toggle("is-named", namesAFolder(v));
   const mark = heroMark(v);
   const headline = el("div", { class: "main-headline" }, headlineOf(v));
   const sub = el("div", { class: "main-sub" }, subTextOf(v));
@@ -701,6 +709,7 @@ export function updateMain(props = {}) {
   const next = mainView(props);
   const handlers = props.handlers ?? view.handlers;
   const prev = view.v;
+  view.hero.classList.toggle("is-named", namesAFolder(next));
 
   if (next.hero !== prev.hero) {
     crossfadeMark(next);
@@ -771,6 +780,15 @@ export function unmountMain() {
 }
 
 // ------------------------------------------------------------------------------ internals ----
+
+/**
+ * Does the hero's own text carry a folder's name? A folder may be called 64 characters, so a sentence with
+ * one in it can be longer than the window is wide, and it then WRAPS: `main.css` centres the wrapped lines
+ * and keeps them off the window's edge for these heroes alone (`.main-hero.is-named`), because every
+ * fixed sentence is one short line and the gate compares those as drawn. A class and not a rule on the
+ * text, since the frames' headlines and the app's are one element and must stay one computed style.
+ */
+const namesAFolder = (v) => v.hero === "queued" || (v.hero === "paused" && v.pair != null);
 
 const bandShowing = (v) => v.waiting > 0;
 const noticeShowing = (v) => noticeOf(v.notice) != null;

@@ -821,11 +821,13 @@ mod tests {
 
     #[test]
     fn with_nothing_running_the_title_says_starting() {
-        // Every folder is due the moment the daemon starts, and none has been popped yet.
+        // Every folder is due at start-up, and none has been reached yet.
         let all = [queued_of("documents", None), queued_of("photos", None)];
         let state = aggregate_state(DaemonState::Idle, &all);
         assert_eq!(state, DaemonState::Queued);
         assert_eq!(title_for(state, None, &all), "Proton Drive Sync — starting");
+        // The glyph is the moving one, not the needs-you one: nothing is being asked of the person.
+        assert_eq!(glyph_for(state), "proton-sync-syncing-symbolic");
         // Beside one that has finished, the folders are named and the glyph is not the settled one.
         let mixed = [
             state_of("documents", DaemonState::Idle),
@@ -834,6 +836,7 @@ mod tests {
         let state = aggregate_state(DaemonState::Idle, &mixed);
         assert_eq!(state, DaemonState::Queued);
         assert_ne!(glyph_for(state), glyph_for(DaemonState::Idle));
+        assert_eq!(glyph_for(state), "proton-sync-syncing-symbolic");
         assert_eq!(
             title_for(state, None, &mixed),
             "Proton Drive Sync — photos starting, documents up to date"
