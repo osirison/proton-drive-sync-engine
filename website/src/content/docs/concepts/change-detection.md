@@ -54,12 +54,40 @@ Concretely, the engine:
 A periodic full-tree scan can be re-enabled as a reconvergence backstop
 (`--events-full-scan-every N`), but it is **off by default** — after the mandatory startup
 snapshot the daemon stays purely event-driven until it is restarted or the event stream forces
-a fallback (no cursor, fetch error, an unresolvable node, …). The **first reconcile after the
+a fallback (no cursor, fetch error, a node it cannot place, …). The **first reconcile after the
 daemon starts is always a full scan** — a fresh process has no pending-change history, so it
 can't safely trust an incremental pass alone.
 
 Event-driven mode is **on by default**. Opt out with `--no-events-driven` (or
 `events_driven = false`), which restores the byte-identical snapshot-only path.
+
+#### Changes elsewhere in your Drive
+
+The event stream is for your whole Proton volume, not for the folder you sync, so most of what it
+reports may be about other folders — other devices, other synced folders, the web app. A folder
+ignores an event about another folder, as long as it knows which Drive folder is its own, every
+folder in its tree has an id, and every file it has recorded sits in a folder it has recorded too.
+A poll in which every event was about other folders costs nothing: no scan of the remote tree and
+no scan of your local folder. The folder cannot tell in these cases, and then re-scans once, as it
+always did. The first is right after it has made a folder itself: that folder has no id until
+Proton's event for it arrives (normally within one poll), and a change elsewhere in that gap could
+be about it. The second is an index that records a file but not the folder it is in (an event
+elsewhere, a removal included, could be about that folder), or a file
+recorded under an id from an older version (the re-scan rewrites it). The third is a change to the
+synced folder itself (renamed, moved, trashed), or a folder moved in from elsewhere, because the
+stream describes nothing inside them. The fourth is an event that names no folder at all, because
+then nothing says where the file is. The fifth is a file or folder it has recorded that moves to a
+folder it does not know: that is either a move out of your synced folder or a move into an empty
+folder it has no record of, and the event cannot tell which, so it looks rather than guess.
+
+**A folder with an include rule ("only sync these") never ignores a created or changed item from another folder.**
+The folders on the way to an included file are not recorded, so it cannot tell where such an event
+belongs, and it re-scans for each one, as before. It does still skip one kind of event, as it
+always did: the removal of an item it has no record of, when every file it has recorded carries its
+Proton id. A file it has just uploaded has no id until Proton's event for it arrives, and while that
+is so this folder re-scans for a removal too. The folders on the way to an included file have no
+entry of their own, so trashing one leaves the included files recorded beneath it in place until
+the next re-scan puts them right.
 
 #### A subtlety worth knowing
 

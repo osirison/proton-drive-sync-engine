@@ -357,6 +357,98 @@ fn a_sandboxed_child_that_runs_the_keyring_or_network_tools_reaches_stubs_not_th
 }
 
 #[test]
+fn scripted_events_answer_the_session_and_the_events_api_without_reaching_a_sandbox_stub() {
+    // #456's two-pair test is the one process-level test that runs the daemon's real session and
+    // events code. The tools it shells are answered from files the test wrote, and the sandbox's
+    // refusing stubs behind them are never reached: `run_bounded` would fail the run if they were.
+    let directory = tempdir().expect("tempdir");
+    let events = common::ScriptedEvents::in_directory(directory.path());
+    events.latest("e1");
+    events.page(
+        "e1",
+        "e2",
+        r#"[{"EventID":"x","EventType":1,"Link":{"LinkID":"n","ParentLinkID":"p"}}]"#,
+    );
+    let mut command = common::sandboxed("sh", directory.path());
+    events.attach(&mut command);
+    command.arg("-c").arg(
+        "secret-tool lookup service ch.proton.drive/drive-sdk-cli account auth-session; \
+         curl -s --max-time 30 -w '\\n%{http_code}' -H @- https://api.invalid/drive/volumes/vol/events/latest < /dev/null; echo; \
+         curl -s --max-time 30 -w '\\n%{http_code}' -H @- https://api.invalid/drive/v2/volumes/vol/events/e1 < /dev/null; echo; \
+         curl -s --max-time 30 -w '\\n%{http_code}' -H @- https://api.invalid/drive/v2/volumes/vol/events/e7 < /dev/null; echo",
+    );
+
+    let output = common::run_bounded(&mut command, common::RUN_BOUND);
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("utf-8");
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 7, "{stdout}");
+    assert_eq!(
+        lines[0],
+        r#"{"session":{"uid":"scripted-uid","accessToken":"scripted-token"}}"#
+    );
+    assert_eq!(lines[1], r#"{"Code":1000,"EventID":"e1"}"#);
+    assert_eq!(lines[2], "200");
+    assert!(
+        lines[3].contains(r#""EventID":"e2""#) && lines[3].contains(r#""LinkID":"n""#),
+        "the page written for e1: {}",
+        lines[3]
+    );
+    assert_eq!(lines[4], "200");
+    assert!(
+        lines[5].contains(r#""EventID":"e7""#) && lines[5].contains(r#""Events":[]"#),
+        "a cursor nobody scripted is an empty page that stays where it was: {}",
+        lines[5]
+    );
+    assert_eq!(lines[6], "200");
+    assert_eq!(
+        events.requests(),
+        [
+            "https://api.invalid/drive/volumes/vol/events/latest",
+            "https://api.invalid/drive/v2/volumes/vol/events/e1",
+            "https://api.invalid/drive/v2/volumes/vol/events/e7"
+        ]
+    );
+}
+
+#[test]
+fn the_scripted_tools_come_first_on_the_path_and_the_refusing_stubs_stay_behind_them() {
+    // The script shadows `secret-tool` and `curl`; it does not remove the sandbox's stubs. A daemon
+    // that gets past the shadow (a different tool, an absolute path) still reaches a refusing stub
+    // and fails its test.
+    let directory = tempdir().expect("tempdir");
+    let events = common::ScriptedEvents::in_directory(directory.path());
+    let mut command = common::sandboxed("sh", directory.path());
+    events.attach(&mut command);
+    command.arg("-c").arg("printf '%s' \"$PATH\"");
+    let output = common::run_bounded(&mut command, common::RUN_BOUND);
+    let path = String::from_utf8(output.stdout).expect("utf-8");
+    let scripted = path
+        .find("scripted-events/bin")
+        .expect("scripted tools on PATH");
+    let sandbox = path
+        .find("sandbox-bin")
+        .expect("the refusing stubs stay on PATH");
+    assert!(scripted < sandbox, "scripted first, sandbox behind: {path}");
+}
+
+#[test]
+fn a_daemon_with_scripted_events_still_needs_a_fake_cli() {
+    // Scripting the events does not unlock the real `proton-drive`: the refusal is unchanged.
+    let directory = tempdir().expect("tempdir");
+    let events = common::ScriptedEvents::in_directory(directory.path());
+    let mut command = common::sandboxed(directory.path().join("proton-syncd"), directory.path());
+    events.attach(&mut command);
+    command.arg("--dry-run");
+    let message = panic_message(|| {
+        common::spawn_logging(&mut command, &directory.path().join("daemon.stderr"));
+    })
+    .expect("a daemon naming no fake CLI is refused");
+    assert!(message.contains("names no fake CLI"), "{message}");
+}
+
+#[test]
 fn a_run_that_reaches_a_stub_tool_fails_the_test_instead_of_passing_degraded() {
     let directory = tempdir().expect("tempdir");
     let message = panic_message(|| {

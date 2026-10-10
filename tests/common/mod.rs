@@ -178,6 +178,120 @@ pub fn opt_in_to_events_driven(command: &mut Command) -> &mut Command {
     command.env(EVENTS_OPT_IN_ENV, "1")
 }
 
+/// The environment variable that tells the scripted `curl` stub where its pages are.
+const SCRIPTED_EVENTS_ENV: &str = "PROTON_SYNC_TEST_SCRIPTED_EVENTS";
+
+/// A **scripted Proton event stream** for a `proton-syncd` that runs with `events_driven` on: the
+/// one deliberate way a test lets the daemon use the session and events code it ships, against
+/// nothing real.
+///
+/// The daemon reads its session by running `secret-tool` and calls the events API by running `curl`
+/// (`src/session.rs`). [`ScriptedEvents::attach`] puts two **answering** stubs of those tools in a
+/// directory of the test's own and that directory **ahead of the sandbox's refusing stubs** on the
+/// command's `PATH`: `secret-tool` prints a session, `curl` serves the pages the test wrote with
+/// [`Self::latest`] and [`Self::page`] (a cursor with no page is an empty one) and records every URL
+/// it was asked for. Nothing else changes: the sandbox's stubs are still behind them, so a daemon
+/// that reaches a tool this does not script — or anything real — still fails its test through
+/// [`run_bounded`] and [`LoggedChild`].
+pub struct ScriptedEvents {
+    directory: PathBuf,
+}
+
+impl ScriptedEvents {
+    /// A scripted stream whose files live under `<sandbox>/scripted-events`.
+    pub fn in_directory(sandbox: &Path) -> Self {
+        let directory = sandbox.join("scripted-events");
+        let bin = directory.join("bin");
+        fs::create_dir_all(&bin).expect("create the scripted events' directory");
+        write_executable(
+            &bin.join("secret-tool"),
+            "#!/bin/sh\n\
+             # Scripted `secret-tool` (tests/common/mod.rs): a session, from nowhere real.\n\
+             printf '%s\\n' '{\"session\":{\"uid\":\"scripted-uid\",\"accessToken\":\"scripted-token\"}}'\n",
+        );
+        write_executable(
+            &bin.join("curl"),
+            &format!(
+                "#!/bin/sh\n\
+                 # Scripted `curl` (tests/common/mod.rs): serves the pages the test wrote.\n\
+                 cat > /dev/null\n\
+                 for url; do :; done\n\
+                 dir=\"${{{SCRIPTED_EVENTS_ENV}}}\"\n\
+                 printf '%s\\n' \"$url\" >> \"$dir/requests.log\"\n\
+                 case \"$url\" in\n\
+                   */events/latest) file=\"$dir/latest.json\" ;;\n\
+                   */events/*) file=\"$dir/page-${{url##*/}}.json\" ;;\n\
+                   *) file=\"\" ;;\n\
+                 esac\n\
+                 if [ -n \"$file\" ] && [ -f \"$file\" ]; then\n\
+                   body=$(cat \"$file\")\n\
+                 else\n\
+                   body=\"{{\\\"Code\\\":1000,\\\"EventID\\\":\\\"${{url##*/}}\\\",\\\"More\\\":false,\\\"Refresh\\\":false,\\\"Events\\\":[]}}\"\n\
+                 fi\n\
+                 printf '%s\\n200' \"$body\"\n"
+            ),
+        );
+        Self { directory }
+    }
+
+    /// Puts the scripted tools first on `command`'s `PATH` and opts it in to `events_driven`.
+    /// Call it after [`sandbox`] (it keeps the sandbox's `PATH` behind its own).
+    pub fn attach<'a>(&self, command: &'a mut Command) -> &'a mut Command {
+        let rest = command
+            .get_envs()
+            .find(|(name, _)| *name == OsStr::new("PATH"))
+            .and_then(|(_, value)| value.map(OsString::from))
+            .or_else(|| std::env::var_os("PATH"))
+            .unwrap_or_else(|| OsString::from("/usr/bin:/bin"));
+        let mut path = OsString::from(self.directory.join("bin"));
+        path.push(":");
+        path.push(rest);
+        command.env("PATH", path);
+        command.env(SCRIPTED_EVENTS_ENV, &self.directory);
+        opt_in_to_events_driven(command)
+    }
+
+    /// The current latest event id: what a first-ever bootstrap anchors its cursor at.
+    pub fn latest(&self, event_id: &str) {
+        fs::write(
+            self.directory.join("latest.json"),
+            format!("{{\"Code\":1000,\"EventID\":\"{event_id}\"}}"),
+        )
+        .expect("write the latest cursor");
+    }
+
+    /// The page served for a request from cursor `from`: it leaves the stream at cursor `to` and
+    /// carries `events` (the JSON array of `Events`).
+    pub fn page(&self, from: &str, to: &str, events: &str) {
+        fs::write(
+            self.directory.join(format!("page-{from}.json")),
+            format!(
+                "{{\"Code\":1000,\"EventID\":\"{to}\",\"More\":false,\"Refresh\":false,\"Events\":{events}}}"
+            ),
+        )
+        .expect("write an events page");
+    }
+
+    /// Every URL the daemon asked `curl` for, in order.
+    pub fn requests(&self) -> Vec<String> {
+        fs::read_to_string(self.directory.join("requests.log"))
+            .unwrap_or_default()
+            .lines()
+            .map(ToOwned::to_owned)
+            .collect()
+    }
+}
+
+fn write_executable(path: &Path, body: &str) {
+    fs::write(path, body).expect("write a scripted tool");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755))
+            .expect("make a scripted tool executable");
+    }
+}
+
 /// Refuses a `proton-syncd` command that would reach the developer's real account:
 ///
 /// * **it names no CLI.** The default is `proton-drive` on `PATH`, the developer's real one, signed
