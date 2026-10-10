@@ -36814,8 +36814,7 @@ mod tests {
         );
         assert!(
             client.root_uid_asks().is_empty(),
-            "a pair with include rules never asks which node its root is: {:?}",
-            client.root_uid_asks()
+            "a pair with include rules never asks which node its root is"
         );
     }
 
@@ -36826,8 +36825,7 @@ mod tests {
         let (daemon, client, _stepper) = docs_daemon(directory.path(), true, true, Vec::new());
         assert!(
             client.root_uid_asks().is_empty(),
-            "boot's bootstrap asked: {:?}",
-            client.root_uid_asks()
+            "boot's bootstrap asked which node the root is"
         );
         assert_eq!(root_uid_of(&daemon, 0), None);
     }
