@@ -6558,7 +6558,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
     /// pass asks the client once for this run ([`PairRuntime::remote_root_uid_asked`]): that is how
     /// an index written before the table existed, or one whose bootstrap could not name the root,
     /// learns it without a full walk. An answer that does not come (the client cannot tell, a
-    /// listing failed) leaves the root unknown, and an unknown root never skips an event.
+    /// listing failed) leaves the root unknown, and an unknown root never drops a node it cannot place.
     fn remote_root_node_for_incremental(
         &mut self,
         changes: &[RemoteChange],
@@ -11033,7 +11033,7 @@ enum RootNodeUpdate {
     /// The root is this node (a composed `volumeId~nodeId`).
     Set(String),
     /// What is recorded may no longer be the folder (the root was missing, or a walk could not name
-    /// it): forget it, so that an unknown root skips nothing.
+    /// it): forget it, so that an unknown root drops no node it cannot place.
     Clear,
 }
 
@@ -35906,7 +35906,7 @@ mod tests {
     #[test]
     fn a_walk_that_cannot_name_the_root_forgets_the_one_it_had() {
         // A uid that may no longer be the folder would let an event inside the folder read as
-        // outside it. Unknown skips nothing; a stale guess could skip a create.
+        // outside it. Unknown drops no node it cannot place; a stale guess could skip a create.
         let directory = tempdir().expect("tempdir");
         let (mut daemon, client, mut stepper) =
             steady_shared_volume_daemon(directory.path(), Vec::new());

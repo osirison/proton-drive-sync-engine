@@ -383,6 +383,10 @@ struct Shape {
     /// Percent of baseline records that carry an id of an older index (a raw id, or another
     /// volume's) instead of a composed one of this volume.
     legacy_ids: u64,
+    /// A folder with no row may be trashed or deleted while it holds records. Only a pair that
+    /// knows its root reads that (a removal it does not hold, with a record in a folder no record
+    /// holds, walks), so a run with include rules leaves it off.
+    trash_rowless_folders: bool,
 }
 
 fn allowed(options: &ScanOptions, world: &World, i: usize) -> bool {
@@ -518,6 +522,10 @@ fn generate(seed: u64, shape: Shape, options: &ScanOptions) -> Scenario {
     // Directories that left the tree holding something in this history.
     let mut left_the_tree_with_children: HashSet<usize> = HashSet::new();
     let mut sha_counter = 10;
+    // Folders that had no row while they were in the tree, at any point of the history. A folder
+    // can leave with its parent, be trashed there, and come back with the parent: it is the same
+    // folder with the same records, wherever it is when the event arrives.
+    let mut rowless_while_inside: HashSet<usize> = HashSet::new();
     let has_daemon_made_record = |base: &HashMap<PathBuf, FileRecord>, world: &World, i: usize| {
         world.inside(i)
             && base
@@ -526,6 +534,15 @@ fn generate(seed: u64, shape: Shape, options: &ScanOptions) -> Scenario {
     };
 
     for _ in 0..(1 + rng.below(shape.max_ops)) {
+        for i in 0..world.nodes.len() {
+            if i != ROOT_NODE
+                && world.nodes[i].dir
+                && world.inside(i)
+                && (rowless.contains(&i) || !allowed(options, &world, i))
+            {
+                rowless_while_inside.insert(i);
+            }
+        }
         let live_dirs: Vec<usize> = (0..world.nodes.len())
             .filter(|&i| world.nodes[i].dir && world.chain_live(i))
             .collect();
@@ -707,7 +724,9 @@ fn generate(seed: u64, shape: Shape, options: &ScanOptions) -> Scenario {
                     continue;
                 }
                 let i = live_nodes[rng.below(live_nodes.len())];
-                if row_less_with_descendants(&world, &rowless, options, i) {
+                if !shape.trash_rowless_folders
+                    && row_less_with_descendants(&world, &rowless_while_inside, i)
+                {
                     continue;
                 }
                 let name = world.nodes[i].name.clone();
@@ -740,7 +759,9 @@ fn generate(seed: u64, shape: Shape, options: &ScanOptions) -> Scenario {
                 if shape.direct_delete && rng.chance(25) && !live_nodes.is_empty() {
                     // Deleted without a trash first.
                     let i = live_nodes[rng.below(live_nodes.len())];
-                    if !row_less_with_descendants(&world, &rowless, options, i) {
+                    if shape.trash_rowless_folders
+                        || !row_less_with_descendants(&world, &rowless_while_inside, i)
+                    {
                         let name = world.nodes[i].name.clone();
                         let parent = world.nodes[i].parent.expect("a parent");
                         structural_inside |= world.inside(i);
@@ -779,7 +800,7 @@ fn generate(seed: u64, shape: Shape, options: &ScanOptions) -> Scenario {
                         .live_children(parent)
                         .iter()
                         .any(|&child| world.nodes[child].name == name)
-                        || row_less_with_descendants(&world, &rowless, options, i)
+                        || row_less_with_descendants(&world, &rowless_while_inside, i)
                         || holes.contains(&parent)
                     {
                         continue;
@@ -829,17 +850,16 @@ fn generate(seed: u64, shape: Shape, options: &ScanOptions) -> Scenario {
     }
 }
 
-/// See the module doc: a folder with no row is not trashed while it holds anything.
+/// See the module doc: a folder with no row is not trashed, deleted or restored while it holds
+/// anything. `rowless_while_inside` is every folder that had no row at some point it was in the
+/// tree, not only the ones in it now: a folder can leave with its parent, be trashed while it is
+/// outside, and be back when the parent is.
 fn row_less_with_descendants(
     world: &World,
-    rowless: &HashSet<usize>,
-    options: &ScanOptions,
+    rowless_while_inside: &HashSet<usize>,
     i: usize,
 ) -> bool {
-    world.nodes[i].dir
-        && world.inside(i)
-        && (rowless.contains(&i) || !allowed(options, world, i))
-        && !world.live_children(i).is_empty()
+    world.nodes[i].dir && rowless_while_inside.contains(&i) && !world.live_children(i).is_empty()
 }
 
 /// What a full walk with the scenario's rules lists at the end of the history.
@@ -1003,9 +1023,13 @@ fn describe_events(events: &[RemoteChange]) -> String {
 }
 
 fn run(shape: Shape, root_known: bool, count: u64) -> Tally {
+    run_seeds(shape, root_known, first_seed()..first_seed() + count)
+}
+
+fn run_seeds(shape: Shape, root_known: bool, seeds: std::ops::Range<u64>) -> Tally {
     let options = shape.rules.options();
     let mut tally = Tally::default();
-    for seed in first_seed()..first_seed() + count {
+    for seed in seeds {
         let scenario = generate(seed, shape, &options);
         let truth = walk_truth(&scenario, &options);
         let outcome = reconstruct_remote(
@@ -1051,6 +1075,7 @@ fn shape(rules: Rules) -> Shape {
         direct_delete: false,
         parentless: 0,
         legacy_ids: 0,
+        trash_rowless_folders: false,
     }
 }
 
@@ -1088,6 +1113,7 @@ fn include_rules_behave_as_if_the_root_were_never_learned() {
 fn an_index_with_folders_missing_its_rows_skips_nothing_it_cannot_justify() {
     let legacy = Shape {
         drop_folder_rows: true,
+        trash_rowless_folders: true,
         ..shape(Rules::None)
     };
     run(legacy, true, scenarios(DEFAULT_SCENARIOS * 2)).assert_sound("folder rows missing", 10);
@@ -1136,10 +1162,22 @@ fn a_node_moved_into_a_folder_with_no_row_is_not_read_as_gone() {
     let empty = Shape {
         drop_folder_rows: true,
         drop_empty_folder_rows: true,
+        trash_rowless_folders: true,
         max_ops: 9,
         ..shape(Rules::None)
     };
     run(empty, true, scenarios(DEFAULT_SCENARIOS * 2)).assert_sound("empty folders, no rows", 10);
+}
+
+/// Seed 20700690 of the large run (`RECONSTRUCT_FUZZ_SCENARIOS=2000000 RECONSTRUCT_FUZZ_FROM=20000000`,
+/// include `**/a`): a folder with no row, holding a record, was trashed while its parent was
+/// temporarily outside the tree, and the parent came back. The generator judged "inside" at trash
+/// time and let the history through; the folder is the same one with the same records wherever it is
+/// when the event arrives, so the history is not generated.
+#[test]
+fn a_folder_trashed_while_its_parent_was_outside_the_tree_is_not_generated() {
+    let tally = run_seeds(shape(Rules::IncludeAnyA), true, 20_700_690..20_700_691);
+    assert_eq!(tally.wrong, 0, "{:?}", tally.examples);
 }
 
 /// Every adversarial shape together, with and without an exclude rule: the combinations are where
@@ -1154,6 +1192,7 @@ fn every_adversarial_shape_at_once() {
             max_ops: 12,
             drop_folder_rows: true,
             drop_empty_folder_rows: true,
+            trash_rowless_folders: true,
             retake_names: 40,
             quick_restore: 25,
             direct_delete: true,

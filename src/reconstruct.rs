@@ -379,19 +379,45 @@ pub fn reconstruct_remote(
             .map(|(path, _)| path)
             .min()
             .cloned();
-        let unnamed_record = legacy_in_base.clone().or_else(|| {
-            remote
-                .keys()
-                .filter(|path| !named.contains(*path))
+        // What stops the removal of a node the pair does not hold from being dropped: a record that
+        // carries no composed id of this volume, since the removed node may be that record. A pair
+        // that knows its root reads the final map, where a record named by its own `Created` event
+        // in this delta is named; one that does not decides as before #456, from the baseline
+        // alone, and walks for any record without an id whatever the delta later names.
+        let unnamed_record = if root_uid.is_some() {
+            legacy_in_base.clone().or_else(|| {
+                remote
+                    .keys()
+                    .filter(|path| !named.contains(*path))
+                    .min()
+                    .cloned()
+            })
+        } else {
+            base_index
+                .iter()
+                .filter(|(_, record)| {
+                    !record
+                        .proton_id
+                        .as_deref()
+                        .is_some_and(|id| is_composed_on(volume_id, id))
+                })
+                .map(|(path, _)| path)
                 .min()
                 .cloned()
-        });
-        // The first condition S fails on, if any. A deferred placement exists only when the root
-        // uid is known, so that condition needs no clause here.
+        };
+        // A record that sits in a folder no record holds: the tree has a folder this pair cannot
+        // name, and an event about a node it does not hold may be about that folder. Read only by a
+        // pair that knows its root (an include rule makes it unknown, and then the index never held
+        // the tree's folders to begin with), so a deferred placement, which exists only then,
+        // always has it.
+        let outside_any_folder =
+            root_uid.and_then(|_| first_record_outside_any_folder(base_index, &remote));
+        // The first condition S fails on, if any, for a placement.
         let placement_blocker = if let Some(path) = unnamed_directory.or(legacy_in_base) {
             Some(PlacementBlocker::Unnamed(path))
         } else {
-            first_record_outside_any_folder(base_index, &remote)
+            outside_any_folder
+                .clone()
                 .map(PlacementBlocker::RecordOutsideAnyFolder)
         };
 
@@ -413,6 +439,17 @@ pub fn reconstruct_remote(
                     if let Some(path) = &unnamed_record {
                         return Reconstruction::FallbackToSnapshot(format!(
                             "removal of untracked node {} while {} has no composed id",
+                            event.node_id,
+                            path.display()
+                        ));
+                    }
+                    // The node may be a folder with no row, trashed with the pair's records beneath
+                    // it: the event is for its own link alone, and nothing in the delta says which
+                    // records were under it.
+                    if let Some(path) = &outside_any_folder {
+                        return Reconstruction::FallbackToSnapshot(format!(
+                            "removal of untracked node {} while {} is in a folder the index has no \
+                             record of",
                             event.node_id,
                             path.display()
                         ));
@@ -2051,16 +2088,120 @@ mod tests {
     }
 
     #[test]
-    fn a_foreign_removal_is_still_dropped_when_a_folder_has_no_row() {
-        // A removal needs only that every record carry an id: a record with one is found by it.
-        // Dropping it is what the code did before #456 and what a missing folder row changes not.
+    fn a_foreign_removal_walks_when_a_record_sits_in_a_folder_the_index_does_not_hold() {
+        // The removal of a node the pair does not hold may be the folder that has no row, with the
+        // pair's records beneath it. Only a pair that knows its root can say the rest of the tree is
+        // named, so it is the one that reads this evidence.
+        expect_fallback(
+            reconstruct(
+                &a_file_synced_under_a_folder_with_no_row(),
+                &[deleted("foreign")],
+                ROOT,
+                &FakeResolver::default(),
+            ),
+            "docs/x.md is in a folder the index has no record of",
+        );
+    }
+
+    #[test]
+    fn a_foreign_removal_is_still_dropped_by_a_pair_that_does_not_know_its_root() {
+        // The pre-#456 rule, kept whole: every record carries an id and none is this node.
         let (map, outside) = complete(reconstruct(
             &a_file_synced_under_a_folder_with_no_row(),
             &[deleted("foreign")],
-            ROOT,
+            None,
             &FakeResolver::default(),
         ));
         assert_eq!((map.len(), outside), (1, 1));
+        let (_, outside) = complete(reconstruct_remote(
+            &a_file_synced_under_a_folder_with_no_row(),
+            &[deleted("foreign")],
+            VOLUME,
+            ROOT,
+            &scan_options_including(&["**/*.md"]),
+            &FakeResolver::default(),
+        ));
+        assert_eq!(outside, 1, "an include rule makes the root unknown");
+    }
+
+    /// Review of #461, round 3: `b` has no row, `b/a.txt` is a record beneath it, and the daemon's
+    /// own upload `c.txt` has no id until its `Created` event, which is in the delta. That event
+    /// names the one record without an id, so the removal of `b` read as "every record is named, so
+    /// this was never synced here" and `b/a.txt` stayed in the map.
+    fn a_folder_with_no_row_and_the_daemons_own_upload() -> (
+        HashMap<PathBuf, FileRecord>,
+        FakeResolver,
+        Vec<RemoteChange>,
+    ) {
+        (
+            base_of(vec![
+                file_record("b/a.txt", "hash-a", Some("vol~a")),
+                file_record("c.txt", "hash-c", None),
+            ]),
+            FakeResolver::with_tree(vec![remote_file("c.txt", "vol~c", "hash-c")]),
+            vec![created("c", "root"), trashed("b", "root")],
+        )
+    }
+
+    #[test]
+    fn a_trashed_folder_with_no_row_walks_even_when_its_own_event_names_the_last_unnamed_record() {
+        let (base, resolver, events) = a_folder_with_no_row_and_the_daemons_own_upload();
+        expect_fallback(
+            reconstruct(&base, &events, ROOT, &resolver),
+            "b/a.txt is in a folder the index has no record of",
+        );
+    }
+
+    #[test]
+    fn a_pair_that_does_not_know_its_root_decides_a_removal_as_before_456() {
+        // The same delta, read by a pair without a root uid: a record without an id walks, as it
+        // always did, whatever a later event of the delta names. (Before this was pinned, such a
+        // pair dropped the trash of `b` here because `c.txt`'s own `Created` event is in the delta,
+        // a walk the old code made.)
+        let (base, resolver, events) = a_folder_with_no_row_and_the_daemons_own_upload();
+        expect_fallback(
+            reconstruct(&base, &events, None, &resolver),
+            "removal of untracked node b while c.txt has no composed id",
+        );
+    }
+
+    #[test]
+    fn a_trashed_folder_with_a_row_is_removed_with_its_records_as_before() {
+        // The control: the same delta with the folder's row.
+        let base = base_of(vec![
+            directory_record("b", Some("vol~b")),
+            file_record("b/a.txt", "hash-a", Some("vol~a")),
+            file_record("c.txt", "hash-c", None),
+        ]);
+        let resolver = FakeResolver::with_tree(vec![remote_file("c.txt", "vol~c", "hash-c")]);
+        let (map, outside) = complete(reconstruct(
+            &base,
+            &[created("c", "root"), trashed("b", "root")],
+            ROOT,
+            &resolver,
+        ));
+        assert_eq!(outside, 0);
+        let mut paths: Vec<_> = map.keys().cloned().collect();
+        paths.sort();
+        assert_eq!(paths, [PathBuf::from("c.txt")]);
+    }
+
+    #[test]
+    fn a_folder_the_delta_renamed_leaves_its_children_unheld_and_a_foreign_event_walks() {
+        // The map half of the "record outside any folder" check: `docs` is renamed `e`, which
+        // moves its own entry and leaves `docs/a.txt` in the map under a folder that is no longer
+        // there (events are per link; the rename of a folder with descendants is a limit older than
+        // #456). The baseline still holds `docs`, so only the map shows it.
+        let resolver = FakeResolver::with_tree(vec![remote_directory("e", "vol~docs")]);
+        expect_fallback(
+            reconstruct(
+                &named_tree(),
+                &[updated("docs", "root"), created("foreign", "elsewhere")],
+                ROOT,
+                &resolver,
+            ),
+            "docs/a.txt is in a folder the index has no record of",
+        );
     }
 
     // --- round 2 of the review of #461 ---------------------------------------------------------

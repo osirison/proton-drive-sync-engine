@@ -1,7 +1,7 @@
 # ADR 0006 — Shared-volume event scope (a change elsewhere on the volume is not a reason to walk)
 
-- **Status:** Accepted (the live gate in `tests/events_scope_live.rs` has not been run against a
-  real account yet; see "Live gate")
+- **Status:** Accepted. The live gate in `tests/events_scope_live.rs` passed on the maintainer's
+  account on 2026-10-10; see "Live gate" for what it did and did not cover.
 - **Date:** 2026-10-10
 - **Relations:** closes ADR 0005 §8a and phase 6 (#456). Changes one line of ADR 0001's list of what
   causes a full walk ("an unresolvable node") and the first pass of ADR 0004's warm start, which no
@@ -99,7 +99,16 @@ moved into the pure `reconstruct_remote`.
 5. **A removal of a node the pair does not track** is deferred the same way and dropped under the
    same rule extended to files (every record carries a composed uid, and no baseline record has an
    older id). It needs no root uid: the removed node could only have been one of the records that
-   lack an id.
+   lack an id. A pair that **knows its root** reads one more thing, the last part of S: a record
+   that sits in a folder the index has no row for. The removed node may be that folder, trashed by
+   one event for its own link, with the pair's records beneath it, and nothing in the delta says
+   which; the pass walks. (Found by the third review: a folder with no row holding `b/a.txt`, the
+   daemon's own upload `c.txt` whose `Created` event is in the same delta, and the folder trashed:
+   the removal read as "every record is named" and `b/a.txt` stayed in the map.) That pair also
+   counts a record with no id as named once its own `Created` event is in the delta. A pair that
+   does **not** know its root decides a removal exactly as the code before this change did, from the
+   baseline alone: any record without a composed id walks, whatever the delta names later, and the
+   folder-with-no-row case is dropped, as it always was.
 6. **A tracked node whose event names a parent the pair does not hold walks.** It left the tree, or
    it went into a folder the pair cannot see into (no row, nothing recorded beneath it), and the
    event does not say which. The first version read it as "left": the node was taken out of the map,
@@ -127,7 +136,11 @@ moved into the pure `reconstruct_remote`.
    delta took out of the map, placed or moved is not resolved through its stale index path (points 3
    and 6). The third removes the entries beneath a folder whose update cannot find it (point 6),
    which the old code left in the map. A delta of nothing but dropped removals is also an idle pass for such a pair
-   (point 12): it drops untracked removals as outside, as it always did.
+   (point 12): it drops untracked removals as outside, as it always did. So an include-rule pair, or
+   one that has not learned its root, still **drops the removal of a node it holds no record of**
+   when every baseline record carries a composed id. That includes a folder with no row that is
+   trashed with the pair's records beneath it (older than this change; the next walk heals it), and
+   it is the one thing "decided as before" skips.
 9. **Learning the root uid.** `ProtonClient::remote_root_uid` returns it from the root listing's
    wrapper node when the CLI prints an id there, otherwise from the root's entry in its parent's
    listing. At most two listings. A full walk that leaves a cursor asks every time (a root that was
@@ -220,12 +233,41 @@ planner's view is then a stale file, not a lost one, so nothing is deleted in th
 test finds it once in about 190,000 two-pass histories (seed 215742) and skips that shape on purpose;
 the code before this change overwrote the record the same way.
 
-Also older than this change and equally true without a root uid, found by the model test and left
-alone because an include-rule pair is decided as it was: with include rules, a folder that has no row
-and holds matching files is trashed or deleted by a single event for its own link, so its files stay
-in the map; and the same folder moved into the tree, or restored, brings files nothing describes.
-Both are closed by walking whenever such an event arrives and a record sits in a folder with no row;
-that costs include-rule pairs a walk per foreign deletion, so it is not done here.
+Also older than this change, found by the model test: a folder that has no row and holds records
+is trashed or deleted by a single event for its own link, so its records stay in the map; and the
+same folder moved into the tree, or restored, brings files nothing describes. **Closed for a pair
+that knows its root** for the trash and the delete (point 5: a record in a folder with no row makes
+the removal walk). **Not closed** for an include-rule pair or one that has not learned its root,
+which are decided as they were, and not for a restore or a move into the tree. Closing it for the
+include-rule pairs means a walk per foreign deletion, because for them almost every record is in a
+folder with no row.
+
+Also not claimed, and also older than this change:
+
+- **A record with no id stays unnamed for as long as its file keeps changing.** An upload keeps the
+  record's existing id (`None` stays `None`), so a file that is changed again before its `Created`
+  event is read stays in the upload window. The skip then treats an event about a node that left
+  the tree as news about somebody else's node: a file with such a record that is moved out of the
+  tree is dropped as outside, and its old path stays in the map until a walk. The cost of the window
+  is usually zero (the next revision upload produces an `Updated` event for the node, and the
+  `AutoLink` that follows names it), so it needs a file that keeps changing and is then moved out
+  before it is named. Found by the review in a model with stale ids; the real stream was not
+  measured.
+- **The listing-ahead overwrite also covers a move out of the tree.** The paragraph above names a
+  holder that is later trashed; the same happens when the holder is later *moved out* instead. The
+  holder's record is gone, its next event reads as foreign, and what was beneath it stays. The code
+  before this change did the same, but its unknown-parent walk healed the move out by accident.
+- **The model's skip for this is broader than the real cases.** `removes_a_node_the_first_pass_overwrote`
+  skips every two-pass history whose second part removes a node the first pass's map no longer
+  holds. That includes a node trashed in one pass and deleted for good in the next, which is
+  harmless. It hides about five times as many histories as the precise overwrite test would, and
+  nothing harmful was seen among them. It looks only at removals, so a history whose second part
+  *moves* the holder out is not skipped; the review's own harness found one such history among 1.4
+  million completed two-pass runs, and the in-repo run has found none in the seeds tried.
+- **A record under an id of an older index (a raw id, or another volume's) that is renamed or moved
+  within the tree keeps its old path.** The id matches no event, so the old path stays in the map
+  until a walk replaces the record. Moving it out of the tree, trashing it and deleting it do walk
+  (S fails, point 4). The model leaves the rename and the move within out for this reason.
 
 ## The model test
 
@@ -246,7 +288,14 @@ first version, it found the two defects fixed then (include rules, and a move ou
 path): 281 wrong maps in 60,000 scenarios without rules, thousands with include rules. Against the
 first fixes the new shapes found 338 wrong maps in 10,000 histories with lost parent ids, 247 in
 20,000 with older ids and 28 in 20,000 with folders that have no row; it reports none in 300,000
-scenarios per configuration now. What the generator leaves out is listed at the top of the file.
+scenarios per configuration now. The third review's large run (2 million scenarios per
+configuration from seed 20,000,000) found one wrong map, seed 20700690 under `include **/a`: a
+folder with no row, holding a record, was trashed while its parent was temporarily outside the
+tree and came back with it. The generator judged "inside" at trash time and let the history
+through; it now remembers every folder that had no row while it was in the tree, and the seed is a
+fixed test. The same review made a pair that knows its root walk for such a trash (point 5), so the
+runs that drop folder rows now generate the trash of a folder with no row too. What the generator
+leaves out is listed at the top of the file.
 
 ## Consequences
 
@@ -263,7 +312,8 @@ scenarios per configuration now. What the generator leaves out is listed at the 
   parent's listing (#30); an event about the pair's own root; a directory moved in or restored; a
   duplicate id in the baseline; a tree with a directory that has no composed id (the window between
   the daemon making a folder and its own event arriving); a record in a folder with no row; a
-  baseline record under an older id; an event that names no parent; **a node the pair holds that
+  baseline record under an older id; **the removal of a node it holds no record of while a record
+  sits in a folder with no row** (a pair that knows its root); an event that names no parent; **a node the pair holds that
   moves out of the tree** (one walk per move out: the same event is a move into a folder the pair
   has no row for, and the pair cannot tell them apart); an event naming a parent that an earlier
   event of the same delta took out; a pair that cannot learn its root uid; **every foreign event of
@@ -274,7 +324,13 @@ scenarios per configuration now. What the generator leaves out is listed at the 
   foreign nodes (except from a pair with include rules); `warm start completed` for every pair at
   every boot, a GUI add included; the skip or idle line on the small pairs whenever Documents
   uploads, and the reverse; and the rate of `cannot tell whether node … is outside` (each one on
-  Documents is a 28-minute walk).
+  Documents is a 28-minute walk). Three things the tests cannot show and the live log can: foreign
+  events that carry **no parent id** are not skipped (they walk, point 4), so if Proton sends many
+  of them the saving shrinks and the log says `names no parent`; a pair **rooted at the top of the
+  volume** was not covered by the live gate, and its root may behave differently (events whose
+  parent is the volume top, which the model gives or omits at random); and the **listing can lag
+  the stream**, which turns a `Created` into a `not in its parent listing yet` walk (#30) however
+  well the skip works.
 - **A residual, contrived:** the root uid names a node and `remote_root` names a path. If an
   ancestor of the folder is renamed and someone makes a different folder at the old path before the
   pair notices, no event is about the old root, so the pair keeps the old uid until its next walk and
@@ -285,10 +341,10 @@ scenarios per configuration now. What the generator leaves out is listed at the 
   the examples configuration documents. Such a pair keeps walking for every foreign event, as before.
   Giving the folders on the way to a match index rows would change the index for every such pair and
   is not part of this.
-- **Not measured.** Whether the real CLI prints an id on the root listing's wrapper node (the
-  second source covers it if not), and whether Proton sends an event for the root folder when a
-  child is added (point 2 would then read every upload as "the root changed" and walk). The live
-  gate reports both.
+- **Measured on 2026-10-10** (live gate, below): the root uid agrees with the parent listing, and
+  creating or renaming a file in the root names the root uid as its parent and sends no event for
+  the root. **Still not measured:** a pair rooted at the volume top, a node restored from the
+  trash, and how many foreign events carry no parent id.
 
 ## Alternatives considered
 
@@ -332,6 +388,19 @@ PROTON_SYNC_LIVE_WRITE=1 \
 
 The skip is relied on once this has passed on a real account. If the first check fails a pair never
 learns its root and nothing is skipped (the old behaviour); if the second fails, do not ship.
+
+**Result, 2026-10-10**, against the maintainer's real account with `PROTON_SYNC_LIVE_REMOTE_ROOT=/my-files/Videos`
+and `PROTON_SYNC_LIVE_WRITE=1`; both tests passed in 21 seconds:
+
+- read only: "root uid OK (the parent listing names the same node)": the client learns a composed
+  uid on the events volume, and the two sources agree;
+- write round trip: "scope round-trip OK: create and rename both name the root uid as their parent;
+  the root itself got no event".
+
+What it did **not** cover: a pair rooted at the top of the volume (the root's parent is then the
+volume top, whose id the stream may omit); a node restored from the trash (the event may arrive
+with a different parent or none); and foreign events that carry no parent id, which the pair
+walks for by design (point 4) and whose frequency on a real stream is not known.
 
 ## Follow-ups
 

@@ -71,7 +71,8 @@ A poll in which every event was about other folders costs nothing: no scan of th
 no scan of your local folder. The folder cannot tell in these cases, and then re-scans once, as it
 always did. The first is right after it has made a folder itself: that folder has no id until
 Proton's event for it arrives (normally within one poll), and a change elsewhere in that gap could
-be about it. The second is an index that records a file but not the folder it is in, or a file
+be about it. The second is an index that records a file but not the folder it is in (an event
+elsewhere, a removal included, could be about that folder), or a file
 recorded under an id from an older version (the re-scan rewrites it). The third is a change to the
 synced folder itself (renamed, moved, trashed), or a folder moved in from elsewhere, because the
 stream describes nothing inside them. The fourth is an event that names no folder at all, because
@@ -79,9 +80,14 @@ then nothing says where the file is. The fifth is a file or folder it has record
 folder it does not know: that is either a move out of your synced folder or a move into an empty
 folder it has no record of, and the event cannot tell which, so it looks rather than guess.
 
-**A folder with an include rule ("only sync these") never ignores an event about another folder.**
-The folders on the way to an included file are not recorded, so it cannot tell where an event
-belongs, and it re-scans for each one, as before.
+**A folder with an include rule ("only sync these") never ignores a created or changed item from another folder.**
+The folders on the way to an included file are not recorded, so it cannot tell where such an event
+belongs, and it re-scans for each one, as before. It does still skip one kind of event, as it
+always did: the removal of an item it has no record of, when every file it has recorded carries its
+Proton id. A file it has just uploaded has no id until Proton's event for it arrives, and while that
+is so this folder re-scans for a removal too. The folders on the way to an included file have no
+entry of their own, so trashing one leaves the included files recorded beneath it in place until
+the next re-scan puts them right.
 
 #### A subtlety worth knowing
 
