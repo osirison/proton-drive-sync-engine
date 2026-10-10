@@ -3,9 +3,9 @@
 - **Status:** Implemented through phase 5 — a config may declare any number of pairs, one daemon
   runs them all (the lift, phase 4c), and the desktop app lists, selects, pauses, adds and removes
   them (phase 5, closed out 2026-10-09: see "Phase 5 shipped, with departures" under the phase
-  plan). Phase 6 (the shared-volume event scope) is not scheduled and is not built; it is tracked
-  in its own issue, #456. Written as a design (2026-08-17); the phases below carry their own
-  "Shipped, with departures" notes.
+  plan). Phase 6 (the shared-volume event scope, §8a) was tracked as #456 and is built: measured on
+  a live account and decided in [ADR 0006](0006-shared-volume-event-scope.md). Written as a design
+  (2026-08-17); the phases below carry their own "Shipped, with departures" notes.
 - **Date:** 2026-08-17
 - **Issue:** #102 (E5 · Multiple folder pairs). This ADR is the "scoping pass" the maintainer's
   decision comment asked for; phases 1 to 5 shipped under it, and the open items are listed in the
@@ -68,7 +68,7 @@ sync several — `Documents → /Docs` and `Photos → /Pictures` — each indep
 **Build order** (engine first, per the maintainer's decision on 2026-08-17): phases 1–4 make
 multiple folders work fully from the command line (shipped); the GUI selector (phase 5c) waits for
 re-drawn frames (shipped, with the frames drawn in the PR that built each screen); the
-multiplied-walk cost (phase 6) gets its own ADR (not scheduled).
+multiplied-walk cost (phase 6) got its own ADR, [0006](0006-shared-volume-event-scope.md) (#456).
 
 ## The shape, in six sentences
 
@@ -698,6 +698,15 @@ field 'pair'`. Non-destructive, comprehensible, accepted.
 Named rather than pretended-away.
 
 ### 8a. Two pairs on one volume pay for each other's events — and one pair already pays today
+
+> **Closed (2026-10-10, #456, [ADR 0006](0006-shared-volume-event-scope.md)).** Measured on the
+> live account (seven fallbacks from two foreign nodes; a 957-folder pair walked for 28 to 30
+> minutes each time), then built as candidate (a) **without its second part**: a pair reads only its
+> own index, because a node is outside when *this* pair's tree is fully named, not because another
+> pair claims it. The empty-`proton_id` window (i) is closed structurally, not by recording an id: a
+> folder the daemon just made has none until its own `Created` event is read, and while any
+> directory lacks one the pass walks as before. (iii) stands as written. The text below is the
+> design as it was written.
 
 This is the hardest technical fact in the feature and it is **pre-existing**, not introduced by
 multi-pair. Chain, verified in code:
@@ -1550,6 +1559,7 @@ Expect this phase to be as large as phase 2 and riskier. Closes: the feature, he
 > A's folder only, and count `event-driven pass fell back to a full-tree snapshot` lines per
 > pair — each carries its `pair{name=…}` span — over the same period for one pair alone and for
 > both. If pair B's count tracks pair A's activity, §8a's candidate (a) is worth its own ADR.
+> (Measured afterwards, from the daemon's own log, on three pairs: it did. See ADR 0006.)
 
 **Phase 5 — GUI (large, and larger than the issue assumes).** Splits into three, and they are worth
 tracking separately because only the first is mechanical: (5a) pair-index `RuntimePaths` and the
@@ -1930,7 +1940,7 @@ Closes: the feature for users.
 > | #453 | The index records no remote root. A pair started with a different `remote_root` over an existing index plans `LocalDelete` for what the old Proton folder had. Gated by delete approval and recoverable by default; neither holds when the guard is off or `local_delete_mode` is `permanent`. Found by the brief (A9). Phase 5 does not remove the app-driven route: the Proton folder field in Settings re-points an existing folder's `remote_root` at one folder or many, and the Add folder dialog over a surviving index names that index without comparing roots. What the set-aside closes is one route, adding back a folder that was removed through the app. |
 > | #454 | The app does not check that the daemon can run more than one folder before it writes a second. A daemon from before #434 exits on a file with two `[[pair]]` tables and nothing syncs until one is removed (see the last paragraph of this section). |
 > | #455 | **Fixed afterwards** (DEVIATIONS §111). At two folders or more, the window told someone whose folder had not synced yet to "Open Drive Sync to choose your two folders", which is the tray's sentence. The same facts are now a folder that has not had its turn, which says `Waiting for documents` or `Starting to sync` in the window, the lists, the chip and the tray. |
-> | #456 | Phase 6, the shared-volume event scope (§8a), as its own issue so #102 can close. It needs its own ADR. |
+> | #456 | **Built afterwards** ([ADR 0006](0006-shared-volume-event-scope.md)). Phase 6, the shared-volume event scope (§8a), as its own issue so #102 could close: measured, then a pair drops an event about another folder on the volume when its own tree is fully named, instead of walking. Resuming a paused pair also queues its pass now. The live gate (`tests/events_scope_live.rs`) has not been run on a real account. |
 >
 > To get this, upgrade the installed daemon and the installed app together. A daemon from before #434
 > refuses a file with more than one `[[pair]]` table (it exits with "syncing more than one pair is not
@@ -1960,7 +1970,8 @@ Closes: the feature for users.
 > refuse the file every ten seconds until the table is removed.
 
 **Phase 6 — Shared-volume event scope (its own ADR).** §8a. Independent of everything above and
-worth doing on its own merits, since one pair already pays the cost. Not scheduled here.
+worth doing on its own merits, since one pair already pays the cost. *Built afterwards (2026-10-10,
+#456): [ADR 0006](0006-shared-volume-event-scope.md).*
 
 An honest ordering note: phase 1 and phase 3 could each ship in a week. **Phases 2, 4 and 5c are the
 three that deserve their own review cycles** — 2 because every invariant guard in `daemon.rs` runs

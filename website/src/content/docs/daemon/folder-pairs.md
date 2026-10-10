@@ -151,18 +151,20 @@ resume it, and `proton-sync reset-index` does not clear it. One case is not cove
   written as an inline array (`pair = [{ ... }]`). Removing a folder takes its table out of the file
   and moves its sync history out of the folder (to `removed-pairs` in the app's state directory), so
   adding the same folder back later starts fresh.
-- **Two pairs on one Proton volume can make each other do full scans.** Proton reports changes per
-  volume, not per folder. When an event names something under neither pair's indexed folders, a
-  pair falls back to a full walk of its remote tree — safe, but it is the cost event-driven
-  detection exists to avoid. Even one pair pays this when you change something elsewhere in your
-  Drive; with several pairs on the usual single volume, one pair's busy folder can trigger the
-  others. **This has not been measured on a real account.** To measure it, run the daemon at
-  `RUST_LOG=info` with two pairs on one volume, change files in one pair's folder only, and count
-  the `event-driven pass fell back to a full-tree snapshot` lines per pair — every line carries its
-  `pair{name=…}` prefix — against a run with one pair. If the idle pair's count follows the busy
-  pair's activity, it is worth fixing; see
-  [ADR 0005](https://github.com/osirison/proton-drive-sync-engine/blob/main/docs/adr/0005-multiple-folder-pairs.md)
-  §8a.
+- **Two pairs on one Proton volume no longer make each other re-scan, except in one short window.** Proton
+  reports changes per volume, not per folder, so each pair sees every change anywhere in your Drive.
+  A pair used to re-scan its whole remote tree whenever an event named something it could not place
+  (28 minutes for a 957-folder pair on a real account, again after every restart). It now ignores
+  an event about another folder, as long as it knows which Drive folder is its own and every folder
+  in its tree has an id. A folder the daemon has just made has no id until Proton's event for it
+  arrives, normally within one 30-second poll; if a change elsewhere arrives in that gap, the pair
+  re-scans once, as before. A pair that cannot tell which Drive folder is its own also re-scans, as
+  before. To see how often it still happens, run at `RUST_LOG=info` and count the
+  `event-driven pass fell back to a full-tree snapshot` lines per pair — every line carries its
+  `pair{name=…}` prefix, and one that comes from the new rule says `cannot tell whether node … is
+  outside this folder` and names the folder without an id. A pass that ignored events says `skipped
+  changes outside this folder`. The reasoning and what was measured are in
+  [ADR 0006](https://github.com/osirison/proton-drive-sync-engine/blob/main/docs/adr/0006-shared-volume-event-scope.md).
 - **One pair that cannot start does not stop the others** — a missing folder or a lock held by
   another process leaves that pair unavailable with the reason as its error. The exception is a
   lock held by another process *at startup*, which refuses to start and names the pair.

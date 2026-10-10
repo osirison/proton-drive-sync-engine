@@ -54,12 +54,23 @@ Concretely, the engine:
 A periodic full-tree scan can be re-enabled as a reconvergence backstop
 (`--events-full-scan-every N`), but it is **off by default** — after the mandatory startup
 snapshot the daemon stays purely event-driven until it is restarted or the event stream forces
-a fallback (no cursor, fetch error, an unresolvable node, …). The **first reconcile after the
+a fallback (no cursor, fetch error, a node it cannot place, …). The **first reconcile after the
 daemon starts is always a full scan** — a fresh process has no pending-change history, so it
 can't safely trust an incremental pass alone.
 
 Event-driven mode is **on by default**. Opt out with `--no-events-driven` (or
 `events_driven = false`), which restores the byte-identical snapshot-only path.
+
+#### Changes elsewhere in your Drive
+
+The event stream is for your whole Proton volume, not for the folder you sync, so most of what it
+reports may be about other folders — other devices, other synced folders, the web app. A folder
+ignores an event about another folder, as long as it knows which Drive folder is its own and every
+folder in its tree has an id. The one time it cannot tell is right after it has made a folder
+itself: that folder has no id until Proton's event for it arrives (normally within one poll), and a
+change elsewhere in that gap could be about it, so the folder re-scans once. A change to the synced
+folder itself (renamed, moved, trashed) and a folder moved in from elsewhere also re-scan, because
+the stream describes nothing inside them.
 
 #### A subtlety worth knowing
 
