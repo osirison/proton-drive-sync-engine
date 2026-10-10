@@ -6662,7 +6662,8 @@ impl<C: ProtonClient> PairPass<'_, C> {
             &remote_entities,
             remote_root_missing,
         );
-        let root_node = self.remote_root_node_after_a_walk(remote_root_missing);
+        let root_node =
+            self.remote_root_node_after_a_walk(remote_root_missing, cursor_update.is_some());
 
         let outcome = self.execute_plan_and_commit(
             &local_scan,
@@ -6695,18 +6696,25 @@ impl<C: ProtonClient> PairPass<'_, C> {
     ///
     /// * the root was **missing**: whatever is recorded is cleared (the pass makes a new node), and
     ///   the next incremental pass that has events to place asks;
-    /// * events are in use and the client **names** it: record it;
-    /// * events are in use and it **cannot be named**: clear what was recorded — a uid that may no
-    ///   longer be the folder would let an event inside it read as outside;
-    /// * events are not in use (off, or no session): leave it, nothing reads it.
+    /// * the walk **leaves a cursor** (`leaves_a_cursor`: events are on, a session is live and a
+    ///   volume was named) and the client names the node: record it;
+    /// * the same, but it **cannot be named**: clear what was recorded — a uid that may no longer
+    ///   be the folder would let an event inside it read as outside;
+    /// * the walk leaves no cursor (events off, no session, or an empty remote root that names no
+    ///   volume, so the next pass is another walk): leave it and ask nothing. The walk that does
+    ///   leave a cursor asks, and that is the one an incremental pass can follow.
     ///
     /// Costs at most two single-directory listings, on a pass that just spent a whole-tree walk.
-    fn remote_root_node_after_a_walk(&mut self, remote_root_missing: bool) -> RootNodeUpdate {
+    fn remote_root_node_after_a_walk(
+        &mut self,
+        remote_root_missing: bool,
+        leaves_a_cursor: bool,
+    ) -> RootNodeUpdate {
         if remote_root_missing {
             self.pair.remote_root_uid_asked = false;
             return RootNodeUpdate::Clear;
         }
-        if !self.pair.config.events_driven || self.event_source.is_none() {
+        if !leaves_a_cursor {
             return RootNodeUpdate::Keep;
         }
         self.pair.remote_root_uid_asked = true;
@@ -35867,7 +35875,7 @@ mod tests {
         let update = daemon
             .pass_for(0)
             .expect("ready")
-            .remote_root_node_after_a_walk(true);
+            .remote_root_node_after_a_walk(true, true);
 
         assert_eq!(update, RootNodeUpdate::Clear);
         assert!(
@@ -35883,7 +35891,13 @@ mod tests {
         let directory = tempdir().expect("tempdir");
         let mut configs = pair_configs(directory.path(), &["a"]);
         configs[0].events_driven = true;
-        let client = MultiRootClient::default().with_root_uid(remote_root_of("a"), "raw-root-id");
+        fs::write(configs[0].local_root.join("a.txt"), b"a").expect("local file");
+        let client = MultiRootClient::default()
+            .with_tree(
+                remote_root_of("a"),
+                vec![remote_file_entity("a.txt", "vol~na", &sha1_bytes(b"a"))],
+            )
+            .with_root_uid(remote_root_of("a"), "raw-root-id");
         let mut daemon = multi_pair_daemon(
             configs,
             client.clone(),
@@ -35893,6 +35907,52 @@ mod tests {
         assert_eq!(stepper.step(&mut daemon), Step::Idle);
         assert_eq!(client.root_uid_asks().len(), 1, "it was asked");
         assert_eq!(root_uid_of(&daemon, 0), None, "and not believed");
+    }
+
+    #[test]
+    fn a_walk_that_leaves_no_cursor_does_not_ask_which_node_the_root_is() {
+        // Nothing streams from a walk that leaves no cursor (an empty remote root names no volume;
+        // an unhealthy events endpoint cannot be read), so the next pass is another walk, and the
+        // walk that does leave a cursor asks. A pair in that state walks every poll: it must not
+        // add listings to each.
+        let directory = tempdir().expect("tempdir");
+        let mut configs = pair_configs(directory.path(), &["a"]);
+        configs[0].events_driven = true;
+        fs::write(configs[0].local_root.join("a.txt"), b"a").expect("local file");
+        let client = MultiRootClient::default()
+            .with_tree(
+                remote_root_of("a"),
+                vec![remote_file_entity("a.txt", "vol~na", &sha1_bytes(b"a"))],
+            )
+            .with_root_uid(remote_root_of("a"), "vol~root-a");
+        let mut daemon = multi_pair_daemon(
+            configs,
+            client.clone(),
+            Some(Box::new(FakeEventSource::with_scripted_latest(
+                "cursor-0",
+                vec![None],
+            ))),
+        );
+        let mut stepper = Stepper::new(&mut daemon);
+
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "the first walk");
+        assert!(
+            load_event_cursor(&daemon.runtime(0).expect("ready").connection, "vol")
+                .expect("cursor read")
+                .is_none(),
+            "precondition: the cursor read failed, so no cursor was left"
+        );
+        assert!(client.root_uid_asks().is_empty(), "so nothing was asked");
+        assert_eq!(root_uid_of(&daemon, 0), None);
+
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle, "the next walk");
+        assert_eq!(
+            client.root_uid_asks().len(),
+            1,
+            "the one that leaves a cursor asks"
+        );
+        assert_eq!(root_uid_of(&daemon, 0), Some("vol~root-a".to_owned()));
     }
 
     #[test]

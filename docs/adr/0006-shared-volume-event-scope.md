@@ -83,8 +83,10 @@ moved into the pure `reconstruct_remote`.
    reason strings are the old ones.
 9. **Learning the root uid.** `ProtonClient::remote_root_uid` returns it from the root listing's
    wrapper node when the CLI prints an id there, otherwise from the root's entry in its parent's
-   listing. At most two listings. A full walk asks every time (a root that was deleted and made
-   again is a different node) and stores the answer or clears what was stored. An incremental pass
+   listing. At most two listings. A full walk that leaves a cursor asks every time (a root that was
+   deleted and made again is a different node) and stores the answer or clears what was stored; one
+   that leaves none asks nothing, because nothing streams from it (an empty remote root names no
+   volume, and such a pair walks on every poll). An incremental pass
    asks once per run, only when it has events to place and none is stored, which is how an index
    written before this change learns it without a walk. It is stored in a single-row table
    (`remote_root_node`) in the **final commit**, beside the cursor, cleared by `reset-index`, and
@@ -155,6 +157,12 @@ test is listed under follow-ups.
   foreign nodes; `warm start completed` for every pair at every boot, a GUI add included; the skip
   line on the small pairs whenever Documents uploads, and the reverse; and the rate of `cannot tell
   whether node … is outside` (each one on Documents is a 28-minute walk).
+- **A residual, contrived:** the root uid names a node and `remote_root` names a path. If an
+  ancestor of the folder is renamed and someone makes a different folder at the old path before the
+  pair notices, no event is about the old root, so the pair keeps the old uid until its next walk and
+  skips events inside the new folder. The window is one poll plus that person's speed; a walk
+  (restart, `resync`, the scheduled sweep) re-asks. A check of the uid before dropping anything
+  would close it at the price of one listing per pass that drops events; not built.
 - **Not measured.** Whether the real CLI prints an id on the root listing's wrapper node (the
   second source covers it if not), and whether Proton sends an event for the root folder when a
   child is added (point 2 would then read every upload as "the root changed" and walk). The live
