@@ -151,15 +151,17 @@ resume it, and `proton-sync reset-index` does not clear it. One case is not cove
   written as an inline array (`pair = [{ ... }]`). Removing a folder takes its table out of the file
   and moves its sync history out of the folder (to `removed-pairs` in the app's state directory), so
   adding the same folder back later starts fresh.
-- **Two pairs on one Proton volume no longer make each other re-scan, except in one short window.** Proton
+- **Two pairs on one Proton volume no longer make each other re-scan, except in a few cases.** Proton
   reports changes per volume, not per folder, so each pair sees every change anywhere in your Drive.
   A pair used to re-scan its whole remote tree whenever an event named something it could not place
   (28 minutes for a 957-folder pair on a real account, again after every restart). It now ignores
-  an event about another folder, as long as it knows which Drive folder is its own and every folder
-  in its tree has an id. A folder the daemon has just made has no id until Proton's event for it
-  arrives, normally within one 30-second poll; if a change elsewhere arrives in that gap, the pair
-  re-scans once, as before. A pair that cannot tell which Drive folder is its own also re-scans, as
-  before. To see how often it still happens, run at `RUST_LOG=info` and count the
+  an event about another folder, as long as it knows which Drive folder is its own, every folder in
+  its tree has an id, and every file it has recorded sits in a folder it has recorded too. A folder
+  the daemon has just made has no id until Proton's event for it arrives, normally within one
+  30-second poll; if a change elsewhere arrives in that gap, the pair re-scans once, as before. A
+  pair that cannot tell which Drive folder is its own also re-scans, as before. **A pair with an
+  `include` rule always re-scans for an event it cannot place**, as before: the folders on the way
+  to an included file are not recorded, so it cannot tell that the event is about another folder. To see how often it still happens, run at `RUST_LOG=info` and count the
   `event-driven pass fell back to a full-tree snapshot` lines per pair — every line carries its
   `pair{name=…}` prefix, and one that comes from the new rule says `cannot tell whether node … is
   outside this folder` and names the folder without an id. A pass that ignored events says `skipped

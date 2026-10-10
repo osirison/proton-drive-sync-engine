@@ -52,7 +52,7 @@ A warm start is attempted on the first pass only when **all** hold, else the pas
 Any doubt during the pass (no cursor, server refresh, events error, unresolvable node, a `Created`
 node its parent listing has not caught up with yet) falls back
 to a bootstrap exactly as a steady-state incremental pass does. (A node elsewhere on a shared
-volume is not doubt once the pair's own tree is fully named: ADR 0006. Before that, a restart
+volume is not doubt once the pair's own tree is fully named and held, for a pair without include rules: ADR 0006. Before that, a restart
 walked for every foreign node in the delta since the cursor.)
 
 Two safety bounds, both new surface:

@@ -65,12 +65,19 @@ Event-driven mode is **on by default**. Opt out with `--no-events-driven` (or
 
 The event stream is for your whole Proton volume, not for the folder you sync, so most of what it
 reports may be about other folders — other devices, other synced folders, the web app. A folder
-ignores an event about another folder, as long as it knows which Drive folder is its own and every
-folder in its tree has an id. The one time it cannot tell is right after it has made a folder
-itself: that folder has no id until Proton's event for it arrives (normally within one poll), and a
-change elsewhere in that gap could be about it, so the folder re-scans once. A change to the synced
-folder itself (renamed, moved, trashed) and a folder moved in from elsewhere also re-scan, because
-the stream describes nothing inside them.
+ignores an event about another folder, as long as it knows which Drive folder is its own, every
+folder in its tree has an id, and every file it has recorded sits in a folder it has recorded too.
+A poll in which every event was about other folders costs nothing: no scan of the remote tree and
+no scan of your local folder. The folder cannot tell in three cases, and then re-scans once, as it
+always did. The first is right after it has made a folder itself: that folder has no id until
+Proton's event for it arrives (normally within one poll), and a change elsewhere in that gap could
+be about it. The second is an index that records a file but not the folder it is in. The third is a
+change to the synced folder itself (renamed, moved, trashed), or a folder moved in from elsewhere,
+because the stream describes nothing inside them.
+
+**A folder with an include rule ("only sync these") never ignores an event about another folder.**
+The folders on the way to an included file are not recorded, so it cannot tell where an event
+belongs, and it re-scans for each one, as before.
 
 #### A subtlety worth knowing
 

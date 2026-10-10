@@ -702,7 +702,7 @@ Named rather than pretended-away.
 > **Closed (2026-10-10, #456, [ADR 0006](0006-shared-volume-event-scope.md)).** Measured on the
 > live account (seven fallbacks from two foreign nodes; a 957-folder pair walked for 28 to 30
 > minutes each time), then built as candidate (a) **without its second part**: a pair reads only its
-> own index, because a node is outside when *this* pair's tree is fully named, not because another
+> own index, because a node is outside when *this* pair's tree is fully named and held (and it has no include rule), not because another
 > pair claims it. The empty-`proton_id` window (i) is closed structurally, not by recording an id: a
 > folder the daemon just made has none until its own `Created` event is read, and while any
 > directory lacks one the pass walks as before. (iii) stands as written. The text below is the
@@ -1940,7 +1940,7 @@ Closes: the feature for users.
 > | #453 | The index records no remote root. A pair started with a different `remote_root` over an existing index plans `LocalDelete` for what the old Proton folder had. Gated by delete approval and recoverable by default; neither holds when the guard is off or `local_delete_mode` is `permanent`. Found by the brief (A9). Phase 5 does not remove the app-driven route: the Proton folder field in Settings re-points an existing folder's `remote_root` at one folder or many, and the Add folder dialog over a surviving index names that index without comparing roots. What the set-aside closes is one route, adding back a folder that was removed through the app. |
 > | #454 | The app does not check that the daemon can run more than one folder before it writes a second. A daemon from before #434 exits on a file with two `[[pair]]` tables and nothing syncs until one is removed (see the last paragraph of this section). |
 > | #455 | **Fixed afterwards** (DEVIATIONS §111). At two folders or more, the window told someone whose folder had not synced yet to "Open Drive Sync to choose your two folders", which is the tray's sentence. The same facts are now a folder that has not had its turn, which says `Waiting for documents` or `Starting to sync` in the window, the lists, the chip and the tray. |
-> | #456 | **Built afterwards** ([ADR 0006](0006-shared-volume-event-scope.md)). Phase 6, the shared-volume event scope (§8a), as its own issue so #102 could close: measured, then a pair drops an event about another folder on the volume when its own tree is fully named, instead of walking. Resuming a paused pair also queues its pass now. The live gate (`tests/events_scope_live.rs`) has not been run on a real account. |
+> | #456 | **Built afterwards** ([ADR 0006](0006-shared-volume-event-scope.md)). Phase 6, the shared-volume event scope (§8a), as its own issue so #102 could close: measured, then a pair drops an event about another folder on the volume when its own tree is fully named and held, and it has no include rule, instead of walking. Resuming a paused pair also queues its pass now. The live gate (`tests/events_scope_live.rs`) has not been run on a real account. |
 >
 > To get this, upgrade the installed daemon and the installed app together. A daemon from before #434
 > refuses a file with more than one `[[pair]]` table (it exits with "syncing more than one pair is not
