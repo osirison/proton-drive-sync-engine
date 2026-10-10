@@ -95,7 +95,7 @@ panel read one value) is how it changes (#102 phase 5c-1, DEVIATIONS §108).
   daemon that has not restarted onto a newly added folder does not run it. The window shows the default
   folder and says so (the notice block, `03-main-screen.md`); it does not rewrite the choice, which applies
   again the moment the daemon runs that folder.
-- **At two folders the first-run wizard never opens** (it is the first-folder flow), and a folder that has never synced is drawn as such rather than as `Everything is up to date`.
+- **At two folders the first-run wizard never opens** (it is the first-folder flow), and a folder that has not had its turn is drawn as waiting rather than as `Everything is up to date`. "Has not had its turn" is exact: no pass has finished for it since the daemon started. The daemon runs one pass at a time, so it is `waiting for <the folder that is running>` or, with nothing running, `starting`; it never claims "up to date" without a finished pass. A folder that has finished a pass and waits behind another stays `up to date`.
 - **A pause the daemon could not save** (`pause_unsaved`): the pause TOOK EFFECT; what is not saved is that
   it survives a restart. The window says so in the notice block, from the hero's own press and from a tray
   row alike (the panel is dismissed before the reply arrives, so Rust tells the window). The notice is kept
@@ -129,7 +129,7 @@ rules it keeps.
 - **A daemon that never lists the folder is said so** after a bounded wait (twenty polls), not waited for for ever,
   and the folder stays in the file.
 - **The first-run takeover never takes the window beside a new folder.** The new folder has not synced; at two
-  folders that is a hero (`nothing synced yet`), and the merge dialog is the answer.
+  folders that is a hero (`Waiting for documents`, or `Starting to sync`), and the merge dialog is the answer.
 
 ## Transitions
 

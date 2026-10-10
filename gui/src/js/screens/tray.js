@@ -70,6 +70,10 @@ const PANEL_STATE = {
   // a failed pass and retry". #246.
   failed: "unreachable",
   firstRun: "needsYou",
+  // A folder that has not had its turn wears the form a folder that has not synced has always worn: it
+  // has not synced anything in this run, and the settled form says it has. It draws no button — there
+  // is nothing to decide and nothing to open the window for (#455).
+  queued: "needsYou",
 };
 
 /**
@@ -102,6 +106,9 @@ const MENU_STATE = {
   // Same table, same reasoning, in `tray_menu.rs` for the native menus.
   failed: "outage",
   firstRun: "deferToWindow",
+  // The settled rows, and at two folders or more the pause row of every folder: a folder waiting for
+  // its turn can be paused like any other (`tray_menu.rs` puts `Queued` beside `Idle` and `Running`).
+  queued: "settled",
 };
 
 /**
@@ -126,6 +133,8 @@ export function foldersOf(pairs, pairStates) {
       syncing: Boolean(summary.syncing),
       rank: entry.rank ?? 0,
       state: entry.state,
+      // The folder a `queued` one waits for (Rust's `waiting_for`); `null` when nothing is running.
+      waitingFor: entry.waiting_for ?? null,
       summary,
     });
   }
@@ -230,8 +239,8 @@ export function trayView(props = {}) {
   const shown = panelFolderOf(folders, decisions);
   const described = scannedName === shown.name;
   const panel = described
-    ? panelOf(daemonState, response, waiting, shown.name)
-    : panelOf(shown.state, factsOfSummary(shown.summary), waiting, shown.name);
+    ? panelOf(daemonState, response, waiting, shown.name, shown.waitingFor)
+    : panelOf(shown.state, factsOfSummary(shown.summary), waiting, shown.name, shown.waitingFor);
   const view = {
     ...panel,
     pair: shown.name,
@@ -249,9 +258,10 @@ export function trayView(props = {}) {
  *
  * `folder` is the folder's name at two folders or more and `null` at one. It changes one sentence: a
  * paused hero names the folder that is paused (`TRAY.pausedSubPair`), because another folder may be
- * syncing under it and "nothing will move" would be untrue of the app.
+ * syncing under it and "nothing will move" would be untrue of the app. `waitingFor` is the folder a
+ * `queued` folder waits for, or `null` when nothing is running yet.
  */
-function panelOf(daemonState, response, waiting, folder = null) {
+function panelOf(daemonState, response, waiting, folder = null, waitingFor = null) {
   const activity = response?.activity ?? null;
   const summary = response?.last_plan_summary ?? null;
   const queued = response?.pending_changes ?? null;
@@ -280,7 +290,7 @@ function panelOf(daemonState, response, waiting, folder = null) {
     state: PANEL_STATE[hero],
     menuState: MENU_STATE[hero],
     hero,
-    ...copyFor(hero, { changes, waiting, queued, lastSync, activity, summary, folder }),
+    ...copyFor(hero, { changes, waiting, queued, lastSync, activity, summary, folder, waitingFor }),
     transfers:
       PANEL_STATE[hero] === "syncing" ? transfersOf(activity, { compact: true }).slice(0, PANEL_ROWS) : [],
   };
@@ -359,6 +369,15 @@ function copyFor(hero, v) {
         // design put it rather than wherever 362px happens to wrap.
         sub: [MAIN.compact.conflictLine, MAIN.compact.deletionLine],
         action: { label: MAIN.compact.review, id: "review" },
+      };
+
+    case "queued":
+      // The window's two sentences (`screens/main.js`), and no button: the one `firstRun` has opens the
+      // window to choose folders, which a person looking at a list of folders has done.
+      return {
+        headline: v.waitingFor ? TRAY.waitingTitle(v.waitingFor) : TRAY.startingTitle,
+        sub: v.waitingFor ? TRAY.waitingSub(v.folder, v.waitingFor) : TRAY.startingSub(v.folder),
+        count: null,
       };
 
     case "firstRun":

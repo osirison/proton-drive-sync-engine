@@ -308,7 +308,7 @@ test("two folders show the worst one's own panel, named, with a pause row for ea
     daemonState: "idle",
     response: reply({ pair: "documents" }),
     pairs: [summary("documents"), summary("photos", { last_error: "boom", pending_changes: 4 })],
-    pairStates: derived(["documents", "idle", 0], ["photos", "failed", 4]),
+    pairStates: derived(["documents", "idle", 0], ["photos", "failed", 5]),
   });
   assert.equal(view.pair, "photos");
   assert.equal(view.headline, MAIN.failed);
@@ -333,7 +333,7 @@ test("the folder the reply describes keeps what only a full reply has", () => {
       activity: { phase: "executing", transfer },
     }),
     pairs: [summary("documents", { syncing: true, pending_changes: 1 }), summary("photos")],
-    pairStates: derived(["documents", "running", 2], ["photos", "idle", 0]),
+    pairStates: derived(["documents", "running", 3], ["photos", "idle", 0]),
   });
   assert.equal(view.pair, "documents");
   assert.equal(view.state, "syncing");
@@ -346,7 +346,7 @@ test("another folder syncing is drawn from its summary: its count, and no rows i
     // The reply is about `documents`, which is idle and carries no activity; `photos` is the one moving.
     response: reply({ pair: "documents" }),
     pairs: [summary("documents"), summary("photos", { syncing: true, pending_changes: 7 })],
-    pairStates: derived(["documents", "idle", 0], ["photos", "running", 2]),
+    pairStates: derived(["documents", "idle", 0], ["photos", "running", 3]),
   });
   assert.equal(view.pair, "photos");
   assert.equal(view.state, "syncing");
@@ -457,8 +457,8 @@ test("a decision never outranks a folder that is moving or wrong", () => {
   // The paused/idle exception is deliberately that narrow: syncing, a failed pass and the rest keep
   // their panel (at one folder, `Syncing…` has no `Review them` either).
   for (const [state, rank, over, form] of [
-    ["running", 2, { syncing: true, pending_changes: 4 }, "syncing"],
-    ["failed", 4, { last_error: "boom", pending_changes: 4 }, "unreachable"],
+    ["running", 3, { syncing: true, pending_changes: 4 }, "syncing"],
+    ["failed", 5, { last_error: "boom", pending_changes: 4 }, "unreachable"],
   ]) {
     const view = trayView({
       daemonState: "idle",
@@ -608,4 +608,82 @@ test("the two paused sentences share their first half and differ only in the fol
   // The counted form agrees with the singular, in both.
   assert.match(MAIN.pausedSub(1, "13:20"), /^1 change has piled up/);
   assert.match(TRAY.pausedSubPair(1, "13:20", "photos"), /^1 change has piled up/);
+});
+
+// ---- a folder that has not had its turn (#455 and the live report) ----------------------------------------
+//
+// Beside other folders a folder with no finished pass is `queued`, never `idle` and never the wizard's
+// `firstRun`. Its panel says so and names what it waits for; it offers no `Open Drive Sync` button, because
+// the sentence that button belonged to ("choose your two folders") is addressed to someone who has not.
+
+/** `[name, state, rank, waiting_for?]` → `pair_states` entries as Rust sends them. */
+const derivedWaiting = (...rows) =>
+  rows.map(([name, state, rank, waiting_for]) => ({
+    name,
+    state,
+    rank,
+    ...(waiting_for ? { waiting_for } : {}),
+  }));
+
+test("a_folder_waiting_behind_a_paused_pass_is_a_panel_that_names_it_and_the_folder_it_waits_for", () => {
+  // A pause does not stop a pass already running, so `documents` is paused (rank 1) and still the one
+  // `photos` waits for. `photos` (rank 2) is the worst folder, and the panel is its own.
+  const view = trayView({
+    daemonState: "paused",
+    response: reply({ pair: "documents", paused: true }),
+    pairs: [
+      summary("documents", { paused: true, syncing: true }),
+      summary("photos", { last_sync_epoch_secs: null }),
+    ],
+    pairStates: derivedWaiting(["documents", "paused", 1], ["photos", "queued", 2, "documents"]),
+  });
+  assert.equal(view.pair, "photos");
+  assert.equal(view.headline, "Waiting for documents");
+  assert.equal(view.sub, "Folders sync one at a time. photos is waiting for documents to finish.");
+  assert.notEqual(view.headline, MAIN.compact.upToDate);
+  assert.equal(view.state, "needsYou", "the form a folder with no pass has always had: it has not synced");
+  assert.equal(view.count, null, "a count inside the mark would be a queue of zero things");
+  assert.equal(view.action, undefined, "nothing to open the window for, and nothing to decide");
+  // Every folder keeps its pause row.
+  const ids = view.menuRows.filter((row) => !row.separator).map((row) => row.id);
+  assert.deepEqual(ids, ["open", "syncNow", "pause@photos", "resume@documents", "closeWindow", "quit"]);
+});
+
+test("with_nothing_running_a_folder_without_a_pass_is_a_starting_panel", () => {
+  const view = trayView({
+    daemonState: "queued",
+    response: reply({ pair: "documents", last_sync_epoch_secs: null }),
+    pairs: [
+      summary("documents", { last_sync_epoch_secs: null }),
+      summary("photos", { last_sync_epoch_secs: null }),
+    ],
+    pairStates: derivedWaiting(["documents", "queued", 2], ["photos", "queued", 2]),
+  });
+  assert.equal(view.pair, "documents", "ties go to the first the daemon lists");
+  assert.equal(view.headline, "Starting to sync");
+  assert.equal(view.sub, "documents starts on its own.");
+  assert.equal(view.action, undefined);
+  assert.equal(view.menuState, "settled");
+  const ids = view.menuRows.filter((row) => !row.separator).map((row) => row.id);
+  assert.ok(ids.includes("pause@documents") && ids.includes("pause@photos"), ids.join());
+});
+
+test("one_folder_keeps_the_first_run_panel_it_always_had", () => {
+  // N=1: the wizard's state, the tray's two sentences and the button that opens the window.
+  const view = trayView({ daemonState: "firstRun", response: reply({ last_sync_epoch_secs: null }) });
+  assert.equal(view.headline, TRAY.nothingSyncedYet);
+  assert.equal(view.sub, TRAY.nothingSyncedYetSub);
+  assert.equal(view.action.id, "open");
+  assert.equal(view.pair, null);
+});
+
+test("a_queued_folder_beside_a_running_one_leaves_the_running_panel_in_front", () => {
+  const view = trayView({
+    daemonState: "running",
+    response: reply({ pair: "documents", syncing: true }),
+    pairs: [summary("documents", { syncing: true }), summary("photos", { last_sync_epoch_secs: null })],
+    pairStates: derivedWaiting(["documents", "running", 3], ["photos", "queued", 2, "documents"]),
+  });
+  assert.equal(view.pair, "documents");
+  assert.equal(view.state, "syncing");
 });

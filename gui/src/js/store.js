@@ -369,6 +369,12 @@ export const select = {
   },
 
   daemonState: () => viewed().status?.state ?? "unreachable",
+  /**
+   * For a `queued` folder: the folder whose pass it waits for, or `null` when nothing is running yet.
+   * Read from the same payload as `daemonState` above (Rust's `StatusPayload.waiting_for`), so the two
+   * can never be about different moments. Every other state carries none.
+   */
+  waitingFor: () => viewed().status?.waiting_for ?? null,
   /** Which request the state above came home from, and the highest one issued (#335). */
   statusIssue: () => viewed().statusIssue ?? 0,
   statusesIssued: () => statusesIssued,

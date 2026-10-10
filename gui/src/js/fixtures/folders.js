@@ -24,7 +24,7 @@ import { settledStatus, stateOf, summary, configListing } from "./pairs.js";
 import { foldersFids } from "./fids.js";
 
 const PAIRS = [summary("documents"), summary("photos", { syncing: true, pending_changes: 3 })];
-const STATES = [stateOf("documents", "idle", 0), stateOf("photos", "running", 2)];
+const STATES = [stateOf("documents", "idle", 0), stateOf("photos", "running", 3)];
 
 const STATUS = settledStatus(PAIRS, STATES);
 const CONFIG = configListing(["documents", "photos"]);

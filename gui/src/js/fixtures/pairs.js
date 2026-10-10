@@ -124,9 +124,9 @@ const FOUR = [
 ];
 const FOUR_STATES = [
   stateOf("documents", "idle", 0),
-  stateOf("photos", "running", 2),
+  stateOf("photos", "running", 3),
   stateOf("music", "paused", 1),
-  stateOf("archive", "failed", 4),
+  stateOf("archive", "failed", 5),
 ];
 
 /** Shared by the three settled frames that differ only in what the pill and the band say. */
@@ -172,7 +172,7 @@ export const PAIR_FIXTURES = {
     // reads `idle` and the window says nothing — the solid dot on the pill is the only place it shows.
     status: settledStatus(
       [summary("documents"), summary("photos", { last_error: "the remote listing timed out" })],
-      [stateOf("documents", "idle", 0), stateOf("photos", "failed", 4)],
+      [stateOf("documents", "idle", 0), stateOf("photos", "failed", 5)],
     ),
     conflicts: [],
   },

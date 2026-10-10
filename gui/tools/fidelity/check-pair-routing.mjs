@@ -8,7 +8,7 @@
 // that answers each command and **holds a reply open when told to**, which is what makes the window
 // between "the person pressed it" and "the daemon answered" a thing a test can stand in.
 //
-// A hundred and one scenarios (the first sixteen are phases 5a-2, 5d and 5b-1's; forty-three are phase 5c-1's —
+// A hundred and five scenarios (the first sixteen are phases 5a-2, 5d and 5b-1's; forty-three are phase 5c-1's —
 // twenty-one built with the selector, the nineteen its review added and the three its second review added — and the last fifteen
 // are phase 5e's, the notifications: the six it was built with and the nine its review added; both below the list —
 // the fifteen after them are phase 5c-2's, adding and removing folders, below the notifications', the ten after those
@@ -167,10 +167,27 @@
 //  69. WHEN THE DEFAULT FOLDER IS REMOVED the next folder's own conflict at the same relative path is still said (a
 //      conflict's signature is only its paths, so the removed folder's bare key silenced it).
 //
+// THE FOLDER THAT HAS NOT HAD ITS TURN (the live report and #455; four more, and the fifth and ninth above were
+// rewritten with it). The daemon runs one pass at a time, so beside other folders a folder with no finished pass is
+// `queued`: it says it is waiting, and for which folder, or that it is starting — never `up to date`, and never the
+// tray's `Open Drive Sync to choose your two folders` in the window. These four replay the payloads the real Rust
+// sends (`gui/test/never-synced-payloads.json`, held by `selection_tests.rs`), not a stand-in's guess at them:
+//
+//  96. WAITING BEHIND A RUNNING PASS: `documents` is mid-pass, `photos` is on screen. The hero, its sub-line, the
+//      chip and the buttons say photos waits for documents; the pill's list and the Settings list say
+//      `syncing`, `waiting for documents`, `waiting for documents` — no folder reads `up to date`.
+//  97. THE FOLDER THAT READ `up to date`: selected, `videos` is drawn as waiting too, and its buttons name it.
+//  98. STARTING: with nothing popped yet every folder is `starting`, in the window, the list and the tray panel, and
+//      the panel has no button and a pause row for each folder.
+//  99. A FOLDER THE FILE LISTS BESIDE A NEVER-SYNCED ONE (the daemon runs one, the app knows of two): the window's
+//      sub-line is `It starts on its own.` and not the tray's sentence (#455).
+//
 // WHAT IT CANNOT SEE: it scripts the bridge, so it proves the facade and the screens agree with each
 // other, not that the real Rust agrees with either (that is `selection_tests.rs`); and it drives the
 // window, except the tray panel scenarios above, which drive `?surface=tray` through the same bridge.
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer";
 import { serve } from "./serve.mjs";
 import {
@@ -185,6 +202,14 @@ import {
   TRAY,
 } from "../../src/js/ui/copy.js";
 import { EMPTY_CONFIG } from "../../src/js/api.js";
+
+// The payloads the real Rust sends for three folders none of which has finished a pass, at two moments
+// (`running`: the default folder is mid-pass; `starting`: nothing has been popped yet), one per folder it
+// describes. Written by `selection_tests.rs` (`never_synced_payloads_are_what_the_page_scenarios_replay`), which
+// fails when this build sends anything else — so a scenario that replays them is shown what the daemon says.
+const NEVER_SYNCED = JSON.parse(
+  readFileSync(fileURLToPath(new URL("../../test/never-synced-payloads.json", import.meta.url)), "utf8"),
+);
 
 // The default roster of every Bridge that does not name its own. FROZEN: it is one array shared by all of them,
 // and a scenario that pushed a folder onto it (`bridge.names.push(...)`) silently gave every later scenario a
@@ -250,9 +275,14 @@ class Bridge {
       trackPause = false,
       notifyPolicy = "never",
       lastSync = 1_750_000_000,
+      replay = null,
     } = {},
   ) {
     this.names = names;
+    // The status payloads THIS BUILD'S RUST sends, by the folder each describes (`never-synced-payloads.json`, held
+    // by `selection_tests.rs`). When set, a status read answers with those bytes instead of what this stand-in
+    // would compose: the page is then shown what the daemon says, not a guess at it.
+    this.replay = replay;
     // Each folder's pass counter (`reconcile_seq`), 1 unless a scenario moves it: `finishPass` is how a
     // scenario says a folder's pass has completed, and the merge dialog of an added folder waits for exactly that.
     this.seqs = {};
@@ -388,7 +418,19 @@ class Bridge {
    */
   status(asked = this.selected) {
     const name = this.strict && !this.names.includes(asked) ? this.names[0] : asked;
+    if (this.replay) return { ...(this.replay[name] ?? this.replay[this.names[0]]), selected: this.selected };
     const never = (pair) => this.neverSynced.includes(pair);
+    // As `gui_core::state::derive` decides it. Beside other folders a folder with no finished pass is `queued`
+    // (waiting for the folder that is running a pass, when one is) and never the wizard's `firstRun`; alone it
+    // is `firstRun`. Paused outranks both, and a state a scenario gave the folder (failed, ...) outranks the wait.
+    const crowded = this.names.length >= 2;
+    const running = this.names.find((pair) => this.states[pair]?.summary?.syncing);
+    const stateOf = (pair) =>
+      this.isPaused(pair)
+        ? "paused"
+        : (this.states[pair]?.state ?? (never(pair) ? (crowded ? "queued" : "firstRun") : "idle"));
+    const waitingOf = (pair) =>
+      stateOf(pair) === "queued" && running && running !== pair ? { waiting_for: running } : {};
     const pairs = this.names.map((pair) => ({
       ...summaryOf(pair, this.queues[pair].length),
       reconcile_seq: this.seqs[pair] ?? 1,
@@ -400,15 +442,17 @@ class Bridge {
     return {
       // What `derive_state` says: a reachable daemon that has never synced THIS pair — or the state the
       // scenario gave it (`states`), which is how a folder is failed, paused or unavailable on screen.
-      state: never(name) ? "firstRun" : this.isPaused(name) ? "paused" : (this.states[name]?.state ?? "idle"),
+      state: stateOf(name),
+      ...waitingOf(name),
       // As Rust answers it: a selection that names a folder the daemon no longer runs reads as the default one.
       selected: this.strict && !this.names.includes(this.selected) ? this.names[0] : this.selected,
       ...(this.pairUnknown ? { pair_unknown: this.pairUnknown } : {}),
       pairs,
       pair_states: this.names.map((pair) => ({
         name: pair,
-        state: this.isPaused(pair) ? "paused" : (this.states[pair]?.state ?? "idle"),
-        rank: this.isPaused(pair) ? 1 : (this.states[pair]?.rank ?? 0),
+        state: stateOf(pair),
+        rank: this.isPaused(pair) ? 1 : (this.states[pair]?.rank ?? (stateOf(pair) === "queued" ? 2 : 0)),
+        ...waitingOf(pair),
       })),
       response: {
         status: "running",
@@ -885,16 +929,16 @@ await scenario("after a switch, the hero's Pause pauses the pair the hero is now
 
 // ---- 5. a pair that has never synced --------------------------------------------------------------
 await scenario(
-  "at two pairs a never-synced pair is drawn as such, and the first-run takeover stays shut",
+  "at two pairs a never-synced pair is drawn as waiting for its turn, and the first-run takeover stays shut",
   async () => {
     const bridge = new Bridge({ docs: [], photos: [] }, { neverSynced: ["docs"] });
     const page = await open(bridge);
-    await until("the hero", async () => (await pageText(page)).includes(TRAY.nothingSyncedYet));
+    await until("the hero", async () => (await pageText(page)).includes(TRAY.startingTitle));
     const shown = await pageText(page);
     if (shown.includes(MAIN.settled))
       throw new Error(`a pair that has never synced was drawn as "${MAIN.settled}"`);
-    if (!shown.includes(TRAY.nothingSyncedYetSub))
-      throw new Error("the second sentence of the never-synced hero is missing");
+    if (!shown.includes(TRAY.startingSub("docs")))
+      throw new Error("the second sentence of the starting hero is missing");
     // The takeover is the full-window wizard, which draws its own chip and no ⋯ menu.
     if (/step 1 of 2/.test(shown)) throw new Error("the first-run takeover opened over a running app");
     await page.close();
@@ -1043,9 +1087,9 @@ await scenario("the tray panel shows the pair its rows act on, not the one the w
     );
   }
   const shown = await pageText(page);
-  if (!shown.includes(TRAY.nothingSyncedYet)) {
+  if (!shown.includes(TRAY.startingSub("docs"))) {
     throw new Error(
-      `the panel does not describe the default pair (docs, never synced): ${JSON.stringify(shown)}`,
+      `the panel does not describe the default pair (docs, not yet started): ${JSON.stringify(shown)}`,
     );
   }
   if (shown.includes(MAIN.compact.upToDate))
@@ -1062,7 +1106,7 @@ await scenario(
       { docs: [], photos: [] },
       {
         selected: "docs",
-        states: { photos: { state: "failed", rank: 4, summary: { last_error: "boom", pending_changes: 3 } } },
+        states: { photos: { state: "failed", rank: 5, summary: { last_error: "boom", pending_changes: 3 } } },
       },
     );
     const page = await open(bridge, "?surface=tray");
@@ -1580,7 +1624,7 @@ const listRows = (page) =>
 
 const FAILED = (error = "the remote listing timed out") => ({
   state: "failed",
-  rank: 4,
+  rank: 5,
   summary: { last_error: error },
 });
 
@@ -3553,6 +3597,214 @@ await scenario("the list is drawn at two folders and not at one, and a row choos
     throw new Error("the list's title is on screen");
   await alone.close();
 });
+
+// ---- a folder that has not had its turn (the live report, and #455) -----------------------------------------
+//
+// Three folders, the default one (`documents`) deep in a 25 minute full walk. Passes are serialized, so the
+// other two have not been reached: the window showed `photos` as `Nothing has synced yet` under "Open Drive
+// Sync to choose your two folders", and the list called `videos` `up to date`. These are driven with the
+// payloads the real Rust sends for exactly that (`NEVER_SYNCED`), not with a stand-in's guess at them.
+
+const THREE = Object.freeze(["documents", "photos", "videos"]);
+
+/** The three folders of the live report, answered with the build's own payloads for `moment`. */
+const threeFolders = (moment, selected = "photos") =>
+  new Bridge(
+    { documents: [], photos: [], videos: [] },
+    { names: THREE, selected, replay: NEVER_SYNCED[moment] },
+  );
+
+/** What the Settings list says for each folder: the word after its name. */
+const settingsWords = (page) =>
+  page.evaluate(() =>
+    Object.fromEntries(
+      [...document.querySelectorAll(".folders-row")].map((row) => [
+        row.dataset.folder,
+        row.querySelector(".folders-row-state")?.textContent ?? null,
+      ]),
+    ),
+  );
+
+/** Whatever of `texts` the page says, for a message that shows what was on screen. */
+const saysAny = (shown, texts) => texts.filter((text) => shown.includes(text));
+
+await scenario(
+  "a folder waiting behind a running pass says it is waiting, and for whom, and never that it is up to date",
+  async () => {
+    const bridge = threeFolders("running");
+    const page = await open(bridge);
+    await until("the hero", async () => (await pageText(page)).includes(TRAY.waitingTitle("documents")));
+    const shown = await pageText(page);
+    // THE FOLDER ON SCREEN: the reason it waits, the folder it waits for, and nothing that was said before.
+    if (!shown.includes(TRAY.waitingSub("photos", "documents"))) {
+      throw new Error(`the hero does not say why photos waits: ${JSON.stringify(shown)}`);
+    }
+    const wrong = saysAny(shown, [
+      MAIN.settled,
+      TRAY.nothingSyncedYet,
+      "choose your two folders",
+      MAIN.settledSubTime(""),
+    ]);
+    if (wrong.length)
+      throw new Error(`the window says ${JSON.stringify(wrong)} about photos: ${JSON.stringify(shown)}`);
+    if ((await chipText(page)) !== CHROME.chips.queued) {
+      throw new Error(`the chip is ${JSON.stringify(await chipText(page))}, not ${CHROME.chips.queued}`);
+    }
+    // It can still be synced now or paused, by name — a folder that waits is not a folder with nothing to do.
+    for (const label of [MAIN.syncNow, TRAY.pausePair("photos")]) {
+      if (!(await hasButton(page, label))) throw new Error(`the hero has no ${JSON.stringify(label)}`);
+    }
+    // The takeover is the first-folder flow and stays shut.
+    if (/step 1 of 2/.test(shown)) throw new Error("the first-run takeover opened over a running app");
+
+    // THE FOLDERS BESIDE IT, in the header's list: the folder that is running, and two that wait. The one the
+    // window was not about used to read `up to date`. The list is 280px and its rows spend it on the folder's
+    // own name (`waiting for documents` left `photos` three letters), so the word is `waiting` and the row
+    // carries the whole as its tooltip.
+    await openList(page);
+    const rows = await listRows(page);
+    const words = Object.fromEntries(THREE.map((name) => [name, rows[name]?.[0]]));
+    const short = {
+      documents: CHROME.pair.states.running,
+      photos: CHROME.pair.waiting,
+      videos: CHROME.pair.waiting,
+    };
+    if (JSON.stringify(words) !== JSON.stringify(short)) {
+      throw new Error(`the list says ${JSON.stringify(words)}, not ${JSON.stringify(short)}`);
+    }
+    const tips = await page.evaluate(() =>
+      [...document.querySelectorAll(".pair-row")].map((row) => [
+        row.dataset.pair,
+        row.querySelector(".pair-row-state").getAttribute("title"),
+      ]),
+    );
+    if (
+      JSON.stringify(tips) !==
+      JSON.stringify([
+        ["documents", null],
+        ["photos", CHROME.pair.waitingFor("documents")],
+        ["videos", CHROME.pair.waitingFor("documents")],
+      ])
+    ) {
+      throw new Error(`the rows' tooltips are ${JSON.stringify(tips)}`);
+    }
+    // And the names are READABLE: no row has squeezed the folder's own name to an ellipsis.
+    const clipped = await page.evaluate(() =>
+      [...document.querySelectorAll(".pair-row-name")]
+        .filter((name) => name.scrollWidth > name.clientWidth)
+        .map((name) => name.textContent),
+    );
+    if (clipped.length) throw new Error(`the list clips the names ${JSON.stringify(clipped)}`);
+    await page.keyboard.press("Escape");
+
+    // AND THE SETTINGS LIST, which has the room and names the folder.
+    await press(page, "Settings");
+    await until("the list", () => page.$(".folders-list"));
+    const settings = await settingsWords(page);
+    const wanted = {
+      documents: CHROME.pair.states.running,
+      photos: CHROME.pair.waitingFor("documents"),
+      videos: CHROME.pair.waitingFor("documents"),
+    };
+    if (JSON.stringify(settings) !== JSON.stringify(wanted)) {
+      throw new Error(`the Settings list says ${JSON.stringify(settings)}, not ${JSON.stringify(wanted)}`);
+    }
+    await page.close();
+  },
+);
+
+await scenario(
+  "the folder that read up to date is drawn as waiting too once it is the one on screen",
+  async () => {
+    const bridge = threeFolders("running", "documents");
+    const page = await open(bridge);
+    // First the default folder, which is the one running: it is syncing, and says nothing about waiting.
+    await until("documents is syncing", async () => (await chipText(page)) === CHROME.chips.syncing);
+    if ((await pageText(page)).includes(TRAY.waitingTitle("documents"))) {
+      throw new Error("the folder that is running is waiting for itself");
+    }
+    await select(page, bridge, "videos");
+    await until("videos waits", async () => (await pageText(page)).includes(TRAY.waitingTitle("documents")));
+    const shown = await pageText(page);
+    if (!shown.includes(TRAY.waitingSub("videos", "documents"))) {
+      throw new Error(`the hero does not name videos: ${JSON.stringify(shown)}`);
+    }
+    if (shown.includes(MAIN.settled)) throw new Error("videos was drawn as up to date");
+    await until("the buttons name videos", () => hasButton(page, TRAY.pausePair("videos")));
+    await page.close();
+  },
+);
+
+await scenario(
+  "with nothing running yet the folders say they are starting, in the window and in the tray",
+  async () => {
+    const bridge = threeFolders("starting");
+    const page = await open(bridge);
+    await until("the hero", async () => (await pageText(page)).includes(TRAY.startingTitle));
+    const shown = await pageText(page);
+    if (!shown.includes(TRAY.startingSub("photos"))) {
+      throw new Error(`the hero does not say photos starts on its own: ${JSON.stringify(shown)}`);
+    }
+    if (saysAny(shown, [MAIN.settled, TRAY.nothingSyncedYet, "choose your two folders"]).length) {
+      throw new Error(`the window says what it said before: ${JSON.stringify(shown)}`);
+    }
+    if ((await chipText(page)) !== CHROME.chips.starting) {
+      throw new Error(`the chip is ${JSON.stringify(await chipText(page))}, not ${CHROME.chips.starting}`);
+    }
+    await openList(page);
+    const words = Object.values(await listRows(page)).map((row) => row[0]);
+    if (
+      JSON.stringify(words) !==
+      JSON.stringify([CHROME.pair.states.queued, CHROME.pair.states.queued, CHROME.pair.states.queued])
+    ) {
+      throw new Error(`the list says ${JSON.stringify(words)}`);
+    }
+    await page.close();
+
+    // THE TRAY PANEL, for the default folder it describes: the same two sentences, no button that sends a person
+    // to the window to choose folders they have chosen, and a pause row for every folder.
+    const panel = await open(threeFolders("starting"), "?surface=tray");
+    await until("the panel", async () => (await pageText(panel)).includes(TRAY.startingTitle));
+    const text = await pageText(panel);
+    if (!text.includes(TRAY.startingSub("documents"))) {
+      throw new Error(`the panel does not say documents starts on its own: ${JSON.stringify(text)}`);
+    }
+    if (text.includes(TRAY.nothingSyncedYetSub) || text.includes(MAIN.compact.upToDate)) {
+      throw new Error(`the panel says what it said before: ${JSON.stringify(text)}`);
+    }
+    if (await panel.$(".compact-action-btn"))
+      throw new Error("the panel offers a button for a folder that only has to start");
+    for (const name of THREE) {
+      if (!(await hasButton(panel, TRAY.pausePair(name)))) {
+        throw new Error(`the panel has no ${JSON.stringify(TRAY.pausePair(name))}`);
+      }
+    }
+    await panel.close();
+  },
+);
+
+await scenario(
+  "a folder the file lists beside a never-synced one is told it starts on its own, not to choose folders",
+  async () => {
+    // The daemon runs ONE folder (the file lists two and it has not restarted onto the second), so it derives
+    // the wizard's state for it; the window knows of two and keeps the wizard shut. #455: the sub-line it draws
+    // was the tray's, which sends a person to the window they are in.
+    const bridge = new Bridge(
+      { docs: [] },
+      { names: ["docs"], roster: ["docs", "photos"], neverSynced: ["docs"] },
+    );
+    const page = await open(bridge);
+    await until("the hero", async () => (await pageText(page)).includes(TRAY.nothingSyncedYet));
+    const shown = await pageText(page);
+    if (!shown.includes(MAIN.firstRunSub))
+      throw new Error(`the sub-line is missing: ${JSON.stringify(shown)}`);
+    if (shown.includes("choose your two folders") || shown.includes(TRAY.nothingSyncedYetSub)) {
+      throw new Error(`the window sends the person to choose folders: ${JSON.stringify(shown)}`);
+    }
+    if (/step 1 of 2/.test(shown)) throw new Error("the first-run takeover opened over a running app");
+    await page.close();
+  },
+);
 
 /** Open Settings at two folders and press `Remove` on the row of `name`. */
 async function pressRemoveOn(page, name) {

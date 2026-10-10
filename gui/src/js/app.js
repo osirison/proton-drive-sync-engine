@@ -276,6 +276,14 @@ function chipFor() {
     };
   }
   if (state === "running") return { variant: "syncing", text: "syncing" };
+  // A folder that has not had its turn (live report, #455) is not `idle`: its chip reads `waiting`
+  // while another folder's pass runs and `starting` while none does, the words its hero speaks whole.
+  if (state === "queued") {
+    return {
+      variant: "idle",
+      text: store.select.waitingFor() ? CHROME.chips.queued : CHROME.chips.starting,
+    };
+  }
   if (state === "paused") return { variant: "idle", text: "paused" };
   if (state === "unreachable") return { variant: "idle", text: "unreachable" };
   if (state === "authExpired") return { variant: "idle", text: "sign-in expired" };
@@ -2580,6 +2588,8 @@ function mainProps(localRoot, remoteRoot) {
     pair: store.select.pairs().length >= 2 ? pair : null,
     notice,
     daemonState: store.select.daemonState(),
+    // The folder a `queued` folder waits for, from the payload its state came in (the hero names it).
+    waitingFor: store.select.waitingFor(),
     response: store.select.response(),
     conflicts: store.select.conflicts(),
     // The same filtered view the chip and the deletions screen read — see `chipFor`. The band says

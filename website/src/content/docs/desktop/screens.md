@@ -15,7 +15,7 @@ beside the name and picks which folder the window is about (see
 folder pair. Conflicts and Deletions have no door: they open over whatever you were looking at,
 from the attention band on Home, or from a notification.
 
-The status chip is the one place the [daemon state](/desktop/overview/#the-seven-daemon-states)
+The status chip is the one place the [daemon state](/desktop/overview/#the-eight-daemon-states)
 is always visible. It reads `idle`, `syncing`, `paused`, `unreachable`, `sign-in expired`,
 `sync failed`, `first run`, `{n} waiting`, `rehearsal · nothing has changed` while a plan is
 open, or `step 1 of 2` during first-run setup. When it reads `idle` the header mark and name
@@ -274,9 +274,17 @@ If the `proton-drive` binary will not run, a dialog says so rather than the flow
 Once the daemon is up, the app hands off out of the takeover on its own — including when the
 first pass *fails*, which releases you onto Home's **Try again now** rather than trapping you.
 
-The takeover is for the first folder only. With two or more folders it does not open. A folder that has never synced shows *Nothing has synced yet* on Home when it is the
-one the window is about, instead of *Everything is up to date*, and further folders are added from
-[Settings](#adding-and-removing-a-folder).
+The takeover is for the first folder only. With two or more folders it does not open, and
+further folders are added from [Settings](#adding-and-removing-a-folder).
+
+With two or more folders the daemon syncs one folder at a time, so a folder that has not had its
+turn since the daemon started says so instead of *Everything is up to date*. On Home it reads
+*Waiting for documents* while that folder's pass runs (*Folders sync one at a time. photos is waiting
+for documents to finish.*), or *Starting to sync* when nothing is running yet. The folder list in the
+header and in Settings says the same in a word — *waiting for documents*, *starting* — and the
+status chip reads *waiting* or *starting*. A folder that has finished a pass and is only waiting
+behind another stays *up to date*: it has synced, and nothing the daemon has said since contradicts
+that.
 
 ## Light theme
 

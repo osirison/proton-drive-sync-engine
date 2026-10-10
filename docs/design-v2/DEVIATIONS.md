@@ -6445,3 +6445,104 @@ The final round of the same review (two routing scenarios, 94 and 95, and one Ru
 - **A dialog replaced by another dialog lets go of its folder state** (the release in `openOverlay`) had no test: a
   failed save opening `Save refused` over an add dialog that was only being typed in left a queued check to be asked
   for a dialog nobody could see. Scenario 95 pins it.
+
+## 111. A folder that has not had its turn: the false all-clear in the list, and the sentence that sent people to a window they were in
+
+Found on a real machine with three folders (`documents` the default, `photos`, `videos`): the default folder was in a
+25 minute full walk, and the Settings list called `videos` `up to date` although the daemon had never run a pass for
+it, while `photos`, the folder on screen, read `Nothing has synced yet` under `Open Drive Sync to choose your two
+folders.` (#455). Nothing was broken in either folder. The daemon runs one pass at a time, so a folder waits its turn;
+the app had no word for waiting and said the nearest thing it had. The maintainer's requirement: a folder that is
+waiting must say it is waiting, because a window that says nothing reads as a crash.
+
+No frame draws any of this, so no fidelity gate saw it. It is the same shape as §67 and #246: a state the daemon is in
+had no arm, and the trailing arm said everything was fine.
+
+### §111a · The cause, in one function
+
+`gui_core::state::derive` is the only place a folder's state is decided, and it has two inputs: the full reply for the
+folder the window is about, and a `PairSummary` for every other folder. A summary has no history, so it could never be
+`FirstRun`, and with no error and an empty queue it fell through to `Idle`. The facts it did carry were enough: a
+daemon starts every folder with no last sync (`src/daemon.rs` builds `PairRuntime` with `last_sync: None`; only a
+finished pass sets it), so `last_sync_epoch_secs: None` means *no pass has finished for this folder in this run*,
+whether it has never synced or synced last week. Both are waiting for their turn, and neither is up to date.
+
+The window's own folder had the mirror problem: the full reply said `FirstRun`, which exists for the first-folder
+wizard, and the window drew that state's tray sentence at two folders.
+
+### §111b · What was built
+
+- **One new state, `Queued`, derived only beside other folders.** After `paused`, the sign-in verdict, `syncing` and a
+  last error, a folder with no finished pass is `Queued`. It sits before the watcher queue, because `pending_changes`
+  is the watcher's count and a folder nobody has popped is not syncing it. Alone (one folder, or a reply that lists
+  none), `derive` is what it was, byte for byte: `one_folder_derives_exactly_as_before_and_is_never_queued` runs every
+  reply the existing corpus reaches with the folder listed as the only one and compares.
+- **`FirstRun` is the lone folder's state.** At two folders the same facts are `Queued`. One consequence is a fix and
+  is recorded because it moves a state: a never-synced folder whose first pass failed used to read `FirstRun` for the
+  folder the reply described (the wizard was checked before the error) and `Failed` for the rest; it is `Failed` for
+  both.
+- **Who it waits for comes from the same reply.** Passes are serialized (one gate and one pass at a time, ADR 0005 §5;
+  `ControlShared::active_pair` in the engine documents that at most one folder's `syncing` is true), so a queued
+  folder waits for the folder whose summary says `syncing`. `PairState.waiting_for` and `StatusPayload.waiting_for`
+  carry the name, only for a `Queued` folder. A `Queued` folder with nobody syncing has no name to give: the daemon
+  seeds every folder due at start-up and has not popped it yet. That is `starting`, and it is true because the first
+  pass of every folder is due the moment the daemon starts.
+- **A folder that has finished a pass stays `up to date` while another folder's pass runs.** It did finish one in this
+  run, nothing the daemon has said since contradicts that, and the hero carries `last synced`. Marking every settled
+  folder `waiting` for as long as another folder's pass lasts would flip the whole list on each pass and say nothing
+  true about the files. The line is the finished pass, not the queue.
+
+### §111c · What each surface says now
+
+| Surface | Before, for a folder with no finished pass | Now |
+| --- | --- | --- |
+| Folder list in Settings | `up to date` (other folders), `nothing synced yet` (the one on screen) | `waiting for documents`, or `starting` |
+| Folder list in the header | the same | `waiting` (the row's tooltip says `waiting for documents`), or `starting` |
+| Status chip | `idle`, or `first run` | `waiting`, or `starting` |
+| Window Home | `Nothing has synced yet` / `Open Drive Sync to choose your two folders.` | `Waiting for documents` / `Folders sync one at a time. photos is waiting for documents to finish.`, or `Starting to sync` / `photos starts on its own.` |
+| Window Home, daemon lists fewer folders than the file | the tray's second sentence | `Nothing has synced yet` / `It starts on its own.` (#455: the sub-line is the window's own) |
+| Tray panel | the first-run panel with an `Open Drive Sync` button, or the settled panel | the same two sentences as the window, the needs-you form with no number and no button |
+| Tray glyph | settled (summary) or attention (described) | attention, like a folder that has not synced anything |
+| Tray title | `photos up to date` or `photos nothing synced yet` | `photos waiting` or `photos starting` |
+| Tray menu | no folder group when the aggregate was first-run | the folder group stays: any folder can be paused while it waits |
+| Notifications (§109) | draw no per-folder state word | unchanged |
+
+The title says `waiting` and not `waiting for documents`: it already names the folder that is syncing, and a phrase that
+carried another folder's name could not be bounded by this folder's share of the 140 characters. The header's list says
+`waiting` for the same kind of reason, found by rendering it: the popover is 280px, a row spends its width on the
+folder's own name, and `waiting for documents` (21 characters of 11px mono) left `photos` two letters and an ellipsis.
+The Settings list has the room and says the whole, cutting the named folder to 16 characters; the window and the panel
+name it whole. The row carries the whole word as its tooltip, and `fidelity:pairs` fails if a row's name is clipped.
+
+### §111d · Decisions and what is left undrawn
+
+- **Rank.** `Queued` ranks strictly between `Paused` and `Running`: below, because the pass that is moving is the news
+  and its panel carries the transfer rows; above, because a queued folder is about to move and a pause is the person's
+  own doing. That renumbers the table (`Unreachable 7` down to `Idle 0`, `Running 3`, `Failed 5`); every literal rank in
+  a fixture, a test and the menu corpus was moved with it, and the doc table in `10-tray.md` has a row.
+- **The mark.** The needs-you form with no numeral, the one a folder that has not synced already wore. A fifth hexagon
+  form for a state that lasts seconds to minutes would have been a sixth glyph, and `10-tray.md` says there are five.
+- **No frame is drawn.** The state cannot be held still by a fixture of the daemon (it is the moment before a folder's
+  first pass of the run), and every drawn frame is a folder that has finished one. The new strings are recorded in
+  `copy-gate.mjs` (`NOT_DRAWN` for the constants, `UNGATED_TEMPLATES` for the templates, each with its reason) rather
+  than left to pass: `CHROME.chips.queued` reads `waiting`, which the gate would have found in other frames' text and
+  called drawn.
+- **What holds it instead.** `fidelity:pairs` replays the payloads the real Rust sends (`gui/test/never-synced-payloads.json`,
+  written and compared by `selection_tests.rs`) for the live report's three folders at two moments, and asserts the hero,
+  the sub-line, the chip, the pill's list, the Settings list and the tray panel. The page's stand-in for Rust now derives
+  `queued` itself for the older scenarios, so the stand-in and the build agree.
+- **Left as it was.** A lone folder (`N = 1`) whose daemon has just restarted reads `up to date` for the moment before its
+  first pass, because its last sync is gone from memory and its history is on disk; changing that would change the
+  one-folder app, which `fidelity:n1` and the D2 rule forbid, and its first pass is due as soon as the daemon starts. A summary still cannot tell
+  a folder that has never synced from one that synced last week; `waiting` is true of both, which is why the state
+  does not claim either.
+
+### §111e · Counts that moved
+
+No frame was added or changed: `assert.mjs` is still 68/68 with 125,981 assertions, the contrast gate 1,696 nodes, and
+`fidelity:n1` 55/55 (nothing it renders lists a second folder, and the one-folder derivation is unchanged). The copy
+gate's drawn strings are 404/404 and its exemptions 99 became 105 (six constants no frame can draw, each with its
+reason in `copy-gate.mjs`), and its ungatable templates 27 became 31 (the four templates of the state). `fidelity:pairs`
+101 became 105 scenarios (four new, and two rewritten: the never-synced pair at two folders, and the tray panel's pin).
+The unit tests are 616, up from 600, and 19 Rust tests are new (13 in `state.rs`, 2 in `tray.rs`, one each in
+`tray_menu.rs` and `icons.rs`, two on the payload and one of them the golden file). The menu corpus gained three cases.

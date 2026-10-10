@@ -25,9 +25,18 @@ Footer doors: `Activity` · `Plan a sync` · `Settings` · `Details`
 
 Two folders or more (`02-shell.md` "Folder selector", DEVIATIONS §108): the header gains a pill naming the folder
 (`documents`) and its list. One word for a folder's state — `up to date` · `syncing` · `paused` · `sync failed`
-(drawn), and `sign-in expired` · `unreachable` · `nothing synced yet` (daemon-wide, or a hero, so never a row's
-word in a frame; the list does say `unreachable` for every row, with no count, while the daemon is not answering)
-— and the count beside it is the chip's own template, `2 waiting`, drawn as nothing at zero.
+(drawn), and `sign-in expired` · `unreachable` (daemon-wide, so never a row's word in a frame; the list does say
+`unreachable` for every row, with no count, while the daemon is not answering) — and the count beside it is the
+chip's own template, `2 waiting`, drawn as nothing at zero.
+
+A folder that has not had its turn (no finished pass since the daemon started, beside other folders; no frame
+draws it, DEVIATIONS §82g and §111): the Settings list says `waiting for documents` while another folder's pass runs
+and `starting` while none does; the header's list says `waiting` (its tooltip, the whole) and `starting`; the chip says
+`waiting` / `starting`. `nothing synced yet` is the lone first folder's
+and no row says it. The window and the tray panel say `Waiting for documents` / `Folders sync one at a time.
+photos is waiting for documents to finish.` and `Starting to sync` / `photos starts on its own.`; the window's own
+sub-line under `Nothing has synced yet` is `It starts on its own.` (the tray keeps `Open Drive Sync to choose your
+two folders.`, which is addressed to someone who has not chosen any).
 
 ## Main screen
 

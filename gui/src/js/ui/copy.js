@@ -43,6 +43,12 @@ export const CHROME = {
     rehearsal: "rehearsal · nothing has changed",
     step: (n, of = 2) => `step ${n} of ${of}`,
     waiting: (n) => `${count(n)} waiting`,
+    /**
+     * The chip beside a folder that has not had its turn (see `pair` below). `waiting` while another
+     * folder's pass runs, `starting` while none does. Not `${n} waiting`: that is the decision count.
+     */
+    queued: "waiting",
+    starting: "starting",
   },
   doors: {
     activity: "Activity",
@@ -54,11 +60,15 @@ export const CHROME = {
    * The folder selector's popover (#102 phase 5c-1, `02-shell.md`): one word for each folder's state.
    * Keyed by `gui_core::DaemonState`'s serialised names, because that is what `pair_states` carries.
    *
-   * Four are drawn (`2a Two folders open`). Three are not, and the reason is the same for all of them:
-   * `authExpired` and `unreachable` are PROCESS-wide — the session and the socket are one per user, so
-   * every row would say it at once, and a popover drawn that way would be four identical rows — and
-   * `firstRun` is only ever derived for the one folder a full reply describes, which the window shows
-   * with a hero rather than a row. Their words are the chip's own (`app.js` `chipFor`), spoken once.
+   * Four are drawn (`2a Two folders open`). Four are not. `authExpired` and `unreachable` are
+   * PROCESS-wide — the session and the socket are one per user, so every row would say it at once, and
+   * a popover drawn that way would be four identical rows. `firstRun` is the one-folder wizard's state
+   * and is not derived beside other folders, so no row of a list of two says it. `queued` is a folder
+   * that has not had its turn, which is the moment after a start and not a state a frame holds still.
+   * Their words are the chip's own (`app.js` `chipFor`), spoken once.
+   *
+   * `queued` IS TWO WORDS (live report, #455): `waitingFor(name)` while another folder's pass is running
+   * and `states.queued` when none is. A folder with no finished pass used to read `up to date` here.
    *
    * A state this build has no word for (an entry a newer daemon sent, or none at all) gets NO word: the
    * row names its folder and says nothing about it. `ui/selector.js`'s `stateWordOf` is the arm, and it
@@ -68,12 +78,21 @@ export const CHROME = {
     states: {
       idle: "up to date",
       running: "syncing",
+      queued: "starting",
       paused: "paused",
       failed: "sync failed",
       authExpired: "sign-in expired",
       unreachable: "unreachable",
       firstRun: "nothing synced yet",
     },
+    /** The folder's name is cut by the caller (`ui/selector.js`): a row has room for a word, not 64 characters. */
+    waitingFor: (name) => `waiting for ${name}`,
+    /**
+     * The same word WITHOUT the folder, for the header's list: that popover is 280px and a row spends most
+     * of it on the folder's own name, so `waiting for documents` left `photos` three letters. The Settings
+     * list has the room and says the whole of it; the popover's row carries the whole as its tooltip.
+     */
+    waiting: "waiting",
   },
 };
 
@@ -91,6 +110,14 @@ export const MAIN = {
    * something nobody asked it. Deleted the day #207 lands, at which point `settledSub` is the line.
    */
   settledSubTime: (ago) => `last synced ${ago}`,
+  /**
+   * The window's sub-line under `Nothing has synced yet` (#455). The tray's own second sentence
+   * (`TRAY.nothingSyncedYetSub`) sends a person to the window to choose their folders; this IS the
+   * window, and with two folders or more they have chosen them. What is true of the folder instead is
+   * that nothing needs doing: the daemon starts a folder's first pass the moment it starts.
+   * Undrawn, like the headline above it (DEVIATIONS §82g).
+   */
+  firstRunSub: "It starts on its own.",
   /** `03-main-screen.md`: rows "cap at ~6 visible with `+n more` in mono if exceeded". */
   andMore: (n) => `+${count(n)} more`,
   /**
@@ -1571,10 +1598,10 @@ export const TRAY = {
    * deck has no words for, because in the window it is unreachable at one folder: `app.js` intercepts
    * `firstRun` with the onboarding takeover before the main screen renders. The tray has no takeover,
    * so it is the surface that must say something, and the alternative was `Everything is up to date`
-   * over a daemon that has never copied a file. At TWO folders or more the takeover never arms (it is
-   * the first-folder flow), so the window says the same two
-   * sentences for a pair that has not synced yet (#102 phase 5a-2) — the same words, undrawn there
-   * too, until the frame that draws a second folder.
+   * over a daemon that has never copied a file. The window says the headline too where it can reach
+   * this state beside a second folder (the daemon lists one, the file lists two), but NOT the second
+   * line: that one sends a person to the window, and the window is where they are (`MAIN.firstRunSub`,
+   * #455). Beside other folders the daemon lists, the state is `queued` and its words are below.
    *
    * Written rather than measured, therefore, and kept as close to what already exists as possible:
    * the v1 tray shipped `Nothing synced yet` as a disabled menu item, and the second line points at
@@ -1582,6 +1609,25 @@ export const TRAY = {
    */
   nothingSyncedYet: "Nothing has synced yet",
   nothingSyncedYetSub: "Open Drive Sync to choose your two folders.",
+
+  /**
+   * A folder that has not had its turn (live report and #455), spoken by the window and the panel alike.
+   * Beside other folders every folder starts without a finished pass, and passes run one at a time, so
+   * such a folder is either WAITING for the pass that is running — named, because "waiting" alone reads
+   * as a crash — or about to START, which the daemon does by itself the moment it starts.
+   *
+   * The reassurance is the reason: `Folders sync one at a time.` is why it waits, said before the
+   * folder (voice rule 3). It claims no order beyond that — a third folder may be behind a second, so
+   * none of these says when a folder starts, only what it waits for. `name` is `null` where the caller
+   * has no folder to name (the one-folder panel), and the sentence still reads.
+   *
+   * Written rather than measured: no frame draws a folder in this state (DEVIATIONS §82g).
+   */
+  waitingTitle: (other) => `Waiting for ${other}`,
+  waitingSub: (name, other) =>
+    `Folders sync one at a time. ${name ?? "This folder"} is waiting for ${other} to finish.`,
+  startingTitle: "Starting to sync",
+  startingSub: (name) => `${name ?? "This folder"} starts on its own.`,
 
   /**
    * DRAWN IN `10a Offline` AND SPOKEN BY NOTHING — kept because the frame draws it, not because a

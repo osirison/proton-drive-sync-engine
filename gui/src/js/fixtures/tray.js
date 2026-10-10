@@ -228,7 +228,7 @@ export const TRAY_FIXTURES = {
       menuState: "outage",
       family: "tray",
       pair: "photos",
-      pairs: [folder("documents"), folder("photos", { rank: 4 })],
+      pairs: [folder("documents"), folder("photos", { rank: 5 })],
       headline: MAIN.failed,
       sub: MAIN.failedSub(4),
       menu: true,

@@ -97,6 +97,15 @@ export function heroStateOf({ daemonState, syncing, waiting, pending = 0, drawsF
   // cannot hide live work.
   if (daemonState === "failed") return "failed";
   if (daemonState === "paused") return "paused";
+  // A FOLDER THAT HAS NOT HAD ITS TURN (live report, #455): beside other folders, one with no finished
+  // pass. It fell to `settled` below — `Everything is up to date` over a folder nothing has looked at,
+  // while another folder's pass ran for 25 minutes — and the window's only other answer for it
+  // (`firstRun`) was reachable for the folder the reply described alone.
+  //
+  // No `drawsFirstRun`-style opt-in: it is derived only beside other folders (Rust), so there is no
+  // takeover for it to hide behind and no one-folder rendering for it to change. BEFORE the `pending`
+  // rule, as Rust decides it: a watch event for a folder that has had no pass is not that folder syncing.
+  if (daemonState === "queued") return "queued";
   // A REACHABLE DAEMON THAT HAS NEVER SYNCED THIS PAIR (#102 phase 5a-2, E14), for the surfaces that
   // have no takeover to hide behind: it used to fall through to `settled` below — `Everything is up to
   // date` over a folder nothing has copied, which is #246's false all-clear in a state the window
@@ -106,10 +115,14 @@ export function heroStateOf({ daemonState, syncing, waiting, pending = 0, drawsF
   // does not always: at one pair the first-run takeover owns this state (`routes.js`), so the main
   // screen behind it is only ever drawn for `firstRun` under the first-sync dialogs, where it has
   // always been `settled` and must stay byte for byte what it was — "a one-folder user sees nothing
-  // new" (D2). The window passes `pairCount >= 2`, where the takeover never arms and this is the
-  // only thing between a new pair and that false all-clear; the tray passes `true`, having no
-  // takeover at any count. ONE definition of the rule for both, in place of the tray's own copy of
-  // it that used to sit in `trayView`.
+  // new" (D2). The window passes `pairCount >= 2`, where the takeover never arms; the tray passes
+  // `true`, having no takeover at any count. ONE definition of the rule for both, in place of the tray's
+  // own copy of it that used to sit in `trayView`.
+  //
+  // Beside other folders Rust no longer derives `firstRun` at all (`queued` above is that state), so
+  // what reaches here at `pairCount >= 2` is a daemon that lists fewer folders than the settings file
+  // does: one folder, never synced, with a second not yet run. Its sub-line is the window's own
+  // (`MAIN.firstRunSub`, #455).
   //
   // BEFORE the `pending` rule: `derive_state` decides `firstRun` ahead of the queue, and a watch
   // event for the new pair's folder is not a reason to call it syncing.
@@ -148,6 +161,9 @@ export function mainView(props = {}) {
     // How many folder pairs there are. Only ever read to decide whether a never-synced pair may be
     // drawn as one (`heroStateOf`'s `drawsFirstRun`); 0 is every caller written before pairs.
     pairCount = 0,
+    // For a `queued` folder: the folder whose pass it waits for, or `null` when nothing is running yet
+    // (Rust's `waiting_for`, which only a `queued` state carries).
+    waitingFor = null,
     // THE FOLDER THE HERO IS ABOUT, and only at two folders or more (#102 phase 5c-1, decision D11): its
     // pause button names it (`Pause photos`) because each folder has its own pause. `null` below two —
     // the only folder is the whole app, and the buttons say what they always said.
@@ -213,6 +229,7 @@ export function mainView(props = {}) {
     starting,
     startError,
     pair,
+    waitingFor,
     notice,
     // "The count in the hexagon is transfers, not decisions" — the decisions are in the chip and the
     // band. `null` renders no numeral at all rather than a zero.
@@ -316,10 +333,14 @@ export function headlineOf(v) {
       return MAIN.failed;
     case "decision":
       return MAIN.compact.needYou(v.waiting);
+    case "queued":
+      // Spoken by the window and the panel alike (`TRAY.waitingTitle`, `screens/tray.js`).
+      return v.waitingFor ? TRAY.waitingTitle(v.waitingFor) : TRAY.startingTitle;
     case "firstRun":
-      // The tray's sentence, not a second one (`screens/tray.js` says the same two things). UNDRAWN
-      // by any frame — the window reaches it only at two pairs or more — so it is a deck string
-      // spoken twice rather than a frame's, and `13-copy-deck.md` carries it under the tray's rows.
+      // The tray's headline, not a second one (`screens/tray.js` says the same). UNDRAWN by any frame
+      // — the window reaches it only when the app knows of two folders and the daemon lists fewer —
+      // so it is a deck string spoken twice rather than a frame's. The SUB-LINE is the window's own
+      // (`MAIN.firstRunSub`, #455): the tray's second sentence sends a person to the window.
       return TRAY.nothingSyncedYet;
     default:
       return MAIN.settled;
@@ -369,8 +390,10 @@ export function subOf(v) {
       // length at all. See `fillFailed`, which puts `.main-failed-error` inside the `.main-failed`
       // block `renderMain` creates.
       return MAIN.failedSub(v.pending);
+    case "queued":
+      return v.waitingFor ? TRAY.waitingSub(v.pair, v.waitingFor) : TRAY.startingSub(v.pair);
     case "firstRun":
-      return TRAY.nothingSyncedYetSub;
+      return MAIN.firstRunSub;
     default:
       return MAIN.settledSubTime(since(v.lastSync));
   }
@@ -407,8 +430,10 @@ export const MARK_STATE = {
   authExpired: "unreachable",
   failed: "unreachable",
   // The tray's own pairing (`PANEL_STATE.firstRun`): the attention form with NO numeral. A count
-  // inside the mark would be a queue of zero things presented as a decision.
+  // inside the mark would be a queue of zero things presented as a decision. A folder that has not had
+  // its turn wears the same: it has not synced anything in this run, and the settled form says it has.
   firstRun: "needsNumeral",
+  queued: "needsNumeral",
   settled: "settled",
 };
 

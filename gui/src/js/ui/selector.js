@@ -83,13 +83,27 @@ function check() {
   return svg;
 }
 
+/** The most characters of another folder's name a state word spells: a folder may be called 64, and a row has room for a word. */
+const WAITING_NAME_MAX = 16;
+
 /**
  * The word for a derived state. Exhaustive over what `gui_core::DaemonState` serialises, with a last
  * arm that claims nothing: a state this build has never heard of is not `up to date` (#246's shape),
  * and is not a word either — the row names its folder and stops. `Object.hasOwn`, because a state is
  * wire text and `states["constructor"]` is a function.
+ *
+ * `waitingFor` is the folder a `queued` folder waits for (Rust's `PairState.waiting_for`), and only a
+ * `queued` folder speaks it: `waiting for documents` while that pass runs, `starting` when nothing does.
+ * Its name is cut to a row's room; the hero and the panel name it whole. `short` drops the name for the
+ * header's list, whose rows have no room for it (`CHROME.pair.waiting`).
  */
-export function stateWordOf(state) {
+export function stateWordOf(state, waitingFor = null, { short = false } = {}) {
+  if (state === "queued" && waitingFor) {
+    if (short) return CHROME.pair.waiting;
+    const name =
+      waitingFor.length > WAITING_NAME_MAX ? `${waitingFor.slice(0, WAITING_NAME_MAX - 1)}…` : waitingFor;
+    return CHROME.pair.waitingFor(name);
+  }
   return Object.hasOwn(CHROME.pair.states, state) ? CHROME.pair.states[state] : "";
 }
 
@@ -115,11 +129,13 @@ export function selectorRows({
   waiting = () => 0,
   reachable = true,
 } = {}) {
-  const stateOf = new Map(pairStates.map((entry) => [entry.name, entry.state]));
+  const derived = new Map(pairStates.map((entry) => [entry.name, entry]));
   return pairs.map((pair) => ({
     name: pair.name,
     selected: pair.name === selected,
-    state: reachable ? (stateOf.get(pair.name) ?? null) : "unreachable",
+    state: reachable ? (derived.get(pair.name)?.state ?? null) : "unreachable",
+    // Who a `queued` folder waits for. With the daemon silent nobody is named: the roster is a memory.
+    waitingFor: reachable ? (derived.get(pair.name)?.waiting_for ?? null) : null,
     waiting: reachable ? waiting(pair.name) : 0,
   }));
 }
@@ -220,8 +236,12 @@ function patchRow(node, row) {
   const [lead, name, state, count] = node.children;
   if (Boolean(lead.firstChild) !== row.selected) lead.replaceChildren(...(row.selected ? [check()] : []));
   if (name.textContent !== row.name) name.textContent = row.name;
-  const word = stateWordOf(row.state);
+  const word = stateWordOf(row.state, row.waitingFor, { short: true });
   if (state.textContent !== word) state.textContent = word;
+  // The whole of it, for a row that had to drop the folder it waits for. No attribute on any other row.
+  const whole = stateWordOf(row.state, row.waitingFor);
+  if (whole !== word) state.title = whole;
+  else state.removeAttribute("title");
   // Nothing waiting draws NOTHING, not `0 waiting`: a quiet folder is not a folder with a number.
   const waiting = row.waiting > 0 ? CHROME.chips.waiting(row.waiting) : "";
   if (count.textContent !== waiting) count.textContent = waiting;

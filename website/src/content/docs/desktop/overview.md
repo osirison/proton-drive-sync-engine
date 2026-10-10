@@ -1,6 +1,6 @@
 ---
 title: Desktop app overview
-description: What the Proton Drive Sync desktop app is, how it maps onto the daemon, and the seven daemon states it shows.
+description: What the Proton Drive Sync desktop app is, how it maps onto the daemon, and the eight daemon states it shows.
 sidebar:
   order: 1
 ---
@@ -44,7 +44,7 @@ seconds when in the background** — plus a periodic conflict re-scan and a refr
 deletions. A socket error is its own explicit state; **counters never render as a
 misleading zero** when the daemon is unreachable — they show an em-dash instead.
 
-## The seven daemon states
+## The eight daemon states
 
 Both the window and the tray derive one shared **daemon state** from the status reply (or
 its absence), so they always agree. Each state drives the headline, the available actions,
@@ -53,12 +53,13 @@ the tray icon, and whether counters are shown:
 | State | Meaning | Primary actions offered |
 | --- | --- | --- |
 | **Running** | Reachable, not paused, changes pending — actively syncing. | Pause (Sync now disappears mid-sync — it would do nothing) |
-| **Idle** | Reachable, not paused, nothing pending — up to date. | Sync now, Pause |
+| **Idle** | Reachable, not paused, nothing pending — up to date. A folder is only ever Idle once a pass has finished for it since the daemon started. | Sync now, Pause |
+| **Queued** | Only with two or more folders. A folder that has not finished a pass since the daemon started and is not running one. The daemon syncs one folder at a time, so it is either waiting for the folder that is running (the window names it) or about to start, which the daemon does by itself. | Sync now, Pause |
 | **Paused** | Sync is paused. The daemon remembers it, so a restart (including the one after saving settings) keeps the pair paused, unless the pause was made while the pair was unavailable: that pause is kept in memory only. To make it stick, resume the pair once its folder is back and pause it again. | Resume |
 | **Auth expired** | The daemon's own sign-in verdict says the Proton session is gone — or, only while it has no verdict yet, a fallback match against the last error's wording. | Try again now |
 | **Failed** | Reachable, but the last pass failed for some other reason — a timeout, a missing `proton-drive` binary, a transfer error. | Try again now |
 | **Unreachable** | The control socket can't be reached, or the reply couldn't be trusted. | Start the sync service |
-| **First run** | Nothing has synced yet. | None — the onboarding takeover covers the window; there is no Home screen to offer buttons on. (With two or more folders the takeover does not open; see [First run](/desktop/screens/#first-run).) |
+| **First run** | Nothing has synced yet, and this is the only folder. | None — the onboarding takeover covers the window; there is no Home screen to offer buttons on. (With two or more folders the takeover does not open, and the same facts are **Queued**; see [First run](/desktop/screens/#first-run).) |
 
 **Failed** is the state most worth naming explicitly. Without it, every kind of failure used
 to fall through to **Idle**, and the app drew "Everything is up to date" over a pass that had
