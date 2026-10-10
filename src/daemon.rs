@@ -4724,7 +4724,7 @@ fn shown_remote_root(key: &Path) -> String {
 /// what nothing recorded means is the caller's ([`settle_remote_root_identity`]).
 fn changed_remote_root(recorded: Option<&Path>, config: &PairConfig) -> Option<StandingCause> {
     let recorded = recorded?;
-    let configured = remote_root_comparison_key(&config.remote_root);
+    let configured = remote_root_key(config);
     (recorded != configured).then(|| StandingCause::RemoteRootChanged {
         pair: config.name.clone(),
         recorded: recorded.to_path_buf(),
@@ -4756,7 +4756,7 @@ fn settle_remote_root_identity(
     if recorded.is_some() {
         return Ok(changed_remote_root(recorded.as_deref(), config));
     }
-    let configured = remote_root_comparison_key(&config.remote_root);
+    let configured = remote_root_key(config);
     if record_remote_root_of_baseline(connection, &configured)? {
         info!(
             remote_root = %shown_remote_root(&configured),
@@ -5919,7 +5919,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
             &mut self.pair.pass_log,
             self.pair_shared,
             &self.pair.config.local_root,
-            &remote_root_comparison_key(&self.pair.config.remote_root),
+            &remote_root_key(&self.pair.config),
         ) {
             warn!(
                 %error,
@@ -8259,7 +8259,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
                     &mut self.pair.pass_log,
                     self.pair_shared,
                     &self.pair.config.local_root,
-                    &remote_root_comparison_key(&self.pair.config.remote_root),
+                    &remote_root_key(&self.pair.config),
                 )?;
             }
             action_number += 1;
@@ -8337,10 +8337,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
         // adoption-only first sync lands its rows in this commit. Never before the pass's work (this
         // is the commit that follows it), and only if the baseline has a row after the mutations
         // above: a pass that leaves it empty describes no folder.
-        record_remote_root_of_baseline(
-            &transaction,
-            &remote_root_comparison_key(&self.pair.config.remote_root),
-        )?;
+        record_remote_root_of_baseline(&transaction, &remote_root_key(&self.pair.config))?;
         for (path, digest, summary) in &summaries {
             store_agreed_summary(&transaction, path, digest, summary, current_epoch_secs())?;
         }
@@ -8752,7 +8749,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
             &mut self.pair.pass_log,
             self.pair_shared,
             &self.pair.config.local_root,
-            &remote_root_comparison_key(&self.pair.config.remote_root),
+            &remote_root_key(&self.pair.config),
         )?;
         // A chunk is many actions; one landed file in it clears the breaker's consecutive run
         // exactly as a successful single action would. A vanished node landed nothing.
@@ -10818,13 +10815,13 @@ fn local_files_from_entities(
         .collect()
 }
 
-/// What a pair's remote root is recorded under beside its node (`index::load_remote_root_uid`): the
-/// reduction the config layer compares remote roots by, so `/Drive/A` and `Drive/A` are one and a
-/// root re-pointed elsewhere is another.
-fn remote_root_key(config: &PairConfig) -> String {
-    crate::config::remote_root_comparison_key(&config.remote_root)
-        .to_string_lossy()
-        .into_owned()
+/// What a pair's remote root is recorded under in its index: the one row that says which Proton
+/// folder the baseline describes (`index::load_recorded_remote_root`, #453) and which node that
+/// folder is (`index::load_remote_root_uid`, #456). The reduction the config layer compares remote
+/// roots by, so `/Drive/A` and `Drive/A` are one and a root re-pointed elsewhere is another. Every
+/// read and write of that row, and every comparison with it, goes through here.
+fn remote_root_key(config: &PairConfig) -> PathBuf {
+    remote_root_comparison_key(&config.remote_root)
 }
 
 fn filter_base_index(
@@ -37273,10 +37270,21 @@ mod tests {
             [remote_root_of("a"), remote_root_of("b"), new_root],
             "asked once, about the new folder"
         );
+        // The record names the folder the baseline describes and is not moved by a pass that was
+        // never allowed to start (#453: the daemon holds such a pair at open, so this runtime
+        // exists only because the test re-pointed it in place). The new answer is therefore not
+        // recorded onto a row that names the old folder — and the old folder's node was not
+        // believed for the new one, which is what this test is about.
         assert_eq!(
             root_uid_of(&daemon, 0),
-            Some("vol~root-a2".to_owned()),
-            "and the answer is recorded for the new path"
+            None,
+            "the node learned for another folder is not recorded onto this row"
+        );
+        assert_eq!(
+            load_recorded_remote_root(&daemon.runtime(0).expect("ready").connection)
+                .expect("recorded root"),
+            Some(remote_root_comparison_key(&remote_root_of("a"))),
+            "and the row still names the folder it was recorded for"
         );
     }
 
@@ -37686,7 +37694,7 @@ mod tests {
         let before = folder_contents(&root);
         open_database(&config.db_path)
             .expect("index")
-            .execute("DELETE FROM remote_root_identity", [])
+            .execute("DELETE FROM remote_root_node", [])
             .expect("make it a legacy index");
         assert_eq!(
             load_existing_recorded_remote_root(&config.db_path).expect("read"),
@@ -37720,7 +37728,7 @@ mod tests {
         let config = synced_once_against_drive_a(directory.path());
         open_database(&config.db_path)
             .expect("index")
-            .execute("DELETE FROM remote_root_identity", [])
+            .execute("DELETE FROM remote_root_node", [])
             .expect("make it a legacy index");
         let client = MultiRootClient::default().with_tree("/Drive/other", drive_a_tree());
 
@@ -38023,7 +38031,7 @@ mod tests {
         let config = synced_once_against_drive_a(directory.path());
         open_database(&config.db_path)
             .expect("index")
-            .execute_batch("DROP TABLE remote_root_identity")
+            .execute_batch("DROP TABLE remote_root_node")
             .expect("make it an index from before the table");
         let client = MultiRootClient::default().with_tree("/Drive/other", drive_a_tree());
 
@@ -38455,7 +38463,7 @@ mod tests {
         let changed = open_database(db_path)
             .expect("index")
             .execute(
-                "UPDATE remote_root_identity SET remote_root = 5 WHERE id = 0",
+                "UPDATE remote_root_node SET remote_root = 5 WHERE id = 0",
                 [],
             )
             .expect("corrupt the record");
