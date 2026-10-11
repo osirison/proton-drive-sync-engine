@@ -1010,6 +1010,52 @@ fn moving_the_folder_to_one_that_does_not_exist_yet_together_with_the_proton_fol
 }
 
 #[test]
+fn moving_the_folder_to_one_that_does_not_exist_yet_still_starts_over_an_index_kept_elsewhere() {
+    // The config places the index outside the folder. Moving the pair to a folder that is not there leaves
+    // that index behind with the old baseline, and it is what would meet the new Proton folder.
+    let session = session(|dir| {
+        let root = dir.join("folders/docs");
+        std::fs::create_dir_all(&root).unwrap();
+        let (db, lock) = (dir.join("state/docs.db"), dir.join("state/docs.lock"));
+        give_history(
+            &gui_core::config_io::PairView {
+                db_path: Some(db.clone()),
+                lockfile_path: Some(lock.clone()),
+                ..view_of(&root)
+            },
+            true,
+        );
+        format!(
+            "socket_path = \"{}\"\nlocal_root = \"{}\"\nremote_root = \"/Drive/docs\"\n\
+             db_path = \"{}\"\nlockfile_path = \"{}\"\n",
+            dead_socket_in(dir).display(),
+            root.display(),
+            db.display(),
+            lock.display()
+        )
+    });
+    let view = session.view("default");
+    assert_eq!(facts(&view), with_history(true), "precondition");
+    let fresh = session.dir.path().join("folders/brand-new");
+    let log = Log::default();
+    let mut service = FakeService::with(DaemonProbe::NotRunning, &log);
+    let both = ConfigUpdate {
+        local_root: Some(fresh.display().to_string()),
+        remote_root: Some("/Drive/elsewhere".to_owned()),
+        ..Default::default()
+    };
+
+    let reply = change(&session, "default", &both, &mut service).expect("started over");
+
+    assert_eq!(
+        reply.index.as_deref().map(Path::new),
+        view.db_path.as_deref()
+    );
+    assert_eq!(facts(&view), started_over(true));
+    assert!(!fresh.exists(), "the app does not make the folder");
+}
+
+#[test]
 fn moving_the_folder_to_one_on_a_drive_that_is_not_there_is_refused() {
     // `usb-not-plugged-in` is not there, so neither is anything that could be told from an unplugged drive.
     let session = two_synced_folders(false);
