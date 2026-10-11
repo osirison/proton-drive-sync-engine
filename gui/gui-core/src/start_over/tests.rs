@@ -75,7 +75,7 @@ fn starting_over_empties_everything_the_daemon_decides_from_and_nothing_else() {
     let root = view.local_root.clone().unwrap();
     assert_eq!(facts(&view), with_history(false), "precondition");
 
-    let done = start_over(&view).expect("nothing holds the folder");
+    let done = start_over(&view, LocalFolder::Unchanged).expect("nothing holds the folder");
 
     assert_eq!(done.index, view.db_path, "it says which index it reset");
     // The baseline, the folder it described (the engine would hold the pair for it otherwise), the
@@ -95,7 +95,7 @@ fn a_paused_folder_is_still_paused_after_it_starts_over() {
     let dir = tempfile::tempdir().unwrap();
     let view = synced_folder(dir.path(), true);
 
-    start_over(&view).expect("started over");
+    start_over(&view, LocalFolder::Unchanged).expect("started over");
 
     assert_eq!(facts(&view), started_over(true));
 }
@@ -113,7 +113,7 @@ fn what_the_engine_would_hold_a_folder_for_is_gone() {
         "precondition: the engine would hold this folder for another Proton folder"
     );
 
-    start_over(&view).expect("started over");
+    start_over(&view, LocalFolder::Unchanged).expect("started over");
 
     assert_eq!(load_existing_recorded_remote_root(&db).unwrap(), None);
 }
@@ -126,7 +126,8 @@ fn a_folder_with_no_index_has_nothing_to_start_over_and_gets_nothing_made() {
     fs::write(root.join("mine.txt"), "x").unwrap();
     let view = view_of(&root);
 
-    let done = start_over(&view).expect("nothing to reset is not a failure");
+    let done =
+        start_over(&view, LocalFolder::Unchanged).expect("nothing to reset is not a failure");
 
     assert_eq!(done.index, None);
     assert!(
@@ -146,12 +147,13 @@ fn a_daemon_that_holds_the_folder_refuses_the_start_over_and_the_index_is_untouc
         other => panic!("precondition: nobody holds the lock yet, got {other:?}"),
     };
 
-    let refused = start_over(&view).expect_err("a held folder is not reset");
+    let refused =
+        start_over(&view, LocalFolder::Unchanged).expect_err("a held folder is not reset");
 
     assert!(matches!(refused, Refusal::InUse(_)), "{refused:?}");
     assert_eq!(fs::read(view.db_path.as_ref().unwrap()).unwrap(), before);
     drop(held);
-    start_over(&view).expect("and once the holder lets go it is reset");
+    start_over(&view, LocalFolder::Unchanged).expect("and once the holder lets go it is reset");
 }
 
 #[test]
@@ -162,9 +164,13 @@ fn a_folder_that_cannot_be_looked_at_is_not_reset_and_not_made() {
     let root = dir.path().join("not-mounted");
     let view = view_of(&root);
 
-    let refused = start_over(&view).expect_err("nothing could be looked at");
+    let refused =
+        start_over(&view, LocalFolder::Unchanged).expect_err("nothing could be looked at");
 
-    assert!(matches!(refused, Refusal::CannotLocate(_)), "{refused:?}");
+    assert!(
+        matches!(refused, Refusal::FolderUnreadable(_)),
+        "{refused:?}"
+    );
     assert!(!root.exists(), "the folder was not made");
 }
 
@@ -176,7 +182,8 @@ fn a_relative_path_is_not_followed_into_the_apps_own_working_directory() {
     let mut view = synced_folder(dir.path(), false);
     view.db_path = Some(PathBuf::from("sync_index.db"));
 
-    let refused = start_over(&view).expect_err("a relative index path cannot be located");
+    let refused = start_over(&view, LocalFolder::Unchanged)
+        .expect_err("a relative index path cannot be located");
 
     assert!(matches!(refused, Refusal::CannotLocate(_)), "{refused:?}");
 }
@@ -195,7 +202,8 @@ fn an_index_that_is_not_a_database_is_left_exactly_as_it_was() {
     .unwrap();
     let before = fs::read(&db).unwrap();
 
-    let refused = start_over(&view).expect_err("a file that is not an index is not reset");
+    let refused = start_over(&view, LocalFolder::Unchanged)
+        .expect_err("a file that is not an index is not reset");
 
     assert!(matches!(refused, Refusal::Failed(_)), "{refused:?}");
     assert_eq!(fs::read(&db).unwrap(), before);
@@ -208,7 +216,8 @@ fn an_index_path_that_is_a_directory_is_not_opened() {
     fs::create_dir_all(root.join(".sync/sync_index.db")).unwrap();
     let view = view_of(&root);
 
-    let refused = start_over(&view).expect_err("a directory is not an index");
+    let refused =
+        start_over(&view, LocalFolder::Unchanged).expect_err("a directory is not an index");
 
     assert!(matches!(refused, Refusal::Failed(_)), "{refused:?}");
 }
@@ -221,9 +230,321 @@ fn the_check_that_precedes_a_stop_touches_nothing() {
     let view = synced_folder(dir.path(), false);
     let before = fs::read(view.db_path.as_ref().unwrap()).unwrap();
 
-    locate(&view).expect("this folder can be looked at");
+    locate(&view, LocalFolder::Unchanged).expect("this folder can be looked at");
 
     assert_eq!(fs::read(view.db_path.as_ref().unwrap()).unwrap(), before);
     let missing = view_of(&dir.path().join("elsewhere"));
-    assert!(locate(&missing).is_err());
+    assert!(locate(&missing, LocalFolder::Unchanged).is_err());
+}
+
+// ---- the words are the start-over's own (#453 review, finding 3) ----------------------------------------
+
+#[test]
+fn a_folder_that_cannot_be_read_is_refused_in_the_start_overs_own_words() {
+    // Remove's sentence for this says it "moved nothing". Nothing is moved here: the sentence says the folder
+    // cannot be read, that an unplugged drive looks the same, and that the app cannot start it over; what the
+    // person can do about it is `advice`.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("not-mounted");
+    let view = view_of(&root);
+
+    let refused = locate(&view, LocalFolder::Unchanged).expect_err("nobody could read it");
+
+    assert!(
+        matches!(refused, Refusal::FolderUnreadable(_)),
+        "{refused:?}"
+    );
+    let said = refused.reason();
+    assert!(
+        said.contains(root.to_str().unwrap()) && said.contains("cannot be read"),
+        "{said}"
+    );
+    assert!(
+        said.contains("an unplugged drive looks the same")
+            && said.contains("the app cannot start it over"),
+        "{said}"
+    );
+    assert!(
+        !said.contains("moved") && !said.contains("nothing was moved"),
+        "nothing is moved by a start-over: {said}"
+    );
+    assert_eq!(
+        refused.advice(),
+        Some("Plug in the drive or make the folder readable, then save again.")
+    );
+}
+
+#[test]
+fn no_refusal_of_the_start_over_says_it_moved_anything() {
+    // Every way the disk can fail to say, worded by the start-over and not by a removal.
+    let dir = tempfile::tempdir().unwrap();
+    let absolute = synced_folder(dir.path(), false);
+    let mut refusals = Vec::new();
+    // A folder that is not there.
+    refusals.push(locate(
+        &view_of(&dir.path().join("gone")),
+        LocalFolder::Unchanged,
+    ));
+    // A relative path, for each of the three the config places.
+    for view in [
+        PairView {
+            local_root: Some(PathBuf::from("Sync")),
+            ..absolute.clone()
+        },
+        PairView {
+            db_path: Some(PathBuf::from("sync_index.db")),
+            ..absolute.clone()
+        },
+        PairView {
+            lockfile_path: Some(PathBuf::from("proton-sync.lock")),
+            ..absolute.clone()
+        },
+    ] {
+        refusals.push(locate(&view, LocalFolder::Unchanged));
+    }
+    // No folder at all.
+    refusals.push(locate(
+        &PairView {
+            local_root: None,
+            ..absolute.clone()
+        },
+        LocalFolder::Unchanged,
+    ));
+    // A state file on a drive that is not there.
+    let away = dir.path().join("usb-not-plugged-in");
+    refusals.push(locate(
+        &PairView {
+            db_path: Some(away.join("idx.db")),
+            lockfile_path: Some(away.join("pair.lock")),
+            ..absolute
+        },
+        LocalFolder::Unchanged,
+    ));
+
+    assert_eq!(refusals.len(), 6);
+    for refusal in refusals {
+        let refusal = refusal.expect_err("none of these can be looked at");
+        assert!(
+            !refusal.reason().contains("moved") && !refusal.reason().contains("nothing was moved"),
+            "{}",
+            refusal.reason()
+        );
+    }
+}
+
+#[test]
+fn a_relative_path_and_a_state_file_on_a_missing_drive_are_worded_by_what_they_are() {
+    let dir = tempfile::tempdir().unwrap();
+    let absolute = synced_folder(dir.path(), false);
+
+    let relative = locate(
+        &PairView {
+            db_path: Some(PathBuf::from("sync_index.db")),
+            ..absolute.clone()
+        },
+        LocalFolder::Unchanged,
+    )
+    .expect_err("relative");
+    assert!(matches!(relative, Refusal::CannotLocate(_)), "{relative:?}");
+    assert!(
+        relative.reason().contains("db_path") && relative.reason().contains("relative path"),
+        "{}",
+        relative.reason()
+    );
+    assert_eq!(relative.advice(), None, "waiting does not make it absolute");
+
+    let away = dir.path().join("usb-not-plugged-in");
+    let drive = locate(
+        &PairView {
+            db_path: Some(away.join("idx.db")),
+            lockfile_path: Some(away.join("pair.lock")),
+            ..absolute
+        },
+        LocalFolder::Unchanged,
+    )
+    .expect_err("the index is on a drive that is not there");
+    assert!(matches!(drive, Refusal::FolderUnreadable(_)), "{drive:?}");
+    assert!(
+        drive.reason().contains(away.to_str().unwrap()),
+        "{}",
+        drive.reason()
+    );
+}
+
+// ---- a folder the save moves the pair to (#453 review, finding 3) -----------------------------------------
+
+#[test]
+fn a_folder_that_does_not_exist_yet_has_no_history_to_start_over_when_the_save_moves_the_pair_to_it()
+ {
+    // The person typed a new folder together with a new Proton folder. It is not there, under a folder that
+    // can be listed: that is an absence, the rule Remove applies to a state file. The daemon makes the folder
+    // when it starts; there is nothing to reset, and nothing is made here.
+    let dir = tempfile::tempdir().unwrap();
+    let fresh = dir.path().join("brand-new");
+    let view = view_of(&fresh);
+
+    assert_eq!(locate(&view, LocalFolder::Moved), Ok(None));
+    let done = start_over(&view, LocalFolder::Moved).expect("nothing to start over");
+
+    assert_eq!(done.index, None);
+    assert!(!fresh.exists(), "the folder was not made");
+    // The same folder, for a pair that already syncs it, is a drive that may come back.
+    assert!(matches!(
+        locate(&view, LocalFolder::Unchanged),
+        Err(Refusal::FolderUnreadable(_))
+    ));
+}
+
+#[test]
+fn a_folder_under_a_folder_that_is_not_there_is_not_known_to_be_absent_even_when_the_save_moves_to_it()
+ {
+    // `/run/media/me/Backup/docs` with `Backup` gone: an unplugged drive, not a folder that is new.
+    let dir = tempfile::tempdir().unwrap();
+    let under_nothing = dir.path().join("usb-not-plugged-in/docs");
+    let view = view_of(&under_nothing);
+
+    let refused = locate(&view, LocalFolder::Moved).expect_err("it cannot be told");
+
+    assert!(
+        matches!(refused, Refusal::FolderUnreadable(_)),
+        "{refused:?}"
+    );
+    assert!(!dir.path().join("usb-not-plugged-in").exists());
+}
+
+#[test]
+fn a_moved_to_folder_that_is_there_but_cannot_be_read_is_not_an_absence() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let locked = dir.path().join("locked");
+    fs::create_dir_all(&locked).unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    let enforced = fs::read_dir(&locked).is_err();
+    let refused = locate(&view_of(&locked), LocalFolder::Moved);
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+    if !enforced {
+        eprintln!("SKIPPED: this user is not stopped by file permissions (root?)");
+        return;
+    }
+
+    let refused = refused.expect_err("the history may be right there");
+    assert!(
+        matches!(refused, Refusal::FolderUnreadable(_)),
+        "{refused:?}"
+    );
+}
+
+#[test]
+fn a_moved_to_folder_that_exists_is_started_over_like_any_other() {
+    // The save points the pair at a folder that already holds an index from an earlier pair: that index
+    // describes another Proton folder, and it is the one that meets the new Proton folder.
+    let dir = tempfile::tempdir().unwrap();
+    let view = synced_folder(dir.path(), true);
+
+    start_over(&view, LocalFolder::Moved).expect("started over");
+
+    assert_eq!(facts(&view), started_over(true));
+}
+
+#[test]
+fn an_index_kept_outside_a_folder_that_is_not_there_yet_is_still_history_to_start_over() {
+    // The config places the index somewhere else. Moving the pair to a folder that does not exist leaves
+    // that index behind with the old baseline: it is what would meet the new Proton folder.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("docs");
+    fs::create_dir_all(&root).unwrap();
+    let state = dir.path().join("state");
+    let view = PairView {
+        db_path: Some(state.join("docs.db")),
+        lockfile_path: Some(state.join("docs.lock")),
+        ..view_of(&root)
+    };
+    give_history(&view, false);
+    fs::remove_dir_all(&root).unwrap();
+    assert_eq!(facts(&view), with_history(false), "precondition");
+
+    // The folder is not there and the pair syncs it: a drive that may come back.
+    assert!(matches!(
+        start_over(&view, LocalFolder::Unchanged),
+        Err(Refusal::FolderUnreadable(_))
+    ));
+    // The save moves the pair to a folder that does not exist yet; the index outside it is reset.
+    let done = start_over(&view, LocalFolder::Moved).expect("started over");
+
+    assert_eq!(done.index, view.db_path);
+    assert_eq!(facts(&view), started_over(false));
+    assert!(!root.exists(), "no folder was made");
+}
+
+#[test]
+fn an_index_kept_on_a_drive_that_is_not_there_is_not_an_absence_for_a_moved_folder_either() {
+    let dir = tempfile::tempdir().unwrap();
+    let away = dir.path().join("usb-not-plugged-in");
+    let view = PairView {
+        db_path: Some(away.join("docs.db")),
+        lockfile_path: Some(away.join("docs.lock")),
+        ..view_of(&dir.path().join("brand-new"))
+    };
+
+    let refused = locate(&view, LocalFolder::Moved).expect_err("the index may be on the drive");
+
+    assert!(
+        matches!(refused, Refusal::FolderUnreadable(_)),
+        "{refused:?}"
+    );
+}
+
+#[test]
+fn a_folder_is_moved_only_when_it_is_another_folder_not_another_spelling() {
+    let dir = tempfile::tempdir().unwrap();
+    let docs = dir.path().join("docs");
+    fs::create_dir_all(&docs).unwrap();
+    let link = dir.path().join("link-to-docs");
+    std::os::unix::fs::symlink(&docs, &link).unwrap();
+    let before = view_of(&docs);
+    let at = |root: &Path| PairView {
+        local_root: Some(root.to_owned()),
+        ..before.clone()
+    };
+
+    for same in [
+        docs.clone(),
+        PathBuf::from(format!("{}/", docs.display())),
+        dir.path().join("./docs"),
+        dir.path().join("other/../docs"),
+        link.clone(),
+    ] {
+        assert_eq!(
+            local_folder_moved(&before, &at(&same)),
+            LocalFolder::Unchanged,
+            "{}",
+            same.display()
+        );
+    }
+    // The folder of a drive that is not plugged in does not become a new folder by being typed again.
+    let away = dir.path().join("usb/docs");
+    assert_eq!(
+        local_folder_moved(&at(&away), &at(&dir.path().join("usb/./docs"))),
+        LocalFolder::Unchanged
+    );
+    for other in [
+        dir.path().join("docs2"),
+        dir.path().join("Docs"),
+        dir.path().join("docs/sub"),
+        dir.path().to_owned(),
+    ] {
+        assert_eq!(
+            local_folder_moved(&before, &at(&other)),
+            LocalFolder::Moved,
+            "{}",
+            other.display()
+        );
+    }
+    let none = PairView {
+        local_root: None,
+        ..before.clone()
+    };
+    assert_eq!(local_folder_moved(&none, &none), LocalFolder::Unchanged);
+    assert_eq!(local_folder_moved(&none, &before), LocalFolder::Moved);
+    assert_eq!(local_folder_moved(&before, &none), LocalFolder::Moved);
 }

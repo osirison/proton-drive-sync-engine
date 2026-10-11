@@ -28,7 +28,7 @@
 //! directory and not this app's ([`locate`] shares [`crate::set_aside::plan`]'s reading of that).
 
 use crate::config_io::PairView;
-use crate::set_aside::{self, LockProbe, Planned};
+use crate::set_aside::{self, LockProbe, Planned, Root, Unlooked};
 use proton_drive_sync_engine::config::same_remote_folder;
 use proton_drive_sync_engine::index::{open_database, reset_index_state};
 use std::fmt;
@@ -56,12 +56,44 @@ pub fn remote_folder_changed(saved: Option<&str>, staged: &str) -> bool {
     !same_remote_folder(Path::new(saved), Path::new(staged))
 }
 
+/// Whether a save moves the folder the pair syncs on this computer, which decides what an absent folder
+/// means: the folder a pair already syncs that is not there is most likely a drive that is not plugged
+/// in, and a folder the person has just typed that is not there is a folder that does not exist yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalFolder {
+    /// The save leaves the pair's folder where it is (or spells it differently).
+    Unchanged,
+    /// The save points the pair at another folder.
+    Moved,
+}
+
+/// Is `after` another folder than `before`? The folders are compared by where they really are
+/// ([`set_aside::real_path`]: links resolved as far as they exist, `.` and `..` gone), so a respelling —
+/// a trailing slash, a link to the same place — is not a move, and the folder of an unplugged drive does
+/// not become a new one by being typed again.
+pub fn local_folder_moved(before: &PairView, after: &PairView) -> LocalFolder {
+    let same = match (before.local_root.as_deref(), after.local_root.as_deref()) {
+        (Some(before), Some(after)) => set_aside::real_path(before) == set_aside::real_path(after),
+        (None, None) => true,
+        _ => false,
+    };
+    if same {
+        LocalFolder::Unchanged
+    } else {
+        LocalFolder::Moved
+    }
+}
+
 /// Why the folder was not started over. Every one of them means **the index was not changed**.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
-    /// The app cannot say where the folder's history is, or whether it is there: a relative path, a folder
-    /// that cannot be read (an unplugged drive looks the same), a lockfile that cannot be asked. Not "there
-    /// is no history".
+    /// A folder that has to be read to say whether the history is there cannot be read — a missing one,
+    /// one that is not mounted, one nobody may list. An unplugged drive looks the same, so this is not
+    /// "there is no history": the app cannot start the folder over, and the person can fix it.
+    FolderUnreadable(String),
+    /// The app cannot say where the folder's history is, or whether it is there, for another reason: a
+    /// relative path, a path that cannot be looked at, a lockfile that cannot be asked. Not "there is no
+    /// history".
     CannotLocate(String),
     /// A daemon holds the pair's lockfile: the index is in use.
     InUse(String),
@@ -73,7 +105,50 @@ impl Refusal {
     /// The sentence, without which kind it was.
     pub fn reason(&self) -> &str {
         match self {
-            Self::CannotLocate(reason) | Self::InUse(reason) | Self::Failed(reason) => reason,
+            Self::FolderUnreadable(reason)
+            | Self::CannotLocate(reason)
+            | Self::InUse(reason)
+            | Self::Failed(reason) => reason,
+        }
+    }
+
+    /// What the person can do about it, for the refusals they can do something about. A sentence, said
+    /// after the account of what was and was not changed.
+    pub fn advice(&self) -> Option<&'static str> {
+        match self {
+            Self::FolderUnreadable(_) => {
+                Some("Plug in the drive or make the folder readable, then save again.")
+            }
+            Self::CannotLocate(_) | Self::InUse(_) | Self::Failed(_) => None,
+        }
+    }
+}
+
+/// What the disk could not say, in **this** module's words. [`set_aside::Undetermined::reason`] is a
+/// removal's sentence and ends "moved nothing"; nothing is moved here.
+impl From<Unlooked> for Refusal {
+    fn from(cause: Unlooked) -> Self {
+        match cause {
+            Unlooked::NoLocalRoot => Self::CannotLocate(
+                "the config gives this folder no local_root, so the app cannot tell where its sync \
+                 history is"
+                    .to_owned(),
+            ),
+            Unlooked::RelativePath { key, path } => Self::CannotLocate(format!(
+                "the config's {key} `{}` is a relative path. The sync service resolves a relative \
+                 path against its own working directory, which this app cannot know, so it cannot \
+                 tell where this folder's sync history is",
+                path.display()
+            )),
+            Unlooked::FolderUnreadable { folder, error } => Self::FolderUnreadable(format!(
+                "the folder {} cannot be read ({error}); an unplugged drive looks the same, so the \
+                 app cannot start it over",
+                folder.display()
+            )),
+            Unlooked::CouldNotLook { path, error } => Self::CannotLocate(format!(
+                "could not look at {}: {error}",
+                path.display()
+            )),
         }
     }
 }
@@ -97,11 +172,17 @@ pub struct Done {
 ///
 /// "Not there" is a claim about a folder that could be read, so this is the question to ask **before**
 /// stopping a daemon for the sake of the answer. The reading of what can and cannot be looked at is
-/// [`set_aside::plan`]'s and is not restated: a relative path, a folder that cannot be listed, a state
-/// path under a folder that cannot be listed.
-pub fn locate(view: &PairView) -> Result<Option<PathBuf>, Refusal> {
-    if let Planned::Undetermined(undetermined) = set_aside::plan(view) {
-        return Err(Refusal::CannotLocate(undetermined.reason));
+/// [`set_aside::plan_for`]'s and is not restated: a relative path, a folder that cannot be listed, a state
+/// path under a folder that cannot be listed. `folder` says whether the save moves the pair's folder:
+/// only then is a folder that is **certainly absent** (not there, under a folder that can be listed — the
+/// rule Remove applies to a state file) a folder with no history, rather than a drive that may come back.
+pub fn locate(view: &PairView, folder: LocalFolder) -> Result<Option<PathBuf>, Refusal> {
+    let rule = match folder {
+        LocalFolder::Unchanged => Root::Existing,
+        LocalFolder::Moved => Root::Moved,
+    };
+    if let Planned::Undetermined(undetermined) = set_aside::plan_for(view, rule) {
+        return Err(undetermined.cause.into());
     }
     let Some(db) = view.db_path.as_ref() else {
         return Err(Refusal::CannotLocate(
@@ -129,8 +210,8 @@ pub fn locate(view: &PairView) -> Result<Option<PathBuf>, Refusal> {
 ///
 /// The transaction is the daemon's (`reset_index_state` is one transaction), so a failure leaves the index
 /// as it was. The pair's pause and its history of what happened are not learned state and stay.
-pub fn start_over(view: &PairView) -> Result<Done, Refusal> {
-    let located = locate(view)?;
+pub fn start_over(view: &PairView, folder: LocalFolder) -> Result<Done, Refusal> {
+    let located = locate(view, folder)?;
     // The proof that nobody has it, held until the reset is done. A missing lockfile is no holder (it is
     // never created here).
     let _held = match set_aside::acquire(view.lockfile_path.as_deref()) {

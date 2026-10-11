@@ -560,42 +560,74 @@ fn no_daemon_running_at_save_time_still_starts_the_folder_over_and_starts_nothin
     assert!(session.config().contains("/Drive/elsewhere"));
 }
 
+/// What the app says when it could not tell whether the service is running, and so changed nothing.
+const COULD_NOT_TELL: &str =
+    "The sync service did not answer, so the app could not tell whether it is \
+                              running. Nothing was changed.";
+
 #[test]
-fn a_daemon_that_cannot_be_asked_is_not_assumed_absent_and_the_lockfile_is_the_proof() {
+fn a_daemon_that_cannot_be_asked_refuses_the_start_over_and_nothing_is_touched() {
+    // The review's case: the daemon is alive but the app could not ask it (the socket path is the
+    // fail-closed `Err`, or the exchange timed out), and the folder is HELD or UNAVAILABLE in it — which
+    // holds neither the lockfile nor the index. A reset under that daemon would go through; the daemon
+    // would lift the hold, bootstrap against the Proton folder it still has in memory and record it; the app
+    // would not restart it, and the next restart would hold the folder against the new Proton folder. So the
+    // answer that did not come is a refusal, as the plain save's restart treats the same answer.
     let session = two_synced_folders(false);
-    let docs = session.view("docs");
+    let (docs, photos, before) = (
+        session.view("docs"),
+        session.view("photos"),
+        session.config(),
+    );
     let log = Log::default();
+    // Nobody holds the lockfile: the lock proves nothing, and that is the point.
     let mut service = FakeService::with(DaemonProbe::Unknown, &log);
 
-    let reply = change(&session, "docs", &update("/Drive/elsewhere"), &mut service)
-        .expect("nobody holds it");
+    let refused = change(&session, "docs", &update("/Drive/elsewhere"), &mut service)
+        .expect_err("it could not be told whether the service runs");
 
+    assert_eq!(refused, COULD_NOT_TELL);
+    assert_eq!(session.config(), before);
+    assert_eq!(facts(&docs), with_history(false), "the index is as it was");
+    assert_eq!(facts(&photos), with_history(false));
     the_log_is(&log, &["probe"]);
-    assert!(
-        matches!(reply.restart, RestartOutcome::Undetermined { .. }),
-        "{:?}",
-        reply.restart
-    );
-    assert_eq!(facts(&docs), started_over(false));
 }
 
 #[test]
-fn a_daemon_that_cannot_be_asked_but_holds_the_folder_changes_nothing() {
-    // Unknown is evidence of neither. A daemon on a socket the app is not dialling still holds the pair's
-    // lockfile, and that is what refuses the start-over.
+fn a_daemon_that_cannot_be_asked_and_holds_the_folder_refuses_before_the_lock_is_asked() {
+    // The same refusal when it does hold the lockfile: the answer is decided at the probe, and nothing
+    // after it (no stop, no wait for the lock, no reset, no start) is reached.
     let session = two_synced_folders(false);
     let (docs, before) = (session.view("docs"), session.config());
     let log = Log::default();
     let mut service = FakeService::running_and_holding(&docs, &log);
     service.probe = DaemonProbe::Unknown;
 
-    let refused =
-        change(&session, "docs", &update("/Drive/elsewhere"), &mut service).expect_err("held");
+    let refused = change(&session, "docs", &update("/Drive/elsewhere"), &mut service)
+        .expect_err("held and unaskable");
 
-    assert!(refused.contains("Nothing was saved"), "{refused}");
+    assert_eq!(refused, COULD_NOT_TELL);
     assert_eq!(session.config(), before);
     assert_eq!(facts(&docs), with_history(false));
     the_log_is(&log, &["probe"]);
+}
+
+#[test]
+fn the_command_whose_socket_cannot_be_resolved_refuses_and_changes_nothing() {
+    // The real command with its real service and #74's fail-closed socket: there is no address to dial, so
+    // the daemon cannot be asked, and the start-over does not guess. Nothing here can reach `systemctl`:
+    // the refusal precedes any stop, and a service that was not found running is never started.
+    let session = two_synced_folders(false);
+    let (docs, before) = (session.view("docs"), session.config());
+    session.state().lock().unwrap().socket_path =
+        Err("the runtime directory is not owned by this user".to_owned());
+
+    let refused = change_through_the_command(&session, "docs", update("/Drive/elsewhere"))
+        .expect_err("it could not be told whether the service runs");
+
+    assert_eq!(refused, COULD_NOT_TELL);
+    assert_eq!(session.config(), before);
+    assert_eq!(facts(&docs), with_history(false));
 }
 
 // ---- a slow daemon -------------------------------------------------------------------------------
@@ -874,25 +906,220 @@ fn an_empty_proton_folder_is_not_a_change_and_is_refused_before_anything_is_touc
 }
 
 #[test]
-fn a_folder_whose_history_cannot_be_looked_at_is_refused_before_the_daemon_is_stopped() {
+fn a_folder_that_cannot_be_read_is_refused_in_the_start_overs_own_words_before_the_daemon_is_stopped(
+) {
     // An unplugged drive: the index that matters is on it, and "no index here" would be a claim about a
-    // folder nobody could read.
+    // folder nobody could read. The sentence is the start-over's: Remove's says it "moved nothing", and
+    // nothing is moved here.
     let session = two_synced_folders(false);
     let (docs, before) = (session.view("docs"), session.config());
+    let root = docs.local_root.clone().unwrap();
     let moved = session.dir.path().join("folders/docs-away");
-    std::fs::rename(docs.local_root.as_ref().unwrap(), &moved).unwrap();
+    std::fs::rename(&root, &moved).unwrap();
     let log = Log::default();
     let mut service = FakeService::with(DaemonProbe::Running, &log);
 
     let refused = change(&session, "docs", &update("/Drive/elsewhere"), &mut service)
         .expect_err("unreadable");
 
-    assert!(refused.contains("Nothing was changed"), "{refused}");
-    assert_eq!(session.config(), before);
     assert!(
-        !docs.local_root.as_ref().unwrap().exists(),
-        "the folder was not made"
+        refused.starts_with(&format!("The folder {} cannot be read (", root.display())),
+        "{refused}"
     );
+    assert!(
+        refused.ends_with(
+            "); an unplugged drive looks the same, so the app cannot start it over. \
+             Nothing was changed. Plug in the drive or make the folder readable, then save again."
+        ),
+        "{refused}"
+    );
+    assert!(
+        !refused.contains("moved"),
+        "nothing is moved here: {refused}"
+    );
+    assert_eq!(session.config(), before);
+    assert!(!root.exists(), "the folder was not made");
+    the_log_is(&log, &[]);
+}
+
+#[test]
+fn a_relative_path_is_refused_in_the_start_overs_own_words_without_advice_that_cannot_help() {
+    let session = two_synced_folders(false);
+    let before = session.config();
+    std::fs::write(
+        session.config_path(),
+        before.replace(
+            &format!(
+                "local_root = \"{}\"",
+                session.view("docs").local_root.unwrap().display()
+            ),
+            "local_root = \"Sync\"",
+        ),
+    )
+    .unwrap();
+    let before = session.config();
+    let log = Log::default();
+    let mut service = FakeService::with(DaemonProbe::Running, &log);
+
+    let refused = change(&session, "docs", &update("/Drive/elsewhere"), &mut service)
+        .expect_err("a relative folder cannot be located");
+
+    assert!(
+        refused.contains("local_root `Sync` is a relative path"),
+        "{refused}"
+    );
+    assert!(refused.ends_with("Nothing was changed."), "{refused}");
+    assert!(!refused.contains("moved"), "{refused}");
+    assert_eq!(session.config(), before);
+    the_log_is(&log, &[]);
+}
+
+#[test]
+fn moving_the_folder_to_one_that_does_not_exist_yet_together_with_the_proton_folder_goes_ahead() {
+    // The person typed a new folder and a new Proton folder in one save. The new folder is not there, under a
+    // folder that can be listed: an absence, by the rule Remove applies to a state file. There is no history
+    // to start over; the daemon makes the folder when it starts, and bootstraps it against the new Proton
+    // folder. The folder the pair leaves is untouched.
+    let session = two_synced_folders(false);
+    let docs = session.view("docs");
+    let fresh = session.dir.path().join("folders/brand-new");
+    let log = Log::default();
+    let mut service = FakeService::running_and_holding(&docs, &log);
+    let both = ConfigUpdate {
+        local_root: Some(fresh.display().to_string()),
+        remote_root: Some("/Drive/elsewhere".to_owned()),
+        ..Default::default()
+    };
+
+    let reply = change(&session, "docs", &both, &mut service).expect("nothing to start over");
+
+    assert_eq!(reply.index, None, "there was no index to start over");
+    assert!(!fresh.exists(), "the app does not make the folder");
+    assert_eq!(facts(&docs), with_history(false), "the folder it leaves");
+    let saved = gui_core::config_io::ConfigDoc::load(&session.config_path()).unwrap();
+    let docs_entry = saved.pair("docs").unwrap();
+    assert_eq!(
+        docs_entry.get_str("local_root"),
+        Some(fresh.display().to_string())
+    );
+    assert_eq!(
+        docs_entry.get_str("remote_root").as_deref(),
+        Some("/Drive/elsewhere")
+    );
+    the_log_is(&log, &["probe", "stop", "start"]);
+}
+
+#[test]
+fn moving_the_folder_to_one_on_a_drive_that_is_not_there_is_refused() {
+    // `usb-not-plugged-in` is not there, so neither is anything that could be told from an unplugged drive.
+    let session = two_synced_folders(false);
+    let (docs, before) = (session.view("docs"), session.config());
+    let away = session.dir.path().join("usb-not-plugged-in/docs");
+    let log = Log::default();
+    let mut service = FakeService::running_and_holding(&docs, &log);
+    let both = ConfigUpdate {
+        local_root: Some(away.display().to_string()),
+        remote_root: Some("/Drive/elsewhere".to_owned()),
+        ..Default::default()
+    };
+
+    let refused = change(&session, "docs", &both, &mut service).expect_err("it cannot be told");
+
+    assert!(refused.contains("cannot be read"), "{refused}");
+    assert!(refused.contains("Plug in the drive"), "{refused}");
+    assert_eq!(session.config(), before);
+    assert_eq!(facts(&docs), with_history(false));
+    assert!(!away.exists());
+    the_log_is(&log, &[]);
+}
+
+#[test]
+fn leaving_the_pairs_folder_unreadable_stays_a_refusal_when_only_the_proton_folder_changes() {
+    // The rule that lets a new folder through is for a folder the SAVE points the pair at. The folder a pair
+    // already syncs that is not there is a drive that may come back, whatever else is typed.
+    let session = two_synced_folders(false);
+    let docs = session.view("docs");
+    let root = docs.local_root.clone().unwrap();
+    std::fs::rename(&root, session.dir.path().join("folders/docs-away")).unwrap();
+    let log = Log::default();
+    let mut service = FakeService::with(DaemonProbe::Running, &log);
+    let respelled = ConfigUpdate {
+        // The same folder, spelled with a trailing slash: not a move.
+        local_root: Some(format!("{}/", root.display())),
+        remote_root: Some("/Drive/elsewhere".to_owned()),
+        ..Default::default()
+    };
+
+    let refused = change(&session, "docs", &respelled, &mut service).expect_err("unreadable");
+
+    assert!(refused.contains("cannot be read"), "{refused}");
+    the_log_is(&log, &[]);
+}
+
+// ---- the refusals that must precede everything, pinned one by one (#453 review, finding 1) -------------------
+
+#[test]
+fn another_folders_proton_folder_is_refused_while_nothing_has_been_touched() {
+    // `photos` syncs with `/Drive/photos`. Pointing `docs` there is refused by the config's own validation
+    // (two folders may not share a Proton folder) — and it must be refused HERE, before the daemon is
+    // stopped and `docs`' index is thrown away: the save validates too, but after the reset, which would
+    // leave the folder started over, the settings unchanged and the service stopped and started for nothing.
+    let session = two_synced_folders(true);
+    let (docs, photos, before) = (
+        session.view("docs"),
+        session.view("photos"),
+        session.config(),
+    );
+    let log = Log::default();
+    let mut service = FakeService::running_and_holding(&docs, &log);
+
+    let refused = change(&session, "docs", &update("/Drive/photos"), &mut service)
+        .expect_err("another folder already syncs with it");
+
+    assert!(
+        refused.starts_with("config would be rejected by the daemon: ")
+            && refused.contains("remote_root `/Drive/photos` is the same path as pair `docs`'s"),
+        "the refusal is the config's own, naming what it collides with: {refused}"
+    );
+    assert_eq!(session.config(), before, "the file is as it was");
+    assert_eq!(facts(&docs), with_history(true), "the index is as it was");
+    assert_eq!(facts(&photos), with_history(false));
+    the_log_is(&log, &[]);
+}
+
+#[test]
+fn a_local_folder_that_reaches_another_folders_through_a_link_is_refused_while_nothing_has_been_touched(
+) {
+    // The half of the daemon's boot check the lexical validation cannot see: two roots that differ as text
+    // and reach one folder through a symlink. The save writes it (it validates lexically), the daemon
+    // refuses to start on it — after this sequence had stopped the service and thrown the index away.
+    let session = two_synced_folders(false);
+    let (docs, photos, before) = (
+        session.view("docs"),
+        session.view("photos"),
+        session.config(),
+    );
+    let link = session.dir.path().join("folders/also-photos");
+    std::os::unix::fs::symlink(photos.local_root.as_ref().unwrap(), &link).unwrap();
+    let log = Log::default();
+    let mut service = FakeService::running_and_holding(&docs, &log);
+    let both = ConfigUpdate {
+        local_root: Some(link.display().to_string()),
+        remote_root: Some("/Drive/elsewhere".to_owned()),
+        ..Default::default()
+    };
+
+    let refused = change(&session, "docs", &both, &mut service).expect_err("one folder, two names");
+
+    assert!(
+        refused.contains("folder pair 'photos'")
+            && refused.contains("is the same folder as folder pair 'docs''s local_root")
+            && refused.contains("Symlinks are followed"),
+        "the refusal is the real-path check's own, naming the folder it reaches: {refused}"
+    );
+    assert_eq!(session.config(), before);
+    assert_eq!(facts(&docs), with_history(false));
+    assert_eq!(facts(&photos), with_history(false));
     the_log_is(&log, &[]);
 }
 

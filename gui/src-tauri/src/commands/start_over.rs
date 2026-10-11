@@ -16,7 +16,11 @@
 //! 1. everything the save would be refused for is asked **on a copy of the file**, and where the folder's
 //!    history is and whether it can be reached is asked **before anything is stopped** — a refusal here
 //!    changes nothing at all;
-//! 2. the daemon, if it is running, is stopped and the stop is confirmed (an absent socket);
+//! 2. the daemon is asked whether it is running, and **an answer that does not come is a refusal**: a daemon
+//!    that may be running may be holding this folder as held or unavailable, which holds neither its index
+//!    nor its lockfile, so the lockfile proves nothing about it and a reset under it would be undone by it
+//!    (it lifts the hold, bootstraps against the Proton folder it still has in memory and records it). A
+//!    running daemon is stopped and the stop is confirmed (an absent socket);
 //! 3. the folder's index is started over (`gui_core::start_over`: the engine's own `reset_index_state`, under
 //!    the pair's lockfile, which is the proof that no daemon has it open);
 //! 4. the file is written;
@@ -38,7 +42,7 @@
 //! process or `systemctl` (`docs/agent-notes/gui-tests-that-shell-systemctl.md`).
 
 use super::{check_update, pair_admin, ConfigUpdate, DaemonProbe, RestartOutcome, NO_ANSWER};
-use gui_core::config_io::{self, ConfigDoc};
+use gui_core::config_io::{self, ConfigDoc, PairView};
 use gui_core::start_over::{self as history, Refusal};
 use std::path::Path;
 use std::time::Duration;
@@ -47,12 +51,36 @@ fn text(error: impl ToString) -> String {
     error.to_string()
 }
 
+/// A sentence starts with a capital. The engine's and the disk's clauses are written to sit inside a
+/// longer sentence and begin without one.
+fn capitalised(clause: &str) -> String {
+    let mut chars = clause.chars();
+    chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
+}
+
+/// What a refusal says when **nothing has been touched yet**: its clause, that nothing was changed, and
+/// what the person can do about it where there is something.
+fn refused_before_anything_changed(refusal: &Refusal) -> String {
+    let advice = refusal
+        .advice()
+        .map(|advice| format!(" {advice}"))
+        .unwrap_or_default();
+    format!(
+        "{}. Nothing was changed.{advice}",
+        capitalised(refusal.reason())
+    )
+}
+
 // ---- the daemon, as the sequence needs it --------------------------------------------------------
 
 /// What the sequence needs of the sync service. The real one dials the control socket and shells
 /// `systemctl` (`commands.rs`'s `LiveService`); a test's keeps a log and can fail on cue.
 pub(super) trait Service {
-    /// Whether the daemon answers on its control socket. `Unknown` is evidence of neither.
+    /// Whether the daemon answers on its control socket. `Unknown` is evidence of neither, and the
+    /// sequence **refuses** on it: see the module doc, step 2.
     fn probe(&mut self) -> DaemonProbe;
     /// Ask it to exit and wait for the socket to go quiet. `Ok` is a confirmed stop; the `Err` is the
     /// ending that says why not.
@@ -98,6 +126,15 @@ pub(super) fn check_file(
         from,
         to: remote_root.to_owned(),
     })
+}
+
+/// `pair` as the config places it now, with the engine's defaults filled in (`config_io::pair_views`).
+fn view_of(doc: &ConfigDoc, pair: &str) -> Result<PairView, String> {
+    config_io::pair_views(&doc.to_toml_string())
+        .map_err(text)?
+        .into_iter()
+        .find(|view| view.name == pair)
+        .ok_or_else(|| format!("the settings have no folder named {pair:?}"))
 }
 
 fn pair_of<'a>(doc: &'a ConfigDoc, pair: &str) -> Result<config_io::PairRead<'a>, String> {
@@ -177,20 +214,28 @@ pub(super) fn change_proton_folder_file(
              Nothing was changed: save again to apply the other settings."
         ));
     }
+    let before = view_of(&doc, pair)?;
     check_update(&mut doc, pair, update)?;
     // The save validates too, but only after the index is reset: a root the daemon would refuse to start
     // on is told now, in the engine's words, while nothing has been touched.
     doc.validate().map_err(text)?;
     pair_admin::check_drive_folder(staged)?;
-    let view = config_io::pair_views(&doc.to_toml_string())
-        .map_err(text)?
-        .into_iter()
-        .find(|view| view.name == pair)
-        .ok_or_else(|| format!("the settings have no folder named {pair:?}"))?;
-    history::locate(&view).map_err(|refusal| format!("{refusal}. Nothing was changed."))?;
+    let view = view_of(&doc, pair)?;
+    // Where the history is that would meet the new Proton folder: the folder the file will name after this
+    // save. A folder the save moves the pair to that is certainly not there has none.
+    let folder = history::local_folder_moved(&before, &view);
+    history::locate(&view, folder).map_err(|refusal| refused_before_anything_changed(&refusal))?;
 
     // ---- 2. the daemon, if it is running ----
     let probe = service.probe();
+    if probe == DaemonProbe::Unknown {
+        // Not "not running". A daemon that may be alive may hold this folder as held or unavailable, and
+        // then it holds neither the lockfile nor the index: the reset would go through, the daemon would
+        // lift its hold, bootstrap against the Proton folder it still has in memory and record it, and the
+        // next restart would hold the folder against the new one. The plain save declines to act on the
+        // same answer (`RestartPlan::LeaveUndetermined`), and so does this.
+        return Err(format!("{}. Nothing was changed.", capitalised(NO_ANSWER)));
+    }
     let stopped = probe == DaemonProbe::Running;
     if stopped {
         match service.stop() {
@@ -208,7 +253,7 @@ pub(super) fn change_proton_folder_file(
     // A daemon that was just stopped may hold the lockfile for a moment after its socket goes quiet.
     let mut waited = Duration::ZERO;
     let reset = loop {
-        match history::start_over(&view) {
+        match history::start_over(&view, folder) {
             Err(Refusal::InUse(_)) if stopped && waited < LOCK_WAIT => {
                 service.sleep(LOCK_ASK_EVERY);
                 waited += LOCK_ASK_EVERY;
@@ -221,7 +266,8 @@ pub(super) fn change_proton_folder_file(
         Err(refusal) => {
             let again = started_again(service, stopped);
             return Err(format!(
-                "{refusal}. Nothing was saved and the folder's index was not changed.{again}"
+                "{}. Nothing was saved and the folder's index was not changed.{again}",
+                capitalised(refusal.reason())
             ));
         }
     };
@@ -243,13 +289,9 @@ pub(super) fn change_proton_folder_file(
     // ---- 5. the daemon, if this stopped it ----
     let restart = if stopped {
         service.start()
-    } else if probe == DaemonProbe::NotRunning {
-        RestartOutcome::NotRunning
     } else {
-        // Evidence of neither: the save does not claim an absence it did not observe.
-        RestartOutcome::Undetermined {
-            reason: NO_ANSWER.to_owned(),
-        }
+        // `NotRunning` is all that is left: an answer that did not come was refused above.
+        RestartOutcome::NotRunning
     };
     Ok(StartOverReply {
         pair: pair.to_owned(),

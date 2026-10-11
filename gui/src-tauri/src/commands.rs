@@ -1304,7 +1304,8 @@ pub async fn change_proton_folder(
 struct LiveService {
     config_path: std::path::PathBuf,
     /// `Err` is #74's fail-closed state: no address to dial, so the daemon cannot be asked and is
-    /// `Unknown` — the lockfile is then the whole proof that nothing has the index open.
+    /// `Unknown` — and an `Unknown` daemon refuses the start-over (`start_over`'s module doc, step 2): the
+    /// lockfile proves nothing about a daemon that holds the folder as held or unavailable.
     socket_path: Result<std::path::PathBuf, String>,
 }
 
