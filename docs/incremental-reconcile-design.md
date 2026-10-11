@@ -180,7 +180,10 @@ the smaller (a) first:
 - **Path-safety.** Every path derived from an event or a targeted listing passes
   `validate_relative_path` / `safe_local_path` before use (Stage 2).
 - **Non-destructive on unknown digests / conservatism.** A `refresh`, an error, an unresolved
-  id, or a move all trigger the full-scan fallback rather than a guessed destructive action.
+  id, or a move all trigger the full-scan fallback rather than a guessed destructive action. (A
+  request that got no answer at all — a timeout, a dropped connection, a `429` or `5xx` — is not an
+  error about the delta: that pass waits and asks again, and falls back only after a bounded time.
+  See ADR 0004.)
 - **Selective-sync everywhere.**
 
 ## Testing

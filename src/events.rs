@@ -88,6 +88,71 @@ pub struct HttpResponse {
     pub body: String,
 }
 
+/// A fetch of the event feed that got no answer **and may well get one next time**: the request
+/// timed out, the connection dropped or could not be made, or the server said "not now" (`429`,
+/// `5xx`). Nothing about the feed is known from it, which is the whole point of the type.
+///
+/// The daemon treats any *other* error from the feed as a definitive answer (a cursor the server
+/// rejects, a reply that does not parse, a `4xx`) and walks the tree, as it always did. This one it
+/// treats as "ask again at the next poll" for a bounded time — a full-tree walk of a large folder
+/// takes ~25 minutes, which is a poor reply to one request that timed out. Downcast with
+/// [`transient_fetch_cause`], the way `AuthFailure` is.
+///
+/// Which failures are transient is decided where they are seen: the transport (`session.rs`, curl's
+/// exit code) and [`EventsClient`] (the HTTP status). `Display` is the full detail, unchanged from
+/// before the type existed; [`Self::cause`] is the short, stable label a once-per-cause log line
+/// compares, which the detail is not (a response body or a request id would make every repeat look
+/// new).
+#[derive(Debug)]
+pub struct TransientFetchError {
+    cause: String,
+    detail: String,
+}
+
+impl TransientFetchError {
+    pub fn new(cause: impl Into<String>, detail: impl Into<String>) -> Self {
+        Self {
+            cause: cause.into(),
+            detail: detail.into(),
+        }
+    }
+
+    /// The short label for this failure, e.g. `curl exit 28 (timed out)` or `HTTP 503`.
+    pub fn cause(&self) -> &str {
+        &self.cause
+    }
+}
+
+impl std::fmt::Display for TransientFetchError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.detail)
+    }
+}
+
+impl std::error::Error for TransientFetchError {}
+
+/// The cause label when `error` is a [`TransientFetchError`] (anywhere in its source chain is not
+/// searched: the type is constructed at the failure and returned as it is), else `None`.
+pub fn transient_fetch_cause<'a>(error: &'a (dyn std::error::Error + 'static)) -> Option<&'a str> {
+    error
+        .downcast_ref::<TransientFetchError>()
+        .map(TransientFetchError::cause)
+}
+
+/// Whether `error` is a [`TransientFetchError`].
+pub fn is_transient_fetch_error(error: &(dyn std::error::Error + 'static)) -> bool {
+    transient_fetch_cause(error).is_some()
+}
+
+/// HTTP statuses that say the server could not answer **now**: `429` (told to slow down — a walk
+/// would be more requests, the opposite of what it asked) and every `5xx` (the server failed; the
+/// same request can succeed later). Every other status is an answer: `401` already refreshes the
+/// session and then fails definitively, and any other `4xx` means the request itself is wrong, so
+/// asking again would be the same wrong request.
+fn is_transient_status(status: u16) -> bool {
+    status == 429 || (500..600).contains(&status)
+}
+
 /// Performs authenticated-agnostic HTTP `GET`s. Injected so the events logic is testable
 /// without a network and the concrete HTTP client stays a swappable concern (the library
 /// intentionally ships no networking dependency).
@@ -173,11 +238,19 @@ impl<T: HttpTransport, S: SessionProvider> EventsClient<T, S> {
             ));
         }
         if response.status != 200 {
-            return Err(boxed_error(format!(
+            let detail = format!(
                 "proton events request to {url} failed: HTTP {} {}",
                 response.status,
                 truncate_for_error(&response.body)
-            )));
+            );
+            return Err(if is_transient_status(response.status) {
+                Box::new(TransientFetchError::new(
+                    format!("HTTP {}", response.status),
+                    detail,
+                ))
+            } else {
+                boxed_error(detail)
+            });
         }
         Ok(response.body)
     }
@@ -638,6 +711,117 @@ mod tests {
         }]);
         let error = events.latest_cursor("VOL").expect_err("5xx must error");
         assert!(error.to_string().contains("HTTP 503"));
+    }
+
+    fn status(code: u16) -> HttpResponse {
+        HttpResponse {
+            status: code,
+            body: format!("body of {code}"),
+        }
+    }
+
+    #[test]
+    fn a_429_and_every_5xx_are_transient_and_carry_the_status_as_the_cause() {
+        for code in [429_u16, 500, 501, 502, 503, 504, 599] {
+            let events = client(vec![status(code)]);
+            let error = events
+                .events_since("VOL", "CUR")
+                .expect_err("a non-200 must error");
+            assert_eq!(
+                transient_fetch_cause(error.as_ref()),
+                Some(format!("HTTP {code}").as_str()),
+                "HTTP {code} is a server that cannot answer now: {error}"
+            );
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("HTTP {code} body of {code}")),
+                "the detail is the message it always was: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_other_status_is_an_answer_and_stays_definitive() {
+        // 401 is its own path (refresh, then give up); the other 4xx say the request is wrong, and a
+        // 3xx or a 2xx that is not 200 is not a feed that failed to answer.
+        for code in [
+            201_u16, 204, 301, 304, 400, 403, 404, 408, 409, 410, 422, 600,
+        ] {
+            let events = client(vec![status(code)]);
+            let error = events
+                .events_since("VOL", "CUR")
+                .expect_err("a non-200 must error");
+            assert!(
+                !is_transient_fetch_error(error.as_ref()),
+                "HTTP {code} is a definitive answer: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn unauthorized_after_a_refresh_is_definitive_but_a_5xx_after_it_is_transient() {
+        let events = client(vec![unauthorized(), unauthorized()]);
+        let error = events.events_since("VOL", "CUR").expect_err("gives up");
+        assert!(!is_transient_fetch_error(error.as_ref()), "{error}");
+
+        let events = client(vec![unauthorized(), status(503)]);
+        let error = events.events_since("VOL", "CUR").expect_err("gives up");
+        assert_eq!(
+            transient_fetch_cause(error.as_ref()),
+            Some("HTTP 503"),
+            "the refresh worked; what failed is the retry, and that is the server not answering"
+        );
+        assert_eq!(*events.session.refreshes.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn an_error_the_transport_typed_as_transient_reaches_the_caller_unchanged() {
+        struct Dropping;
+        impl HttpTransport for Dropping {
+            fn get(&self, _url: &str, _headers: &[(String, String)]) -> AppResult<HttpResponse> {
+                Err(Box::new(TransientFetchError::new(
+                    "curl exit 28 (timed out)",
+                    "curl failed (exit status: 28): ",
+                )))
+            }
+        }
+        let events = EventsClient::new(
+            Dropping,
+            FakeSession {
+                refreshes: Mutex::new(0),
+            },
+            "test-app@0.0.0",
+        );
+        for error in [
+            events.events_since("VOL", "CUR").expect_err("transport"),
+            events.latest_cursor("VOL").expect_err("transport"),
+        ] {
+            assert_eq!(
+                transient_fetch_cause(error.as_ref()),
+                Some("curl exit 28 (timed out)")
+            );
+            assert_eq!(error.to_string(), "curl failed (exit status: 28): ");
+        }
+    }
+
+    #[test]
+    fn a_reply_that_does_not_parse_or_is_not_a_success_is_definitive() {
+        // The feed answered; what it said is wrong. Asking again would get the same reply.
+        let events = client(vec![ok("this is not json")]);
+        let error = events.events_since("VOL", "CUR").expect_err("malformed");
+        assert!(!is_transient_fetch_error(error.as_ref()), "{error}");
+
+        let events = client(vec![ok(
+            r#"{"Code":2000,"EventID":"x","More":false,"Refresh":false,"Events":[]}"#,
+        )]);
+        let error = events.events_since("VOL", "CUR").expect_err("non-success");
+        assert!(!is_transient_fetch_error(error.as_ref()), "{error}");
+
+        // A plain error is not one, and neither is one that merely mentions a timeout.
+        assert!(!is_transient_fetch_error(
+            boxed_error("curl failed (exit status: 28): ").as_ref()
+        ));
     }
 
     #[test]

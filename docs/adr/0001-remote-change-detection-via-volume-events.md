@@ -243,7 +243,8 @@ periodic full scan as backstop", and the original `EVENTS_POLL_INTERVAL` comment
   **opt-in and off by default** since PR #138, so forcing one here would reinstate exactly what that
   change removed.
 - **Full remote-tree walks** therefore happen on: a startup bootstrap (when warm start is
-  ineligible), an event-stream fallback (no cursor / no volume / fetch error / server refresh /
+  ineligible), an event-stream fallback (no cursor / no volume / a fetch the server answered with an
+  error — a fetch that got no answer waits first, ADR 0004 — / server refresh /
   unresolvable node — which, since ADR 0006, is a node the pair cannot place *while its tree is not
   fully named*, no longer any node elsewhere on the volume / incomplete remote listing / a `Created`
   node whose parent listing has not caught up with it), `proton-sync resync` / `--full-walk`, the opt-in
