@@ -6671,5 +6671,5 @@ that reaches it is still held by the engine, which is the net the brief asked to
 No frame was added or changed: `assert.mjs` is 68/68 with 125,981 assertions, the contrast gate 1,696 nodes and
 `fidelity:n1` 55/55. The copy gate's drawn strings are 404/404 and its exemptions 105 became 108 and its ungatable
 templates 31 became 34. `fidelity:pairs` 108 became 115 scenarios (the new seven; two existing ones, which type a Proton
-folder and expect a plain write, now confirm the dialog first). The unit tests became 628, up from 623, and the dialog
+folder and expect a plain write, now confirm the dialog first). The unit tests became 629, up from 623, and the dialog
 routes 10 became 11.
