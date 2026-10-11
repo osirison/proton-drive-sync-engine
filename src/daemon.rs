@@ -7031,8 +7031,8 @@ impl<C: ProtonClient> PairPass<'_, C> {
             outage.since = now;
             let said = format!(
                 "Proton's change feed has not answered for {} ({cause}), so this folder is \
-                 synced by walking the whole tree instead; it goes back to following changes \
-                 once the feed answers",
+                 checked by walking the whole tree instead, and changes wait until each walk; \
+                 it goes back to following changes once the feed answers",
                 describe_wait(waited)
             );
             outage.degraded = Some(said.clone());
@@ -23256,7 +23256,7 @@ mod tests {
     /// [`warm_start_fixture`] over a given event source, for a test that scripts what it answers.
     fn warm_start_fixture_with(
         directory: &tempfile::TempDir,
-        source: FakeEventSource,
+        source: impl EventSource + 'static,
     ) -> (
         Daemon<EventFakeClient>,
         Arc<AtomicUsize>,
@@ -23321,7 +23321,7 @@ mod tests {
     /// pass must leave exactly as it found it.
     fn steady_feed_fixture(
         directory: &tempfile::TempDir,
-        source: FakeEventSource,
+        source: impl EventSource + 'static,
     ) -> (
         Daemon<EventFakeClient>,
         Arc<AtomicUsize>,
@@ -23537,6 +23537,215 @@ mod tests {
     }
 
     #[test]
+    fn a_held_pass_keeps_the_pending_deletions_the_unsyncable_list_and_the_last_error() {
+        // What the last real pass reported is still true after a pass that did nothing: the
+        // withheld deletions a person has not decided on, the files that cannot be synced and the
+        // error that pass ended with. A held pass that blanked any of them would show an all-clear
+        // the feed's silence has not earned.
+        let directory = tempdir().expect("tempdir");
+        let source = FakeEventSource::new("cursor-0");
+        let script = source.since_script();
+        let (mut daemon, _walks, _lists, _old) = steady_feed_fixture(&directory, source);
+        let withheld = vec![
+            PendingDeletion {
+                path: PathBuf::from("gone.txt"),
+                direction: DeleteDirection::Local,
+                entity_kind: EntityKind::File,
+                fingerprint: "hash".to_owned(),
+                detected_epoch_secs: 5,
+                first_seen_epoch_secs: 3,
+                subtree_files: None,
+                subtree_bytes: None,
+                disposal: LocalDisposal::Permanent,
+            },
+            PendingDeletion {
+                path: PathBuf::from("old-folder"),
+                direction: DeleteDirection::Remote,
+                entity_kind: EntityKind::Directory,
+                fingerprint: "vol~folder".to_owned(),
+                detected_epoch_secs: 5,
+                first_seen_epoch_secs: 4,
+                subtree_files: Some(7),
+                subtree_bytes: Some(700),
+                disposal: LocalDisposal::Permanent,
+            },
+        ];
+        let cannot_sync = vec![UnsyncableItem {
+            path: PathBuf::from("pipe"),
+            entity_kind: EntityKind::File,
+            reason: UnsyncableReason::Other("local_fifo".to_owned()),
+            first_seen_epoch_secs: 2,
+        }];
+        let earlier_error = "the pass before this one could not finish".to_owned();
+        {
+            let pair = daemon.pair_mut();
+            pair.pending_deletions = withheld.clone();
+            pair.unsyncable = cannot_sync.clone();
+            pair.last_error = Some(earlier_error.clone());
+        }
+        script.fail_transiently(1, TIMED_OUT);
+
+        daemon.reconcile_blocking().expect_held("held");
+
+        assert_eq!(
+            daemon.pair().pending_deletions,
+            withheld,
+            "a deletion still waiting for a decision stays listed"
+        );
+        assert_eq!(
+            daemon.pair().unsyncable,
+            cannot_sync,
+            "the standing list of files that cannot be synced is not recomputed or blanked"
+        );
+        assert_eq!(
+            daemon.pair().last_error.as_deref(),
+            Some(earlier_error.as_str()),
+            "the previous error is neither cleared nor replaced"
+        );
+    }
+
+    /// A script in the test's own directory, run once so the first real call cannot meet
+    /// `ETXTBSY` (a sibling test's `fork` can briefly hold the just-written file open).
+    #[cfg(unix)]
+    fn fake_tool(directory: &Path, name: &str, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = directory.join(name);
+        fs::write(
+            &path,
+            format!("#!/bin/sh\n[ \"$1\" = --probe ] && exit 0\n{body}"),
+        )
+        .expect("write fake tool");
+        let mut permissions = fs::metadata(&path).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&path, permissions).expect("permissions");
+        for _ in 0..200 {
+            match std::process::Command::new(&path).arg("--probe").status() {
+                Ok(_) => return path,
+                Err(error) if error.raw_os_error() == Some(26) => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("fake tool does not run: {error}"),
+            }
+        }
+        panic!("fake tool stayed busy");
+    }
+
+    /// The real [`CurlHttpTransport`], [`CliKeyringSession`] and [`EventsClient`] under the daemon,
+    /// with the two programs they shell (`curl`, `secret-tool`) replaced by scripts in the test's
+    /// own directory: nothing here reaches the network, the keyring or the session bus. Which
+    /// failures hold the pass and which walk is decided by the classification in `session.rs` and
+    /// `events.rs`, so only a test through all three layers pins the join between them.
+    #[cfg(unix)]
+    #[test]
+    fn the_real_curl_transport_and_events_client_hold_on_no_answer_and_walk_on_a_refusal() {
+        struct Case {
+            name: &'static str,
+            curl_body: &'static str,
+            held: bool,
+            cause: Option<&'static str>,
+        }
+        let cases = [
+            Case {
+                name: "curl exit 28 (timed out)",
+                curl_body: "cat > /dev/null\necho 'curl: (28) Operation timed out' >&2\nexit 28\n",
+                held: true,
+                cause: Some("curl exit 28 (timed out)"),
+            },
+            Case {
+                name: "HTTP 503",
+                curl_body: "cat > /dev/null\nprintf '{\"Code\":2000}\\n503'\n",
+                held: true,
+                cause: Some("HTTP 503"),
+            },
+            Case {
+                name: "HTTP 404",
+                curl_body: "cat > /dev/null\nprintf '{\"Code\":2501}\\n404'\n",
+                held: false,
+                cause: None,
+            },
+            Case {
+                name: "curl exit 3 (malformed URL)",
+                curl_body: "cat > /dev/null\necho 'curl: (3) URL rejected' >&2\nexit 3\n",
+                held: false,
+                cause: None,
+            },
+        ];
+        for case in cases {
+            let directory = tempdir().expect("tempdir");
+            let tools = directory.path().join("tools");
+            fs::create_dir(&tools).expect("tools directory");
+            let log = tools.join("curl.log");
+            let curl = fake_tool(
+                &tools,
+                "curl",
+                &format!(
+                    "echo \"$*\" | tr '\\n' ' ' >> {log}\necho >> {log}\n{body}",
+                    log = log.display(),
+                    body = case.curl_body
+                ),
+            );
+            let secret_tool = fake_tool(
+                &tools,
+                "secret-tool",
+                "printf '{\"session\":{\"uid\":\"u\",\"accessToken\":\"t\"}}'\n",
+            );
+            let session = CliKeyringSession::with_secret_tool(&secret_tool).expect("fake session");
+            let source = EventsClient::new(CurlHttpTransport::with_curl(&curl), session, "test")
+                .with_api_base("http://feed.invalid");
+            let (mut daemon, full_walks, _lists, _old) = steady_feed_fixture(&directory, source);
+            let cursor_before = cursor_row(&daemon);
+
+            if case.held {
+                daemon
+                    .reconcile_blocking()
+                    .expect_held(&format!("{} says nothing about the feed", case.name));
+                assert_eq!(
+                    full_walks.load(Ordering::SeqCst),
+                    0,
+                    "{}: no walk",
+                    case.name
+                );
+                assert_eq!(cursor_row(&daemon), cursor_before, "{}", case.name);
+                assert!(daemon.pair().force_local_rescan, "{}", case.name);
+                assert_eq!(
+                    daemon
+                        .pair()
+                        .feed_outage
+                        .as_ref()
+                        .and_then(|outage| outage.reported.as_deref()),
+                    case.cause,
+                    "{}: the cause is the classifier's label",
+                    case.name
+                );
+            } else {
+                daemon
+                    .reconcile_blocking()
+                    .expect_clean(&format!("{} is an answer, so the pass walks", case.name));
+                assert_eq!(
+                    full_walks.load(Ordering::SeqCst),
+                    1,
+                    "{}: walked",
+                    case.name
+                );
+                assert!(
+                    daemon.pair().feed_outage.is_none(),
+                    "{}: a refusal is not a wait",
+                    case.name
+                );
+            }
+            let asked = fs::read_to_string(&log).expect("the fake curl ran");
+            let first = asked.lines().next().expect("curl was called");
+            assert!(
+                first.contains("http://feed.invalid/drive/v2/volumes/vol/events/cursor-0"),
+                "{}: the real client asked the feed for the stored cursor: {first}",
+                case.name
+            );
+            assert!(first.contains("--max-time"), "{}: {first}", case.name);
+        }
+    }
+
+    #[test]
     fn a_held_pass_seals_a_booked_apply_as_failed_with_the_reason() {
         // An apply is a request a client polls with no deadline. A held pass consumed it, so it must
         // answer it — and say the true thing, that nothing was applied.
@@ -23645,8 +23854,12 @@ mod tests {
             .clone()
             .expect("the feed is reported");
         assert!(
-            said.contains("change feed has not answered"),
-            "last_error says which thing is wrong: {said}"
+            said.contains("change feed has not answered")
+                && said.contains("checked by walking the whole tree instead")
+                && said.contains("changes wait until each walk")
+                && said.contains("goes back to following changes once the feed answers")
+                && !said.contains("synced"),
+            "last_error says which thing is wrong, and does not claim the folder is synced: {said}"
         );
 
         // Still down: the clock restarted with the walk, so the next poll waits instead of walking

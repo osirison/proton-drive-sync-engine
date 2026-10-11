@@ -67,9 +67,10 @@ or changed, and the next poll — thirty seconds later — asks again. A skipped
 behind: no "last synced" time, no error, no history entry. A restart that was waiting to resume
 from its saved position still resumes from it on the next try.
 
-If the stream stays silent for **ten minutes in a row**, the engine syncs by walking the tree
-instead, because the `proton-drive` CLI may work when the event stream does not. It also says so:
-the folder's last error reads "Proton's change feed has not answered for …" until the stream
+If the stream stays silent for **ten minutes in a row**, the engine checks the tree by walking
+it instead, because the `proton-drive` CLI may work when the event stream does not. Nothing is
+synced during those ten minutes, and afterwards changes wait until each walk finishes. It says
+so: the folder's last error reads "Proton's change feed has not answered for …" until the stream
 answers again. While it stays down, that walk happens at most once every ten minutes.
 
 An answer that is *wrong* — the server rejects the saved position, or the reply can't be read —
