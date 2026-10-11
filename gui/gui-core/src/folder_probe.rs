@@ -310,47 +310,78 @@ pub fn probe_remote_via_daemon(
     socket_path: &Path,
     candidate: &Path,
 ) -> Result<FolderProbe, ProbeListingError> {
-    // A relative candidate would be resolved by the daemon against *its own* `remote_root`, so it
-    // would measure a real folder — just not the one the user typed, and it would say so with a
-    // confident number. Refused rather than resolved, because the whole point of the step is that a
-    // wrong folder is noticed by its size.
-    if !candidate.is_absolute() {
-        return Err(ProbeListingError::Failed(format!(
-            "'{}' is not a Proton Drive folder path; it must start with `/`, like /Drive/Photos",
-            candidate.display()
-        )));
-    }
+    require_absolute(candidate)?;
     probe_remote_from(candidate, |directory| {
-        let request = ControlRequest {
-            argument: Some(wire_path(directory).into_owned()),
-            // The daemon's own maximum, so a wide folder is not silently under-counted; the reply
-            // still says whether even that was enough, and `ProbeListing::truncated` carries it.
-            limit: Some(LIST_ENTRIES_MAX_LIMIT),
-            ..ControlRequest::new(ControlCommand::List)
-        };
-        let response = send_request(socket_path, &request, PROBE_LISTING_TIMEOUT)
-            .map_err(ProbeListingError::Unreachable)?;
-        match response.listing {
-            Some(ListingOutcome::Listed {
-                entries, truncated, ..
-            }) => Ok(ProbeListing {
-                entries: entries
-                    .into_iter()
-                    .map(|entry| (entry.path, entry.entity_kind))
-                    .collect(),
-                truncated,
-            }),
-            Some(ListingOutcome::Busy) => Err(ProbeListingError::Busy),
-            Some(ListingOutcome::Failed { error }) => Err(ProbeListingError::Failed(error)),
-            // A daemon this build does not understand, or one predating `list`'s absolute selector
-            // and refusing it. Reported as the daemon's answer — never as absence, which is what
-            // would send a second CLI client to walk beside it.
-            Some(ListingOutcome::Unknown) | None => Err(ProbeListingError::Failed(
-                "the sync daemon did not answer with a listing; it is probably older than this app"
-                    .to_owned(),
-            )),
-        }
+        list_via_daemon(socket_path, directory)
     })
+}
+
+/// Whether the daemon **lists** `candidate` — the first step of [`probe_remote_via_daemon`] and nothing
+/// after it: ONE [`ControlCommand::List`], whose entries are dropped. The walk below a folder is a price
+/// (up to [`MAX_REMOTE_LISTINGS`] children of the CLI); whether the folder is there at all is one.
+///
+/// `Ok` is the daemon's own word that the folder is there and could be read. **`Err` is not "it is not
+/// there"**: the reply to a listing that failed carries display-only text a client must not classify
+/// (`ListingOutcome::Failed`, #103), so a folder that does not exist, a busy daemon, a session that has
+/// expired and a daemon older than this app all arrive here, and the caller can only say it could not
+/// tell. The same absolute frame, the same refusal of a relative candidate, the same typed errors.
+pub fn remote_folder_lists_via_daemon(
+    socket_path: &Path,
+    candidate: &Path,
+) -> Result<(), ProbeListingError> {
+    require_absolute(candidate)?;
+    list_via_daemon(socket_path, candidate).map(|_| ())
+}
+
+/// A relative candidate would be resolved by the daemon against *its own* `remote_root`, so it would
+/// measure a real folder — just not the one the user typed, and it would say so with a confident number.
+/// Refused rather than resolved, because the whole point of the step is that a wrong folder is noticed by
+/// its size.
+fn require_absolute(candidate: &Path) -> Result<(), ProbeListingError> {
+    if candidate.is_absolute() {
+        return Ok(());
+    }
+    Err(ProbeListingError::Failed(format!(
+        "'{}' is not a Proton Drive folder path; it must start with `/`, like /Drive/Photos",
+        candidate.display()
+    )))
+}
+
+/// One directory's immediate children from the daemon: a single [`ControlCommand::List`] in the absolute
+/// frame, which is the one body behind the walk and behind [`remote_folder_lists_via_daemon`].
+fn list_via_daemon(
+    socket_path: &Path,
+    directory: &Path,
+) -> Result<ProbeListing, ProbeListingError> {
+    let request = ControlRequest {
+        argument: Some(wire_path(directory).into_owned()),
+        // The daemon's own maximum, so a wide folder is not silently under-counted; the reply
+        // still says whether even that was enough, and `ProbeListing::truncated` carries it.
+        limit: Some(LIST_ENTRIES_MAX_LIMIT),
+        ..ControlRequest::new(ControlCommand::List)
+    };
+    let response = send_request(socket_path, &request, PROBE_LISTING_TIMEOUT)
+        .map_err(ProbeListingError::Unreachable)?;
+    match response.listing {
+        Some(ListingOutcome::Listed {
+            entries, truncated, ..
+        }) => Ok(ProbeListing {
+            entries: entries
+                .into_iter()
+                .map(|entry| (entry.path, entry.entity_kind))
+                .collect(),
+            truncated,
+        }),
+        Some(ListingOutcome::Busy) => Err(ProbeListingError::Busy),
+        Some(ListingOutcome::Failed { error }) => Err(ProbeListingError::Failed(error)),
+        // A daemon this build does not understand, or one predating `list`'s absolute selector
+        // and refusing it. Reported as the daemon's answer — never as absence, which is what
+        // would send a second CLI client to walk beside it.
+        Some(ListingOutcome::Unknown) | None => Err(ProbeListingError::Failed(
+            "the sync daemon did not answer with a listing; it is probably older than this app"
+                .to_owned(),
+        )),
+    }
 }
 
 /// The sentence a probe failure is shown as. One place, so the CLI and socket paths cannot end up
@@ -817,5 +848,104 @@ mod tests {
                 "{listing:?} answered, so it must not read as an absent daemon: {error:?}"
             );
         }
+    }
+    // ---- whether the folder is there at all (#453 review, finding 4) ----------------------------------
+
+    #[test]
+    fn a_folder_the_daemon_lists_is_there_and_exactly_one_listing_was_asked_for() {
+        // The start-over's confirmation asks whether a typed Proton folder exists: the walk's first step,
+        // and not the walk. A folder with a subfolder would cost a second request in the price.
+        let replies = std::collections::HashMap::from([(
+            "/Drive/Candidate".to_owned(),
+            reply(Some(listed(
+                "/Drive/Candidate",
+                vec![
+                    entry("/Drive/Candidate/a.txt", EntityKind::File),
+                    entry("/Drive/Candidate/sub", EntityKind::Directory),
+                ],
+                false,
+            ))),
+        )]);
+        let (socket, _dir, seen) = spawn_listing_daemon(replies);
+
+        remote_folder_lists_via_daemon(&socket, Path::new("/Drive/Candidate"))
+            .expect("the daemon listed it");
+
+        assert_eq!(
+            seen.lock().expect("seen lock").as_slice(),
+            ["/Drive/Candidate"],
+            "one request, in the absolute frame the price walk uses, and no walk below it"
+        );
+    }
+
+    #[test]
+    fn an_empty_folder_the_daemon_lists_is_there() {
+        // Empty is not absent: the daemon listed it, so it exists.
+        let replies = std::collections::HashMap::from([(
+            "/Drive/Empty".to_owned(),
+            reply(Some(listed("/Drive/Empty", vec![], false))),
+        )]);
+        let (socket, _dir, _seen) = spawn_listing_daemon(replies);
+
+        remote_folder_lists_via_daemon(&socket, Path::new("/Drive/Empty"))
+            .expect("an empty folder lists");
+    }
+
+    #[test]
+    fn a_folder_the_daemon_could_not_list_is_not_said_to_be_missing() {
+        // Every one of these arrives as "could not list", and none may be read as "does not exist": the
+        // failure text is display-only (`ListingOutcome::Failed`), and a busy daemon attempted nothing.
+        for (listing, expect) in [
+            (
+                Some(ListingOutcome::Failed {
+                    error: "proton-drive list failed for /Drive/Candidate: not found".to_owned(),
+                }),
+                "failed",
+            ),
+            (Some(ListingOutcome::Busy), "busy"),
+            (Some(ListingOutcome::Unknown), "failed"),
+            (None, "failed"),
+        ] {
+            let replies = std::collections::HashMap::from([(
+                "/Drive/Candidate".to_owned(),
+                reply(listing.clone()),
+            )]);
+            let (socket, _dir, _seen) = spawn_listing_daemon(replies);
+
+            let error = remote_folder_lists_via_daemon(&socket, Path::new("/Drive/Candidate"))
+                .expect_err("it did not list");
+
+            match (&error, expect) {
+                (ProbeListingError::Failed(_), "failed") | (ProbeListingError::Busy, "busy") => {}
+                _ => panic!("{listing:?} became {error:?}, not {expect}"),
+            }
+        }
+    }
+
+    #[test]
+    fn nothing_listening_is_unreachable_and_a_relative_folder_is_refused_before_anything_is_asked()
+    {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let error = remote_folder_lists_via_daemon(
+            &dir.path().join("nothing-here.sock"),
+            Path::new("/Drive/Candidate"),
+        )
+        .expect_err("nothing is listening");
+        assert!(
+            matches!(error, ProbeListingError::Unreachable(_)),
+            "{error:?}"
+        );
+
+        let (socket, _dir, seen) = spawn_listing_daemon(std::collections::HashMap::new());
+        let error = remote_folder_lists_via_daemon(&socket, Path::new("Photos"))
+            .expect_err("a relative folder is not a Proton Drive path");
+        assert!(
+            matches!(&error, ProbeListingError::Failed(message) if message.contains("/Drive/")),
+            "{error:?}"
+        );
+        assert!(
+            seen.lock().expect("seen lock").is_empty(),
+            "refused before the daemon was asked"
+        );
     }
 }

@@ -3754,6 +3754,45 @@ fn probe_remote_folder(
     }
 }
 
+/// Does the sync service list this Proton Drive folder? Asked by the confirmation that changing a folder's
+/// Proton folder opens (#453 review, finding 4), to learn whether the folder the person typed is there:
+/// saving creates a Proton folder that does not exist and uploads the whole local folder into it, and a
+/// mistyped one is otherwise only caught by reading the sentence.
+///
+/// **The Add folder dialog's check, down to its first step**: the daemon's `list` verb in the absolute
+/// frame (`gui_core::folder_probe::remote_folder_lists_via_daemon`) — one request, behind the daemon's one
+/// `CliGate` — without the walk below the folder that prices it there. It resolves when the daemon lists
+/// the folder. **It rejects for every other reason, and a rejection is not "the folder does not exist"**:
+/// the daemon's failure text is display-only (`ListingOutcome::Failed`, #103), so a folder that is not there,
+/// a daemon that is busy, a session that has expired and a daemon that is not running all arrive as "could
+/// not list", and the caller says only that it could not tell.
+///
+/// It asks the daemon and **only the daemon**. `probe_folder` falls back to a `proton-drive` child when
+/// nothing answers the socket, which is right for onboarding and for a price the person waits on; here the
+/// question is asked while the dialog is open and the answer only removes a sentence, so a missing daemon is
+/// "could not tell" and no child is ever spawned (#23).
+#[tauri::command]
+pub async fn check_proton_folder_listed(state: Paths<'_>, path: String) -> Result<(), String> {
+    let socket = state.lock().unwrap().socket_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        proton_folder_is_listed(socket, std::path::Path::new(&path))
+    })
+    .await
+    .map_err(|error| format!("folder check failed: {error}"))?
+}
+
+/// [`check_proton_folder_listed`]'s body, split out so it is testable without a Tauri handle.
+fn proton_folder_is_listed(
+    socket: Result<std::path::PathBuf, String>,
+    candidate: &std::path::Path,
+) -> Result<(), String> {
+    use gui_core::folder_probe::{describe_probe_failure, remote_folder_lists_via_daemon};
+
+    let socket = socket
+        .map_err(|reason| format!("the app has no sync service address to ask ({reason})"))?;
+    remote_folder_lists_via_daemon(&socket, candidate).map_err(describe_probe_failure)
+}
+
 /// The state files the daemon keeps out of its own scan, so a relocated index inside the sync root
 /// is not reported as user data some rule is hiding.
 ///
@@ -4896,6 +4935,81 @@ mod socket_tests {
             probe.bytes, None,
             "a remote listing exposes no usable size, however it was obtained"
         );
+    }
+
+    /// The start-over confirmation's question (#453 review, finding 4): is the typed Proton folder there?
+    /// The daemon answers it or nobody does — the app spawns no `proton-drive` child for it.
+    #[test]
+    fn the_folder_check_resolves_only_for_a_folder_the_daemon_lists_and_never_spawns_a_child() {
+        let candidate = std::path::Path::new("/Drive/Candidate");
+
+        // A daemon that lists it.
+        let (socket, _dir) = spawn_repeating_daemon(vec![listing_reply(serde_json::json!({
+            "state": "listed",
+            "path": "/Drive/Candidate",
+            "entries": [],
+            "total": 0,
+            "truncated": false
+        }))]);
+        proton_folder_is_listed(Ok(socket), candidate).expect("the daemon listed it");
+
+        // A daemon that tried and could not: not "missing", only not listed. The sentence is its own.
+        let (socket, _dir) = spawn_repeating_daemon(vec![listing_reply(serde_json::json!({
+            "state": "failed",
+            "error": "proton-drive list failed for /Drive/Candidate: not found"
+        }))]);
+        let error = proton_folder_is_listed(Ok(socket), candidate).expect_err("it did not list");
+        assert!(error.contains("not found"), "{error}");
+
+        // A daemon too busy to try.
+        let (socket, _dir) = spawn_repeating_daemon(vec![listing_reply(serde_json::json!({
+            "state": "busy"
+        }))]);
+        let error = proton_folder_is_listed(Ok(socket), candidate).expect_err("busy");
+        assert!(error.contains("busy"), "{error}");
+
+        // Nothing listening, and no address to dial at all (#74's fail-closed state): could not tell.
+        let dir = tempfile::tempdir().unwrap();
+        assert!(
+            proton_folder_is_listed(Ok(dir.path().join("nothing-here.sock")), candidate).is_err()
+        );
+        let error = proton_folder_is_listed(Err("not our runtime directory".to_owned()), candidate)
+            .expect_err("no address");
+        assert!(error.contains("not our runtime directory"), "{error}");
+
+        // A relative folder is not a Proton Drive path and is refused before the daemon is asked.
+        let (socket, _dir) = spawn_repeating_daemon(vec![CANNED_REPLY.to_owned()]);
+        let error = proton_folder_is_listed(Ok(socket), std::path::Path::new("Photos"))
+            .expect_err("relative");
+        assert!(error.contains("must start with `/`"), "{error}");
+    }
+
+    #[test]
+    fn the_folder_check_command_reads_its_socket_from_the_session_and_resolves_for_a_listed_folder()
+    {
+        let (socket, _dir) = spawn_repeating_daemon(vec![listing_reply(serde_json::json!({
+            "state": "listed",
+            "path": "/Drive/Candidate",
+            "entries": [],
+            "total": 0,
+            "truncated": false
+        }))]);
+        let (app, _dir) = mock_app(socket);
+        let state = app.state::<Mutex<RuntimePaths>>();
+
+        tauri::async_runtime::block_on(check_proton_folder_listed(
+            state.clone(),
+            "/Drive/Candidate".to_owned(),
+        ))
+        .expect("listed");
+
+        // And with the socket gone, the same command rejects: it did not remember the answer.
+        state.lock().unwrap().socket_path = Err("gone".to_owned());
+        tauri::async_runtime::block_on(check_proton_folder_listed(
+            state.clone(),
+            "/Drive/Candidate".to_owned(),
+        ))
+        .expect_err("no address");
     }
 
     /// A headless mock app (no webview/display) managing `RuntimePaths` pointed at `socket`, with

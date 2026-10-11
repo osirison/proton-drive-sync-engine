@@ -1591,7 +1591,7 @@ enum Class {
 /// Every `#[tauri::command]` and what it is. Adding a command without adding it here fails
 /// `every_pair_slot_command_names_its_class`, which is the point: a command that reads a pair slot
 /// must say how it takes the pair.
-const COMMAND_CLASSES: [(&str, Class); 45] = [
+const COMMAND_CLASSES: [(&str, Class); 46] = [
     ("get_status", Class::R),
     ("list_pending_deletions", Class::R),
     ("scan_conflicts", Class::R),
@@ -1638,6 +1638,9 @@ const COMMAND_CLASSES: [(&str, Class); 45] = [
     ("write_notify_policy", Class::Independent),
     ("check_cli", Class::Independent),
     ("probe_folder", Class::Independent),
+    // Asks the daemon whether it lists a Proton folder the person typed (#453 review): about a candidate path,
+    // like `probe_folder`, and not addressed to a pair.
+    ("check_proton_folder_listed", Class::Independent),
     ("open_remote", Class::Independent),
     ("open_system_log", Class::Independent),
     ("close_window", Class::Independent),
