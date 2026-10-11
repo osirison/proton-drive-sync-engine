@@ -320,3 +320,53 @@ export function settledLinesOf(reply) {
   }
   return lines;
 }
+
+// ------------------------------------------------------------------- the Proton folder is changed ----
+
+/** The one phase in which something is in flight and the dialog may not be left. */
+export const START_OVER_BUSY = ["working"];
+
+/**
+ * The confirmation that changing a folder's Proton folder asks for (#453, the Settings half), and the answer
+ * it is waiting for. `update` is the very object `write_config` would have been sent and `sent` the staged
+ * edits it was made from (identity, to tell "nothing was typed since" from "something was"); both are
+ * carried so that confirming saves exactly what was staged when `Save` was pressed, for the folder it was
+ * pressed for (class W) — whatever is selected by the time the person answers.
+ */
+export function blankStartOver({ pair, from, to, update, sent }) {
+  // confirm | working
+  //
+  // `listed` is what the sync service said about the new Proton folder: `null` while it is being asked (and
+  // when nothing has asked), `true` when it LISTED it, `false` when it could not — which is not "it is not
+  // there": the service's failure text is not for classifying (#103). Only `true` removes a sentence.
+  return { pair, from, to, update, sent, phase: "confirm", error: null, listed: null };
+}
+
+/**
+ * What the confirmation says, from the file's roster (rule 3 of this file).
+ *
+ * Four sentences: which two Proton folders, what starting over does, that nothing is deleted, and that it can
+ * be slow — and between the first and the second, "if the new Proton folder does not exist yet, it is created",
+ * until the sync service has listed that folder (`listed === true`). Saving creates a Proton folder that is not
+ * there and uploads the local folder into it, and a mistyped one is otherwise only caught by reading the first
+ * sentence. A folder the service listed exists, so the sentence would say nothing true; one it could not list
+ * may or may not, so the sentence stays. The folder is called what the app calls it — its name beside other folders, and its folder on this
+ * computer when it is the only one (a lone folder is named `default`, which means nothing to the person who
+ * made it). The Proton folders are shown as a Proton path is read, with the leading `/`.
+ */
+export function startOverOf({ pair, roster = [], from, to, listed = null }) {
+  const entry = roster.find((candidate) => candidate.name === pair);
+  const folder = roster.length >= 2 ? pair : entry?.local_root || pair;
+  const target = remotePathForProbe(String(to ?? ""));
+  return {
+    folder,
+    title: FOLDERS.startOver.title(folder),
+    lines: [
+      FOLDERS.startOver.moves(folder, target, remotePathForProbe(String(from ?? ""))),
+      ...(listed === true ? [] : [FOLDERS.startOver.ifMissing(target)]),
+      FOLDERS.startOver.starts,
+      FOLDERS.remove.keeps,
+      FOLDERS.startOver.slow,
+    ],
+  };
+}

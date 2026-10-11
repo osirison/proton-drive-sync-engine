@@ -193,6 +193,13 @@ const LEDGER = [
       "reads `flow.pair`, never the selection), so a switch under it changes nothing it does",
   ],
   [
+    "startOver",
+    GLOBAL,
+    "the confirmation that changing a folder's Proton folder asks for (#453). It carries the folder it was " +
+      "drawn for and the very update `Save` was pressed with (class W: `confirmStartOver` reads `flow.pair` and " +
+      "`flow.update`, never the selection), so a switch under it changes nothing it does",
+  ],
+  [
     "folderMerge",
     GLOBAL,
     "the watch on a just-added folder's first pass: `{ pair, seq }`, compared only against a reply that " +

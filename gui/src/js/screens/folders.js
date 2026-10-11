@@ -441,3 +441,60 @@ export function renderRemoveFolder({ flow, removal, account, handlers }) {
   );
   return [body, foot];
 }
+
+// ------------------------------------------------------------------------- the start-over dialog ----
+
+/** What the start-over dialog's shape is: the phase, the sentences and a refusal — never a value typed. */
+export function startOverShape({ flow, view }) {
+  return JSON.stringify([flow.phase, flow.error, view.lines]);
+}
+
+/**
+ * The confirmation that changing a folder's Proton folder asks for (#453, the Settings half). Its body is the
+ * removal confirmation's shape — sentences, then `Cancel` and the action — because it is the same kind of
+ * question: something that cannot be taken back is about to happen, and the safe choice is the loud one.
+ *
+ * A refusal from the command is shown under the sentences in the command's own words and the dialog stays
+ * open, so the person can read it, cancel, or try again; nothing was saved when it is shown.
+ */
+export function renderStartOver({ flow, view, handlers }) {
+  const working = flow.phase === "working";
+  const body = dialogBody({
+    padding: "0 24px",
+    marginTop: "16px",
+    children: [
+      ...view.lines.map((sentence) => el("div", { class: "folders-line" }, sentence)),
+      flow.error ? el("div", { class: "folders-error is-block", role: "alert" }, flow.error) : null,
+      working
+        ? el("div", { class: "folders-status", role: "status" }, FOLDERS.startOver.working(view.folder))
+        : null,
+    ].filter(Boolean),
+  });
+  body.classList.add("folders-body", "is-lines");
+
+  const foot = dialogFoot({
+    padding: "14px 24px 18px",
+    marginTop: "16px",
+    gap: "10px",
+    align: "center",
+    children: [
+      el("span", { class: "folders-spacer" }),
+      working
+        ? null
+        : button({
+            kind: "primary",
+            size: "bar",
+            label: FOLDERS.add.cancel,
+            onClick: () => handlers.onCancel?.(),
+          }),
+      button({
+        kind: "secondaryFilled",
+        size: "bar",
+        label: FOLDERS.startOver.confirm,
+        disabled: working,
+        onClick: () => handlers.onConfirm?.(),
+      }),
+    ].filter(Boolean),
+  });
+  return [body, foot];
+}

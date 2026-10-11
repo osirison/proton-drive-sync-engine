@@ -876,6 +876,117 @@ fn a_state_file_whose_folder_is_missing_is_not_absent() {
     assert!(matches!(super::plan(&view), Planned::Nothing { .. }));
 }
 
+// ---- a folder a save moves the pair to (#453, the start-over) -------------------------------------------
+
+#[test]
+fn a_moved_to_folder_that_is_certainly_absent_has_nothing_in_it_and_an_existing_one_is_a_drive_that_may_return()
+ {
+    let base = tempfile::tempdir().unwrap();
+    let fresh = base.path().join("brand-new");
+    let view = view_for(&fresh);
+
+    // Pointed at by a save: not there, under a folder that can be listed. Nothing is in it.
+    assert!(
+        matches!(plan_for(&view, Root::Moved), Planned::Nothing { .. }),
+        "{:?}",
+        plan_for(&view, Root::Moved)
+    );
+    // The folder a pair already syncs, missing: most likely a drive that is not plugged in. Unchanged.
+    let Planned::Undetermined(undetermined) = plan_for(&view, Root::Existing) else {
+        panic!("an existing pair's missing folder was said to hold no history")
+    };
+    assert!(undetermined.retry);
+    assert!(
+        matches!(&undetermined.cause, Unlooked::FolderUnreadable { folder, .. } if folder == &fresh),
+        "{:?}",
+        undetermined.cause
+    );
+    assert!(matches!(super::plan(&view), Planned::Undetermined(_)));
+    assert!(!fresh.exists(), "looking made nothing");
+}
+
+#[test]
+fn the_absence_rule_is_the_state_files_rule_not_a_second_one() {
+    let base = tempfile::tempdir().unwrap();
+    // Not there, under a folder that can be listed.
+    assert!(certainly_absent(&base.path().join("nope")));
+    // There.
+    assert!(!certainly_absent(base.path()));
+    // Not there, and the folder it would sit in is not there either: a drive that is not mounted.
+    assert!(!certainly_absent(&base.path().join("usb/docs")));
+    // A file where a folder should be is there.
+    let file = base.path().join("a-file");
+    write(&file, "x");
+    assert!(!certainly_absent(&file));
+
+    // And the removal reads a state file the same way: the same two paths, the same two answers.
+    let root = base.path().join("docs");
+    write(&root.join("a.txt"), "mine");
+    let with_index_at = |db: PathBuf| view("docs", &root, db, root.join(".sync/proton-sync.lock"));
+    assert!(matches!(
+        super::plan(&with_index_at(base.path().join("nope/idx.db"))),
+        Planned::Undetermined(_)
+    ));
+    assert!(matches!(
+        super::plan(&with_index_at(base.path().join("idx.db"))),
+        Planned::Nothing { .. }
+    ));
+}
+
+#[test]
+fn a_moved_to_folder_is_absent_only_where_its_parent_can_be_listed() {
+    let base = tempfile::tempdir().unwrap();
+    // `usb` is not there, so neither is anything under it that could be told from an unplugged drive.
+    let under_nothing = view_for(&base.path().join("usb/docs"));
+    let Planned::Undetermined(undetermined) = plan_for(&under_nothing, Root::Moved) else {
+        panic!("a folder on a drive that is not there was said to hold no history")
+    };
+    assert!(undetermined.retry);
+
+    // A folder that is there but cannot be read is not an absence either.
+    if permissions_are_enforced(base.path()) {
+        let locked = base.path().join("locked");
+        fs::create_dir_all(&locked).unwrap();
+        set_mode(&locked, 0o000);
+        let planned = plan_for(&view_for(&locked), Root::Moved);
+        set_mode(&locked, 0o755);
+        assert!(matches!(planned, Planned::Undetermined(_)), "{planned:?}");
+    }
+
+    // A folder that is there is read as it always was: its `.sync` is the thing to move.
+    let there = default_layout(base.path(), "there");
+    assert_eq!(
+        plan_for(&there, Root::Moved),
+        Planned::Move(plan(&there)),
+        "a present folder is the same plan for either rule"
+    );
+}
+
+#[test]
+fn state_the_config_places_outside_a_moved_to_folder_that_is_absent_is_still_looked_at() {
+    let base = tempfile::tempdir().unwrap();
+    let root = base.path().join("brand-new");
+    let elsewhere = base.path().join("elsewhere");
+    write(&elsewhere.join("idx.db"), "index");
+    let outside = view(
+        "docs",
+        &root,
+        elsewhere.join("idx.db"),
+        elsewhere.join("pair.lock"),
+    );
+
+    let Planned::Move(moved) = plan_for(&outside, Root::Moved) else {
+        panic!("the index outside the folder is history the move leaves behind")
+    };
+    assert_eq!(moved.items, [elsewhere.join("idx.db")]);
+    // Under the absent folder itself there is nothing to ask about, whatever the config names there.
+    let inside = view("docs", &root, root.join("idx.db"), root.join("pair.lock"));
+    assert!(matches!(
+        plan_for(&inside, Root::Moved),
+        Planned::Nothing { .. }
+    ));
+}
+
 #[test]
 fn a_move_that_could_not_look_is_recorded_and_happens_when_the_drive_is_back() {
     // The whole flow of an unplugged drive: removal finds nothing it can look at, a record of the pair

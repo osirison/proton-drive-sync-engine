@@ -106,6 +106,12 @@ cadence. The reason says which of these it is:
   A pair whose files were all deleted on both sides, with the deletions synced, has nothing
   left to compare. It is not held when you change `remote_root`: the daemon starts it over
   from the folder you configured.
+
+  The desktop app does not leave you here when you change a folder's Proton folder in
+  **Settings**: it asks once, and on confirmation starts the folder over from both sides before it
+  saves (see [Changing a folder's Proton Drive folder](/desktop/screens/#changing-a-folders-proton-drive-folder)).
+  The hold is for a `remote_root` changed any other way: editing the file, or adding a folder over
+  a history kept from another Proton folder.
 - **Its state was removed along with the folder** — the folder was deleted and made again
   with files in it, and the index and lock inside it went with it. The daemon prepares the
   pair again from the new folder on its next attempt; you don't need to do anything. (If the

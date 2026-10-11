@@ -225,11 +225,43 @@ impl Plan {
 /// The disk could not say whether there is history to move.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Undetermined {
-    /// Why, in a sentence a person can act on.
+    /// Why, in a sentence a person can act on — **a removal's** sentence ("moved nothing"). A caller with
+    /// another job words [`Self::cause`] itself.
     pub reason: String,
     /// Whether looking again later could answer it (a drive that comes back), and so whether a record
     /// of the move is worth keeping. A path the app can never locate safely is not.
     pub retry: bool,
+    /// What could not be looked at, as a fact and not a sentence: the start-over (`crate::start_over`)
+    /// asks the same question of the disk for a different purpose, and its sentences are its own.
+    pub cause: Unlooked,
+}
+
+/// What the disk could not say, without the wording ([`Undetermined::reason`] is this module's).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Unlooked {
+    /// The config gives the pair no `local_root`.
+    NoLocalRoot,
+    /// A path the config gives is relative: the daemon resolves it against its own working directory,
+    /// which this app cannot know.
+    RelativePath { key: &'static str, path: PathBuf },
+    /// A folder that had to be listed could not be: missing (a drive that is not plugged in looks the
+    /// same), unreadable, or not a folder.
+    FolderUnreadable { folder: PathBuf, error: String },
+    /// A path could not be looked at, for a reason that is not "it is not there".
+    CouldNotLook { path: PathBuf, error: String },
+}
+
+/// Whether the pair's folder is one it already syncs or one a save is moving it to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Root {
+    /// The folder the pair syncs now. It has to be a folder that can be listed before anything under it
+    /// can be called absent: a missing one is most likely a drive that is not plugged in.
+    Existing,
+    /// A folder the pair is being pointed at in the very save being decided. The person may have typed
+    /// one that does not exist yet (the daemon makes it when it starts), and a folder that is **certainly
+    /// absent** ([`certainly_absent`]) holds no history. One that is missing for any other reason, or
+    /// that cannot be listed, is [`Root::Existing`]'s answer.
+    Moved,
 }
 
 /// What looking at a pair's state found.
@@ -278,8 +310,36 @@ fn state_candidates(view: &PairView) -> Vec<PathBuf> {
     all
 }
 
-fn undetermined(reason: String, retry: bool) -> Planned {
-    Planned::Undetermined(Undetermined { reason, retry })
+fn undetermined(reason: String, retry: bool, cause: Unlooked) -> Planned {
+    Planned::Undetermined(Undetermined {
+        reason,
+        retry,
+        cause,
+    })
+}
+
+/// The folder `path` would sit in, when it **cannot be listed** (and why). `NotFound` for a path is an
+/// absence only if this says `None`: a state file on a drive that is not mounted has no parent to list,
+/// and that is not an absence. **The one definition of that rule**, read by [`plan_for`] for a state file
+/// and by [`certainly_absent`] for a folder.
+fn unlistable_parent(path: &Path) -> Option<(PathBuf, io::Error)> {
+    let parent = path.parent()?;
+    fs::read_dir(parent)
+        .err()
+        .map(|error| (parent.to_owned(), error))
+}
+
+/// Whether `path` is certainly not there: looked at, `NotFound`, under a folder that could be listed (the
+/// rule [`plan_for`] applies to a state file). Anything else — it is there, it could not be looked at, the
+/// folder it would sit in cannot be read — is not an absence.
+///
+/// **The limit is the module's own** (see [`plan`]): a drive that is not mounted but whose mount point is
+/// still a folder reads like an empty folder, and nothing here tells them apart.
+pub fn certainly_absent(path: &Path) -> bool {
+    matches!(
+        fs::symlink_metadata(path),
+        Err(error) if error.kind() == io::ErrorKind::NotFound
+    ) && unlistable_parent(path).is_none()
 }
 
 /// What setting this pair's history aside would move. Pure reading of the disk; moves nothing.
@@ -302,11 +362,24 @@ fn undetermined(reason: String, retry: bool) -> Planned {
 /// only when it is a file — a directory named as a state file is a config the engine accepts, and is
 /// not this module's to move.
 pub fn plan(view: &PairView) -> Planned {
+    plan_for(view, Root::Existing)
+}
+
+/// [`plan`] for a folder that is either the one the pair syncs ([`Root::Existing`], which is `plan`) or
+/// one a save is moving it to ([`Root::Moved`]).
+///
+/// The only difference is the first look. A moved-to folder that is **certainly absent**
+/// ([`certainly_absent`]) has no `.sync` and nothing under it, so it is not "could not read" and the look
+/// goes on to the state files the config places **elsewhere** — an index kept outside the folder is
+/// history the move does not leave behind. Every other state of that folder is read exactly as an
+/// existing one is.
+pub fn plan_for(view: &PairView, rule: Root) -> Planned {
     let Some(root) = view.local_root.as_deref() else {
         return undetermined(
             "the config gives this pair no local_root, so the app cannot tell where its history is"
                 .to_owned(),
             false,
+            Unlooked::NoLocalRoot,
         );
     };
     for (key, path) in [
@@ -323,11 +396,17 @@ pub fn plan(view: &PairView) -> Planned {
                     path.display()
                 ),
                 false,
+                Unlooked::RelativePath {
+                    key,
+                    path: path.to_owned(),
+                },
             );
         }
     }
-    // The root has to be a folder that can be listed before anything under it can be called absent.
-    if let Err(error) = fs::read_dir(root) {
+    // The root has to be a folder that can be listed before anything under it can be called absent —
+    // unless it is one the save is moving the pair to and it is certainly not there.
+    let root_is_absent = rule == Root::Moved && certainly_absent(root);
+    if !root_is_absent && let Err(error) = fs::read_dir(root) {
         return undetermined(
             format!(
                 "the folder {} cannot be read ({error}); a drive that is unplugged or not mounted \
@@ -336,6 +415,10 @@ pub fn plan(view: &PairView) -> Planned {
                 root.display()
             ),
             true,
+            Unlooked::FolderUnreadable {
+                folder: root.to_owned(),
+                error: error.to_string(),
+            },
         );
     }
 
@@ -343,28 +426,40 @@ pub fn plan(view: &PairView) -> Planned {
     let mut notes = Vec::new();
     let state = sync_state_dir(root);
     let mut state_is_not_a_directory = false;
-    match fs::symlink_metadata(&state) {
-        Ok(meta) if meta.is_dir() || meta.file_type().is_symlink() => items.push(state.clone()),
-        Ok(_) => {
-            state_is_not_a_directory = true;
-            notes.push(format!(
-                "{} is a file, not a directory, so it is not the sync engine's state and was left \
-                 where it is",
-                state.display()
-            ));
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => {
-            return undetermined(
-                format!("could not look at {}: {error}", state.display()),
-                true,
-            );
+    // A folder that is certainly not there has no `.sync`.
+    if !root_is_absent {
+        match fs::symlink_metadata(&state) {
+            Ok(meta) if meta.is_dir() || meta.file_type().is_symlink() => items.push(state.clone()),
+            Ok(_) => {
+                state_is_not_a_directory = true;
+                notes.push(format!(
+                    "{} is a file, not a directory, so it is not the sync engine's state and was left \
+                     where it is",
+                    state.display()
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return undetermined(
+                    format!("could not look at {}: {error}", state.display()),
+                    true,
+                    Unlooked::CouldNotLook {
+                        path: state.clone(),
+                        error: error.to_string(),
+                    },
+                );
+            }
         }
     }
     for file in named_state_files(view) {
         // Inside the state directory it is covered by moving that — or cannot exist, when `.sync` is
-        // not a directory. And never the folder itself, or something it sits inside.
-        if file.starts_with(&state) || root.starts_with(&file) || items.contains(&file) {
+        // not a directory. And never the folder itself, or something it sits inside. Nor can anything
+        // exist under a folder that is certainly not there.
+        if file.starts_with(&state)
+            || root.starts_with(&file)
+            || items.contains(&file)
+            || (root_is_absent && file.starts_with(root))
+        {
             continue;
         }
         match fs::symlink_metadata(&file) {
@@ -374,11 +469,8 @@ pub fn plan(view: &PairView) -> Planned {
             )),
             Ok(_) => items.push(file),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                // Absent only if the folder it would be in can itself be listed: a state file on a
-                // drive that is not mounted has no parent to list, and that is not an absence.
-                if let Some(parent) = file.parent()
-                    && let Err(parent_error) = fs::read_dir(parent)
-                {
+                // Absent only if the folder it would be in can itself be listed.
+                if let Some((parent, parent_error)) = unlistable_parent(&file) {
                     return undetermined(
                         format!(
                             "the folder {} cannot be read ({parent_error}), so the app cannot \
@@ -388,6 +480,10 @@ pub fn plan(view: &PairView) -> Planned {
                             file.display()
                         ),
                         true,
+                        Unlooked::FolderUnreadable {
+                            folder: parent,
+                            error: parent_error.to_string(),
+                        },
                     );
                 }
             }
@@ -395,6 +491,10 @@ pub fn plan(view: &PairView) -> Planned {
                 return undetermined(
                     format!("could not look at {}: {error}", file.display()),
                     true,
+                    Unlooked::CouldNotLook {
+                        path: file.clone(),
+                        error: error.to_string(),
+                    },
                 );
             }
         }

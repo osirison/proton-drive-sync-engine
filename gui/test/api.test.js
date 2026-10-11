@@ -86,6 +86,21 @@ const WRITES = [
     { init: { local_root: "/home/u/Photos", remote_root: "/Drive/Photos", exclude: [] } },
   ],
   ["remove_pair", "removePair", (opts) => api.removePair(opts), {}],
+  // CHANGING A FOLDER'S PROTON FOLDER (#453). Both are writes for the pair the edit was typed for: the
+  // question (`remoteRoot` is the staged value, as written) and the save that follows its confirmation
+  // (the very `update` `write_config` takes).
+  [
+    "check_proton_folder_change",
+    "checkProtonFolderChange",
+    (opts) => api.checkProtonFolderChange("/Drive/New", opts),
+    { remoteRoot: "/Drive/New" },
+  ],
+  [
+    "change_proton_folder",
+    "changeProtonFolder",
+    (opts) => api.changeProtonFolder({ remote_root: "/Drive/New", scan_interval_secs: 60 }, opts),
+    { update: { remote_root: "/Drive/New", scan_interval_secs: 60 } },
+  ],
 ];
 
 test("a_class_w_wrapper_without_a_pair_rejects_and_sends_nothing", async () => {
@@ -110,6 +125,16 @@ test("a_class_w_wrapper_sends_exactly_its_arguments_and_the_pair_it_was_given", 
       `${name}: the pair travels with the arguments`,
     );
   }
+});
+
+test("the_check_that_a_proton_folder_is_listed_is_about_a_path_and_names_no_pair", async () => {
+  // Independent, like `probe_folder`: it asks the sync service about a candidate Proton folder, which is not a
+  // folder pair. The path crosses the bridge as it was given, and nothing else does.
+  await api.checkProtonFolderListed("/Drive/elsewhere");
+  assert.deepEqual(
+    calls.map((call) => [call.cmd, call.args]),
+    [["check_proton_folder_listed", { path: "/Drive/elsewhere" }]],
+  );
 });
 
 test("the_conflict_the_store_tagged_is_sent_without_the_tag", async () => {

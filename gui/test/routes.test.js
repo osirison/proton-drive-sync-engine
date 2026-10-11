@@ -109,8 +109,9 @@ test("the tray no longer asks the shell to navigate, so there is nothing left to
 //
 // The folder dialogs (#102 phase 5c-2) made it ten: `addFolder` and `removeFolder` (drawn: `8a Add folder`,
 // `8a Remove folder`) and `folderMerge`, which is `firstSync` addressed to a folder that was just added and so
-// draws the same frame.
-test("only the ten drawn dialogs are dialogs", () => {
+// draws the same frame. `startOver` (#453) is the eleventh and the one NO frame draws (DEVIATIONS §112): the
+// confirmation that changing a folder's Proton folder asks for, in the removal confirmation's shape.
+test("only the eleven dialogs are dialogs", () => {
   const dialogs = Object.keys(ROUTES).filter((id) => isDialog(id));
   assert.deepEqual(dialogs.sort(), [
     "addFolder",
@@ -123,6 +124,7 @@ test("only the ten drawn dialogs are dialogs", () => {
     "neverSynced",
     "removeFolder",
     "saveRefused",
+    "startOver",
   ]);
 });
 
@@ -133,6 +135,16 @@ test("the added folder's merge is the first-run merge's surface, and neither is 
     assert.deepEqual(ROUTES.folderMerge[key], ROUTES.firstSync[key], `folderMerge.${key}`);
   }
   assert.equal(ROUTES.folderMerge.closable, false);
+});
+
+test("the start-over confirmation has the removal confirmation's surface, and is closable", () => {
+  // Same kind of question (something that cannot be taken back is about to happen), same surface: the
+  // difference between them would be a confirmation that looks different depending on what asked it. Its
+  // Esc and ✕ are vetoed in flight by `dialogVetoed`, not by being unclosable.
+  for (const key of ["size", "presentation", "closable", "kind"]) {
+    assert.deepEqual(ROUTES.startOver[key], ROUTES.removeFolder[key], `startOver.${key}`);
+  }
+  assert.equal(ROUTES.startOver.closable, true);
 });
 
 test("none of onboarding's three dialogs is closable", () => {

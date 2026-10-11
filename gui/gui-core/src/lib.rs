@@ -41,6 +41,7 @@ pub mod plan;
 pub mod set_aside;
 pub mod sidecars;
 pub mod skip_rules;
+pub mod start_over;
 pub mod state;
 /// The one recording fake daemon every GUI test shares. Behind a cargo feature so it is never part
 /// of the shipped app: `gui/src-tauri` turns it on for its own tests only (`[dev-dependencies]`).

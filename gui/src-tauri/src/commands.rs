@@ -50,6 +50,7 @@ use tauri::{Emitter, Manager, State};
 type Paths<'a> = State<'a, Mutex<RuntimePaths>>;
 
 mod pair_admin;
+mod start_over;
 
 /// A status round trip, with the derived UI state folded in so the frontend never re-derives it.
 /// On a socket failure the `state` is `unreachable`/etc. and `error` is set — never zeroed counters.
@@ -985,7 +986,20 @@ fn write_config_file(
     update: &ConfigUpdate,
 ) -> Result<(), String> {
     let mut doc = config_io::ConfigDoc::load(path).map_err(|e| e.to_string())?;
-    apply_update(&mut doc, pair, update).map_err(|e| e.to_string())?;
+    check_update(&mut doc, pair, update)?;
+    doc.save(path).map_err(|e| e.to_string())
+}
+
+/// Apply `update` to `doc` and refuse it for everything a save is refused for — **the one body of "would
+/// this save go ahead"**, read by [`write_config_file`] and by the start-over a changed Proton folder is
+/// saved through (`start_over`), so the two cannot disagree about what the daemon would refuse to start
+/// on. Writes nothing.
+fn check_update(
+    doc: &mut config_io::ConfigDoc,
+    pair: &str,
+    update: &ConfigUpdate,
+) -> Result<(), String> {
+    apply_update(doc, pair, update).map_err(|e| e.to_string())?;
     if update.touches_state_paths() {
         // THE HALF OF THE DAEMON'S BOOT CHECK THE LEXICAL VALIDATOR CANNOT SEE. `save` passes two
         // roots that reach one folder through a symlink, and the daemon refuses to start on them —
@@ -996,7 +1010,7 @@ fn write_config_file(
         doc.validate().map_err(|e| e.to_string())?;
         config_io::real_path_conflicts(&doc.to_toml_string()).map_err(|e| e.to_string())?;
     }
-    doc.save(path).map_err(|e| e.to_string())
+    Ok(())
 }
 
 /// Class W (#102 phase 5b-1): a write, so the pair is REQUIRED and is the one the caller captured
@@ -1209,6 +1223,118 @@ pub async fn remove_pair(
         apply_socket_adoption(&state, true);
     }
     Ok(reply)
+}
+
+/// Would saving this Proton folder change the one the folder syncs with (#453, the Settings half)? Asked
+/// by `Save`, before it writes anything, so a changed folder can be confirmed first.
+///
+/// **The engine's rule, against the file's value**: `gui_core::start_over::remote_folder_changed` asks
+/// `config::same_remote_folder`, so `/Drive/X`, `Drive/X` and `Drive/X/` are one folder and do not ask,
+/// and the folder it changed from is the one the settings file holds for this pair — not a copy in a
+/// window that can be a poll old. Class W for its pair argument: the pair the edits were staged for, and a
+/// name the app does not know is refused. Reads the file and nothing else — no daemon is asked, no index
+/// is opened, nothing is written.
+#[tauri::command]
+pub async fn check_proton_folder_change(
+    state: Paths<'_>,
+    pair: String,
+    remote_root: String,
+) -> Result<start_over::RemoteRootCheck, String> {
+    let (path, pair) = {
+        let paths = state.lock().unwrap();
+        let pair = paths.resolve_ask(Ask::Named(&pair))?;
+        (paths.config_path.clone(), pair.name)
+    };
+    tauri::async_runtime::spawn_blocking(move || start_over::check_file(&path, &pair, &remote_root))
+        .await
+        .map_err(|error| format!("remote-root check failed: {error}"))?
+}
+
+/// Class W (#453, the Settings half): save a changed Proton folder by **starting the folder over from both
+/// sides** — files only on one side are copied to the other, a difference is kept as a conflict copy, and
+/// nothing is deleted. The caller has asked the person first (`check_proton_folder_change`, then the
+/// confirmation); this does not ask again, and it refuses when the folder is not changed after all.
+///
+/// The order is the design (`start_over`'s module doc): everything refusable is asked first and changes
+/// nothing; the daemon, if it is running, is stopped; the folder's index is started over under the
+/// pair's own lockfile; the file is written; the daemon is started again. `update` is the same object
+/// `write_config` takes, so the other settings staged beside the folder are saved in the same write and
+/// the same restart. A refusal leaves the settings file as it was, and says what became of the daemon.
+#[tauri::command]
+pub async fn change_proton_folder(
+    state: Paths<'_>,
+    pair: String,
+    update: ConfigUpdate,
+) -> Result<start_over::StartOverReply, String> {
+    let (path, socket_path, pair) = {
+        let paths = state.lock().unwrap();
+        let pair = paths.resolve_ask(Ask::Named(&pair))?;
+        (
+            paths.config_path.clone(),
+            paths.socket_path.clone(),
+            pair.name,
+        )
+    };
+    let reply = {
+        let path = path.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let mut service = LiveService {
+                config_path: path.clone(),
+                socket_path,
+            };
+            start_over::change_proton_folder_file(&path, &pair, &update, &mut service)
+        })
+        .await
+        .map_err(|error| format!("start-over task failed: {error}"))??
+    };
+    re_resolve_after_a_write(&state, &path);
+    // The restart above is the same one `restart_service` makes, so its socket follows the same rule.
+    if old_socket_is_settled(&reply.restart) {
+        apply_socket_adoption(&state, true);
+    }
+    Ok(reply)
+}
+
+/// The real sync service, for [`start_over::Service`]: the control socket for the probe and the stop, and
+/// the shared start logic (the systemd unit first, a direct spawn against the config as the fallback).
+/// **Never constructed by a test** — its `start` is `systemctl --user start proton-syncd`, which on a
+/// developer's machine is the live unit (`docs/agent-notes/gui-tests-that-shell-systemctl.md`). A test of
+/// a command that builds one reaches it only through a socket nobody listens on, where the sequence
+/// neither stops nor starts anything.
+struct LiveService {
+    config_path: std::path::PathBuf,
+    /// `Err` is #74's fail-closed state: no address to dial, so the daemon cannot be asked and is
+    /// `Unknown` — and an `Unknown` daemon refuses the start-over (`start_over`'s module doc, step 2): the
+    /// lockfile proves nothing about a daemon that holds the folder as held or unavailable.
+    socket_path: Result<std::path::PathBuf, String>,
+}
+
+impl start_over::Service for LiveService {
+    fn probe(&mut self) -> DaemonProbe {
+        probe_old_socket(&self.socket_path).unwrap_or(DaemonProbe::Unknown)
+    }
+
+    fn stop(&mut self) -> Result<(), RestartOutcome> {
+        match &self.socket_path {
+            Ok(socket) => stop_service_impl(socket),
+            Err(reason) => Err(RestartOutcome::Undetermined {
+                reason: reason.clone(),
+            }),
+        }
+    }
+
+    fn start(&mut self) -> RestartOutcome {
+        match start_service_impl(&self.config_path) {
+            Ok(detail) => RestartOutcome::Restarted {
+                detail: format!("the service restarted ({detail})"),
+            },
+            Err(reason) => RestartOutcome::NotStarted { reason },
+        }
+    }
+
+    fn sleep(&mut self, how_long: std::time::Duration) {
+        std::thread::sleep(how_long);
+    }
 }
 
 /// The pairs a daemon runs right now, by its own `status` reply — `None` when it did not answer, or
@@ -2635,8 +2761,6 @@ pub(crate) fn restart_service_impl(
     socket_path: &std::path::Path,
     only_if_running: bool,
 ) -> Result<RestartOutcome, String> {
-    use std::time::{Duration, Instant};
-
     let probe = probe_from(&ipc::command(
         socket_path,
         Target::DEFAULT,
@@ -2648,9 +2772,7 @@ pub(crate) fn restart_service_impl(
         RestartPlan::LeaveStopped => return Ok(RestartOutcome::NotRunning),
         RestartPlan::LeaveUndetermined => {
             return Ok(RestartOutcome::Undetermined {
-                reason: "the sync service did not answer, so the app could not tell whether it \
-                         is running"
-                    .to_string(),
+                reason: NO_ANSWER.to_string(),
             });
         }
         // Nothing to stop. Reported by the fact it leaves behind, not by the sequence: what the
@@ -2665,6 +2787,31 @@ pub(crate) fn restart_service_impl(
         }
         RestartPlan::StopThenStart => {}
     }
+
+    if let Err(outcome) = stop_service_impl(socket_path) {
+        return Ok(outcome);
+    }
+    // The stop is CONFIRMED here — the socket is authoritatively absent — so a failed start leaves
+    // nothing running, which is the ending the old code discarded along with the successful stop.
+    Ok(match start_service_impl(config_path) {
+        Ok(detail) => started(format!("the service restarted ({detail})")),
+        Err(reason) => RestartOutcome::NotStarted { reason },
+    })
+}
+
+/// What the app says when the daemon was asked whether it is running and the exchange did not finish.
+/// One sentence for the two callers that decline to act on it (a save's restart, and the start-over a
+/// changed Proton folder is saved through), so they cannot word one fact two ways.
+const NO_ANSWER: &str =
+    "the sync service did not answer, so the app could not tell whether it is running";
+
+/// The stop half of a restart, on its own: ask the daemon to exit and wait for its control socket to go
+/// quiet. `Ok(())` is a **confirmed** stop (the socket is authoritatively absent); the `Err` is the
+/// ending that explains why not ([`stop_timeout_outcome`]: `NeverStopped` only from an observation of
+/// life, `Undetermined` otherwise). A caller that needs the daemon off a file for a while — the
+/// start-over, which resets an index no daemon may have open — stops with this and starts again itself.
+pub(crate) fn stop_service_impl(socket_path: &std::path::Path) -> Result<(), RestartOutcome> {
+    use std::time::{Duration, Instant};
 
     // Best-effort: if the shutdown call itself errors the daemon may already be exiting;
     // the socket probe below is the authoritative "has it stopped" signal.
@@ -2686,20 +2833,14 @@ pub(crate) fn restart_service_impl(
             Duration::from_secs(1),
         ));
         if last == DaemonProbe::NotRunning {
-            break;
+            return Ok(());
         }
         // The ending is what was last OBSERVED, not the fact of having timed out.
         if Instant::now() >= deadline {
-            return Ok(stop_timeout_outcome(last));
+            return Err(stop_timeout_outcome(last));
         }
         std::thread::sleep(Duration::from_millis(200));
     }
-    // The stop is CONFIRMED here — the socket is authoritatively absent — so a failed start leaves
-    // nothing running, which is the ending the old code discarded along with the successful stop.
-    Ok(match start_service_impl(config_path) {
-        Ok(detail) => started(format!("the service restarted ({detail})")),
-        Err(reason) => RestartOutcome::NotStarted { reason },
-    })
 }
 
 /// Whether `outcome` confirms the OLD `socket_path` no longer needs dialling — the gate for #336's
@@ -3611,6 +3752,45 @@ fn probe_remote_folder(
             Err(describe_probe_failure(error))
         }
     }
+}
+
+/// Does the sync service list this Proton Drive folder? Asked by the confirmation that changing a folder's
+/// Proton folder opens (#453 review, finding 4), to learn whether the folder the person typed is there:
+/// saving creates a Proton folder that does not exist and uploads the whole local folder into it, and a
+/// mistyped one is otherwise only caught by reading the sentence.
+///
+/// **The Add folder dialog's check, down to its first step**: the daemon's `list` verb in the absolute
+/// frame (`gui_core::folder_probe::remote_folder_lists_via_daemon`) — one request, behind the daemon's one
+/// `CliGate` — without the walk below the folder that prices it there. It resolves when the daemon lists
+/// the folder. **It rejects for every other reason, and a rejection is not "the folder does not exist"**:
+/// the daemon's failure text is display-only (`ListingOutcome::Failed`, #103), so a folder that is not there,
+/// a daemon that is busy, a session that has expired and a daemon that is not running all arrive as "could
+/// not list", and the caller says only that it could not tell.
+///
+/// It asks the daemon and **only the daemon**. `probe_folder` falls back to a `proton-drive` child when
+/// nothing answers the socket, which is right for onboarding and for a price the person waits on; here the
+/// question is asked while the dialog is open and the answer only removes a sentence, so a missing daemon is
+/// "could not tell" and no child is ever spawned (#23).
+#[tauri::command]
+pub async fn check_proton_folder_listed(state: Paths<'_>, path: String) -> Result<(), String> {
+    let socket = state.lock().unwrap().socket_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        proton_folder_is_listed(socket, std::path::Path::new(&path))
+    })
+    .await
+    .map_err(|error| format!("folder check failed: {error}"))?
+}
+
+/// [`check_proton_folder_listed`]'s body, split out so it is testable without a Tauri handle.
+fn proton_folder_is_listed(
+    socket: Result<std::path::PathBuf, String>,
+    candidate: &std::path::Path,
+) -> Result<(), String> {
+    use gui_core::folder_probe::{describe_probe_failure, remote_folder_lists_via_daemon};
+
+    let socket = socket
+        .map_err(|reason| format!("the app has no sync service address to ask ({reason})"))?;
+    remote_folder_lists_via_daemon(&socket, candidate).map_err(describe_probe_failure)
 }
 
 /// The state files the daemon keeps out of its own scan, so a relocated index inside the sync root
@@ -4609,6 +4789,9 @@ mod config_tests;
 mod pair_admin_tests;
 
 #[cfg(all(test, unix))]
+mod start_over_tests;
+
+#[cfg(all(test, unix))]
 mod socket_tests {
     use super::*;
     use std::io::{BufRead, BufReader, Write};
@@ -4752,6 +4935,81 @@ mod socket_tests {
             probe.bytes, None,
             "a remote listing exposes no usable size, however it was obtained"
         );
+    }
+
+    /// The start-over confirmation's question (#453 review, finding 4): is the typed Proton folder there?
+    /// The daemon answers it or nobody does — the app spawns no `proton-drive` child for it.
+    #[test]
+    fn the_folder_check_resolves_only_for_a_folder_the_daemon_lists_and_never_spawns_a_child() {
+        let candidate = std::path::Path::new("/Drive/Candidate");
+
+        // A daemon that lists it.
+        let (socket, _dir) = spawn_repeating_daemon(vec![listing_reply(serde_json::json!({
+            "state": "listed",
+            "path": "/Drive/Candidate",
+            "entries": [],
+            "total": 0,
+            "truncated": false
+        }))]);
+        proton_folder_is_listed(Ok(socket), candidate).expect("the daemon listed it");
+
+        // A daemon that tried and could not: not "missing", only not listed. The sentence is its own.
+        let (socket, _dir) = spawn_repeating_daemon(vec![listing_reply(serde_json::json!({
+            "state": "failed",
+            "error": "proton-drive list failed for /Drive/Candidate: not found"
+        }))]);
+        let error = proton_folder_is_listed(Ok(socket), candidate).expect_err("it did not list");
+        assert!(error.contains("not found"), "{error}");
+
+        // A daemon too busy to try.
+        let (socket, _dir) = spawn_repeating_daemon(vec![listing_reply(serde_json::json!({
+            "state": "busy"
+        }))]);
+        let error = proton_folder_is_listed(Ok(socket), candidate).expect_err("busy");
+        assert!(error.contains("busy"), "{error}");
+
+        // Nothing listening, and no address to dial at all (#74's fail-closed state): could not tell.
+        let dir = tempfile::tempdir().unwrap();
+        assert!(
+            proton_folder_is_listed(Ok(dir.path().join("nothing-here.sock")), candidate).is_err()
+        );
+        let error = proton_folder_is_listed(Err("not our runtime directory".to_owned()), candidate)
+            .expect_err("no address");
+        assert!(error.contains("not our runtime directory"), "{error}");
+
+        // A relative folder is not a Proton Drive path and is refused before the daemon is asked.
+        let (socket, _dir) = spawn_repeating_daemon(vec![CANNED_REPLY.to_owned()]);
+        let error = proton_folder_is_listed(Ok(socket), std::path::Path::new("Photos"))
+            .expect_err("relative");
+        assert!(error.contains("must start with `/`"), "{error}");
+    }
+
+    #[test]
+    fn the_folder_check_command_reads_its_socket_from_the_session_and_resolves_for_a_listed_folder()
+    {
+        let (socket, _dir) = spawn_repeating_daemon(vec![listing_reply(serde_json::json!({
+            "state": "listed",
+            "path": "/Drive/Candidate",
+            "entries": [],
+            "total": 0,
+            "truncated": false
+        }))]);
+        let (app, _dir) = mock_app(socket);
+        let state = app.state::<Mutex<RuntimePaths>>();
+
+        tauri::async_runtime::block_on(check_proton_folder_listed(
+            state.clone(),
+            "/Drive/Candidate".to_owned(),
+        ))
+        .expect("listed");
+
+        // And with the socket gone, the same command rejects: it did not remember the answer.
+        state.lock().unwrap().socket_path = Err("gone".to_owned());
+        tauri::async_runtime::block_on(check_proton_folder_listed(
+            state.clone(),
+            "/Drive/Candidate".to_owned(),
+        ))
+        .expect_err("no address");
     }
 
     /// A headless mock app (no webview/display) managing `RuntimePaths` pointed at `socket`, with

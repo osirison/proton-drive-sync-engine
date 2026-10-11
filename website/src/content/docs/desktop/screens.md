@@ -217,6 +217,50 @@ paused stay paused.* (At three or more it reads *for all three folders*, and so 
 re-pause anything. (One case is not covered: a pause made while a folder was unavailable is kept
 in memory only — see [Controlling the pairs](/daemon/folder-pairs/#controlling-the-pairs).)
 
+### Changing a folder's Proton Drive folder
+
+A folder's sync history describes the Proton folder it was last synced with, so pointing an existing
+folder at another one is not a plain save. **Save** first asks the sync engine whether the Proton
+folder you typed is another one, using the engine's own rule and the value in the settings file as
+it is now: `Drive/docs`, `/Drive/docs/` and `/Drive/docs` are one folder, and a save that only
+respells it asks nothing and goes ahead as it always did. A subfolder, a parent, a different
+capitalisation or a trailing space are other folders.
+
+When it is another folder, a dialog asks once. It names the folder and both Proton folders, and
+says what saving does: the folder **starts over from both sides**, so files that are only on one
+side are copied to the other, a file that differs is kept as a conflict copy, nothing is deleted
+on this computer or in Proton Drive, and it can take a while for a large folder. **Cancel** closes
+the dialog and changes nothing; what you typed stays staged.
+
+Saving creates a Proton folder that is not there and uploads your folder into it, so the dialog
+also says *If /Drive/elsewhere does not exist in Proton Drive yet, it is created.* It is there from
+the moment the dialog opens, and it goes only when the sync service has listed that folder. A
+folder the service could not list keeps the sentence, whatever the reason (the folder is missing,
+the service is busy or not running): the app does not guess, so check the spelling before you
+confirm.
+
+**Start over and save** is one step. It stops the sync service if it is running, starts the
+folder's index over (the same thing `proton-sync reset-index --yes` does, done by the app while
+nothing has the index open), writes the settings, and starts the service again. The history is
+gone before the settings name the new Proton folder, so the folder is never synced against the old
+folder's history and the sync service does not hold it. A folder you had paused stays paused. If
+the service was not running, nothing is started: the folder starts over from both sides whenever
+you next start it. If any step before the settings are written fails, nothing is saved, the dialog
+stays open with the reason, and the service is started again if the app had stopped it. While the
+step runs, the dialog cannot be left.
+
+Two refusals change nothing at all, and say so. If the app **could not tell whether the sync
+service is running** (it did not answer), it does not start the folder over: a service that is
+running may be holding the folder without having its history open, and would undo the reset. Try
+again once the service answers. If the **folder on this computer cannot be read**, which is also
+what an unplugged drive looks like, the app cannot tell whether its history is there, so it does not
+start it over: plug in the drive or make the folder readable, then save again. Changing the folder
+on this computer to one that does not exist yet, together with the Proton folder, is not refused:
+a folder that is not there has no history, and the service makes it when it starts.
+
+The sync service still holds a folder whose settings are edited outside the app to another Proton
+folder (see [the Proton folder changed](/reference/troubleshooting/#a-folder-pair-shows-an-error-and-isnt-syncing)).
+
 ## Adding and removing a folder
 
 With two or more folders the **Folders** tab opens with a list: each folder's name over the two

@@ -1591,7 +1591,7 @@ enum Class {
 /// Every `#[tauri::command]` and what it is. Adding a command without adding it here fails
 /// `every_pair_slot_command_names_its_class`, which is the point: a command that reads a pair slot
 /// must say how it takes the pair.
-const COMMAND_CLASSES: [(&str, Class); 43] = [
+const COMMAND_CLASSES: [(&str, Class); 46] = [
     ("get_status", Class::R),
     ("list_pending_deletions", Class::R),
     ("scan_conflicts", Class::R),
@@ -1622,6 +1622,11 @@ const COMMAND_CLASSES: [(&str, Class); 43] = [
     // reads the file, and changes nothing.
     ("check_add_pair", Class::NewPair),
     ("remove_pair", Class::W),
+    // The Settings half of #453. Both are class W for the pair they were staged for: a changed Proton
+    // folder asked about, or saved by starting that folder over, belongs to the folder the edit was typed
+    // in and never to the selection.
+    ("check_proton_folder_change", Class::W),
+    ("change_proton_folder", Class::W),
     ("tray_action", Class::Row),
     ("tray_status", Class::DefaultPair),
     ("choose_folder", Class::Independent),
@@ -1633,6 +1638,9 @@ const COMMAND_CLASSES: [(&str, Class); 43] = [
     ("write_notify_policy", Class::Independent),
     ("check_cli", Class::Independent),
     ("probe_folder", Class::Independent),
+    // Asks the daemon whether it lists a Proton folder the person typed (#453 review): about a candidate path,
+    // like `probe_folder`, and not addressed to a pair.
+    ("check_proton_folder_listed", Class::Independent),
     ("open_remote", Class::Independent),
     ("open_system_log", Class::Independent),
     ("close_window", Class::Independent),
