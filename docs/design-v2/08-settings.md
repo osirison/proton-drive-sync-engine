@@ -258,6 +258,30 @@ dialog then shows the command's actual reply in place of the sentences — `was 
 account of where the history went (moved to X, nothing to move, or **pending, with the reason**), verbatim — and
 `Done`. (Drawn: `8a Remove folder`, the first folder; the answer is the command's own words and is not drawn.)
 
+## Change a folder's Proton folder (600px dialog, drawn in no frame)
+
+Changing the Proton Drive folder of a folder that already syncs is not a plain save (#453). A folder's sync
+history describes the Proton folder it was last synced with, so `Save` asks the engine whether the staged Proton
+folder is **another one** — by the engine's own rule, against the settings file's value for that folder, so
+`Drive/docs/` for `/Drive/docs` is the same folder and saves as it always did, without a question. A different one
+opens this dialog in the removal confirmation's shape (title, sentences, `Cancel` the primary, the action quiet
+beside it):
+
+`Change the Proton Drive folder of documents?` (at one folder, of the folder's path on this computer: the lone
+folder is called `default`, which means nothing to the person who made it), then four sentences:
+
+1. `documents will sync with /Drive/elsewhere instead of /Drive/docs.`
+2. `It starts over from both sides: files that are only on one side are copied to the other, and a file that differs is kept as a conflict copy.`
+3. `Nothing is deleted on this computer or in Proton Drive.` (the removal confirmation's own sentence)
+4. `This can take a while for a large folder.`
+
+`Cancel` closes it and changes nothing: the typed folder stays staged. `Start over and save` is one command that
+stops the sync service (if it is running), starts the folder's index over, writes the settings and starts the
+service again, in that order; while it runs the dialog says `Starting documents over…` and cannot be left. The
+reply's restart ending is latched exactly as a save's restart is, so the Settings bar says what it says after any
+save. A refusal keeps the dialog open with the command's own sentence under the four, and nothing was saved. The
+folder's pause is kept. Drawn in no frame (DEVIATIONS §112): `fidelity:pairs` drives it on the real page.
+
 ## Save refused (600px dialog)
 
 The existing daemon rejects a config write if its own parser would refuse the result. Surface that

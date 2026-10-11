@@ -6602,3 +6602,74 @@ What each surface shows now, for the three cases the review asked about:
 | One waiting, nothing running | syncing glyph; `starting` for all, or `photos starting, documents up to date` beside a finished one | `Starting to sync`, the syncing mark, no button | `Starting to sync`, syncing mark, chip `starting` | `starting`; no marker |
 | One waiting, one with a withheld deletion | syncing glyph; `photos starting, documents up to date` (decisions are not in the glyph or the title) | `1 thing needs you` and `Review them`, for the folder that holds it | `Starting to sync`; the other folder's hero is `1 thing needs you` | `starting` and `up to date`, `1 waiting`; the pill carries the decision ring |
 
+## Changing a folder's Proton folder (#453, the Settings half, 2026-10-11)
+
+## 112. One dialog the design never drew, and why a changed Proton folder starts the folder over instead of setting its history aside
+
+Since #458 the engine holds a pair whose configured Proton folder is not the one its index records, and its only exits are
+`reset-index` and putting the folder back. Settings let a person type another Proton folder and press `Save`, which wrote
+the file, restarted the service and left the folder held, with no way out in the app. The maintainer's decision
+(issue #453, 2026-10-10): changing an existing folder's Proton folder asks once, and on confirmation starts that folder
+over from both sides — files only on one side are copied to the other, a difference is kept as a conflict copy, nothing is
+deleted — and the folder is not held. At one folder and at many.
+
+### §112a · The dialog no frame draws
+
+An eleventh dialog (`startOver`; `routes.test.js` names it) in the removal confirmation's
+shape: a title, four sentences, `Cancel` the primary and `Start over and save` the quiet button beside it. No frame draws it
+and none was added: a frame would be a fixture's guess at two folders' names, and the dialog opens only from a staged
+Proton folder that is another one by the engine's rule. Its sentences are in `13-copy-deck.md` and `08-settings.md`, and
+`copy-gate.mjs` records them as the convention for an undrawn string asks: three constants in `NOT_DRAWN` and three
+templates in `UNGATED_TEMPLATES`, each with its reason and (for the templates) a fixed fragment no frame contains, so the
+entry fails the day a frame draws it. The fourth sentence, `Nothing is deleted on this computer or in Proton Drive.`, is
+the removal confirmation's own (`FOLDERS.remove.keeps`) and is drawn in `8a Remove folder`, so it is not a second copy.
+`fidelity:n1` is unchanged at 55/55: nothing at one folder draws differently unless the Proton folder field changed to
+another folder.
+
+The folder is named by its name beside other folders and by its folder on this computer when it is the only one: a lone
+folder is called `default`, which means nothing to the person who made it.
+
+### §112b · Departure from the brief: the mechanism is neither of the two it offered
+
+The brief offered (a) write the file, restart, send `reset_index` and (b) stop the daemon, set the history aside with
+`set_aside`, write the file, start the daemon. Neither was built as written:
+
+- **(b) loses the folder's pause.** The pause lives in the index (`pair_pause`), and `reset_index_state` keeps it on purpose
+  (`index::load_pair_paused`: "a start-over that quietly resumed the folder would sync one the person had told it to leave
+  alone"). `set_aside` moves the whole `.sync`, pause included, so a paused folder would resume and start syncing the
+  moment the service came back. D12/#441 say the daemon keeps each folder's pause across a restart for exactly that
+  reason.
+- **(a) needs a verb the app does not have and somebody to send it to.** `gui_core::ipc` has no `reset_index`, and with no
+  daemon running at save time (a save restarts only a running one, #320) there is nobody to send it to, which would leave
+  the folder held with no way out in the app. It would also write the new Proton folder over the old baseline and rely on
+  the hold for the window between.
+
+What is built is the offline form of (a)'s reset in (b)'s order: stop the daemon if it runs, run the engine's own
+`reset_index_state` on the folder's index under the pair's lockfile (the proof that no daemon has it open, the one
+`set_aside` uses), write the file, start the daemon. `gui_core::start_over` is the reset; `commands/start_over.rs` is the
+order. The history of what happened (`sync_passes`, `sync_events`) stays, as it does for `reset-index`.
+
+### §112c · What holds each failure, and what no frame can show
+
+`fidelity:pairs` drives the real page against a scripted bridge through the seven states below, and `start_over_tests.rs`
+holds the order and each failure's residue:
+
+- It asks, names the folder and both Proton folders, writes and restarts nothing, and `Cancel` changes nothing.
+- Confirming acts for the folder the dialog was drawn for (the selection moved under it), through one command, with no
+  plain write and no second restart; the reply's restart ending is latched as a save's is.
+- A respelling (`Drive/docs`, `/Drive/docs/`, `./Drive/docs`) asks nothing and saves as it always did.
+- A refusal keeps the dialog, in the command's own words, with the edit staged.
+- A start-over in flight is not left by Esc or a shortcut, and says so.
+- A question the engine could not answer is a refused save, never a plain write.
+- At one folder the title names the folder on this computer.
+
+The first-run takeover is not changed: it writes the implicit pair through `write_config`, and a folder with an old index
+that reaches it is still held by the engine, which is the net the brief asked to keep.
+
+### §112d · Counts that moved
+
+No frame was added or changed: `assert.mjs` is 68/68 with 125,981 assertions, the contrast gate 1,696 nodes and
+`fidelity:n1` 55/55. The copy gate's drawn strings are 404/404 and its exemptions 105 became 108 and its ungatable
+templates 31 became 34. `fidelity:pairs` 108 became 115 scenarios (the new seven; two existing ones, which type a Proton
+folder and expect a plain write, now confirm the dialog first). The unit tests became 628, up from 623, and the dialog
+routes 10 became 11.
