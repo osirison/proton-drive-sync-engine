@@ -90,15 +90,15 @@ const WRITES = [
   // question (`remoteRoot` is the staged value, as written) and the save that follows its confirmation
   // (the very `update` `write_config` takes).
   [
-    "check_remote_root_change",
-    "checkRemoteRootChange",
-    (opts) => api.checkRemoteRootChange("/Drive/New", opts),
+    "check_proton_folder_change",
+    "checkProtonFolderChange",
+    (opts) => api.checkProtonFolderChange("/Drive/New", opts),
     { remoteRoot: "/Drive/New" },
   ],
   [
-    "change_remote_root",
-    "changeRemoteRoot",
-    (opts) => api.changeRemoteRoot({ remote_root: "/Drive/New", scan_interval_secs: 60 }, opts),
+    "change_proton_folder",
+    "changeProtonFolder",
+    (opts) => api.changeProtonFolder({ remote_root: "/Drive/New", scan_interval_secs: 60 }, opts),
     { update: { remote_root: "/Drive/New", scan_interval_secs: 60 } },
   ],
 ];

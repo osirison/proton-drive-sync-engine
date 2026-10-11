@@ -116,18 +116,18 @@ export const api = {
   // and for a report built from settling an earlier note, so read `reason`/`message`, not its length).
   removePair: ({ pair } = {}) => write("remove_pair", {}, pair),
   // CHANGING A FOLDER'S PROTON FOLDER (#453, the Settings half). Two writes (class W: the pair the edit was
-  // typed for, never the selection). `checkRemoteRootChange` asks, before anything is saved, whether
+  // typed for, never the selection). `checkProtonFolderChange` asks, before anything is saved, whether
   // saving `remoteRoot` changes the Proton folder the settings file holds for that pair — BY THE ENGINE'S
   // RULE, so `/Drive/X`, `Drive/X` and `Drive/X/` are one folder and ask nothing — and resolves with
-  // `{ changed, from, to }`. It reads the file and changes nothing. `changeRemoteRoot` is the save that
+  // `{ changed, from, to }`. It reads the file and changes nothing. `changeProtonFolder` is the save that
   // follows a confirmation: the SAME `update` object `writeConfig` takes, saved by starting that folder over
   // from both sides (the daemon is stopped, the folder's index is started over, the file is written, the
   // daemon is started again) and resolving with `{ pair, path, restart, index }` — `restart` is the typed
   // ending a save's restart resolves with. It rejects, with the file unchanged, when any step before the
   // write fails; the message says what became of the daemon and of the index.
-  checkRemoteRootChange: (remoteRoot, { pair } = {}) =>
-    write("check_remote_root_change", { remoteRoot }, pair),
-  changeRemoteRoot: (update, { pair } = {}) => write("change_remote_root", { update }, pair),
+  checkProtonFolderChange: (remoteRoot, { pair } = {}) =>
+    write("check_proton_folder_change", { remoteRoot }, pair),
+  changeProtonFolder: (update, { pair } = {}) => write("change_proton_folder", { update }, pair),
   // Settings › `Choose…`. Resolves `null` when the picker is DISMISSED and rejects when it could
   // not open — the two were one answer until Copilot's second pass, which made a broken picker
   // indistinguishable from a closed one.
@@ -580,7 +580,7 @@ function mockInvoke(cmd, args) {
         truncated: false,
         unreadable_directories: 0,
       });
-    case "check_remote_root_change": {
+    case "check_proton_folder_change": {
       // A crude stand-in for the engine's rule (leading and trailing `/` do not count), enough for a
       // preview to be able to open the confirmation; the real answer is `config::same_remote_folder`.
       const bare = (root) =>
@@ -594,7 +594,7 @@ function mockInvoke(cmd, args) {
         to: args?.remoteRoot ?? "",
       });
     }
-    case "change_remote_root":
+    case "change_proton_folder":
       // Accepts, and says what a save's restart says: the service restarted.
       return Promise.resolve({
         pair: args?.pair ?? null,

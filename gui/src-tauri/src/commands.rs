@@ -1235,7 +1235,7 @@ pub async fn remove_pair(
 /// name the app does not know is refused. Reads the file and nothing else — no daemon is asked, no index
 /// is opened, nothing is written.
 #[tauri::command]
-pub async fn check_remote_root_change(
+pub async fn check_proton_folder_change(
     state: Paths<'_>,
     pair: String,
     remote_root: String,
@@ -1252,7 +1252,7 @@ pub async fn check_remote_root_change(
 
 /// Class W (#453, the Settings half): save a changed Proton folder by **starting the folder over from both
 /// sides** — files only on one side are copied to the other, a difference is kept as a conflict copy, and
-/// nothing is deleted. The caller has asked the person first (`check_remote_root_change`, then the
+/// nothing is deleted. The caller has asked the person first (`check_proton_folder_change`, then the
 /// confirmation); this does not ask again, and it refuses when the folder is not changed after all.
 ///
 /// The order is the design (`start_over`'s module doc): everything refusable is asked first and changes
@@ -1261,7 +1261,7 @@ pub async fn check_remote_root_change(
 /// `write_config` takes, so the other settings staged beside the folder are saved in the same write and
 /// the same restart. A refusal leaves the settings file as it was, and says what became of the daemon.
 #[tauri::command]
-pub async fn change_remote_root(
+pub async fn change_proton_folder(
     state: Paths<'_>,
     pair: String,
     update: ConfigUpdate,
@@ -1282,7 +1282,7 @@ pub async fn change_remote_root(
                 config_path: path.clone(),
                 socket_path,
             };
-            start_over::change_remote_root_file(&path, &pair, &update, &mut service)
+            start_over::change_proton_folder_file(&path, &pair, &update, &mut service)
         })
         .await
         .map_err(|error| format!("start-over task failed: {error}"))??

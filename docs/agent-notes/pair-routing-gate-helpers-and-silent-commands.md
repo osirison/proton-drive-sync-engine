@@ -27,7 +27,7 @@ not beside the scenarios it was written for.
 command, goes green without ever reaching it.
 
 **Cause:** `default: return null`. For a command whose `null` reads as "no" (the Proton-folder question,
-`check_remote_root_change`: `answer?.changed` is falsy), every existing scenario keeps taking the old path.
+`check_proton_folder_change`: `answer?.changed` is falsy), every existing scenario keeps taking the old path.
 
 **Fix:** give the Bridge a case for the command, as Rust answers it, **before** relying on a scenario; then
 rerun the whole gate, because the scenarios that used to take the old path (here the two that type a Proton

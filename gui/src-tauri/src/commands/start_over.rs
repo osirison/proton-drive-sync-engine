@@ -81,7 +81,7 @@ pub struct RemoteRootCheck {
     pub to: String,
 }
 
-/// The blocking half of `check_remote_root_change`: read the file and ask the engine's rule. **Reads
+/// The blocking half of `check_proton_folder_change`: read the file and ask the engine's rule. **Reads
 /// nothing else and changes nothing** — no daemon is asked, no index is opened.
 ///
 /// Compared against the file's value for the pair and not against anything the caller holds: the file is
@@ -149,13 +149,13 @@ fn started_again(service: &mut dyn Service, stopped: bool) -> String {
     }
 }
 
-/// The blocking body of `change_remote_root`. See the module doc for the order and why; the steps are
+/// The blocking body of `change_proton_folder`. See the module doc for the order and why; the steps are
 /// numbered here as there.
 ///
 /// `Err` means **the settings file was not changed**. When the daemon had been stopped it was started
 /// again, and the message says what became of that. Where the folder's index had already been started
 /// over, the message says so: it will start over under the folder the file still names.
-pub(super) fn change_remote_root_file(
+pub(super) fn change_proton_folder_file(
     config_path: &Path,
     pair: &str,
     update: &ConfigUpdate,

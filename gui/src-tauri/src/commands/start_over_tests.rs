@@ -1,4 +1,4 @@
-//! `check_remote_root_change` and `change_remote_root` (#453, the Settings half).
+//! `check_proton_folder_change` and `change_proton_folder` (#453, the Settings half).
 //!
 //! What is held down here is the ORDER and what each failure leaves behind, because that is the design:
 //! the daemon is stopped before the folder's index is started over, the index is started over before the
@@ -15,7 +15,7 @@
 //! tests that go through the real command dial a socket nobody listens on, where the sequence neither
 //! stops nor starts anything.
 
-use super::start_over::{change_remote_root_file, Service, LOCK_ASK_EVERY, LOCK_WAIT};
+use super::start_over::{change_proton_folder_file, Service, LOCK_ASK_EVERY, LOCK_WAIT};
 use super::*;
 use gui_core::set_aside::{self, LockGuard, LockProbe};
 use gui_core::start_over::testing::{facts, give_history, started_over, view_of, with_history};
@@ -219,14 +219,14 @@ fn the_log_is(log: &Log, expected: &[&str]) {
     assert_eq!(log.lines(), expected);
 }
 
-// ---- the question: check_remote_root_change ------------------------------------------------------
+// ---- the question: check_proton_folder_change ------------------------------------------------------
 
 fn check(
     session: &Session,
     pair: &str,
     remote_root: &str,
 ) -> Result<start_over::RemoteRootCheck, String> {
-    run!(check_remote_root_change(
+    run!(check_proton_folder_change(
         session.state(),
         pair.to_owned(),
         remote_root.to_owned()
@@ -326,7 +326,7 @@ fn change(
     update: &ConfigUpdate,
     service: &mut FakeService,
 ) -> Result<start_over::StartOverReply, String> {
-    change_remote_root_file(&session.config_path(), pair, update, service)
+    change_proton_folder_file(&session.config_path(), pair, update, service)
 }
 
 #[test]
@@ -917,7 +917,11 @@ fn change_through_the_command(
     pair: &str,
     update: ConfigUpdate,
 ) -> Result<start_over::StartOverReply, String> {
-    run!(change_remote_root(session.state(), pair.to_owned(), update))
+    run!(change_proton_folder(
+        session.state(),
+        pair.to_owned(),
+        update
+    ))
 }
 
 #[test]

@@ -1625,8 +1625,8 @@ const COMMAND_CLASSES: [(&str, Class); 45] = [
     // The Settings half of #453. Both are class W for the pair they were staged for: a changed Proton
     // folder asked about, or saved by starting that folder over, belongs to the folder the edit was typed
     // in and never to the selection.
-    ("check_remote_root_change", Class::W),
-    ("change_remote_root", Class::W),
+    ("check_proton_folder_change", Class::W),
+    ("change_proton_folder", Class::W),
     ("tray_action", Class::Row),
     ("tray_status", Class::DefaultPair),
     ("choose_folder", Class::Independent),

@@ -3786,13 +3786,13 @@ async function writeStagedPolicy(policy) {
 /**
  * Does saving `update` change the Proton folder this folder syncs with — `{ from, to }` — or `null`?
  *
- * The ENGINE answers (`check_remote_root_change`: `config::same_remote_folder`, against the settings file's
+ * The ENGINE answers (`check_proton_folder_change`: `config::same_remote_folder`, against the settings file's
  * value for this pair), so a respelling is not a change and nothing is asked of the person. A rejection is
  * a refused save, in `saveSettings`' `catch`: a question that could not be answered is not "no".
  */
 async function changedProtonFolder(pair, update) {
   if (activeFixture() || !("remote_root" in update)) return null;
-  const answer = await api.checkRemoteRootChange(update.remote_root, { pair });
+  const answer = await api.checkProtonFolderChange(update.remote_root, { pair });
   return answer?.changed ? { from: answer.from, to: answer.to } : null;
 }
 
@@ -3803,7 +3803,7 @@ async function changedProtonFolder(pair, update) {
 //   2. It is: this dialog says which two Proton folders, that the folder starts over from both sides, that
 //      nothing is deleted, and that it can be slow. `Cancel` closes it and changes nothing — the staged
 //      edits stay staged.
-//   3. `Start over and save`: ONE `change_remote_root`, which stops the service, starts the folder's index
+//   3. `Start over and save`: ONE `change_proton_folder`, which stops the service, starts the folder's index
 //      over, writes the settings and starts the service again, in that order, and whose reply carries the
 //      same typed ending a save's restart does. The folder is not held, and nothing is deleted.
 //   4. The ending is latched exactly as a save's, so the Settings bar says what it says after any save.
@@ -3839,7 +3839,7 @@ async function confirmStartOver() {
   render();
   let reply;
   try {
-    reply = await api.changeRemoteRoot(update, { pair });
+    reply = await api.changeProtonFolder(update, { pair });
   } catch (error) {
     // Nothing was saved: the command's refusal, in its own words, says what became of the service and of
     // the folder's index. The dialog stays so it can be read, and the staged edits stay staged.
