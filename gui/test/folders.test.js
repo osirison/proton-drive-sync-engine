@@ -12,12 +12,15 @@ import {
   addRequestOf,
   addViewOf,
   blankAdd,
+  blankStartOver,
   listRows,
   priceOf,
   remotePathForProbe,
   removalOf,
   replyAbout,
   settledLinesOf,
+  START_OVER_BUSY,
+  startOverOf,
   waitStepOf,
   withRule,
 } from "../src/js/folders.js";
@@ -432,4 +435,60 @@ test("the_bar_is_rebuilt_when_the_sentence_appears", () => {
   const before = settingsBarShape({ dirty: true, configStaged: true, folderCount: 1 });
   const after = settingsBarShape({ dirty: true, configStaged: true, folderCount: 2 });
   assert.notEqual(before, after);
+});
+
+// ---- the confirmation of a changed Proton folder (#453) --------------------------------------------------
+
+const TWO = [
+  { name: "docs", local_root: "~/Documents", remote_root: "/Drive/docs" },
+  { name: "photos", local_root: "~/Pictures", remote_root: "/Drive/photos" },
+];
+const ONE = [{ name: "default", local_root: "~/ProtonDrive", remote_root: "/Drive/RemoteFolder" }];
+
+test("the_confirmation_says_the_four_things_in_order_and_nothing_else", () => {
+  const view = startOverOf({ pair: "docs", roster: TWO, from: "/Drive/docs", to: "/Drive/elsewhere" });
+  assert.deepEqual(view.lines, [
+    "docs will sync with /Drive/elsewhere instead of /Drive/docs.",
+    "It starts over from both sides: files that are only on one side are copied to the other, and a file that differs is kept as a conflict copy.",
+    "Nothing is deleted on this computer or in Proton Drive.",
+    "This can take a while for a large folder.",
+  ]);
+  assert.equal(view.title, "Change the Proton Drive folder of docs?");
+});
+
+test("the_nothing_is_deleted_sentence_is_the_removals_own_and_not_a_second_copy", () => {
+  const view = startOverOf({ pair: "docs", roster: TWO, from: "/Drive/docs", to: "/Drive/elsewhere" });
+  assert.ok(view.lines.includes(FOLDERS.remove.keeps));
+});
+
+test("beside_other_folders_the_folder_is_named_by_its_name_and_alone_by_its_folder_on_this_computer", () => {
+  assert.equal(startOverOf({ pair: "photos", roster: TWO, from: "a", to: "b" }).folder, "photos");
+  // A lone folder is called `default`, which means nothing to the person who made it.
+  assert.equal(startOverOf({ pair: "default", roster: ONE, from: "a", to: "b" }).folder, "~/ProtonDrive");
+  // And a roster that does not know the folder (or knows no path for it) falls back to the name.
+  assert.equal(startOverOf({ pair: "default", roster: [], from: "a", to: "b" }).folder, "default");
+  assert.equal(
+    startOverOf({ pair: "default", roster: [{ name: "default", local_root: null }], from: "a", to: "b" })
+      .folder,
+    "default",
+  );
+});
+
+test("the_proton_folders_are_shown_as_a_proton_path_is_read_with_the_leading_slash", () => {
+  const view = startOverOf({ pair: "docs", roster: TWO, from: "Drive/docs", to: "Drive/elsewhere" });
+  assert.equal(view.lines[0], "docs will sync with /Drive/elsewhere instead of /Drive/docs.");
+});
+
+test("a_new_confirmation_waits_for_an_answer_and_carries_what_it_was_drawn_for", () => {
+  const update = { remote_root: "/Drive/elsewhere" };
+  const sent = { remote_root: "/Drive/elsewhere" };
+  const flow = blankStartOver({ pair: "docs", from: "/Drive/docs", to: "/Drive/elsewhere", update, sent });
+  assert.equal(flow.phase, "confirm");
+  assert.equal(flow.error, null);
+  // By identity: `saveSettings` tells "nothing was staged since" from "something was" by it.
+  assert.equal(flow.update, update);
+  assert.equal(flow.sent, sent);
+  assert.equal(flow.pair, "docs");
+  assert.ok(!START_OVER_BUSY.includes(flow.phase), "a confirmation can be left");
+  assert.deepEqual(START_OVER_BUSY, ["working"], "and only the command in flight cannot");
 });

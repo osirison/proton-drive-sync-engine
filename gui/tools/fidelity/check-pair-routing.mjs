@@ -8,13 +8,14 @@
 // that answers each command and **holds a reply open when told to**, which is what makes the window
 // between "the person pressed it" and "the daemon answered" a thing a test can stand in.
 //
-// A hundred and eight scenarios (the first sixteen are phases 5a-2, 5d and 5b-1's; forty-three are phase 5c-1's —
+// A hundred and fifteen scenarios (the first sixteen are phases 5a-2, 5d and 5b-1's; forty-three are phase 5c-1's —
 // twenty-one built with the selector, the nineteen its review added and the three its second review added — and the last fifteen
 // are phase 5e's, the notifications: the six it was built with and the nine its review added; both below the list —
 // the fifteen after them are phase 5c-2's, adding and removing folders, below the notifications', the ten after those
 // are its review's (84 to 93), and the last two are that review's final round (94 and 95), all at the end of the
 // file; the folder that has not had its turn (#455) added four, and its review three: the mark it wears, a withheld
-// deletion beside it, and a long folder name in its hero). The first four are each a way a write can land on a different pair than the one it was
+// deletion beside it, and a long folder name in its hero; the last seven are the Settings half of #453's, changing a
+// folder's Proton folder, in the section at the end of the file). The first four are each a way a write can land on a different pair than the one it was
 // drawn for — each was a bug before the capture existed or would be again if it were removed. The fifth
 // and sixth are the first-run rule at two pairs and at one. The next three are the rest of the capture:
 // a late READ, the decision on a conflict, and the tray panel's pin. The next two are the tray panel's
@@ -301,6 +302,10 @@ class Bridge {
     this.removeReply = null;
     // The sentence a `write_config` is refused with, or null for a save that lands.
     this.writeRefusal = null;
+    // The Proton-folder change (#453): the sentence `change_remote_root` is refused with (nothing was saved),
+    // and the one `check_remote_root_change` itself fails with — a question that could not be answered.
+    this.changeRefusal = null;
+    this.checkRefusal = null;
     // The accounts of earlier removals an `add_pair` finished (`settled_earlier[].message`), as it replies them.
     this.addSettled = [];
     // A stand-in that answers as Rust does once a folder has left the file: a folder asked for by name that the
@@ -625,6 +630,40 @@ class Bridge {
       case "write_config":
         if (this.writeRefusal) throw new Error(this.writeRefusal);
         return null;
+      case "check_remote_root_change": {
+        // As Rust answers it: against the settings FILE's value for the pair (an own property, as a file's
+        // table is — a folder named `constructor` has none), by a stand-in for the engine's rule that
+        // ignores a leading, trailing or `.` separator. A folder with no saved Proton folder is no change.
+        if (this.checkRefusal) throw new Error(this.checkRefusal);
+        const own = Object.hasOwn(this.configs, args?.pair) ? this.configs[args.pair] : null;
+        const from = own?.remote_root ?? null;
+        const bare = (root) =>
+          String(root ?? "")
+            .trim()
+            .split("/")
+            .filter((part) => part && part !== ".")
+            .join("/");
+        const to = args?.remoteRoot ?? "";
+        return {
+          changed: from !== null && bare(from) !== "" && bare(to) !== "" && bare(from) !== bare(to),
+          from,
+          to,
+        };
+      }
+      case "change_remote_root":
+        // The save that starts the folder over: it carries the restart's ending in its own reply.
+        if (this.changeRefusal) throw new Error(this.changeRefusal);
+        return {
+          pair: args?.pair,
+          path: "/home/u/.config/proton-sync/proton-sync.toml",
+          restart: {
+            ending: this.restartEnding,
+            ...(this.restartEnding === "restarted"
+              ? { detail: "the service restarted" }
+              : { reason: "it would not stop" }),
+          },
+          index: `/home/u/${args?.pair}/.sync/sync_index.db`,
+        };
       case "check_cli":
         return { installed: true, distro: null };
       case "scan_conflicts":
@@ -797,6 +836,10 @@ async function poll(page, bridge) {
 }
 
 const pageText = (page) => page.evaluate(() => document.getElementById("app-root")?.innerText ?? "");
+
+/** What the open dialog says, and whether there is one. Defined here: the Settings scenarios below use them. */
+const dialogText = (page) => page.evaluate(() => document.querySelector(".dialog")?.innerText ?? "");
+const hasDialog = (page) => page.evaluate(() => Boolean(document.querySelector(".dialog")));
 
 /** Click the first button whose text is exactly `text`; waits for it to exist. */
 async function press(page, text) {
@@ -2222,13 +2265,23 @@ async function stagedInTheGap({ tab, control, use, key, expected }) {
   await settle(page);
   await select(page, bridge, "docs");
   await press(page, SETTINGS.save);
-  await until("docs' write", () => bridge.called("write_config").length >= 1);
-  expectPair(bridge.called("write_config"), "docs", "write_config");
-  const update = bridge.called("write_config")[0].args.update;
+  // A CHANGED PROTON FOLDER is not a plain write (#453): it is confirmed first, and saved by starting the
+  // folder over. The routing rule is the same one — the write is for the folder the screen was drawn for.
+  const command = key === "remote_root" ? "change_remote_root" : "write_config";
+  if (command === "change_remote_root") {
+    await until("the confirmation", async () => (await dialogText(page)).includes(FOLDERS.startOver.confirm));
+    await press(page, FOLDERS.startOver.confirm);
+  }
+  await until("docs' write", () => bridge.called(command).length >= 1);
+  expectPair(bridge.called(command), "docs", command);
+  const update = bridge.called(command)[0].args.update;
   if (JSON.stringify(update[key]) !== JSON.stringify(expected)) {
     throw new Error(`the write carried ${JSON.stringify(update)}, not ${key} = ${JSON.stringify(expected)}`);
   }
-  if (bridge.called("write_config").length !== 1) throw new Error("more than one write went out");
+  if (bridge.called(command).length !== 1) throw new Error("more than one write went out");
+  if (command === "change_remote_root" && bridge.called("write_config").length) {
+    throw new Error("a changed Proton folder was also saved by a plain write");
+  }
   await page.close();
 }
 
@@ -3268,8 +3321,6 @@ await scenario(
 //  83. THE MENU OFFERS `Add folder…` AT EVERY COUNT.
 
 /** The dialog's text, or "" when none is open. */
-const dialogText = (page) => page.evaluate(() => document.querySelector(".dialog")?.innerText ?? "");
-const hasDialog = (page) => page.evaluate(() => Boolean(document.querySelector(".dialog")));
 /** What a dialog field holds, by its `data-field`. */
 const fieldValue = (page, field) =>
   page.evaluate((name) => document.querySelector(`[data-field="${name}"]`)?.value ?? null, field);
@@ -4552,6 +4603,201 @@ await scenario(
     await settle(page);
     if (bridge.called("check_add_pair").length !== asked) {
       throw new Error("the engine was asked about an add whose dialog had been replaced");
+    }
+    await page.close();
+  },
+);
+
+// ---- changing a folder's Proton folder (#453, the Settings half) ---------------------------------------------
+//
+//  A CHANGED PROTON FOLDER IS NOT A PLAIN WRITE. The folder's index describes the folder it last synced with, so
+//  `Save` asks the engine whether the staged one is another (the settings FILE's value against the typed one, by
+//  the engine's rule) before anything is written, and only a change asks the person. Confirming is ONE
+//  `change_remote_root` that stops the service, starts the folder's index over, writes the file and starts the
+//  service again — for the folder the dialog was drawn for, never the one selected when it is answered.
+//
+//   a. It asks, naming the folder and both Proton folders, writes and restarts nothing, and Cancel changes nothing.
+//   b. Confirming acts on the folder it was drawn for (the selection moved under it), through the one command.
+//   c. A respelling asks nothing and saves as it always did, by a plain write.
+//   d. A refusal keeps the dialog, in the command's words, with the staged edit staged.
+//   e. A start-over in flight is not left by Esc or a shortcut, and its answer closes the dialog.
+//   f. A question that cannot be answered is a refused save, not a plain write.
+//   g. At one folder the folder is named by its folder on this computer, not by `default`.
+
+/** Type a Proton folder into the field of the folder on screen and press Save. */
+async function saveProtonFolder(page, value) {
+  await press(page, "Settings");
+  const field = await until("the remote field", () => fieldNamed('[data-field="remote_root"]')(page));
+  await typeInto(value)(field);
+  await settle(page);
+  await press(page, SETTINGS.save);
+}
+
+const confirmationIsUp = (page) => async () => (await dialogText(page)).includes(FOLDERS.startOver.confirm);
+
+await scenario(
+  "a changed Proton folder asks before it saves, naming the folder and both Proton folders; Cancel changes nothing",
+  async () => {
+    const bridge = new Bridge({ docs: [], photos: [] }, { configs: SETTINGS_FILES });
+    const page = await open(bridge);
+    await saveProtonFolder(page, "/Drive/elsewhere");
+    await until("the confirmation", confirmationIsUp(page));
+    const shown = await dialogText(page);
+    for (const sentence of [
+      FOLDERS.startOver.title("docs"),
+      FOLDERS.startOver.moves("docs", "/Drive/elsewhere", "/Drive/docs"),
+      FOLDERS.startOver.starts,
+      FOLDERS.remove.keeps,
+      FOLDERS.startOver.slow,
+    ]) {
+      if (!shown.includes(sentence)) {
+        throw new Error(
+          `the confirmation does not say ${JSON.stringify(sentence)}: ${JSON.stringify(shown)}`,
+        );
+      }
+    }
+    const asked = bridge.called("check_remote_root_change");
+    if (asked.length !== 1) throw new Error(`the engine was asked ${asked.length} times, not once`);
+    expectPair(asked, "docs", "check_remote_root_change");
+    if (asked[0].args.remoteRoot !== "/Drive/elsewhere") {
+      throw new Error(`the engine was asked about ${JSON.stringify(asked[0].args)}`);
+    }
+    const written = () =>
+      ["write_config", "change_remote_root", "restart_service"].filter((cmd) => bridge.called(cmd).length);
+    if (written().length) throw new Error(`${written()} went out before the person had answered`);
+
+    await press(page, FOLDERS.add.cancel);
+    await until("the dialog to close", async () => !(await hasDialog(page)));
+    await settle(page);
+    if (written().length) throw new Error(`Cancel sent ${written()}`);
+    if (!(await armed(page, SETTINGS.save))) throw new Error("Cancel threw the staged edit away");
+    const typed = await page.evaluate(() => document.querySelector('[data-field="remote_root"]').value);
+    if (typed !== "/Drive/elsewhere")
+      throw new Error(`the field reads ${JSON.stringify(typed)} after Cancel`);
+    await page.close();
+  },
+);
+
+await scenario(
+  "confirming starts the folder over for the folder the dialog was drawn for, through one command and no plain write",
+  async () => {
+    const bridge = new Bridge({ docs: [], photos: [] }, { configs: SETTINGS_FILES });
+    const page = await open(bridge);
+    await saveProtonFolder(page, "/Drive/elsewhere");
+    await until("the confirmation", confirmationIsUp(page));
+    await select(page, bridge, "photos"); // the selection moves under the dialog
+    await press(page, FOLDERS.startOver.confirm);
+    await until("the change", () => bridge.called("change_remote_root").length === 1);
+    expectPair(bridge.called("change_remote_root"), "docs", "change_remote_root");
+    const update = bridge.called("change_remote_root")[0].args.update;
+    if (update.remote_root !== "/Drive/elsewhere" || Object.keys(update).length !== 1) {
+      throw new Error(`the change carried ${JSON.stringify(update)}`);
+    }
+    await until("the dialog to close", async () => !(await hasDialog(page)));
+    await settle(page);
+    if (bridge.called("write_config").length) throw new Error("the change was also saved by a plain write");
+    if (bridge.called("restart_service").length) {
+      throw new Error("the service was restarted a second time: the command's own reply carries its restart");
+    }
+    await select(page, bridge, "docs");
+    await press(page, "Settings");
+    if (await armed(page, SETTINGS.save)) throw new Error("the saved edit is still staged");
+    // The reply's restart ending is latched as a save's own is, so the bar says what it says after any save.
+    await until("the bar's note about the restart", async () =>
+      (await pageText(page)).includes(SETTINGS.savedRestarted),
+    );
+    await page.close();
+  },
+);
+
+await scenario(
+  "a respelling of the saved Proton folder asks nothing and saves as it always did",
+  async () => {
+    for (const spelling of ["Drive/docs", "/Drive/docs/", "./Drive/docs"]) {
+      const bridge = new Bridge({ docs: [], photos: [] }, { configs: SETTINGS_FILES });
+      const page = await open(bridge);
+      await saveProtonFolder(page, spelling);
+      await until("the plain write", () => bridge.called("write_config").length === 1);
+      expectPair(bridge.called("write_config"), "docs", "write_config");
+      if (bridge.called("write_config")[0].args.update.remote_root !== spelling) {
+        throw new Error(`the write carried ${JSON.stringify(bridge.called("write_config")[0].args.update)}`);
+      }
+      if (await hasDialog(page)) throw new Error(`${spelling} asked the person something`);
+      if (bridge.called("change_remote_root").length) throw new Error(`${spelling} started the folder over`);
+      await page.close();
+    }
+  },
+);
+
+await scenario(
+  "a refused start-over keeps the dialog open in the command's words and the edit staged",
+  async () => {
+    const bridge = new Bridge({ docs: [], photos: [] }, { configs: SETTINGS_FILES });
+    bridge.changeRefusal =
+      "The sync service did not stop (it was still answering 8s later), so nothing was changed.";
+    const page = await open(bridge);
+    await saveProtonFolder(page, "/Drive/elsewhere");
+    await until("the confirmation", confirmationIsUp(page));
+    await press(page, FOLDERS.startOver.confirm);
+    await until("the refusal", async () => (await dialogText(page)).includes(bridge.changeRefusal));
+    if (!(await dialogText(page)).includes(FOLDERS.startOver.confirm)) {
+      throw new Error("the dialog lost its button after a refusal");
+    }
+    await press(page, FOLDERS.add.cancel);
+    await until("the dialog to close", async () => !(await hasDialog(page)));
+    if (!(await armed(page, SETTINGS.save))) throw new Error("the refusal threw the staged edit away");
+    await page.close();
+  },
+);
+
+await scenario(
+  "a start-over in flight is not left by Esc or a shortcut, says so, and closes when it answers",
+  async () => {
+    const bridge = new Bridge({ docs: [], photos: [] }, { configs: SETTINGS_FILES });
+    const page = await open(bridge);
+    await saveProtonFolder(page, "/Drive/elsewhere");
+    await until("the confirmation", confirmationIsUp(page));
+    const release = bridge.hold("change_remote_root");
+    await press(page, FOLDERS.startOver.confirm);
+    await until("the change in flight", () => bridge.called("change_remote_root").length === 1);
+    await until("the line that says so", async () =>
+      (await dialogText(page)).includes(FOLDERS.startOver.working("docs")),
+    );
+    await page.keyboard.press("Escape");
+    await tryEveryWayOut(page);
+    if (!(await hasDialog(page))) throw new Error("a way out closed the dialog of a start-over in flight");
+    if ((await litDoor(page)) !== "settings") {
+      throw new Error(`the window moved to ${await litDoor(page)} under a dialog that cannot be left`);
+    }
+    if (await hasButton(page, FOLDERS.add.cancel)) throw new Error("Cancel is offered mid-flight");
+    release();
+    await until("the dialog to close", async () => !(await hasDialog(page)));
+    await page.close();
+  },
+);
+
+await scenario("a question the engine could not answer is a refused save, not a plain write", async () => {
+  const bridge = new Bridge({ docs: [], photos: [] }, { configs: SETTINGS_FILES });
+  bridge.checkRefusal = "the settings file could not be read";
+  const page = await open(bridge);
+  await saveProtonFolder(page, "/Drive/elsewhere");
+  await until("the refusal", async () => (await dialogText(page)).includes(bridge.checkRefusal));
+  if (bridge.called("write_config").length || bridge.called("change_remote_root").length) {
+    throw new Error("a save went out although the engine could not say whether the folder changed");
+  }
+  await page.close();
+});
+
+await scenario(
+  "at one folder the confirmation names the folder on this computer, not `default`",
+  async () => {
+    const bridge = oneFolder({ configs: { docs: { remote_root: "/Drive/docs" } } });
+    const page = await open(bridge);
+    await saveProtonFolder(page, "/Drive/elsewhere");
+    await until("the confirmation", confirmationIsUp(page));
+    const shown = await dialogText(page);
+    if (!shown.includes(FOLDERS.startOver.title("/home/u/docs"))) {
+      throw new Error(`the title does not name the folder on this computer: ${JSON.stringify(shown)}`);
     }
     await page.close();
   },

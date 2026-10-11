@@ -126,6 +126,19 @@ export const ROUTES = {
     task: "5c-2",
     issue: 102,
   },
+  // The confirmation that changing a folder's Proton folder asks for (#453, the Settings half): opened by
+  // `Save` when the staged Proton folder is another one by the engine's rule, and left with Esc or the ✕ —
+  // EXCEPT while the command runs (`dialogVetoed`): it stops the service, starts the folder's index over and
+  // writes the file, and a dialog closed between the steps would hide what became of them. The removal
+  // confirmation's size and shape, and like it drawn in no frame (§112).
+  startOver: {
+    kind: "overlay",
+    presentation: "dialog",
+    closable: true,
+    size: [600, null],
+    task: "453",
+    issue: 453,
+  },
   // `9a First sync`, addressed to a folder that was just added (decision D6): the same surface, the same
   // two numbers, no plan footer — nothing rehearsed this merge, so it claims nothing about it. Opened by
   // the add flow and left with Esc (the merge carries on in the daemon whether or not it is watched), and

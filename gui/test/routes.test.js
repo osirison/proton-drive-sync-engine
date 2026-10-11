@@ -109,8 +109,9 @@ test("the tray no longer asks the shell to navigate, so there is nothing left to
 //
 // The folder dialogs (#102 phase 5c-2) made it ten: `addFolder` and `removeFolder` (drawn: `8a Add folder`,
 // `8a Remove folder`) and `folderMerge`, which is `firstSync` addressed to a folder that was just added and so
-// draws the same frame.
-test("only the ten drawn dialogs are dialogs", () => {
+// draws the same frame. `startOver` (#453) is the eleventh and the one NO frame draws (DEVIATIONS §112): the
+// confirmation that changing a folder's Proton folder asks for, in the removal confirmation's shape.
+test("only the eleven dialogs are dialogs", () => {
   const dialogs = Object.keys(ROUTES).filter((id) => isDialog(id));
   assert.deepEqual(dialogs.sort(), [
     "addFolder",
@@ -123,6 +124,7 @@ test("only the ten drawn dialogs are dialogs", () => {
     "neverSynced",
     "removeFolder",
     "saveRefused",
+    "startOver",
   ]);
 });
 

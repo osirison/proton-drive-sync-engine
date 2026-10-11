@@ -110,15 +110,25 @@ import {
   addViewOf,
   blankAdd,
   blankRemove,
+  blankStartOver,
   listRows,
   remotePathForProbe,
   removalOf,
   replyAbout,
   settledLinesOf,
+  START_OVER_BUSY,
+  startOverOf,
   waitStepOf,
   withRule,
 } from "./folders.js";
-import { addFolderShape, removeFolderShape, renderAddFolder, renderRemoveFolder } from "./screens/folders.js";
+import {
+  addFolderShape,
+  removeFolderShape,
+  renderAddFolder,
+  renderRemoveFolder,
+  renderStartOver,
+  startOverShape,
+} from "./screens/folders.js";
 import { severityOfItem } from "./ui/rows.js";
 import { activeFixture, fid } from "./fixtures/frames.js";
 import { mountPreview, applyPreviewTheme } from "./fixtures/preview.js";
@@ -3155,6 +3165,7 @@ function dialogContentFor(id) {
   if (id === "firstSync" || id === "consent" || id === "cliMissing") return onboardingDialogContent(id);
   if (id === "addFolder") return addFolderDialog();
   if (id === "removeFolder") return removeFolderDialog();
+  if (id === "startOver") return startOverDialog();
   if (id === "folderMerge") return folderMergeDialog();
   return id === "saveRefused" ? settingsDialog(id) : activityDialog(id);
 }
@@ -3726,6 +3737,18 @@ async function saveSettings(pair = store.select.pairName()) {
   // keystroke typed while the write was in flight, while telling the person it had been saved.
   const sent = stagedFor(pair).edits;
   try {
+    // A CHANGED PROTON FOLDER IS NOT A PLAIN WRITE (#453). The folder's index describes the folder it last
+    // synced with, and saved against another it would plan everything the old one had and the new one lacks
+    // as deleted on Proton — so the engine holds such a folder, and this app cannot release the hold. The
+    // person is asked once, and confirming starts the folder over from both sides (`confirmStartOver`). Asked
+    // BEFORE anything is written, and by the engine's rule: `/Drive/X` and `Drive/X/` are one folder and
+    // save as they always did.
+    const changed = await changedProtonFolder(pair, update);
+    if (changed) {
+      settingsSaving = false;
+      openStartOver(blankStartOver({ pair, from: changed.from, to: changed.to, update, sent }));
+      return;
+    }
     // TWO FILES, AND `notify_policy` NEVER GOES IN THE DAEMON'S. Its config parser is
     // `deny_unknown_fields`, so one stray key stops the daemon starting; the GUI's own `gui.toml`
     // is where a GUI-local preference belongs.
@@ -3734,11 +3757,7 @@ async function saveSettings(pair = store.select.pairName()) {
     // "Nothing was saved. Your old settings are still running", and a policy written before a
     // refusal would make that sentence false about the one thing that HAD been written.
     if (Object.keys(update).length) await api.writeConfig(update, { pair });
-    if (policy) {
-      await api.writeNotifyPolicy(policy);
-      notifyPolicy = policy;
-      notifyPolicyEdit = null;
-    }
+    await writeStagedPolicy(policy);
     if (stagedFor(pair).edits === sent) patchStaging(pair, { edits: {} });
     // The rules changed under the report, so the counts on the skip tab are about a config that is
     // no longer on disk. Ask again rather than showing yesterday's numbers next to today's rules.
@@ -3754,6 +3773,100 @@ async function saveSettings(pair = store.select.pairName()) {
   }
   settingsSaving = false;
   render();
+}
+
+/** The staged notification policy, written to `gui.toml` — the GUI's own file, never the daemon's. */
+async function writeStagedPolicy(policy) {
+  if (!policy) return;
+  await api.writeNotifyPolicy(policy);
+  notifyPolicy = policy;
+  notifyPolicyEdit = null;
+}
+
+/**
+ * Does saving `update` change the Proton folder this folder syncs with — `{ from, to }` — or `null`?
+ *
+ * The ENGINE answers (`check_remote_root_change`: `config::same_remote_folder`, against the settings file's
+ * value for this pair), so a respelling is not a change and nothing is asked of the person. A rejection is
+ * a refused save, in `saveSettings`' `catch`: a question that could not be answered is not "no".
+ */
+async function changedProtonFolder(pair, update) {
+  if (activeFixture() || !("remote_root" in update)) return null;
+  const answer = await api.checkRemoteRootChange(update.remote_root, { pair });
+  return answer?.changed ? { from: answer.from, to: answer.to } : null;
+}
+
+// ---- changing a folder's Proton folder (#453, the Settings half) ----
+//
+//   1. `Save` asks the engine whether the staged Proton folder is another one (`changedProtonFolder`).
+//      Nothing is written; if it is not another one the save goes on exactly as it always has.
+//   2. It is: this dialog says which two Proton folders, that the folder starts over from both sides, that
+//      nothing is deleted, and that it can be slow. `Cancel` closes it and changes nothing — the staged
+//      edits stay staged.
+//   3. `Start over and save`: ONE `change_remote_root`, which stops the service, starts the folder's index
+//      over, writes the settings and starts the service again, in that order, and whose reply carries the
+//      same typed ending a save's restart does. The folder is not held, and nothing is deleted.
+//   4. The ending is latched exactly as a save's, so the Settings bar says what it says after any save.
+
+function openStartOver(flow) {
+  startOver = flow;
+  openOverlay("startOver");
+}
+
+function startOverDialog() {
+  const flow = startOver;
+  if (!flow) return null;
+  const view = startOverOf({ pair: flow.pair, roster: folderRoster(), from: flow.from, to: flow.to });
+  return {
+    title: view.title,
+    signature: startOverShape({ flow, view }),
+    children: renderStartOver({
+      flow,
+      view,
+      handlers: { onCancel: () => closeOverlay(), onConfirm: confirmStartOver },
+    }),
+  };
+}
+
+async function confirmStartOver() {
+  const flow = startOver;
+  if (!flow || flow.phase !== "confirm") return;
+  // CAPTURED, class W: the folder the confirmation was drawn for and the update `Save` was pressed with,
+  // whatever is selected or staged by the time the command answers.
+  const { pair, update, sent } = flow;
+  flow.phase = "working";
+  flow.error = null;
+  render();
+  let reply;
+  try {
+    reply = await api.changeRemoteRoot(update, { pair });
+  } catch (error) {
+    // Nothing was saved: the command's refusal, in its own words, says what became of the service and of
+    // the folder's index. The dialog stays so it can be read, and the staged edits stay staged.
+    flow.phase = "confirm";
+    flow.error = String(error?.message ?? error);
+    render();
+    clearTimeout(pollTimer);
+    poll();
+    return;
+  }
+  // The file is written. What the restart became is the typed ending a save's own restart resolves with, and
+  // is latched the same way, so the Settings bar draws the same sentence after either.
+  noteRestartOutcome(reply?.restart);
+  const policy = notifyPolicyEdit != null && notifyPolicyEdit !== notifyPolicy ? notifyPolicyEdit : null;
+  if (startOver === flow) leaveDialog();
+  if (stagedFor(pair).edits === sent) patchStaging(pair, { edits: {} });
+  skipRuleReport = null;
+  skipRuleAsked = false;
+  try {
+    await writeStagedPolicy(policy);
+  } catch (error) {
+    settingsError = String(error?.message ?? error);
+    openOverlay("saveRefused");
+  }
+  await refreshConfig(pair);
+  clearTimeout(pollTimer);
+  poll();
 }
 
 /**
@@ -4492,6 +4605,12 @@ let addFolder = null;
 let removeFolder = null;
 /** The merge of a folder that was just added: `{ pair, seq, waits }`, or null. */
 let folderMerge = null;
+/**
+ * The confirmation that changing a folder's Proton folder asks for (`folders.js` `blankStartOver`), or null
+ * (#453). It carries the folder it was drawn for and the very update `Save` was pressed with, so confirming
+ * saves what was staged then, for that folder, whatever is selected by the time it is answered.
+ */
+let startOver = null;
 /** The debounce between a keystroke and the engine's answer about it. */
 let addFolderTimer = null;
 /** How long the engine is given to answer about what was typed, after the last keystroke. */
@@ -4529,6 +4648,7 @@ function dropOrphanedFolderDialog() {
   const orphaned =
     (dialogOverlay === "addFolder" && !addFolder) ||
     (dialogOverlay === "removeFolder" && !removeFolder) ||
+    (dialogOverlay === "startOver" && !startOver) ||
     (dialogOverlay === "folderMerge" && !folderMerge);
   if (!orphaned) return;
   leaveDialog();
@@ -4538,6 +4658,7 @@ function dropOrphanedFolderDialog() {
 function dialogVetoed(id) {
   if (id === "addFolder") return Boolean(addFolder && BUSY_PHASES.includes(addFolder.phase));
   if (id === "removeFolder") return removeFolder?.phase === "removing";
+  if (id === "startOver") return Boolean(startOver && START_OVER_BUSY.includes(startOver.phase));
   return false;
 }
 
@@ -4548,6 +4669,8 @@ function releaseFolderState(id) {
     addFolder = null;
   } else if (id === "removeFolder") {
     removeFolder = null;
+  } else if (id === "startOver") {
+    startOver = null;
   } else if (id === "folderMerge") {
     folderMerge = null;
   }

@@ -1388,6 +1388,28 @@ export const FOLDERS = {
     done: "Done",
   },
 
+  // ----------------------------------------------------------------- the Proton folder is changed (#453) ----
+  /**
+   * Changing the Proton Drive folder of a folder that already syncs asks once, and saving starts that folder
+   * over (maintainer decision, #453, 2026-10-10). Four things, in the order a person needs them: which two
+   * Proton folders, what starting over does, that nothing is deleted (the removal confirmation's own
+   * sentence, `remove.keeps`, not a second copy of it), and that it can be slow.
+   *
+   * `folder` is the folder as the app calls it: its name beside other folders, its folder on this computer
+   * when it is the only one (`startOverOf`); `to` and `from` are the Proton folders as the settings file
+   * holds them, with the leading `/` a Proton path is read with. No frame draws the dialog: written, not
+   * measured (§112).
+   */
+  startOver: {
+    title: (folder) => `Change the Proton Drive folder of ${folder}?`,
+    moves: (folder, to, from) => `${folder} will sync with ${to} instead of ${from}.`,
+    starts:
+      "It starts over from both sides: files that are only on one side are copied to the other, and a file that differs is kept as a conflict copy.",
+    slow: "This can take a while for a large folder.",
+    confirm: "Start over and save",
+    working: (folder) => `Starting ${folder} over…`,
+  },
+
   // ------------------------------------------------------------------------ the save, with two folders or more ----
   /**
    * What a save costs when there is more than one folder (A11, decision D12). Saving restarts the one

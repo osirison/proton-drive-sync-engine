@@ -86,6 +86,21 @@ const WRITES = [
     { init: { local_root: "/home/u/Photos", remote_root: "/Drive/Photos", exclude: [] } },
   ],
   ["remove_pair", "removePair", (opts) => api.removePair(opts), {}],
+  // CHANGING A FOLDER'S PROTON FOLDER (#453). Both are writes for the pair the edit was typed for: the
+  // question (`remoteRoot` is the staged value, as written) and the save that follows its confirmation
+  // (the very `update` `write_config` takes).
+  [
+    "check_remote_root_change",
+    "checkRemoteRootChange",
+    (opts) => api.checkRemoteRootChange("/Drive/New", opts),
+    { remoteRoot: "/Drive/New" },
+  ],
+  [
+    "change_remote_root",
+    "changeRemoteRoot",
+    (opts) => api.changeRemoteRoot({ remote_root: "/Drive/New", scan_interval_secs: 60 }, opts),
+    { update: { remote_root: "/Drive/New", scan_interval_secs: 60 } },
+  ],
 ];
 
 test("a_class_w_wrapper_without_a_pair_rejects_and_sends_nothing", async () => {

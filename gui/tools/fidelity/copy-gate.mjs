@@ -380,6 +380,24 @@ const NOT_DRAWN = new Map([
     "the button before the folders have been checked; the frame draws the checked dialog",
   ],
   ["FOLDERS.add.checking", "the button mid-click: on screen only while the two folders are being measured"],
+  // #453, the Settings half: the confirmation that changing a folder's Proton folder asks for. THE DESIGN
+  // NEVER DREW IT (DEVIATIONS §112) and the change that builds it adds no frame: the dialog is the removal
+  // confirmation's shape, opened only by a staged Proton folder that is another one by the engine's rule, and
+  // a frame of it would be a fixture's guess at two folders' names. Its sentences are written, not measured,
+  // and `fidelity:pairs` drives the real page through every state of it. The fourth of its four sentences,
+  // `FOLDERS.remove.keeps`, is the removal confirmation's own and is drawn in `8a Remove folder`.
+  [
+    "FOLDERS.startOver.starts",
+    "the confirmation of a changed Proton folder is drawn in no frame (§112): written, not measured",
+  ],
+  [
+    "FOLDERS.startOver.slow",
+    "the confirmation of a changed Proton folder is drawn in no frame (§112): written, not measured",
+  ],
+  [
+    "FOLDERS.startOver.confirm",
+    "the button of the confirmation of a changed Proton folder, drawn in no frame (§112)",
+  ],
 ]);
 
 /**
@@ -759,6 +777,38 @@ const UNGATED_TEMPLATES = new Map([
         "place of the four sentences. The list is drawn from two folders, so the state needs a file that " +
         "lists one beside a daemon that runs two; `8a Remove folder` draws the first of two.",
       absent: "is the only folder, and syncing needs at least one",
+    },
+  ],
+  // #453, the Settings half: the three templates of the confirmation no frame draws (§112). Each fragment is
+  // fixed text of the template that no frame contains, so the entry fails the day a frame draws it.
+  [
+    "FOLDERS.startOver.title",
+    {
+      why:
+        "The title of the confirmation that changing a folder's Proton folder asks for. It is opened by `Save` " +
+        "when the staged Proton folder is another one by the engine's rule, from `app.js`'s `saveSettings`; " +
+        "no frame draws it (DEVIATIONS §112), and the folder it names is the person's, not a fixture's.",
+      absent: "Change the Proton Drive folder of",
+    },
+  ],
+  [
+    "FOLDERS.startOver.moves",
+    {
+      why:
+        "The confirmation's first sentence: the folder and both Proton folders, as the settings file holds " +
+        "them. The folders are the person's own paths, so there is nothing fixed to match in a frame, and " +
+        "no frame draws the dialog (§112).",
+      absent: " will sync with ",
+    },
+  ],
+  [
+    "FOLDERS.startOver.working",
+    {
+      why:
+        "The line the confirmation says while the command runs: it stops the service, starts the folder's " +
+        "index over, writes the settings and starts the service again, which takes the seconds a restart " +
+        "does. No frame holds a moment that long (§112), and `fidelity:pairs` drives it on the real page.",
+      absent: "Starting ",
     },
   ],
   [
