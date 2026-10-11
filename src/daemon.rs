@@ -38853,6 +38853,42 @@ mod tests {
     }
 
     #[test]
+    fn the_question_the_app_asks_before_it_starts_a_folder_over_is_the_holds_question() {
+        // #453, the Settings half. `config::same_remote_folder` is what the desktop app asks to decide
+        // whether a changed Proton folder needs the start-over; the hold is what the daemon does about
+        // one. If the two disagreed, the app would either prompt for a respelling or let a different
+        // folder through to be held after the save. Every pair of spellings, both ways round.
+        let directory = tempdir().expect("tempdir");
+        let config = synced_once_against_drive_a(directory.path());
+        let spellings = [
+            "/Drive/a",
+            "Drive/a",
+            "/Drive/a/",
+            "./Drive/a",
+            "/Drive/b",
+            "/Drive/a/sub",
+            "/Drive",
+            "/Drive/A",
+            "/Drive/a ",
+        ];
+        for configured in spellings {
+            let (_, pair) = with_remote_root(&config, configured).into_parts();
+            for recorded in spellings {
+                let held = changed_remote_root(
+                    Some(&remote_root_comparison_key(Path::new(recorded))),
+                    &pair,
+                )
+                .is_some();
+                assert_eq!(
+                    held,
+                    !crate::config::same_remote_folder(Path::new(recorded), Path::new(configured)),
+                    "recorded {recorded:?}, configured {configured:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn the_same_remote_root_spelled_four_ways_does_not_refuse() {
         // `/Drive/X`, `Drive/X`, `Drive/X/` and `./Drive/X` are one folder (the config reader's own
         // rule): editing the spelling is not a different Proton folder.
@@ -39268,6 +39304,135 @@ mod tests {
                 .is_some(),
             "and its baseline is the new folder's"
         );
+    }
+
+    /// How many of this process's file descriptors name `path` (Linux: `/proc/self/fd`). The tests
+    /// run in one process, so this is the question "does anything in the daemon hold this file open".
+    fn descriptors_open_on(path: &Path) -> usize {
+        let wanted = fs::canonicalize(path).expect("the file exists");
+        fs::read_dir("/proc/self/fd")
+            .expect("/proc/self/fd")
+            .filter_map(Result::ok)
+            .filter(|entry| fs::read_link(entry.path()).is_ok_and(|target| target == wanted))
+            .count()
+    }
+
+    #[test]
+    fn a_held_pair_keeps_neither_its_lock_nor_its_index_open() {
+        // #453, the Settings half. The desktop app's order does not depend on this (it stops the daemon
+        // first), but a design that writes the file first and starts the folder over while a daemon
+        // holds the pair would, and so does anyone who runs `reset-index` by hand against a held pair:
+        // boot opens the pair to find out which Proton folder its index describes, and on a refusal
+        // the runtime is dropped, which releases the per-root lock and the index connection.
+        let directory = tempdir().expect("tempdir");
+        let config = synced_once_against_drive_a(directory.path());
+        {
+            // The control: a pair that is NOT held does have the index open, and the count sees it. A
+            // count that could not would make the zero below mean nothing.
+            let client = MultiRootClient::default().with_tree("/Drive/a", drive_a_tree());
+            let (daemon, _stepper) = restarted(config.clone(), &client);
+            assert!(daemon.runtime(0).is_some(), "precondition: a ready pair");
+            assert!(
+                descriptors_open_on(&config.db_path) > 0,
+                "a ready pair has its index open, and the count sees it"
+            );
+        }
+        let client = MultiRootClient::default().with_tree("/Drive/other", Vec::new());
+
+        let (mut daemon, mut stepper) =
+            restarted(with_remote_root(&config, "/Drive/other"), &client);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_held_on_the_remote_root(&daemon, "Drive/a", "Drive/other");
+
+        // The lock: this process can take it while the daemon, with the held pair, is alive.
+        let taken = LockGuard::acquire(&config.lockfile_path)
+            .expect("the held pair does not hold its per-root lock");
+        drop(taken);
+        // The index: no descriptor of the daemon's names it.
+        assert_eq!(
+            descriptors_open_on(&config.db_path),
+            0,
+            "the held pair left its index open"
+        );
+        // And the lock file itself: only the guard this test just dropped ever had it.
+        assert_eq!(descriptors_open_on(&config.lockfile_path), 0);
+    }
+
+    #[test]
+    fn an_index_started_over_while_no_daemon_ran_is_not_held_for_a_changed_remote_root() {
+        // #453, the Settings half. The desktop app starts a folder over when the person changes its
+        // Proton folder: with no daemon running it runs `reset_index_state` on the pair's index file
+        // (the transaction `proton-sync reset-index` runs), and only then writes the new `remote_root`.
+        // The contract the app stands on is pinned here, on the engine's side: that pair is **not
+        // held**, it lists the new folder, it compares both sides (the file only the disk has goes up,
+        // the file only the new folder has comes down) and it deletes nothing.
+        let directory = tempdir().expect("tempdir");
+        let config = synced_once_against_drive_a(directory.path());
+        let root = config.local_root.clone();
+        {
+            let connection = open_database(&config.db_path).expect("the index outlives the daemon");
+            reset_index_state(&connection).expect("started over");
+        }
+        let client = MultiRootClient::default().with_tree(
+            "/Drive/other",
+            vec![
+                remote_file_entity("a.txt", "volo~na", &sha1_bytes(b"a")),
+                remote_file_entity("c.txt", "volo~nc", &sha1_bytes(b"downloaded")),
+            ],
+        );
+
+        let (mut daemon, mut stepper) =
+            restarted(with_remote_root(&config, "/Drive/other"), &client);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(
+            daemon.runtime(0).is_some(),
+            "not held: {:?}",
+            published_error(&daemon, 0)
+        );
+        assert_eq!(published_error(&daemon, 0), None);
+        assert_eq!(client.walks(), [PathBuf::from("/Drive/other")]);
+        assert!(client.deletes().is_empty(), "{:?}", client.deletes());
+        assert!(root.join("a.txt").exists() && root.join("b.txt").exists());
+        assert_eq!(
+            fs::read(root.join("c.txt")).expect("downloaded from the new folder"),
+            b"downloaded"
+        );
+        assert_eq!(
+            uploads_of(&client, "b.txt"),
+            1,
+            "starting over compares both sides: the file only the disk has is uploaded"
+        );
+        assert_eq!(
+            load_recorded_remote_root(&daemon.runtime(0).expect("ready").connection)
+                .expect("recorded root"),
+            Some(PathBuf::from("Drive/other")),
+            "and the pass records the folder it synced"
+        );
+    }
+
+    #[test]
+    fn a_pause_survives_an_index_started_over_while_no_daemon_ran() {
+        // The reason the app starts a folder over with `reset_index_state` and does not move its whole
+        // `.sync` aside: the pause lives in the index and the reset keeps it on purpose
+        // (`load_pair_paused`). The folder the person paused stays paused through the start-over —
+        // no pass runs, nothing is listed on either side — and a held pair would have been no better.
+        let directory = tempdir().expect("tempdir");
+        let config = synced_once_against_drive_a(directory.path());
+        {
+            let connection = open_database(&config.db_path).expect("the index");
+            store_pair_paused(&connection, true).expect("paused");
+            reset_index_state(&connection).expect("started over");
+        }
+        let client = MultiRootClient::default().with_tree("/Drive/other", drive_a_tree());
+
+        let (mut daemon, mut stepper) =
+            restarted(with_remote_root(&config, "/Drive/other"), &client);
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(daemon.runtime(0).is_some(), "ready, not held");
+        assert!(daemon.shared.pairs[0].is_paused(), "and still paused");
+        assert_the_remote_was_not_touched(&client, "a paused pair");
     }
 
     #[test]

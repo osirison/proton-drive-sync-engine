@@ -107,6 +107,8 @@ pub fn run() {
             commands::add_pair,
             commands::check_add_pair,
             commands::remove_pair,
+            commands::check_remote_root_change,
+            commands::change_remote_root,
             commands::choose_folder,
             commands::run_dry_run,
             commands::apply_plan,

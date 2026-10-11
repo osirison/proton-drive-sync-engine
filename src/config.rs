@@ -1660,6 +1660,21 @@ pub(crate) fn remote_root_comparison_key(remote_root: &Path) -> PathBuf {
         .collect()
 }
 
+/// Whether two `remote_root` values name **the same Proton folder to the engine** — the question the
+/// Proton-folder hold asks (#453), asked of two config values instead of an index and a config.
+///
+/// It is [`remote_root_comparison_key`] equality and nothing else, so a client that asks it (the
+/// desktop app's Settings, before it offers to start a folder over) gets the daemon's own answer
+/// and not a second normaliser to keep in step: `/Drive/X`, `Drive/X`, `Drive/X/` and `./Drive/X`
+/// are one folder, while a subfolder, a parent, another case, a longer name sharing a prefix and a
+/// trailing space are other folders. The values are compared as written — a client that trims what
+/// it writes must trim before it asks, because the daemon reads the file untrimmed.
+///
+/// Whether the `proton-drive` CLI reads the spellings alike is not claimed here; see the key's doc.
+pub fn same_remote_folder(a: &Path, b: &Path) -> bool {
+    remote_root_comparison_key(a) == remote_root_comparison_key(b)
+}
+
 /// Which file a `db_path` / `lockfile_path` names, once `~` is out of the way: an absolute override
 /// verbatim, a relative one under `local_root`, and otherwise the per-root `.sync` default.
 ///
@@ -6949,6 +6964,61 @@ local_delete_mode = \"permanent\"
             key,
             "and another folder is another key"
         );
+    }
+
+    #[test]
+    fn same_remote_folder_says_what_the_hold_says_and_nothing_more() {
+        // #453, the Settings half. The app asks this before it offers to start a folder over, so it
+        // must agree with the key an index records its folder under, in both directions: a respelling
+        // is one folder (asking would be a prompt for nothing), anything else is another (not asking
+        // would leave the pair to be held after the save).
+        for (a, b) in [
+            ("/Drive/X", "Drive/X"),
+            ("/Drive/X", "/Drive/X/"),
+            ("/Drive/X", "./Drive/X"),
+            ("Drive/./X", "/Drive/X"),
+            ("/Drive/X", "/Drive/X"),
+            // The Drive root is a folder like any other, and every spelling of it is one folder.
+            ("/", ""),
+            ("/", "."),
+        ] {
+            assert!(
+                same_remote_folder(Path::new(a), Path::new(b)),
+                "{a} and {b} are one folder"
+            );
+            assert!(
+                same_remote_folder(Path::new(b), Path::new(a)),
+                "and the question is symmetric: {b} and {a}"
+            );
+        }
+        for (a, b) in [
+            ("/Drive/X", "/Drive/Y"),
+            ("/Drive/X", "/Drive/X/sub"),
+            ("/Drive/X/sub", "/Drive/X"),
+            ("/Drive/X", "/Drive"),
+            ("/Drive/X", "/Drive/x"),
+            ("/Drive/X", "/Drive/X2"),
+            ("/Drive/X", "/Drive/X "),
+            ("/Drive/X", "/"),
+            // `..` is kept as written, as the key keeps it: it is never resolved here.
+            ("/Drive/a/../b", "/Drive/b"),
+        ] {
+            assert!(
+                !same_remote_folder(Path::new(a), Path::new(b)),
+                "{a} and {b} are two folders"
+            );
+        }
+        // And it is the key's equality, on any two values: no second rule can creep in.
+        for a in ["/Drive/X", "Drive/X/", "/Drive/Y", "/", "x/../y"] {
+            for b in ["/Drive/X", "./Drive/X", "/Drive/Y/", "", "y"] {
+                assert_eq!(
+                    same_remote_folder(Path::new(a), Path::new(b)),
+                    remote_root_comparison_key(Path::new(a))
+                        == remote_root_comparison_key(Path::new(b)),
+                    "{a} / {b}"
+                );
+            }
+        }
     }
 
     #[test]
