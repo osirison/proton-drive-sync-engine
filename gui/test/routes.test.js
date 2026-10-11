@@ -137,6 +137,16 @@ test("the added folder's merge is the first-run merge's surface, and neither is 
   assert.equal(ROUTES.folderMerge.closable, false);
 });
 
+test("the start-over confirmation has the removal confirmation's surface, and is closable", () => {
+  // Same kind of question (something that cannot be taken back is about to happen), same surface: the
+  // difference between them would be a confirmation that looks different depending on what asked it. Its
+  // Esc and ✕ are vetoed in flight by `dialogVetoed`, not by being unclosable.
+  for (const key of ["size", "presentation", "closable", "kind"]) {
+    assert.deepEqual(ROUTES.startOver[key], ROUTES.removeFolder[key], `startOver.${key}`);
+  }
+  assert.equal(ROUTES.startOver.closable, true);
+});
+
 test("none of onboarding's three dialogs is closable", () => {
   // They are not opened by the user and Esc cannot reach them: app.js drives all three from its own
   // flow state rather than through `openOverlay`, so `closeOverlay` has nothing to close.
