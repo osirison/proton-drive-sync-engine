@@ -445,15 +445,35 @@ const TWO = [
 ];
 const ONE = [{ name: "default", local_root: "~/ProtonDrive", remote_root: "/Drive/RemoteFolder" }];
 
-test("the_confirmation_says_the_four_things_in_order_and_nothing_else", () => {
+test("the_confirmation_says_the_four_things_in_order_and_a_conditional_one_until_the_folder_is_listed", () => {
   const view = startOverOf({ pair: "docs", roster: TWO, from: "/Drive/docs", to: "/Drive/elsewhere" });
   assert.deepEqual(view.lines, [
     "docs will sync with /Drive/elsewhere instead of /Drive/docs.",
+    "If /Drive/elsewhere does not exist in Proton Drive yet, it is created.",
     "It starts over from both sides: files that are only on one side are copied to the other, and a file that differs is kept as a conflict copy.",
     "Nothing is deleted on this computer or in Proton Drive.",
     "This can take a while for a large folder.",
   ]);
   assert.equal(view.title, "Change the Proton Drive folder of docs?");
+});
+
+test("the_conditional_sentence_goes_only_when_the_sync_service_listed_the_folder", () => {
+  const ask = (listed) =>
+    startOverOf({ pair: "docs", roster: TWO, from: "/Drive/docs", to: "Drive/elsewhere", listed }).lines;
+  const sentence = "If /Drive/elsewhere does not exist in Proton Drive yet, it is created.";
+  // Not asked yet, still being asked, and could not be answered all read the same: it may not be there.
+  for (const listed of [undefined, null, false]) {
+    assert.ok(ask(listed).includes(sentence), `listed = ${listed}`);
+    assert.equal(ask(listed).length, 5);
+  }
+  // Listed: it is there, so nothing is created and the sentence would say nothing true.
+  assert.ok(!ask(true).includes(sentence));
+  assert.equal(ask(true).length, 4);
+  // And the four others are the same in every state, in the same order.
+  assert.deepEqual(
+    ask(true),
+    ask(false).filter((line) => line !== sentence),
+  );
 });
 
 test("the_nothing_is_deleted_sentence_is_the_removals_own_and_not_a_second_copy", () => {
@@ -489,6 +509,7 @@ test("a_new_confirmation_waits_for_an_answer_and_carries_what_it_was_drawn_for",
   assert.equal(flow.update, update);
   assert.equal(flow.sent, sent);
   assert.equal(flow.pair, "docs");
+  assert.equal(flow.listed, null, "and has asked nobody whether the new Proton folder is there");
   assert.ok(!START_OVER_BUSY.includes(flow.phase), "a confirmation can be left");
   assert.deepEqual(START_OVER_BUSY, ["working"], "and only the command in flight cannot");
 });

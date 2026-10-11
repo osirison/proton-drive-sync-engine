@@ -802,6 +802,17 @@ const UNGATED_TEMPLATES = new Map([
     },
   ],
   [
+    "FOLDERS.startOver.ifMissing",
+    {
+      why:
+        "The confirmation's conditional second sentence: the new Proton folder, and that it is created if it " +
+        "does not exist yet. It is the person's own path, so there is nothing fixed to match in a frame, and " +
+        "no frame draws the dialog (§112). `fidelity:pairs` drives it on the real page in both of its states " +
+        "(the sync service listed the folder, so it is gone; it could not, so it stays).",
+      absent: " does not exist in Proton Drive yet, it is created.",
+    },
+  ],
+  [
     "FOLDERS.startOver.working",
     {
       why:

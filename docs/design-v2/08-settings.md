@@ -268,19 +268,47 @@ opens this dialog in the removal confirmation's shape (title, sentences, `Cancel
 beside it):
 
 `Change the Proton Drive folder of documents?` (at one folder, of the folder's path on this computer: the lone
-folder is called `default`, which means nothing to the person who made it), then four sentences:
+folder is called `default`, which means nothing to the person who made it), then four sentences and, until the
+sync service has listed the new Proton folder, a conditional one after the first:
 
 1. `documents will sync with /Drive/elsewhere instead of /Drive/docs.`
-2. `It starts over from both sides: files that are only on one side are copied to the other, and a file that differs is kept as a conflict copy.`
-3. `Nothing is deleted on this computer or in Proton Drive.` (the removal confirmation's own sentence)
-4. `This can take a while for a large folder.`
+2. `If /Drive/elsewhere does not exist in Proton Drive yet, it is created.` Saving creates a Proton folder that is
+   not there and uploads the whole local folder into it, so a mistyped one would otherwise be made and filled behind
+   one sentence. It is on the dialog from the moment it opens, and goes only when the sync service **lists** the
+   folder (the Add folder check's first step: one `list` of the typed folder, asked of the service and never of a
+   `proton-drive` child). A folder it could not list stays under the sentence: the service's failure text is for
+   display and is not classified (#103), so "could not list" is never "does not exist", and the dialog never claims
+   either. The same words while the check runs, when it cannot answer and when the folder is missing.
+3. `It starts over from both sides: files that are only on one side are copied to the other, and a file that differs is kept as a conflict copy.`
+4. `Nothing is deleted on this computer or in Proton Drive.` (the removal confirmation's own sentence)
+5. `This can take a while for a large folder.`
 
 `Cancel` closes it and changes nothing: the typed folder stays staged. `Start over and save` is one command that
 stops the sync service (if it is running), starts the folder's index over, writes the settings and starts the
 service again, in that order; while it runs the dialog says `Starting documents over…` and cannot be left. The
 reply's restart ending is latched exactly as a save's restart is, so the Settings bar says what it says after any
-save. A refusal keeps the dialog open with the command's own sentence under the four, and nothing was saved. The
-folder's pause is kept. Drawn in no frame (DEVIATIONS §112): `fidelity:pairs` drives it on the real page.
+save. A refusal keeps the dialog open with the command's own sentence under the sentences, and nothing was saved.
+The folder's pause is kept. Drawn in no frame (DEVIATIONS §112): `fidelity:pairs` drives it on the real page.
+
+The refusals that change nothing, in the command's own words:
+
+- **The app could not tell whether the sync service is running** (`The sync service did not answer, so the app could
+  not tell whether it is running. Nothing was changed.`): a service that may be alive may hold the folder as held or
+  unavailable, which holds neither its index nor its lockfile, so the lockfile proves nothing about it and a reset
+  under it would be lifted by it. The plain save declines to act on the same answer.
+- **The folder on this computer cannot be read** (`The folder /mnt/usb/docs cannot be read (…); an unplugged drive
+  looks the same, so the app cannot start it over. Nothing was changed. Plug in the drive or make the folder
+  readable, then save again.`): the folder's history may be right there, so the app does not call it empty. Nothing
+  is moved by a start-over, and the sentence does not say so (Remove's sentence for the same fact does).
+- **Another folder's Proton folder, or a local folder that reaches another folder through a link**: the config's own
+  validation and its real-path check, asked on a copy of the file before the service is stopped and the index is
+  started over.
+
+Changing the folder on this computer in the same save is not a refusal when the new folder **is certainly not there**
+(not found, under a folder the app can list: the rule Remove applies to a state file): a folder that does not exist
+yet has no history, the service makes it when it starts, and the pair starts there against the new Proton folder. An
+index the config keeps outside the folder is still started over. A new folder under a folder that is not there (a
+drive that is not plugged in) is refused like an unreadable one.
 
 ## Save refused (600px dialog)
 

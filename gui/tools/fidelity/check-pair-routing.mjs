@@ -8,14 +8,15 @@
 // that answers each command and **holds a reply open when told to**, which is what makes the window
 // between "the person pressed it" and "the daemon answered" a thing a test can stand in.
 //
-// A hundred and fifteen scenarios (the first sixteen are phases 5a-2, 5d and 5b-1's; forty-three are phase 5c-1's —
+// A hundred and nineteen scenarios (the first sixteen are phases 5a-2, 5d and 5b-1's; forty-three are phase 5c-1's —
 // twenty-one built with the selector, the nineteen its review added and the three its second review added — and the last fifteen
 // are phase 5e's, the notifications: the six it was built with and the nine its review added; both below the list —
 // the fifteen after them are phase 5c-2's, adding and removing folders, below the notifications', the ten after those
 // are its review's (84 to 93), and the last two are that review's final round (94 and 95), all at the end of the
 // file; the folder that has not had its turn (#455) added four, and its review three: the mark it wears, a withheld
-// deletion beside it, and a long folder name in its hero; the last seven are the Settings half of #453's, changing a
-// folder's Proton folder, in the section at the end of the file). The first four are each a way a write can land on a different pair than the one it was
+// deletion beside it, and a long folder name in its hero; the last eleven are the Settings half of #453's, changing a
+// folder's Proton folder, in the section at the end of the file: seven it was built with and four the review of
+// #467 added for the sentence about a Proton folder that may not exist). The first four are each a way a write can land on a different pair than the one it was
 // drawn for — each was a bug before the capture existed or would be again if it were removed. The fifth
 // and sixth are the first-run rule at two pairs and at one. The next three are the rest of the capture:
 // a late READ, the decision on a conflict, and the tray panel's pin. The next two are the tray panel's
@@ -306,6 +307,9 @@ class Bridge {
     // and the one `check_proton_folder_change` itself fails with — a question that could not be answered.
     this.changeRefusal = null;
     this.checkRefusal = null;
+    // The sentence the sync service's listing of the NEW Proton folder is refused with (a folder that is not
+    // there, a busy or absent service — the page is told only that it could not list it), or null for a listed one.
+    this.listedRefusal = null;
     // The accounts of earlier removals an `add_pair` finished (`settled_earlier[].message`), as it replies them.
     this.addSettled = [];
     // A stand-in that answers as Rust does once a folder has left the file: a folder asked for by name that the
@@ -650,6 +654,11 @@ class Bridge {
           to,
         };
       }
+      case "check_proton_folder_listed":
+        // As Rust answers it: resolves when the sync service LISTED the folder and rejects otherwise, without
+        // saying why in a way the page may read (`ListingOutcome::Failed` is display-only).
+        if (this.listedRefusal) throw new Error(this.listedRefusal);
+        return null;
       case "change_proton_folder":
         // The save that starts the folder over: it carries the restart's ending in its own reply.
         if (this.changeRefusal) throw new Error(this.changeRefusal);
@@ -4623,6 +4632,11 @@ await scenario(
 //   e. A start-over in flight is not left by Esc or a shortcut, and its answer closes the dialog.
 //   f. A question that cannot be answered is a refused save, not a plain write.
 //   g. At one folder the folder is named by its folder on this computer, not by `default`.
+//   h. Saving creates a Proton folder that is not there, so the dialog says it is created if it does not exist,
+//      from the moment it opens, and stops saying so only when the sync service has LISTED the folder.
+//   i. A folder the service could not list keeps the sentence, and the person can still confirm.
+//   j. An answer that comes after the person has confirmed or cancelled changes nothing and breaks nothing.
+//   k. The service is asked in the absolute frame, however the person spelled the folder.
 
 /** Type a Proton folder into the field of the folder on screen and press Save. */
 async function saveProtonFolder(page, value) {
@@ -4801,6 +4815,172 @@ await scenario(
       throw new Error(`the title does not name the folder on this computer: ${JSON.stringify(shown)}`);
     }
     await page.close();
+  },
+);
+
+await scenario(
+  "the confirmation says the new Proton folder is created if it does not exist until the sync service lists it",
+  async () => {
+    const bridge = new Bridge({ docs: [], photos: [] }, { configs: SETTINGS_FILES });
+    const sentence = FOLDERS.startOver.ifMissing("/Drive/elsewhere");
+    const answer = bridge.hold("check_proton_folder_listed");
+    const page = await open(bridge);
+    await saveProtonFolder(page, "/Drive/elsewhere");
+    await until("the confirmation", confirmationIsUp(page));
+    await until(
+      "the folder to be asked about",
+      () => bridge.called("check_proton_folder_listed").length === 1,
+    );
+    const asked = bridge.called("check_proton_folder_listed")[0].args;
+    if (asked.path !== "/Drive/elsewhere" || Object.keys(asked).length !== 1) {
+      throw new Error(`the service was asked ${JSON.stringify(asked)}, not for the typed folder alone`);
+    }
+    // Before the answer the sentence is there: it is true whatever the answer is.
+    if (!(await dialogText(page)).includes(sentence)) {
+      throw new Error(`the dialog does not say ${JSON.stringify(sentence)} while it is being asked`);
+    }
+    answer();
+    await until("the sentence to go once the service listed the folder", async () => {
+      const shown = await dialogText(page);
+      return !shown.includes(sentence) && shown.includes(FOLDERS.startOver.confirm);
+    });
+    // The others are as they were, in the same dialog.
+    const shown = await dialogText(page);
+    for (const kept of [
+      FOLDERS.startOver.moves("docs", "/Drive/elsewhere", "/Drive/docs"),
+      FOLDERS.startOver.starts,
+      FOLDERS.remove.keeps,
+      FOLDERS.startOver.slow,
+    ]) {
+      if (!shown.includes(kept)) throw new Error(`the dialog lost ${JSON.stringify(kept)}`);
+    }
+    if (bridge.called("check_proton_folder_listed").length !== 1)
+      throw new Error("the service was asked twice");
+    await page.close();
+  },
+);
+
+await scenario(
+  "the sync service is asked about the Proton folder in the absolute frame, however the person spelled it",
+  async () => {
+    // `Drive/elsewhere` and `/Drive/elsewhere` are one location: the check is asked, and the sentence names it,
+    // with the leading `/` a Proton path is read with. A relative path would be read by the service against its
+    // own root and list some other folder (the Add folder check refuses it for the same reason).
+    const bridge = new Bridge({ docs: [], photos: [] }, { configs: SETTINGS_FILES });
+    const page = await open(bridge);
+    await saveProtonFolder(page, "Drive/elsewhere");
+    await until("the confirmation", confirmationIsUp(page));
+    await until(
+      "the folder to be asked about",
+      () => bridge.called("check_proton_folder_listed").length === 1,
+    );
+    const asked = bridge.called("check_proton_folder_listed")[0].args;
+    if (asked.path !== "/Drive/elsewhere") {
+      throw new Error(`the service was asked about ${JSON.stringify(asked.path)}, not an absolute path`);
+    }
+    const sentence = FOLDERS.startOver.ifMissing("/Drive/elsewhere");
+    await page.close();
+    // The same dialog with a service that could not list it: the sentence names the absolute path.
+    const again = new Bridge({ docs: [], photos: [] }, { configs: SETTINGS_FILES });
+    again.listedRefusal = "not listed";
+    const second = await open(again);
+    await saveProtonFolder(second, "Drive/elsewhere");
+    await until("the confirmation", confirmationIsUp(second));
+    await until("the sentence", async () => (await dialogText(second)).includes(sentence));
+    await second.close();
+  },
+);
+
+await scenario(
+  "a Proton folder the sync service could not list keeps the sentence, and the person can still confirm",
+  async () => {
+    const bridge = new Bridge({ docs: [], photos: [] }, { configs: SETTINGS_FILES });
+    bridge.listedRefusal = "the sync service did not answer";
+    const sentence = FOLDERS.startOver.ifMissing("/Drive/elsewhere");
+    const page = await open(bridge);
+    await saveProtonFolder(page, "/Drive/elsewhere");
+    await until("the confirmation", confirmationIsUp(page));
+    await until(
+      "the folder to be asked about",
+      () => bridge.called("check_proton_folder_listed").length === 1,
+    );
+    await settle(page);
+    const shown = await dialogText(page);
+    if (!shown.includes(sentence)) {
+      throw new Error(`a folder that could not be listed lost its sentence: ${JSON.stringify(shown)}`);
+    }
+    // The service's own words are for nobody to classify, and are not drawn either.
+    if (shown.includes(bridge.listedRefusal))
+      throw new Error("the listing's failure text reached the dialog");
+    await press(page, FOLDERS.startOver.confirm);
+    await until("the change", () => bridge.called("change_proton_folder").length === 1);
+    expectPair(bridge.called("change_proton_folder"), "docs", "change_proton_folder");
+    await until("the dialog to close", async () => !(await hasDialog(page)));
+    await page.close();
+  },
+);
+
+await scenario(
+  "an answer about the Proton folder that comes after the person has confirmed or cancelled changes nothing",
+  async () => {
+    // Confirmed first: the change runs, the dialog closes, and the late answer reaches nothing.
+    {
+      const bridge = new Bridge({ docs: [], photos: [] }, { configs: SETTINGS_FILES });
+      const answer = bridge.hold("check_proton_folder_listed");
+      const page = await open(bridge);
+      await saveProtonFolder(page, "/Drive/elsewhere");
+      await until("the confirmation", confirmationIsUp(page));
+      await press(page, FOLDERS.startOver.confirm);
+      await until("the change", () => bridge.called("change_proton_folder").length === 1);
+      await until("the dialog to close", async () => !(await hasDialog(page)));
+      answer();
+      await settle(page);
+      if (await hasDialog(page)) throw new Error("a late answer opened a dialog");
+      if (bridge.called("change_proton_folder").length !== 1) throw new Error("the change ran twice");
+      await page.close();
+    }
+    // Confirmed and still running: the answer arrives under a dialog that cannot be left, and does not change
+    // what it says while the command is in flight.
+    {
+      const bridge = new Bridge({ docs: [], photos: [] }, { configs: SETTINGS_FILES });
+      const sentence = FOLDERS.startOver.ifMissing("/Drive/elsewhere");
+      const answer = bridge.hold("check_proton_folder_listed");
+      const finish = bridge.hold("change_proton_folder");
+      const page = await open(bridge);
+      await saveProtonFolder(page, "/Drive/elsewhere");
+      await until("the confirmation", confirmationIsUp(page));
+      await press(page, FOLDERS.startOver.confirm);
+      await until("the change in flight", () => bridge.called("change_proton_folder").length === 1);
+      await until("the line that says so", async () =>
+        (await dialogText(page)).includes(FOLDERS.startOver.working("docs")),
+      );
+      answer();
+      await settle(page);
+      if (!(await dialogText(page)).includes(sentence)) {
+        throw new Error("an answer changed what the dialog says while the change was in flight");
+      }
+      finish();
+      await until("the dialog to close", async () => !(await hasDialog(page)));
+      await page.close();
+    }
+    // Cancelled first: the staged edit stays staged, and the late answer does not bring the dialog back.
+    {
+      const bridge = new Bridge({ docs: [], photos: [] }, { configs: SETTINGS_FILES });
+      const answer = bridge.hold("check_proton_folder_listed");
+      const page = await open(bridge);
+      await saveProtonFolder(page, "/Drive/elsewhere");
+      await until("the confirmation", confirmationIsUp(page));
+      await press(page, FOLDERS.add.cancel);
+      await until("the dialog to close", async () => !(await hasDialog(page)));
+      answer();
+      await settle(page);
+      if (await hasDialog(page)) throw new Error("a late answer brought the dialog back");
+      if (!(await armed(page, SETTINGS.save))) throw new Error("the late answer threw the staged edit away");
+      if (bridge.called("change_proton_folder").length || bridge.called("write_config").length) {
+        throw new Error("a late answer saved something");
+      }
+      await page.close();
+    }
   },
 );
 

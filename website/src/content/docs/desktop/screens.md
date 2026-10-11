@@ -232,6 +232,13 @@ side are copied to the other, a file that differs is kept as a conflict copy, no
 on this computer or in Proton Drive, and it can take a while for a large folder. **Cancel** closes
 the dialog and changes nothing; what you typed stays staged.
 
+Saving creates a Proton folder that is not there and uploads your folder into it, so the dialog
+also says *If /Drive/elsewhere does not exist in Proton Drive yet, it is created.* It is there from
+the moment the dialog opens, and it goes only when the sync service has listed that folder. A
+folder the service could not list keeps the sentence, whatever the reason (the folder is missing,
+the service is busy or not running): the app does not guess, so check the spelling before you
+confirm.
+
 **Start over and save** is one step. It stops the sync service if it is running, starts the
 folder's index over (the same thing `proton-sync reset-index --yes` does, done by the app while
 nothing has the index open), writes the settings, and starts the service again. The history is
@@ -241,6 +248,15 @@ the service was not running, nothing is started: the folder starts over from bot
 you next start it. If any step before the settings are written fails, nothing is saved, the dialog
 stays open with the reason, and the service is started again if the app had stopped it. While the
 step runs, the dialog cannot be left.
+
+Two refusals change nothing at all, and say so. If the app **could not tell whether the sync
+service is running** (it did not answer), it does not start the folder over: a service that is
+running may be holding the folder without having its history open, and would undo the reset. Try
+again once the service answers. If the **folder on this computer cannot be read**, which is also
+what an unplugged drive looks like, the app cannot tell whether its history is there, so it does not
+start it over: plug in the drive or make the folder readable, then save again. Changing the folder
+on this computer to one that does not exist yet, together with the Proton folder, is not refused:
+a folder that is not there has no history, and the service makes it when it starts.
 
 The sync service still holds a folder whose settings are edited outside the app to another Proton
 folder (see [the Proton folder changed](/reference/troubleshooting/#a-folder-pair-shows-an-error-and-isnt-syncing)).

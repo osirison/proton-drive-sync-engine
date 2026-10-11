@@ -3801,8 +3801,9 @@ async function changedProtonFolder(pair, update) {
 //   1. `Save` asks the engine whether the staged Proton folder is another one (`changedProtonFolder`).
 //      Nothing is written; if it is not another one the save goes on exactly as it always has.
 //   2. It is: this dialog says which two Proton folders, that the folder starts over from both sides, that
-//      nothing is deleted, and that it can be slow. `Cancel` closes it and changes nothing — the staged
-//      edits stay staged.
+//      nothing is deleted, and that it can be slow — and, until the sync service has LISTED the new Proton
+//      folder (`askWhetherTheNewFolderIsThere`), that it is created if it does not exist yet. `Cancel`
+//      closes it and changes nothing — the staged edits stay staged.
 //   3. `Start over and save`: ONE `change_proton_folder`, which stops the service, starts the folder's index
 //      over, writes the settings and starts the service again, in that order, and whose reply carries the
 //      same typed ending a save's restart does. The folder is not held, and nothing is deleted.
@@ -3811,12 +3812,36 @@ async function changedProtonFolder(pair, update) {
 function openStartOver(flow) {
   startOver = flow;
   openOverlay("startOver");
+  askWhetherTheNewFolderIsThere(flow);
+}
+
+/**
+ * Ask the sync service whether it LISTS the Proton folder the person typed, and take the sentence "if it does
+ * not exist yet, it is created" off the dialog when it does. The dialog opens first, with the sentence: it is
+ * true whatever the answer is, so a person who confirms before it comes has been told. A rejection — a folder
+ * that is not there, a busy or absent service, anything — keeps the sentence: it is not an answer about the
+ * folder (#103). Overtaken by a Cancel or a confirmation, the answer is dropped.
+ */
+async function askWhetherTheNewFolderIsThere(flow) {
+  const listed = await api.checkProtonFolderListed(remotePathForProbe(String(flow.to ?? ""))).then(
+    () => true,
+    () => false,
+  );
+  if (startOver !== flow || flow.phase !== "confirm") return;
+  flow.listed = listed;
+  render();
 }
 
 function startOverDialog() {
   const flow = startOver;
   if (!flow) return null;
-  const view = startOverOf({ pair: flow.pair, roster: folderRoster(), from: flow.from, to: flow.to });
+  const view = startOverOf({
+    pair: flow.pair,
+    roster: folderRoster(),
+    from: flow.from,
+    to: flow.to,
+    listed: flow.listed,
+  });
   return {
     title: view.title,
     signature: startOverShape({ flow, view }),

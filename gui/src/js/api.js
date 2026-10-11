@@ -128,6 +128,12 @@ export const api = {
   checkProtonFolderChange: (remoteRoot, { pair } = {}) =>
     write("check_proton_folder_change", { remoteRoot }, pair),
   changeProtonFolder: (update, { pair } = {}) => write("change_proton_folder", { update }, pair),
+  // Does the sync service LIST this Proton Drive folder? (#453 review.) The confirmation asks it of the new
+  // folder, `path` absolute (`/Drive/X`): the Add folder check's first step, one request and not its walk.
+  // Resolves when the service listed the folder and REJECTS for every other reason — which is not "the folder
+  // does not exist": the service's failure text is not for classifying (#103), so a missing folder, a busy
+  // service, an expired session and a service that is not running all reject. Not addressed to a pair.
+  checkProtonFolderListed: (path) => invoke("check_proton_folder_listed", { path }),
   // Settings › `Choose…`. Resolves `null` when the picker is DISMISSED and rejects when it could
   // not open — the two were one answer until Copilot's second pass, which made a broken picker
   // indistinguishable from a closed one.
@@ -594,6 +600,9 @@ function mockInvoke(cmd, args) {
         to: args?.remoteRoot ?? "",
       });
     }
+    case "check_proton_folder_listed":
+      // Lists it: a preview's folder is there.
+      return Promise.resolve(null);
     case "change_proton_folder":
       // Accepts, and says what a save's restart says: the service restarted.
       return Promise.resolve({

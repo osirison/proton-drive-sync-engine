@@ -127,6 +127,16 @@ test("a_class_w_wrapper_sends_exactly_its_arguments_and_the_pair_it_was_given", 
   }
 });
 
+test("the_check_that_a_proton_folder_is_listed_is_about_a_path_and_names_no_pair", async () => {
+  // Independent, like `probe_folder`: it asks the sync service about a candidate Proton folder, which is not a
+  // folder pair. The path crosses the bridge as it was given, and nothing else does.
+  await api.checkProtonFolderListed("/Drive/elsewhere");
+  assert.deepEqual(
+    calls.map((call) => [call.cmd, call.args]),
+    [["check_proton_folder_listed", { path: "/Drive/elsewhere" }]],
+  );
+});
+
 test("the_conflict_the_store_tagged_is_sent_without_the_tag", async () => {
   // The wire's `Conflict` has three fields; the store's `pair` is for the caller.
   await api.readConflictPair(CONFLICT, { pair: "docs" });

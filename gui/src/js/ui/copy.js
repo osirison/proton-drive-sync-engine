@@ -1393,7 +1393,8 @@ export const FOLDERS = {
    * Changing the Proton Drive folder of a folder that already syncs asks once, and saving starts that folder
    * over (maintainer decision, #453, 2026-10-10). Four things, in the order a person needs them: which two
    * Proton folders, what starting over does, that nothing is deleted (the removal confirmation's own
-   * sentence, `remove.keeps`, not a second copy of it), and that it can be slow.
+   * sentence, `remove.keeps`, not a second copy of it), and that it can be slow — and a fifth after the
+   * first, `ifMissing`, until the sync service has listed the new Proton folder.
    *
    * `folder` is the folder as the app calls it: its name beside other folders, its folder on this computer
    * when it is the only one (`startOverOf`); `to` and `from` are the Proton folders as the settings file
@@ -1403,6 +1404,14 @@ export const FOLDERS = {
   startOver: {
     title: (folder) => `Change the Proton Drive folder of ${folder}?`,
     moves: (folder, to, from) => `${folder} will sync with ${to} instead of ${from}.`,
+    /**
+     * Saving creates a Proton folder that is not there and uploads the whole local folder into it, so a
+     * mistyped one is made and filled (review of #467). Said from the moment the dialog opens and until the
+     * sync service has LISTED the folder: the service's failure text is display-only (#103), so "it could
+     * not list it" is never "it is not there", and this stays the conditional it is — the same words
+     * whether the check is still running, could not answer, or the folder is missing.
+     */
+    ifMissing: (to) => `If ${to} does not exist in Proton Drive yet, it is created.`,
     starts:
       "It starts over from both sides: files that are only on one side are copied to the other, and a file that differs is kept as a conflict copy.",
     slow: "This can take a while for a large folder.",
