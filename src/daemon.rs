@@ -6583,8 +6583,10 @@ impl<C: ProtonClient> PairPass<'_, C> {
             format!(
                 "no usable proton-drive CLI session (locked keyring, headless host, or the CLI is \
                  not logged in); the {}s event poll is off, so full-tree snapshots and the session \
-                 retry ride each pair's own scan interval instead",
+                 retry ride each pair's own scan interval instead; help: {}",
                 self.events_poll_interval.as_secs(),
+                crate::doctor::links::docs_url("signed-in")
+                    .expect("the signed-in check has an anchor"),
             ),
         );
     }
@@ -6695,7 +6697,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
             AuthState::SignedOut => note_session_declined(
                 self.session_declined,
                 SessionDeclineCause::SignedOut,
-                AUTH_DECLINE_REASON.to_owned(),
+                AUTH_DECLINE_REASON.clone(),
             ),
             AuthState::SignedIn => {
                 clear_session_decline(self.session_declined, SessionDeclineCause::SignedOut);
@@ -10445,8 +10447,17 @@ fn publish_auth_evidence(shared: &ControlShared, state: AuthState) -> bool {
 }
 
 /// The standing reason reported when the Proton session is the thing that is wrong.
-const AUTH_DECLINE_REASON: &str = "the proton-drive CLI session is signed out or expired; run `proton-drive login` \
-     (the daemon reuses that CLI's session)";
+///
+/// Built once because it carries the docs link, which `doctor::links` owns (a literal here would
+/// be a second spelling of the URL). The URL ends the sentence.
+static AUTH_DECLINE_REASON: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    format!(
+        "the proton-drive CLI session is signed out or expired; run `{}` (the daemon reuses that \
+         CLI's session); help: {}",
+        crate::doctor::links::SIGN_IN_COMMAND,
+        crate::doctor::links::docs_url("signed-in").expect("the signed-in check has an anchor"),
+    )
+});
 
 /// A latched process-wide decline: which cause, and the line it was reported with.
 ///
@@ -12810,7 +12821,7 @@ mod tests {
                 .session_declined
                 .as_ref()
                 .map(|declined| declined.reason.as_str()),
-            Some(AUTH_DECLINE_REASON),
+            Some(AUTH_DECLINE_REASON.as_str()),
             "the sign-out is reported through the session latch, not beside it"
         );
         // The reason is a log line and a status string, so it must read as one sentence. The
@@ -12821,6 +12832,16 @@ mod tests {
         assert!(
             !AUTH_DECLINE_REASON.contains("  ") && !AUTH_DECLINE_REASON.contains('\n'),
             "the reason must render as one line with no whitespace run: {AUTH_DECLINE_REASON:?}"
+        );
+
+        // It names the right sign-in command and ends with the docs link for the `signed-in`
+        // check, taken from `doctor::links` (D12).
+        let docs = crate::doctor::links::docs_url("signed-in").expect("an anchor");
+        assert!(
+            AUTH_DECLINE_REASON.contains("`proton-drive auth login`")
+                && AUTH_DECLINE_REASON.ends_with(&docs),
+            "{:?}",
+            *AUTH_DECLINE_REASON
         );
 
         // Recovery clears it, because it is OUR cause…
@@ -22955,6 +22976,12 @@ mod tests {
             reported.contains("no usable proton-drive CLI session")
                 && reported.contains("scan interval"),
             "the session cause must name itself and the cadence it implies: {reported}"
+        );
+        assert!(
+            reported.ends_with(
+                &crate::doctor::links::docs_url("signed-in").expect("the signed-in anchor")
+            ),
+            "the session cause ends with the docs link for the signed-in check: {reported}"
         );
         assert_eq!(
             daemon.pair().event_scope_declined,

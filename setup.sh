@@ -498,7 +498,7 @@ preview_and_start() {
     warn "the dry-run preview failed — NOT starting the service."
     sed 's/^/    /' "${errfile}" >&2 || true
     rm -f "${errfile}"
-    err "fix the above (commonly: run 'proton-drive login'), then re-run ./setup.sh"
+    err "fix the above (commonly: run 'proton-drive auth login'), then re-run ./setup.sh"
   fi
   rm -f "${errfile}"
 

@@ -1764,7 +1764,7 @@ export const NOTIFY = {
       : `Proton Drive is asking you to sign in again. ${count(n)} ${plural(n, "change is", "changes are")} waiting — nothing is lost.`,
   /**
    * `11a Outage` draws `Sign in`. Nothing in the command surface signs in — the daemon reuses the
-   * CLI's keyring session, so re-authenticating is `proton-drive login` in a terminal. DEVIATIONS
+   * CLI's keyring session, so re-authenticating is `proton-drive auth login` in a terminal. DEVIATIONS
    * §67a settled this for the main screen's hero; `Try again now` is the tray's word for the same act.
    */
   outageRetry: TRAY.tryAgain,

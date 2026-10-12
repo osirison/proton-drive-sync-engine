@@ -941,7 +941,7 @@ mod unix_tests {
 
         // The human output names it too, with the action that fixes it.
         let human = run_control_raw(&socket_path, &["status"]);
-        assert!(human.contains("proton-drive login"), "{human}");
+        assert!(human.contains("proton-drive auth login"), "{human}");
 
         // A listing refused for the same reason reports itself as failed, not as empty.
         let (listing, success) = run_control_args_any_exit(&socket_path, &["--json", "list"]);

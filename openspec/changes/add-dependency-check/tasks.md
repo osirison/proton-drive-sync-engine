@@ -133,7 +133,7 @@
 
 ## 4. `proton-sync doctor`
 
-- [ ] 4.1 Add `Commands::Doctor { proton_cli: Option<PathBuf> }` to `src/bin/proton-sync.rs`, with
+- [x] 4.1 Add `Commands::Doctor { proton_cli: Option<PathBuf> }` to `src/bin/proton-sync.rs`, with
       the form `proton-sync [--config FILE] [--json] doctor [--proton-cli PATH]` (`--config`
       stays top-level, D8). Dispatch it at the top of `main`, before
       `resolve_control_socket_path` and the `--pair`/`--all-pairs` branches. It:
@@ -144,7 +144,7 @@
       `build_request`, `run_for_pair`'s exit-code match and its print match are exhaustive, so
       each needs a `Doctor` arm, an `unreachable!` naming the early dispatch. Verify: through
       4.3's tests
-- [ ] 4.2 Add `DoctorTools` to `tests/common/mod.rs` (D14). It:
+- [x] 4.2 Add `DoctorTools` to `tests/common/mod.rs` (D14). It:
       - writes answering stubs for `proton-drive`, `secret-tool` and `systemctl`, each with a
         chosen status, stderr or signal;
       - sets `PATH` to the answering stubs, then the refusing stubs, with no system directory;
@@ -156,7 +156,7 @@
       Extend `refuse_the_real_cli` to refuse a `doctor` command that has no marker, and pin both
       in `tests/test_isolation.rs`. Verify: `cargo test --test test_isolation` passes, and a
       scratch test running `sync_cli(dir).arg("doctor")` without the helper is refused
-- [ ] 4.3 Add `tests/doctor_cli.rs`, every run through `sync_cli` + `DoctorTools` + `run_bounded`.
+- [x] 4.3 Add `tests/doctor_cli.rs`, every run through `sync_cli` + `DoctorTools` + `run_bounded`.
       The cases:
       - **(a) the sibling's smoke scenario.** No `proton-drive`, no config, no bus. Stdout names
         `proton-drive` as missing and contains `https://proton.me/drive/download`, and the exit is
@@ -175,7 +175,7 @@
       - **(i)** the timeout stub gives `unknown` with "did not answer", not `missing`.
 
       Verify: `cargo test --test doctor_cli`
-- [ ] 4.4 Document `doctor` in `website/src/content/docs/cli/reference.md`:
+- [x] 4.4 Document `doctor` in `website/src/content/docs/cli/reference.md`:
       - a Commands-table row;
       - a "Checking this machine: doctor" section saying it does not use the daemon socket and
         listing its flags;
@@ -199,7 +199,7 @@
       - the WARN is not repeated by later passes;
       - `curl` is not checked when no pair streams;
       - the fake records every program asked for, and no lib test reaches `SystemEnvironment`
-- [ ] 5.2 Change `AUTH_DECLINE_REASON` to `proton-drive auth login` plus the `signed-in` docs
+- [x] 5.2 Change `AUTH_DECLINE_REASON` to `proton-drive auth login` plus the `signed-in` docs
       link, and add the same link to the no-session reason (D12). Change `proton-sync status`'s
       `sign-in` row to `proton-drive auth login`. Make `tests/ipc_cli.rs:944` assert the new
       text. Verify: `cargo test --test ipc_cli` passes, and the
@@ -213,7 +213,7 @@
 
 ## 6. The sign-in command, everywhere, and its guard
 
-- [ ] 6.1 Replace `proton-drive login` with `proton-drive auth login` at the remaining live
+- [x] 6.1 Replace `proton-drive login` with `proton-drive auth login` at the remaining live
       sites:
       - `setup.sh:501`;
       - the comments in `gui/src/js/screens/main.js:523` and `gui/src/js/ui/copy.js:1767`;
@@ -224,7 +224,7 @@
       The daemon, the control CLI and `tests/ipc_cli.rs` are task 5.2. The dated records under
       `docs/` stay as written. Verify: the line-break-aware scan (design Context) finds no live
       site
-- [ ] 6.2 Add `tests/sign_in_command.rs` (D13): the roots, the exemptions, the normalisation and
+- [x] 6.2 Add `tests/sign_in_command.rs` (D13): the roots, the exemptions, the normalisation and
       the needle built from parts. Verify: it passes. Putting the wrapped form back into a docs
       page fails it, naming the file and line. Revert that edit
 

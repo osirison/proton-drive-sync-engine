@@ -282,6 +282,135 @@ impl ScriptedEvents {
     }
 }
 
+/// The variable [`DoctorTools::attach`] sets and [`refuse_the_real_cli`] looks for on a `doctor`
+/// run.
+const DOCTOR_TOOLS_ENV: &str = "PROTON_SYNC_TEST_DOCTOR_TOOLS";
+
+/// How one answering stub tool ends. Built with [`Stub::exits`], [`Stub::crashes_with_sigill`] or
+/// [`Stub::never_answers`].
+pub struct Stub {
+    stdout: String,
+    stderr: String,
+    ending: StubEnding,
+}
+
+enum StubEnding {
+    Exit(i32),
+    Sigill,
+    Hang,
+}
+
+impl Stub {
+    /// Exits with `status`.
+    pub fn exits(status: i32) -> Self {
+        Self {
+            stdout: String::new(),
+            stderr: String::new(),
+            ending: StubEnding::Exit(status),
+        }
+    }
+
+    /// Kills itself with SIGILL, the way a binary built for a CPU with AVX2 dies without it.
+    pub fn crashes_with_sigill() -> Self {
+        Self {
+            ending: StubEnding::Sigill,
+            ..Self::exits(0)
+        }
+    }
+
+    /// Does not answer within any limit a check sets.
+    pub fn never_answers() -> Self {
+        Self {
+            ending: StubEnding::Hang,
+            ..Self::exits(0)
+        }
+    }
+
+    /// One line on stdout (no single quote: it is written into the script quoted).
+    pub fn prints(mut self, line: &str) -> Self {
+        assert!(!line.contains('\''), "a stub's output is single-quoted");
+        self.stdout = line.to_owned();
+        self
+    }
+
+    /// One line on stderr (no single quote).
+    pub fn complains(mut self, line: &str) -> Self {
+        assert!(!line.contains('\''), "a stub's output is single-quoted");
+        self.stderr = line.to_owned();
+        self
+    }
+
+    /// `PATH` holds no system directory in a doctor run, so the script uses builtins and absolute
+    /// paths only: a bare `sleep` would fail inside the stub with "not found" and pass the test for
+    /// the wrong reason.
+    fn script(&self) -> String {
+        let mut body = String::from("#!/bin/sh\n# Answering stub (tests/common/mod.rs).\n");
+        if !self.stdout.is_empty() {
+            body.push_str(&format!("printf '%s\\n' '{}'\n", self.stdout));
+        }
+        if !self.stderr.is_empty() {
+            body.push_str(&format!("printf '%s\\n' '{}' >&2\n", self.stderr));
+        }
+        match self.ending {
+            StubEnding::Exit(status) => body.push_str(&format!("exit {status}\n")),
+            StubEnding::Sigill => body.push_str("kill -s ILL $$\n"),
+            StubEnding::Hang => body.push_str("exec /bin/sleep 30\n"),
+        }
+        body
+    }
+}
+
+/// Answering `proton-drive`, `secret-tool` and `systemctl` for a `proton-sync doctor` run: the one
+/// deliberate way a test lets the check run a tool, and what that tool says is the test's.
+///
+/// [`Self::attach`] sets the command's `PATH` to the directory of answering stubs and then the
+/// sandbox's refusing ones, with **no system directory**, so a tool a test did not provide is
+/// reported missing and can never be the real one on the developer's machine. It also sets the
+/// marker [`refuse_the_real_cli`] looks for: a `doctor` run without it is refused.
+pub struct DoctorTools {
+    bin: PathBuf,
+}
+
+impl DoctorTools {
+    /// Stubs live under `<sandbox>/doctor-tools/bin`; none exists until a method adds it.
+    pub fn in_directory(sandbox: &Path) -> Self {
+        let bin = sandbox.join("doctor-tools").join("bin");
+        fs::create_dir_all(&bin).expect("create the doctor tools' directory");
+        Self { bin }
+    }
+
+    /// Where `proton-drive` is, for a test that passes it as `--proton-cli` or `proton_cli`.
+    pub fn proton_drive_path(&self) -> PathBuf {
+        self.bin.join("proton-drive")
+    }
+
+    pub fn proton_drive(&self, stub: Stub) -> &Self {
+        self.write("proton-drive", &stub)
+    }
+
+    pub fn secret_tool(&self, stub: Stub) -> &Self {
+        self.write("secret-tool", &stub)
+    }
+
+    pub fn systemctl(&self, stub: Stub) -> &Self {
+        self.write("systemctl", &stub)
+    }
+
+    fn write(&self, name: &str, stub: &Stub) -> &Self {
+        write_executable(&self.bin.join(name), &stub.script());
+        self
+    }
+
+    /// Sets `command`'s `PATH` to these stubs, then the sandbox's refusing ones, and marks it as
+    /// run with them. Call it after [`sandbox`].
+    pub fn attach<'a>(&self, command: &'a mut Command) -> &'a mut Command {
+        let mut path = OsString::from(&self.bin);
+        path.push(":");
+        path.push(stub_directory());
+        command.env("PATH", path).env(DOCTOR_TOOLS_ENV, "1")
+    }
+}
+
 fn write_executable(path: &Path, body: &str) {
     fs::write(path, body).expect("write a scripted tool");
     #[cfg(unix)]
@@ -303,9 +432,27 @@ fn write_executable(path: &Path, body: &str) {
 ///   table, when it has them), or calls [`opt_in_to_events_driven`]. The flag `--events-driven`
 ///   overrides a file that turned events off, so it is refused as well unless the run opted in.
 ///
-/// Any other program passes: the control CLI never runs `proton-drive` or reads the keyring.
+/// * a `proton-sync doctor` command **without the marker** [`DoctorTools::attach`] sets: it runs
+///   the CLI, `secret-tool` and `systemctl` from `PATH`, which would be the developer's own.
+///
+/// Any other program passes: the control CLI's other verbs never run `proton-drive` or read the
+/// keyring.
 pub fn refuse_the_real_cli(command: &Command) {
-    if Path::new(command.get_program()).file_name() != Some(OsStr::new("proton-syncd")) {
+    let program = Path::new(command.get_program()).file_name();
+    if program == Some(OsStr::new("proton-sync")) && command.get_args().any(|arg| arg == "doctor") {
+        // `doctor` runs the CLI, the keyring tool and `systemctl` from `PATH`: without the
+        // helper's answering stubs and its `PATH` it would run the developer's own.
+        let marked = command
+            .get_envs()
+            .any(|(name, value)| name == OsStr::new(DOCTOR_TOOLS_ENV) && value.is_some());
+        assert!(
+            marked,
+            "{command:?} runs `doctor` without common::DoctorTools: it would run the real \
+             `proton-drive`, `secret-tool` and `systemctl`, and read the real keyring"
+        );
+        return;
+    }
+    if program != Some(OsStr::new("proton-syncd")) {
         return;
     }
     let args: Vec<&OsStr> = command.get_args().collect();

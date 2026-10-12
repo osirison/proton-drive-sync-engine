@@ -46,7 +46,7 @@ app shows neither rather than drawing a bar that means nothing.
 
 **Sync now** disappears while a pass is running. There is no *Re-authenticate* button: nothing
 in the app can sign you in, so an expired session offers **Try again now** and the sign-in
-stays `proton-drive login` in a terminal.
+stays `proton-drive auth login` in a terminal.
 
 ![The main screen with three changes syncing and an attention band below: one row saying one file changed on both sides with a Compare button, another saying two deletions are waiting with a Review button.](../../../assets/screenshots/main-needs-you.png)
 

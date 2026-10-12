@@ -520,7 +520,7 @@ export function heroActionsOf(v) {
   }
   if (v.hero === "authExpired" || v.hero === "failed") {
     // `Try again now` and not `11a Outage`'s `Sign in`: NOTHING IN THE COMMAND SURFACE SIGNS IN.
-    // Re-authentication is `proton-drive login` in a terminal — the daemon reuses that CLI's keyring
+    // Re-authentication is `proton-drive auth login` in a terminal — the daemon reuses that CLI's keyring
     // session — so a `Sign in` button here would be a control with no action behind it, which is
     // worse than the honest one. Retrying is exactly right once the user has signed in elsewhere.
     // DEVIATIONS §67.

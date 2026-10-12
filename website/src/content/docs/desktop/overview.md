@@ -67,7 +67,7 @@ not finished — the same mistake the engine's own #246 fixed. The reply's count
 daemon's own and are not blanked in this state; only the state itself used to be misread.
 
 Nothing in the app can sign you in — an expired session is fixed by running
-`proton-drive login` yourself in a terminal, which is why **Auth expired** offers no
+`proton-drive auth login` yourself in a terminal, which is why **Auth expired** offers no
 sign-in button of its own.
 
 In the **Unreachable** and **First run** states, counters render as **em-dashes** rather
