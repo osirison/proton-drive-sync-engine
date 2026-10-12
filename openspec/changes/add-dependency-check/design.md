@@ -540,11 +540,12 @@ It skips `config` (already validated, and fatal) and `service` (the daemon may b
 This can be added later, additively and with `#[serde(default)]`, if the app needs the daemon's
 view.
 
-**The binary tests.** `version` is not taken through `CliGate`. At that moment no pass is running.
-The only possible overlap is a `list` request on the IPC task, which is accepted under assumption
-A2.
+**`CliGate` and the lock probe.** The start-up `version` call goes through the client's `CliGate`
+and skips the lock probe (assumption A2, settled). The gate matters because a `list` request on
+the IPC task may be spawning a `proton-drive` child at that moment. The probe is skipped because
+the daemon holds the global lock itself, so the probe would always answer "unknown".
 
-Binary-level tests that start `proton-syncd` with a fake `proton_cli` see one extra `version` call
+**The binary tests.** Binary-level tests that start `proton-syncd` with a fake `proton_cli` see one extra `version` call
 at boot. Tests that count or log fake-CLI calls are audited (task 4.3).
 
 ### D13. Fixing the sign-in command, and the guard
@@ -605,7 +606,7 @@ sibling change's.
 
 ## Risks / Trade-offs
 
-- **[`proton-drive version` touches shared state]** (assumption A2). → If verification shows it
+- **[`proton-drive version` touches shared state]** (assumption A2: not proven safe, so this mitigation is in scope, task 3.7). → If verification shows it
   opens the CLI's cache or `events.lock`, `doctor` first probes the user-global lock the way
   `--dry-run` does (`probe_daemon_lock`: shared, non-blocking, released at once). When a daemon
   holds that lock, `doctor` reports `proton-drive` as `unknown` ("the daemon is running; its
@@ -645,22 +646,74 @@ sibling change's.
 
 ## Open Questions
 
-- **A1.** Does `secret-tool lookup` exit non-zero with empty stderr for "no such item" and print
-  the error for every other failure? The design depends on that split. Is a dismissed unlock
-  prompt reported as an error or as "no item"? Settle it by reading libsecret's
-  `tool/secret-tool.c` (task 1.2). If errors turn out to be silent too, D4's `missing` wording
-  already names the other case, and no spec scenario changes.
-- **A2.** Does `proton-drive version`:
-  - exit 0 offline, and without a session;
-  - open no file under the CLI's data directory (`~/.local/share/proton-drive-cli/`, its SQLite
-    cache, `events.lock`);
-  - make no network connection?
+- **A1.** Settled on 2026-10-13, from libsecret 0.21.0 source (nothing was run).
+  [`tool/secret-tool.c`, `secret_tool_action_lookup`](https://gitlab.gnome.org/GNOME/libsecret/-/blob/0.21.0/tool/secret-tool.c#L206):
+  - **No such item:** `secret_password_lookupv_binary_sync` returns `NULL` with no error, and the
+    action does `if (value == NULL) return 1;` without printing. Exit 1, empty stderr. Proven.
+  - **Every other failure:** `if (error != NULL)` prints `<prgname>: <message>` with `g_printerr`
+    and returns 1, so exit 1 with the message on stderr (no session bus, no secret service, a
+    D-Bus error). Bad arguments print a usage text and exit 2. Proven.
+  - **A dismissed unlock prompt:** the lookup finds the item in a locked collection and calls
+    unlock (`on_lookup_searched` in [`libsecret/secret-methods.c`](https://gitlab.gnome.org/GNOME/libsecret/-/blob/0.21.0/libsecret/secret-methods.c#L1356)).
+    Dismissal is not an error in the library: `perform_prompt_complete` records `dismissed` and the
+    task still returns success ([`secret-prompt.c`](https://gitlab.gnome.org/GNOME/libsecret/-/blob/0.21.0/libsecret/secret-prompt.c#L259)).
+    `on_xlock_prompted` then returns the service's `Completed` result as the list of unlocked
+    paths. When that list is empty, `on_lookup_unlocked` returns `NULL` with no error, which is the
+    "no such item" path: exit 1, empty stderr. **Proven:** the library raises no error for a
+    dismissal. **Inferred:** the service sends an empty path list when a prompt is dismissed (the
+    Secret Service specification leaves the value open). So a dismissed prompt very likely reads
+    as `missing`.
+  - **Timeout:** an unanswered prompt blocks `g_main_loop_run` with no limit, so the 60 s cap in D4
+    is the only bound.
 
-  The maintainer settles this on a machine where running the real CLI is safe, or from the CLI's
-  source (task 1.1). D12 and the first risk above give the fallback.
-- **A3.** Settled on 2026-10-12 (systemd on Fedora 44): `systemctl --user show
-  no-such-unit-xyz.service -p LoadState --value` printed `not-found` and exited 0. Task 1.3 re-runs
-  it on the CI image.
+  Result: D4's split holds, and the dismissed-prompt case is silent, as the `missing` wording
+  already assumes. No spec scenario changes.
+- **A2.** Settled on 2026-10-13, from the CLI's source, at commit
+  `8ffae007b0fbb8bcef53514719d6f093bb32dcf9` of `ProtonDriveApps/sdk`, `cli/` (changelog
+  `cli/v0.9.0`). The real CLI was not run. Trace from the entry point
+  ([`proton-drive.ts`](https://github.com/ProtonDriveApps/sdk/blob/8ffae007b0fbb8bcef53514719d6f093bb32dcf9/cli/src/proton-drive.ts), the build entry in `cli/scripts/build-cli.mjs`):
+  1. Imports: `commands/registry.ts` constructs the command objects at import time. The
+     project's own module-level code in `src/` holds only constants and `new Set(...)`; it opens
+     no store, keyring, config file or HTTP client.
+  2. `initSentry(...)` runs before dispatch ([line 14](https://github.com/ProtonDriveApps/sdk/blob/8ffae007b0fbb8bcef53514719d6f093bb32dcf9/cli/src/proton-drive.ts#L14)). Official builds
+     have a `SENTRY_DSN`, so `Sentry.init` runs there. Whether `@sentry/bun`, the bundled SDK or
+     the Bun runtime open a file or a connection at that point is dependency code and was not read.
+  3. `run` calls `runSingleInvocation`, then `runCommand`, then `parseCliInvocation`
+     ([`cli/run.ts`](https://github.com/ProtonDriveApps/sdk/blob/8ffae007b0fbb8bcef53514719d6f093bb32dcf9/cli/src/cli/run.ts#L66)): `version`, `--version` and `-v` call `printVersions`
+     and return before `init(...)`. `init` (`mkdir` of the data, cache and log directories, the
+     SQLite caches, the events store and `events.lock`, the credentials store, the HTTP client) is
+     reached only for a real command ([line 51](https://github.com/ProtonDriveApps/sdk/blob/8ffae007b0fbb8bcef53514719d6f093bb32dcf9/cli/src/cli/run.ts#L51)).
+  4. `printVersions` ([`cli/version.ts`](https://github.com/ProtonDriveApps/sdk/blob/8ffae007b0fbb8bcef53514719d6f093bb32dcf9/cli/src/cli/version.ts)) prints two lines, then does a
+     `fetch` of `https://proton.me/download/drive/cli/version.json` with a 5 s timeout and
+     swallows every failure.
+
+  Answers:
+  - **(a) exit 0 offline and signed out:** yes by source. The fetch error is caught, nothing reads
+    the session, and `proton-drive.ts` ends with `process.exit(0)`. Offline it can take up to 5 s
+    (a black-holed connection); D3's 10 s limit covers that.
+  - **(b) opens nothing under `~/.local/share/proton-drive-cli/`:** true of the project's own code
+    on the `version` path. **Not proven** for the Sentry initialisation and the dependencies'
+    import-time work.
+  - **(c) makes no network connection:** **false.** It makes one HTTPS request to `proton.me`.
+    D3's wording must not claim the call is offline-safe or silent, and the doctor must not run it
+    in a context that forbids network access.
+
+  **Decision (fail closed): (b) is not proven for the whole process, so task 3.7 is in scope.**
+  Consequences:
+  - The lock probe lives inside the shared `proton-drive` check in `src/doctor.rs`, not in the
+    `doctor` verb. The desktop app runs the check beside a live daemon more often than anyone runs
+    `doctor`, so a probe in the verb would leave that path unprotected.
+  - The daemon's own start-up `version` call (D12) skips the probe: the daemon holds the global
+    lock, so the probe would always answer "unknown". It goes through the client's `CliGate`
+    (`src/proton.rs`), because the control-socket task may already be spawning a `proton-drive`
+    child for a `list` request at the same moment.
+- **A3.** Settled on 2026-10-12 and 2026-10-13 (systemd on Fedora 44), read-only:
+  - `systemctl --user show no-such-unit-xyz.service -p LoadState --value` printed `not-found`, exit 0.
+  - `systemctl --user show proton-syncd.service -p LoadState --value` (an installed unit, at
+    `~/.config/systemd/user/proton-syncd.service`) printed `loaded`, exit 0.
+
+  Both exit 0, so the check must read the printed value, as D5 expects. Task 1.3 re-runs it on the
+  CI image.
 - Should recommended problems and could-not-check results also appear somewhere in the desktop
   app after first run? Today they appear only on the blocking screen and in `doctor`. Adding a
   notice later changes nothing here.

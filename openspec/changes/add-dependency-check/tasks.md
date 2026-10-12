@@ -1,6 +1,6 @@
 ## 1. Settle the three assumptions before any code
 
-- [ ] 1.1 A2 (design, Open Questions): find out what `proton-drive version` does. Either the
+- [x] 1.1 A2 (design, Open Questions): find out what `proton-drive version` does. Either the
       maintainer runs it on a machine where running the real CLI is safe, or it is read from the
       CLI's source. The questions:
       - with the network down, and while signed out, does it still exit 0?
@@ -10,7 +10,7 @@
       Write the answers into design.md's Open Questions, replacing A2. If it touches shared
       state, task 3.7 is in scope; if not, mark 3.7 as not needed. Verify: design.md states the
       result and its source
-- [ ] 1.2 A1: read the lookup action in libsecret's `tool/secret-tool.c` and record three things,
+- [x] 1.2 A1: read the lookup action in libsecret's `tool/secret-tool.c` and record three things,
       with a link to the source:
       - whether "no such item" exits non-zero with empty stderr;
       - whether every other failure prints to stderr;
@@ -18,7 +18,7 @@
 
       Verify: design.md states the result. If errors are silent, D4's `missing` wording already
       names that case, and no scenario changes
-- [ ] 1.3 A3: run `systemctl --user show no-such-unit-xyz.service -p LoadState --value; echo $?` and
+- [x] 1.3 A3: run `systemctl --user show no-such-unit-xyz.service -p LoadState --value; echo $?` and
       the same for an installed unit. It is read-only. Verify: design.md records the output (D5
       expects `not-found` with status 0)
 
