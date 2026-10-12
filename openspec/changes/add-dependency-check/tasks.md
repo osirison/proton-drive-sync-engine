@@ -24,16 +24,16 @@
 
 ## 2. Shared definitions and the docs anchors
 
-- [ ] 2.1 Add `paths::default_config_path()` to the engine: `$XDG_CONFIG_HOME` (absolute only,
+- [x] 2.1 Add `paths::default_config_path()` to the engine: `$XDG_CONFIG_HOME` (absolute only,
       the existing `absolute_dir` rule), else `$HOME/.config`, then `proton-sync/proton-sync.toml`.
       Make `gui/src-tauri/src/config_path.rs`'s `gui_config_path` delegate to it (design D6).
       Verify: new engine unit tests cover a relative `XDG_CONFIG_HOME` being ignored, and the
       existing `config_path` tests pass (`cargo test --workspace config_path`)
-- [ ] 2.2 In `src/session.rs`, add one `pub(crate)` builder for the `secret-tool lookup service …
+- [x] 2.2 In `src/session.rs`, add one `pub(crate)` builder for the `secret-tool lookup service …
       account …` arguments and make `read_keyring_session` use it (D4). Behaviour does not
       change. Verify: `cargo test session::tests` passes, and a new unit test pins the exact
       argument list
-- [ ] 2.3 Add `doctor::links` (D9). It holds:
+- [x] 2.3 Add `doctor::links` (D9). It holds:
       - Proton's four URLs;
       - `proton-drive auth login`;
       - `DOCS_SITE`;
@@ -41,7 +41,7 @@
 
       Verify: it compiles, and nothing outside the module spells these URLs (`git grep -n
       'proton.me/drive/download' -- src gui/src-tauri gui/gui-core` lists only `src/doctor.rs`)
-- [ ] 2.4 Add a "Dependency check" section to
+- [x] 2.4 Add a "Dependency check" section to
       `website/src/content/docs/reference/troubleshooting.md`, with one `###` subsection per check
       using the D9 headings. Each subsection says:
       - what the result means;
@@ -55,7 +55,7 @@
 
       Link the existing "Remote operations fail" and "After a reboot …" sections to it.
       Verify: `(cd website && npm run build)` succeeds
-- [ ] 2.5 Add `tests/doctor_links.rs` (D9). It spawns nothing. For every anchor `doctor::links`
+- [x] 2.5 Add `tests/doctor_links.rs` (D9). It spawns nothing. For every anchor `doctor::links`
       can emit, it asserts:
       - the page exists;
       - exactly one heading has that slug;

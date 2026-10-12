@@ -144,6 +144,15 @@ pub fn default_socket_path() -> Result<std::path::PathBuf, String> {
         .map_err(|error| format!("cannot resolve the control socket path: {error}"))
 }
 
+/// The engine's default config path rule (`paths::default_config_path_in`), through the facade, so
+/// the app and `proton-sync doctor` read one definition of where the config is.
+pub fn default_config_path_in(
+    config_home: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> std::path::PathBuf {
+    proton_drive_sync_engine::paths::default_config_path_in(config_home, home)
+}
+
 /// Convenience wrapper for the argument-less commands (`status`, `pause`, `resume`, `syncnow`).
 ///
 /// `target` says which folder pair the command is about (#102 phase 5a): [`Target::DEFAULT`] sends

@@ -203,13 +203,8 @@ pub fn gui_config_path() -> PathBuf {
 }
 
 fn gui_config_path_in(config_home: Option<OsString>, home: Option<OsString>) -> PathBuf {
-    let base = absolute_dir(config_home)
-        // Same rule for `HOME`: a relative one lands the config in the same per-cwd place.
-        .or_else(|| absolute_dir(home).map(|home| home.join(".config")))
-        // Last resort. Was a relative `.config`, which is the very shape the rule above rejects —
-        // the config would be written under, and re-read from, whatever cwd each launch had.
-        .unwrap_or_else(std::env::temp_dir);
-    base.join("proton-sync").join("proton-sync.toml")
+    // The engine owns the rule (the `doctor` check reads the same file), as it does the socket (#277).
+    gui_core::ipc::default_config_path_in(config_home, home)
 }
 
 use gui_core::config_io::expand_config_path as expand;

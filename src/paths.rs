@@ -205,6 +205,27 @@ fn effective_uid() -> u32 {
     unsafe { libc::geteuid() }
 }
 
+/// The config file the desktop app owns and `proton-sync doctor` reads when no `--config` is
+/// given: `$XDG_CONFIG_HOME/proton-sync/proton-sync.toml`, else
+/// `$HOME/.config/proton-sync/proton-sync.toml`. Each variable counts only when it is absolute
+/// ([`absolute_dir`]).
+pub fn default_config_path() -> PathBuf {
+    default_config_path_in(env::var_os("XDG_CONFIG_HOME"), env::var_os("HOME"))
+}
+
+/// [`default_config_path`] with the environment values passed in, so the rule is testable without
+/// changing process-wide variables.
+///
+/// With neither value usable the last resort is the temp directory, not a relative path: a
+/// relative one would be written under, and re-read from, whatever directory each launch had.
+pub fn default_config_path_in(config_home: Option<OsString>, home: Option<OsString>) -> PathBuf {
+    absolute_dir(config_home)
+        .or_else(|| absolute_dir(home).map(|home| home.join(".config")))
+        .unwrap_or_else(env::temp_dir)
+        .join("proton-sync")
+        .join("proton-sync.toml")
+}
+
 /// A base-directory environment value, honoured **only when it is absolute** (#286). The one rule
 /// every XDG reader in this module goes through; the values are taken as arguments (never read
 /// here) so the rule is testable without mutating process-wide environment variables.
@@ -232,6 +253,44 @@ fn absolute_dir(value: Option<OsString>) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_default_config_path_follows_xdg_then_home() {
+        let path = |xdg: Option<&str>, home: Option<&str>| {
+            default_config_path_in(xdg.map(OsString::from), home.map(OsString::from))
+        };
+
+        assert_eq!(
+            path(Some("/cfg"), Some("/home/me")),
+            PathBuf::from("/cfg/proton-sync/proton-sync.toml")
+        );
+        assert_eq!(
+            path(None, Some("/home/me")),
+            PathBuf::from("/home/me/.config/proton-sync/proton-sync.toml")
+        );
+    }
+
+    #[test]
+    fn a_relative_or_empty_config_home_is_ignored() {
+        for bad in [".config", "", "~/.config"] {
+            let path = default_config_path_in(Some(OsString::from(bad)), Some("/home/me".into()));
+            assert_eq!(
+                path,
+                PathBuf::from("/home/me/.config/proton-sync/proton-sync.toml"),
+                "XDG_CONFIG_HOME={bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn with_no_usable_home_the_config_path_is_still_absolute() {
+        let path = default_config_path_in(Some(OsString::new()), Some(OsString::from("home/me")));
+
+        assert_eq!(
+            path,
+            env::temp_dir().join("proton-sync").join("proton-sync.toml")
+        );
+    }
 
     #[test]
     fn runtime_defaults_use_xdg_runtime_dir_when_available() {
