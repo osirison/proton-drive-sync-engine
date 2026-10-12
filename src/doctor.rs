@@ -410,10 +410,45 @@ pub trait Environment {
     fn probe_lock(&self, path: &Path) -> GlobalLockProbe;
     /// stdin is always `/dev/null`.
     fn run(&self, program: &Path, args: &[&str], limit: Duration, stdout: Stdout) -> Ran;
+    /// An environment that cannot look at anything ([`InertEnvironment`]): a caller that would
+    /// report its answers as problems skips the check instead.
+    fn is_inert(&self) -> bool {
+        false
+    }
 }
 
 /// The real environment.
 pub struct SystemEnvironment;
+
+/// Finds nothing and runs nothing: the daemon's default, so a `Daemon` built by a test cannot
+/// reach a real tool. Only `Daemon::new` installs [`SystemEnvironment`].
+pub struct InertEnvironment;
+
+impl Environment for InertEnvironment {
+    fn find_program(&self, _name: &str) -> Option<PathBuf> {
+        None
+    }
+
+    fn var(&self, _name: &str) -> Option<OsString> {
+        None
+    }
+
+    fn read_file(&self, _path: &Path) -> io::Result<String> {
+        Err(io::ErrorKind::NotFound.into())
+    }
+
+    fn probe_lock(&self, _path: &Path) -> GlobalLockProbe {
+        GlobalLockProbe::Unknown("inert environment".to_owned())
+    }
+
+    fn run(&self, _program: &Path, _args: &[&str], _limit: Duration, _stdout: Stdout) -> Ran {
+        Ran::NotFound
+    }
+
+    fn is_inert(&self) -> bool {
+        true
+    }
+}
 
 const HEAD_CHARS: usize = 200;
 /// How long to wait for a pipe's first line once the child is gone. A grandchild that kept the

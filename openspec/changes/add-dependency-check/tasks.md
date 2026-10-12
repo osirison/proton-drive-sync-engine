@@ -186,7 +186,7 @@
 
 ## 5. Daemon start-up check
 
-- [ ] 5.1 Hold an `Arc<dyn doctor::Environment>` in `Daemon`. It defaults to an inert
+- [x] 5.1 Hold an `Arc<dyn doctor::Environment>` in `Daemon`. It defaults to an inert
       environment that finds and runs nothing. Only `Daemon::new` installs `SystemEnvironment`,
       and a `#[cfg(test)]` setter installs a fake. `from_pairs` keeps its signature (24 uses).
       In `Daemon::run`, after the control-socket task is spawned and before the first step, run
@@ -204,11 +204,11 @@
       `sign-in` row to `proton-drive auth login`. Make `tests/ipc_cli.rs:944` assert the new
       text. Verify: `cargo test --test ipc_cli` passes, and the
       degraded-session-once tests still pass
-- [ ] 5.3 Audit every binary test that starts `proton-syncd` with a fake `proton_cli`. Make each
+- [x] 5.3 Audit every binary test that starts `proton-syncd` with a fake `proton_cli`. Make each
       fake answer `version` with exit 0, and update any test that counts or logs CLI calls so
       that it ignores the start-up `version` call. Verify: `cargo test --workspace --all-targets`
       is green, and the PR lists the fake CLI scripts touched
-- [ ] 5.4 Document the start-up check in `website/src/content/docs/daemon/logging.md`: what it
+- [x] 5.4 Document the start-up check in `website/src/content/docs/daemon/logging.md`: what it
       checks, that it logs once and keeps running, and where the fix is. Verify: the site builds
 
 ## 6. The sign-in command, everywhere, and its guard

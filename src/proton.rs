@@ -299,6 +299,12 @@ pub trait ProtonClient: Send + Sync {
     fn remote_root_uid(&self, _remote_root: &Path) -> AppResult<Option<String>> {
         Ok(None)
     }
+    /// The gate this client's `proton-drive` children run under, for a caller that spawns one of
+    /// its own (the daemon's start-up check) and must not overlap a `list` request's. `None` for a
+    /// client that shells out to nothing, which is what a test double wants.
+    fn cli_gate(&self) -> Option<Arc<CliGate>> {
+        None
+    }
     fn ensure_root_directory(&self, remote_root: &Path) -> AppResult<()> {
         Err(boxed_error(format!(
             "creating remote root directories is not supported by this Proton client: {}",
@@ -767,6 +773,10 @@ impl Default for CommandPolicy {
 }
 
 impl ProtonClient for ProtonDriveClient {
+    fn cli_gate(&self) -> Option<Arc<CliGate>> {
+        Some(Arc::clone(&self.gate))
+    }
+
     fn list(&self, remote_root: &Path) -> AppResult<HashMap<PathBuf, RemoteFile>> {
         match self.list_entities_or_missing_root(remote_root)? {
             RemoteListingStatus::Found(entities) => Ok(entities
