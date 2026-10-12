@@ -68,7 +68,7 @@
 
 ## 3. The check module (`src/doctor.rs`)
 
-- [ ] 3.1 Add the types (`CheckId`, `Severity`, `Outcome`, `CheckResult`, `Report`, `Inputs`), the
+- [x] 3.1 Add the types (`CheckId`, `Severity`, `Outcome`, `CheckResult`, `Report`, `Inputs`), the
       `Environment` trait and `SystemEnvironment` (D1, D2). `SystemEnvironment`:
       - nulls stdin;
       - keeps or discards stdout;
@@ -84,13 +84,13 @@
       - a non-executable file giving `NotExecutable`.
 
       Run with `cargo test doctor::tests`
-- [ ] 3.2 Implement the `proton-drive` check: resolve the program (a `PATH` search, no spawn,
+- [x] 3.2 Implement the `proton-drive` check: resolve the program (a `PATH` search, no spawn,
       for a bare name) and run `version` with a 10 s limit (D3). Verify: one unit test per row of
       D3's table, all against a fake `Environment`, including:
       - "non-zero exit is `failed` and not `missing`" (the reversed §72 case);
       - SIGILL naming `linux/x64-baseline`;
       - the `ok` statement carrying the version and the absolute path
-- [ ] 3.3 Implement the `signed-in` check in D4's order:
+- [x] 3.3 Implement the `signed-in` check in D4's order:
       1. the credential store;
       2. `secret-tool` on `PATH`;
       3. the session bus;
@@ -101,11 +101,11 @@
       - the fake records `Discard` for the lookup;
       - a stderr line gives `unknown`, and empty stderr gives `missing`;
       - a timeout's wording mentions the unlock prompt
-- [ ] 3.4 Implement `secret-tool`, `curl` and `session-bus` (presence and environment only), and
+- [x] 3.4 Implement `secret-tool`, `curl` and `session-bus` (presence and environment only), and
       `service` (`systemctl --user show proton-syncd.service -p LoadState --value`, D5). Verify:
       unit tests for every outcome, including `masked` → failed and `systemctl` absent → unknown,
       and the recommended wording that says sync still works but walks the whole folder
-- [ ] 3.5 Implement the `config` check and the choice of CLI path (D6):
+- [x] 3.5 Implement the `config` check and the choice of CLI path (D6):
       - `--proton-cli` first;
       - then a validated file's `proton_cli`;
       - then `proton-drive`.
@@ -118,14 +118,14 @@
         and says so;
       - an absolute `proton_cli` in the file is the path run;
       - `--proton-cli` beats the file
-- [ ] 3.6 Implement the verdict (D7), the human renderer (D8) and `Serialize` for `--json`.
+- [x] 3.6 Implement the verdict (D7), the human renderer (D8) and `Serialize` for `--json`.
       Verify: unit tests cover:
       - the verdict table, including a recommended problem leaving `ok`;
       - every URL in the human output followed by whitespace or a newline, with no punctuation
         attached;
       - the JSON round-tripping through `serde_json::from_str`;
       - no CLI-related result carrying a link outside `doctor::links`
-- [ ] 3.7 Only if 1.1 found that `version` touches shared state: before running `version`, probe
+- [x] 3.7 Only if 1.1 found that `version` touches shared state: before running `version`, probe
       the user-global lock with `daemon::probe_daemon_lock` (shared, non-blocking). When a daemon
       holds it, report `proton-drive` as `unknown` ("the daemon is running; its start-up log
       checks the CLI") without spawning. Verify: a unit test with the lock held asserts that

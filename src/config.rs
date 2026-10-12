@@ -581,6 +581,12 @@ pub struct FileConfig {
 }
 
 impl FileConfig {
+    /// The file's `proton_cli`, as written (no `~` expansion). Read by the dependency check
+    /// (`doctor`) to learn which CLI the daemon would run.
+    pub fn proton_cli(&self) -> Option<&Path> {
+        self.proton_cli.as_deref()
+    }
+
     /// Whether this file sets `key` **at the top level** (either spelling — the parse already
     /// resolved the kebab-case alias).
     ///
