@@ -20,7 +20,14 @@
 #
 # `check` reads files only (grep, sed, awk). `set` also runs `cargo update --workspace --offline`
 # and `npm version`, because Cargo.lock and gui/package-lock.json belong to those tools: editing
-# them with sed leaves a lockfile that the next `--locked` build refuses.
+# them with sed leaves a lockfile that the next `--locked` build refuses. The offline cargo step
+# needs a populated cargo cache (run `cargo fetch` once with the network first); it does not need
+# the network itself.
+#
+# `set` is all-or-nothing: it copies every file it will write first, and if anything fails it puts
+# them all back and exits non-zero. It also drops the changelog and AppStream entries of every
+# version equal to or higher than the one being set (see "Superseded entries" below), and refuses
+# to do so for a version whose tag exists.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -227,14 +234,8 @@ today_rfc2822() { LC_ALL=C date -R; }
 today_iso() { LC_ALL=C date +%F; }
 
 add_spec_changelog() {
-  local upstream="$1" rpm="$2" newest who file="$root/$SPEC"
-  newest="$(spec_changelog_version)"
-  [[ "$newest" == "$rpm-"* ]] && return 0
-  # keep the name and address of the previous entry: "* Day Mon DD YYYY NAME <ADDRESS> - VERSION"
-  who="$(awk '/^%changelog/ { on = 1; next } on && /^\* / { print; exit }' "$file" |
-    sed -E 's/^\* [A-Za-z]{3} [A-Za-z]{3} [0-9]{1,2} [0-9]{4} //; s/ - .*//')"
-  [[ -n "$who" ]] || die "$SPEC: no earlier %changelog entry to take the name from"
-  awk -v entry="* $(today_rpm) $who - $rpm-1" -v note="- Release $upstream." '
+  local upstream="$1" rpm="$2" revision="$3" who="$4" file="$root/$SPEC"
+  awk -v entry="* $(today_rpm) $who - $rpm-$revision" -v note="- Release $upstream." '
     { print }
     /^%changelog/ { print entry; print note; print "" }
   ' "$file" >"$file.new"
@@ -242,12 +243,9 @@ add_spec_changelog() {
 }
 
 add_deb_changelog() {
-  local upstream="$1" rpm="$2" file="$root/$DEB_CHANGELOG" who
-  [[ "$(deb_changelog_version)" == "$rpm-"* ]] && return 0
-  who="$(grep -m1 -E '^ -- ' "$file" | sed -E 's/^ -- (.*[>])  .*/\1/')"
-  [[ -n "$who" ]] || die "$DEB_CHANGELOG: no earlier entry to take the maintainer from"
+  local upstream="$1" rpm="$2" revision="$3" who="$4" file="$root/$DEB_CHANGELOG"
   {
-    printf '%s (%s) unstable; urgency=medium\n\n' "$PACKAGE" "$(deb_version "$upstream")"
+    printf '%s (%s-%s) unstable; urgency=medium\n\n' "$PACKAGE" "$rpm" "$revision"
     printf '  * Release %s.\n\n' "$upstream"
     printf ' -- %s  %s\n\n' "$who" "$(today_rfc2822)"
     cat "$file"
@@ -257,7 +255,6 @@ add_deb_changelog() {
 
 add_metainfo_release() {
   local upstream="$1" rpm="$2" file="$root/$METAINFO"
-  [[ "$(metainfo_release_attribute version)" == "$rpm" ]] && return 0
   grep -q -E '^[[:space:]]*<releases>' "$file" || die "$METAINFO: no <releases> element"
   awk -v v="$rpm" -v d="$(today_iso)" -v t="$(appstream_type "$upstream")" -v up="$upstream" '
     { print }
@@ -272,6 +269,138 @@ add_metainfo_release() {
   command mv -f "$file.new" "$file"
 }
 
+# The name and address of the newest entry, read before the entries are dropped: the new entry
+# is written in the same name.
+spec_changelog_author() {
+  # "* Day Mon DD YYYY NAME <ADDRESS> - VERSION"
+  awk '/^%changelog/ { on = 1; next } on && /^\* / { print; exit }' "$root/$SPEC" |
+    sed -E 's/^\* [A-Za-z]{3} [A-Za-z]{3} [0-9]{1,2} [0-9]{4} //; s/ - .*//'
+}
+deb_changelog_author() {
+  grep -m1 -E '^ -- ' "$root/$DEB_CHANGELOG" | sed -E 's/^ -- (.*[>])  .*/\1/' || true
+}
+
+# --- Superseded entries ------------------------------------------------------------------------
+#
+# Setting V removes every changelog and <release> entry whose upstream version is V or higher,
+# then adds V's entry on top. An equal entry is replaced, so running `set` again for one version
+# changes nothing. A higher entry cannot have been released: the policy is to fix forward, and
+# lowering a published version needs an epoch. Leaving it would stack V above or beside entries
+# it supersedes (appstream: releases-not-in-order; two 0.1.0 entries after the final release).
+
+# "X Y Z RANK N" for an upstream version; RANK orders alpha < beta < rc < final.
+version_key() {
+  local v="$1" core pre="" rank=4 n=0 x y z
+  core="${v%%-*}"
+  if [[ "$v" == *-* ]]; then
+    pre="${v#*-}"
+    case "${pre%%.*}" in
+      alpha) rank=1 ;;
+      beta) rank=2 ;;
+      rc) rank=3 ;;
+    esac
+    n="${pre#*.}"
+  fi
+  IFS=. read -r x y z <<<"$core"
+  echo "$x $y $z $rank $n"
+}
+
+# prints -1, 0 or 1 for A <, = or > B
+version_compare() {
+  local -a a b
+  local i
+  read -ra a <<<"$(version_key "$1")"
+  read -ra b <<<"$(version_key "$2")"
+  for i in 0 1 2 3 4; do
+    if ((a[i] < b[i])); then echo -1; return 0; fi
+    if ((a[i] > b[i])); then echo 1; return 0; fi
+  done
+  echo 0
+}
+
+# "ORDINAL<TAB>VERSION-REVISION" for each entry of a file, newest first. KIND: spec, deb, meta.
+list_entries() {
+  case "$1" in
+    spec) awk '/^%changelog/ { on = 1; next } on && /^\* / { n++; v = $0; sub(/.* - /, "", v); print n "\t" v }' "$root/$SPEC" ;;
+    deb) awk '/^proton-drive-sync-engine \(/ { n++; v = $0; sub(/^[^(]*\(/, "", v); sub(/\).*/, "", v); print n "\t" v }' "$root/$DEB_CHANGELOG" ;;
+    meta) awk '/<release / { n++; v = $0; sub(/.*version="/, "", v); sub(/".*/, "", v); print n "\t" v "-1" }' "$root/$METAINFO" ;;
+  esac
+}
+
+# drop_entries KIND " 1 3 ": delete the entries with those ordinals, whole
+drop_entries() {
+  local kind="$1" ordinals="$2" file
+  case "$kind" in
+    spec) file="$root/$SPEC" ;;
+    deb) file="$root/$DEB_CHANGELOG" ;;
+    meta) file="$root/$METAINFO" ;;
+  esac
+  awk -v kind="$kind" -v drop="$ordinals" '
+    kind == "spec" && /^%changelog/ { in_log = 1 }
+    {
+      starts = 0
+      if (kind == "spec") starts = (in_log && $0 ~ /^\* /)
+      else if (kind == "deb") starts = ($0 ~ /^proton-drive-sync-engine \(/)
+      else starts = ($0 ~ /<release /)
+      if (starts) { n++; skipping = (index(drop, " " n " ") > 0) }
+      if (skipping) {
+        if (kind == "meta" && $0 ~ /<\/release>/) skipping = 0
+        next
+      }
+      print
+    }
+  ' "$file" >"$file.new"
+  command mv -f "$file.new" "$file"
+}
+
+# plan_drops KIND UPSTREAM: sets DROP_ORDINALS (" 1 2 "), DROP_VERSIONS (upstream forms) and
+# EQUAL_REVISION (the revision of an entry for UPSTREAM itself, or 1)
+plan_drops() {
+  local kind="$1" upstream="$2" ordinal entry version revision
+  DROP_ORDINALS=" "
+  DROP_VERSIONS=()
+  EQUAL_REVISION=1
+  while IFS=$'\t' read -r ordinal entry; do
+    [[ -n "$ordinal" ]] || continue
+    revision="${entry##*-}"
+    version="${entry%-*}"
+    version="${version//\~/-}"
+    valid_shape "$version" || die "a $kind entry has the version '$entry', which is not an upstream version"
+    if [[ "$(version_compare "$version" "$upstream")" != -1 ]]; then
+      DROP_ORDINALS+="$ordinal "
+      DROP_VERSIONS+=("$version")
+      if [[ "$version" == "$upstream" && "$revision" =~ ^[1-9][0-9]*$ ]]; then EQUAL_REVISION="$revision"; fi
+    fi
+  done < <(list_entries "$kind")
+}
+
+# --- Undoing a failed set ----------------------------------------------------------------------
+
+snapshot_dir=""
+committed=0
+
+restore_snapshot() {
+  local file
+  for file in "$@"; do
+    command cp -p "$snapshot_dir/$file" "$root/$file"
+    rm -f "$root/$file.new" "$root/$file.kept"
+  done
+}
+
+SET_FILES=()
+
+on_exit() {
+  local status=$?
+  if [[ -n "$snapshot_dir" ]]; then
+    if ((committed == 0)); then
+      restore_snapshot "${SET_FILES[@]}"
+      echo "version.sh: set failed; every file is back as it was." >&2
+    fi
+    rm -rf "$snapshot_dir"
+  fi
+  return "$status"
+}
+
 cmd_set() {
   local upstream="${1:-}"
   [[ $# -eq 1 ]] || { usage; exit 2; }
@@ -280,18 +409,61 @@ cmd_set() {
     echo "version.sh: X.Y.Z-(alpha|beta|rc).N with N a positive integer (0.1.0-beta.1)." >&2
     exit 2
   fi
-  local rpm arch file
+  local rpm arch file kind
   rpm="$(rpm_version "$upstream")"
   arch="$(arch_version "$upstream")"
+  SET_FILES=("${MANIFESTS[@]}" Cargo.lock "$TAURI_CONF" "$GUI_PACKAGE" "$GUI_LOCK" "$SPEC" "$PKGBUILD" \
+    "$DEB_CHANGELOG" "$METAINFO" "$ASSETS")
 
   # Everything that will be written must exist before the first write, so a wrong checkout
   # changes nothing.
-  for file in "${MANIFESTS[@]}" Cargo.lock "$TAURI_CONF" "$GUI_PACKAGE" "$GUI_LOCK" "$SPEC" "$PKGBUILD" \
-    "$DEB_CHANGELOG" "$METAINFO" "$ASSETS"; do
+  for file in "${SET_FILES[@]}"; do
     [[ -f "$root/$file" ]] || die "$file: not found under $root"
   done
   command -v cargo >/dev/null || die "cargo is needed to regenerate Cargo.lock"
   command -v npm >/dev/null || die "npm is needed to regenerate gui/package-lock.json"
+
+  local spec_who deb_who
+  spec_who="$(spec_changelog_author)"
+  [[ -n "$spec_who" ]] || die "$SPEC: no %changelog entry to take the name from"
+  deb_who="$(deb_changelog_author)"
+  [[ -n "$deb_who" ]] || die "$DEB_CHANGELOG: no entry to take the maintainer from"
+
+  # Plan which entries are superseded, and refuse before any write if one of them was tagged.
+  local spec_drops deb_drops meta_drops spec_rev deb_rev dropped=()
+  plan_drops spec "$upstream"; spec_drops="$DROP_ORDINALS"; spec_rev="$EQUAL_REVISION"
+  dropped+=("${DROP_VERSIONS[@]/#/RPM %changelog }")
+  plan_drops deb "$upstream"; deb_drops="$DROP_ORDINALS"; deb_rev="$EQUAL_REVISION"
+  dropped+=("${DROP_VERSIONS[@]/#/debian\/changelog }")
+  plan_drops meta "$upstream"; meta_drops="$DROP_ORDINALS"
+  dropped+=("${DROP_VERSIONS[@]/#/metainfo }")
+  local root_physical top entry version
+  root_physical="$(cd "$root" && pwd -P)"
+  if command -v git >/dev/null &&
+    top="$(git -C "$root" rev-parse --show-toplevel 2>/dev/null)" && [[ "$top" == "$root_physical" ]]; then
+    for entry in "${dropped[@]}"; do
+      version="${entry##* }"
+      if [[ -n "$(git -C "$root" tag -l "v$version")" ]]; then
+        echo "version.sh: refusing: setting $upstream would drop the $entry entry, and the tag v$version exists." >&2
+        echo "version.sh: a tagged version cannot be lowered; set a higher one." >&2
+        exit 2
+      fi
+    done
+  fi
+
+  # From here on a failure puts every file back.
+  snapshot_dir="$(mktemp -d)"
+  trap on_exit EXIT
+  for file in "${SET_FILES[@]}"; do
+    mkdir -p "$snapshot_dir/$(dirname "$file")"
+    command cp -p "$root/$file" "$snapshot_dir/$file"
+  done
+
+  for entry in "${dropped[@]}"; do
+    echo "version.sh: dropping the $entry entry (superseded by $upstream)"
+  done
+  local current_upstream
+  current_upstream="$(line_value "$PKGBUILD" '_upstream_ver=')"
 
   for file in "${MANIFESTS[@]}"; do manifest_set "$file" "$upstream"; done
   json_set "$TAURI_CONF" "$upstream"
@@ -299,28 +471,38 @@ cmd_set() {
 
   replace_line "$SPEC" '^%global[[:space:]]+upstream_version[[:space:]].*' "%global upstream_version $upstream"
   replace_line "$SPEC" '^Version:[[:space:]].*' "Version:        $rpm"
-  add_spec_changelog "$upstream" "$rpm"
+  drop_entries spec "$spec_drops"
+  add_spec_changelog "$upstream" "$rpm" "$spec_rev" "$spec_who"
 
   replace_line "$PKGBUILD" '^_upstream_ver=.*' "_upstream_ver=$upstream"
   replace_line "$PKGBUILD" '^pkgver=.*' "pkgver=$arch"
-  replace_line "$PKGBUILD" '^pkgrel=.*' "pkgrel=1"
+  # A new upstream version starts at revision 1. The same version again keeps a revision that was
+  # raised on purpose for a packaging-only rebuild.
+  if [[ "$current_upstream" != "$upstream" ]]; then
+    replace_line "$PKGBUILD" '^pkgrel=.*' "pkgrel=1"
+  fi
 
-  add_deb_changelog "$upstream" "$rpm"
+  drop_entries deb "$deb_drops"
+  add_deb_changelog "$upstream" "$rpm" "$deb_rev" "$deb_who"
+  drop_entries meta "$meta_drops"
   add_metainfo_release "$upstream" "$rpm"
   replace_line "$ASSETS" '^default_archive[[:space:]]*=.*' "default_archive = \"target/dist/$PACKAGE-$upstream.tar.gz\""
 
   # The two lockfiles are regenerated by the tools that own them. --offline: the three workspace
-  # entries are the only ones that change, and they need no registry.
-  (cd "$root" && cargo update --workspace --offline --quiet)
+  # entries are the only ones that change, but cargo still reads the registry index and the
+  # crates it already has, so the cargo cache must be populated.
+  (cd "$root" && cargo update --workspace --offline --quiet) ||
+    die "cargo update --workspace --offline failed: its cache is empty or incomplete. Run 'cargo fetch' (needs the network) and then 'packaging/version.sh set $upstream' again."
   # npm also rewrites package.json (it turns the "—" in the description into a literal dash),
   # which is noise in a version bump, so the file written above is put back after the lockfile is
   # regenerated. The version in it is the same one.
   command cp -p "$root/$GUI_PACKAGE" "$root/$GUI_PACKAGE.kept"
   (cd "$root/gui" && npm version "$upstream" --no-git-tag-version --allow-same-version --ignore-scripts >/dev/null) ||
-    { command mv -f "$root/$GUI_PACKAGE.kept" "$root/$GUI_PACKAGE"; die "npm version failed"; }
+    die "npm version failed"
   command mv -f "$root/$GUI_PACKAGE.kept" "$root/$GUI_PACKAGE"
 
-  echo "version.sh: set $upstream (RPM $rpm, Debian $(deb_version "$upstream"), Arch $arch)."
+  committed=1
+  echo "version.sh: set $upstream (RPM $rpm, Debian $rpm-$deb_rev, Arch $arch)."
 }
 
 case "${1:-}" in

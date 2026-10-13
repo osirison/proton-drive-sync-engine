@@ -51,8 +51,9 @@ cargo test computes_empty_file_sha1   # single test by name substring
 selection is *just* the root crate. Without the flag, `gui/gui-core` and `gui/src-tauri` are
 neither linted nor tested. (`cargo fmt --all` already spans every member.)
 
-The product version is written in 16 places (three manifests, three `Cargo.lock` entries, the Tauri
-and npm files, and the RPM, Arch, Debian and AppStream packaging, each in its own spelling).
+The product version is stated in many files (three manifests, three `Cargo.lock` entries, the Tauri
+and npm files, and the RPM, Arch, Debian and AppStream packaging, each in its own spelling);
+`check` compares 19 values.
 `packaging/version.sh` holds the one mapping between them: `set <X.Y.Z or X.Y.Z-(alpha|beta|rc).N>`
 is the only way to change a version, and `check` (CI's `rust` job and `tests/scripts.rs` run it) fails
 naming the file, the expected value and the value found. `website/package.json` is not a version site.
