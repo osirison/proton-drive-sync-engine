@@ -5389,7 +5389,13 @@ fn each_failing_credential_is_named_with_its_renewal_step_and_the_others_are_sti
     let tree = PublishTree::new();
     let good = tree.good_credentials();
     // (what, changed environment, the credential it must name, a word of its renewal step)
-    let cases: Vec<(&str, Vec<(String, String)>, &str, &str)> = vec![
+    type Case = (
+        &'static str,
+        Vec<(String, String)>,
+        &'static str,
+        &'static str,
+    );
+    let cases: Vec<Case> = vec![
         (
             "a COPR config that does not parse",
             with(&good, "STUB_COPR_WHOAMI_FAILS", "1"),
@@ -6322,7 +6328,10 @@ fn only_the_publish_job_reads_secrets_and_it_runs_in_the_release_environment() {
         1,
         "one environment, one approval"
     );
-    assert!(job.contains("    environment: release\n"), "{job}");
+    assert!(
+        job.contains("    environment: release\n"),
+        "the release environment line is missing"
+    );
     assert_eq!(publish.matches("secrets.").count(), 4);
     assert_eq!(
         job.matches("secrets.").count(),
@@ -6347,7 +6356,11 @@ fn only_the_publish_job_reads_secrets_and_it_runs_in_the_release_environment() {
         .find(|step| step.starts_with("Write the credentials"))
         .expect("step");
     let step = step.split("\n      - ").next().expect("one step");
-    assert_eq!(step.matches("secrets.").count(), 4, "{step}");
+    assert_eq!(
+        step.matches("secrets.").count(),
+        4,
+        "the credentials step must read exactly the four secrets"
+    );
     // Permissions: contents read at the top, and no job asks for more.
     assert_eq!(permission_blocks(&publish), [vec!["contents: read"]]);
     assert!(!publish.contains("contents: write") && !publish.contains("write-all"));
@@ -6448,10 +6461,10 @@ fn the_publish_steps_run_in_order_and_each_channel_runs_after_a_good_preflight_e
     assert!(!job.contains("continue-on-error"));
     assert!(job.contains("id: preflight\n"));
     // The final step names the steps it checks; the cleanup always runs.
-    assert!(job.contains("if: \"always() && steps.route.outcome == 'success'\"\n        run: packaging/release/aggregate.sh preflight aur copr\n"), "{job}");
+    assert!(job.contains("if: \"always() && steps.route.outcome == 'success'\"\n        run: packaging/release/aggregate.sh preflight aur copr\n"), "the final step is missing or ungated");
     assert!(
         job.contains("if: always()\n        run: packaging/release/credentials.sh remove\n"),
-        "{job}"
+        "the cleanup step is missing or ungated"
     );
     // Each step calls a script; the logic is not in the workflow.
     for call in [
@@ -6468,18 +6481,20 @@ fn the_publish_steps_run_in_order_and_each_channel_runs_after_a_good_preflight_e
             && publish.contains("PR 4b adds the verification jobs HERE")
     );
     // A release is never published from a workflow, and nothing writes to a release.
-    for text in [&publish] {
-        assert!(
-            !text.contains("gh release"),
-            "a release command in a workflow"
-        );
-    }
+    assert!(
+        !publish.contains("gh release"),
+        "a release command in the publish workflow"
+    );
 }
 
 #[test]
 fn the_copr_namespace_is_written_once_in_the_workflow_and_nowhere_in_the_scripts() {
     let publish = workflow("publish.yml");
-    assert_eq!(publish.matches("osirison").count(), 1, "{publish}");
+    assert_eq!(
+        publish.matches("osirison").count(),
+        1,
+        "the COPR namespace must be written once"
+    );
     assert_eq!(
         publish.matches("\nenv:\n  COPR_OWNER: osirison\n").count(),
         1
@@ -6515,7 +6530,7 @@ fn release_yml_warns_about_the_copr_token_through_env_and_its_pins_are_updated_o
     let release = workflow("release.yml");
     assert!(release.contains(
         "      - name: Warn when the COPR token is about to expire\n        env:\n          COPR_TOKEN_EXPIRES: ${{ vars.COPR_TOKEN_EXPIRES }}\n        run: packaging/release/token-expiry.sh warn\n"
-    ), "{release}");
+    ), "the release workflow lacks the expiry warning step");
     assert!(job_block(&release, "gate").contains("token-expiry.sh warn"));
     assert_eq!(release.matches("vars.").count(), 1);
     assert!(unsafe_expression_lines(&release).is_empty());
