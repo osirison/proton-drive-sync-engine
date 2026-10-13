@@ -64,6 +64,12 @@ the dated entry (`0.1.0~beta.1-1` for `0.1.0-beta.1`) and `packaging/version.sh 
 newest entry against the root `Cargo.toml`. Versions are set only through that script; do not add
 the entry by hand.
 
+`set` also drops the changelog and AppStream entries of every version equal to or higher than the
+one it sets (it prints each), and refuses if a tag `v<that version>` exists. It reads **local tags
+only**, so run `git fetch --tags` first; when it cannot look (git missing, or the tree is not the
+top level of a git repository) it says so on stderr and goes on. Setting the same version again
+keeps a raised revision (`-2`). `SOURCE_DATE_EPOCH` fixes the date it writes.
+
 ## Building a real `.deb`
 
 `dpkg-buildpackage` hard-codes `./debian` relative to the invocation directory — it has

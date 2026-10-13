@@ -833,6 +833,9 @@ fn version_script(
 ) -> std::process::Output {
     let mut command = common::sandboxed("bash", directory);
     command.arg(root.join("packaging/version.sh")).args(args);
+    // The entry date is today's unless this is set; a fixed one keeps two runs byte-identical
+    // even across midnight. 1700000000 is Tue, 14 Nov 2023 22:13:20 UTC.
+    command.env("SOURCE_DATE_EPOCH", "1700000000");
     if let Some(stubs) = stubs {
         let path = std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".to_owned());
         command.env(
@@ -1166,5 +1169,162 @@ fn rerunning_for_the_same_version_keeps_a_deliberate_revision() {
         fs::read_to_string(&pkgbuild)
             .expect("PKGBUILD")
             .contains("\npkgrel=1\n")
+    );
+}
+
+// --- packaging/version.sh: self-closing entries, a failed snapshot, tag-check notes, dates ------
+
+#[test]
+fn a_self_closing_last_release_is_dropped_and_the_closing_tags_survive() {
+    let directory = tempdir().expect("tempdir");
+    let (tree, stubs) = copy_of_the_version_sites(directory.path());
+    let metainfo = tree.join(META_FILE);
+    let text = fs::read_to_string(&metainfo).expect("metainfo");
+    fs::write(
+        &metainfo,
+        text.replace(
+            "  </releases>",
+            "    <release version=\"9.0.0\" date=\"2026-01-01\"/>\n  </releases>",
+        ),
+    )
+    .expect("write");
+    set_ok(&tree, directory.path(), &stubs, "0.1.0-beta.1");
+    let meta = fs::read_to_string(&metainfo).expect("metainfo");
+    assert!(!meta.contains("9.0.0"), "{meta}");
+    assert!(
+        meta.contains("</releases>") && meta.contains("</component>"),
+        "{meta}"
+    );
+    assert_eq!(meta.matches("<release ").count(), 1);
+}
+
+#[test]
+fn a_metainfo_that_lost_its_closing_tags_rolls_the_whole_set_back() {
+    let directory = tempdir().expect("tempdir");
+    let (tree, stubs) = copy_of_the_version_sites(directory.path());
+    // An entry the script cannot see the end of: no </release> and no self-closing slash.
+    let metainfo = tree.join(META_FILE);
+    let text = fs::read_to_string(&metainfo).expect("metainfo");
+    fs::write(
+        &metainfo,
+        text.replace(
+            "  </releases>",
+            "    <release version=\"9.0.0\" date=\"2026-01-01\">\n  </releases>",
+        ),
+    )
+    .expect("write");
+    let before = contents(&tree);
+    let output = version_script(
+        &tree,
+        directory.path(),
+        Some(&stubs),
+        &["set", "0.1.0-beta.1"],
+    );
+    assert!(!output.status.success(), "{output:?}");
+    assert_eq!(before, contents(&tree));
+}
+
+#[test]
+fn a_failed_snapshot_restores_nothing_it_did_not_copy_and_leaks_no_directory() {
+    use std::os::unix::fs::MetadataExt;
+    if fs::metadata(env!("CARGO_MANIFEST_DIR"))
+        .expect("metadata")
+        .uid()
+        == 0
+        || fs::metadata("/proc/self").expect("metadata").uid() == 0
+    {
+        return; // a root process reads a mode-000 file; this case cannot be driven
+    }
+    let directory = tempdir().expect("tempdir");
+    let (tree, stubs) = copy_of_the_version_sites(directory.path());
+    let scratch = directory.path().join("tmp");
+    fs::create_dir(&scratch).expect("tmp");
+    let before = contents(&tree);
+    let locked = tree.join("examples/packaging/release-assets.toml");
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).expect("chmod");
+    let mut command = common::sandboxed("bash", directory.path());
+    command
+        .arg(tree.join("packaging/version.sh"))
+        .args(["set", "0.1.0-beta.1"])
+        .env("TMPDIR", &scratch);
+    let path = std::env::var("PATH").unwrap_or_default();
+    command.env(
+        "PATH",
+        common::path_with_stubs(&format!("{}:{path}", stubs.display())),
+    );
+    let output = common::run_other_tool(&mut command);
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o644)).expect("chmod back");
+    assert!(!output.status.success(), "{output:?}");
+    let leaked: Vec<_> = fs::read_dir(&scratch).expect("read").collect();
+    assert!(
+        leaked.is_empty(),
+        "the snapshot directory leaked: {leaked:?}"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("cp: cannot stat"),
+        "the rollback copied a file that was never snapshotted: {stderr}"
+    );
+    assert_eq!(before, contents(&tree));
+}
+
+#[test]
+fn an_alpha_sorts_below_every_beta_and_the_final() {
+    let directory = tempdir().expect("tempdir");
+    let (tree, stubs) = copy_of_the_version_sites(directory.path());
+    set_ok(&tree, directory.path(), &stubs, "0.1.0-beta.1");
+    set_ok(&tree, directory.path(), &stubs, "0.1.0-alpha.1");
+    let deb = fs::read_to_string(tree.join(DEB_FILE)).expect("deb");
+    assert!(!deb.contains("beta.1"), "beta.1 sorts above alpha.1: {deb}");
+    // and the final release is dropped by an alpha too
+    let directory = tempdir().expect("tempdir");
+    let (tree, stubs) = copy_of_the_version_sites(directory.path());
+    set_ok(&tree, directory.path(), &stubs, "0.1.0-alpha.1");
+    let deb = fs::read_to_string(tree.join(DEB_FILE)).expect("deb");
+    assert!(
+        !deb.contains("(0.1.0-1)"),
+        "0.1.0 sorts above alpha.1: {deb}"
+    );
+}
+
+#[test]
+fn the_entry_date_honours_source_date_epoch() {
+    let directory = tempdir().expect("tempdir");
+    let (tree, stubs) = copy_of_the_version_sites(directory.path());
+    set_ok(&tree, directory.path(), &stubs, "0.1.0-beta.1");
+    // 1700000000 is Tue, 14 Nov 2023 22:13:20 UTC (version_script sets it).
+    assert!(
+        fs::read_to_string(tree.join(DEB_FILE))
+            .expect("deb")
+            .contains("Tue, 14 Nov 2023 22:13:20 +0000")
+    );
+    assert!(
+        fs::read_to_string(tree.join(SPEC_FILE))
+            .expect("spec")
+            .contains("* Tue Nov 14 2023 ")
+    );
+    assert!(
+        fs::read_to_string(tree.join(META_FILE))
+            .expect("metainfo")
+            .contains("date=\"2023-11-14\"")
+    );
+}
+
+#[test]
+fn the_tag_check_says_when_it_cannot_run_and_that_it_reads_local_tags_only() {
+    let directory = tempdir().expect("tempdir");
+    let (tree, stubs) = copy_of_the_version_sites(directory.path());
+    // The copy is not the top level of a repository.
+    let output = version_script(
+        &tree,
+        directory.path(),
+        Some(&stubs),
+        &["set", "0.1.0-beta.1"],
+    );
+    assert!(output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("tag check skipped") && stderr.contains("is not in a git repository"),
+        "{stderr}"
     );
 }

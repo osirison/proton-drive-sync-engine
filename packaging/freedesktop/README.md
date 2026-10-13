@@ -35,3 +35,9 @@ The newest `<release>` of the metainfo carries the version (`0.1.0~beta.1` for `
 `type="development"`; a final release has `type="stable"`) and the date. They are written by
 `packaging/version.sh set <upstream version>` and compared by `packaging/version.sh check`.
 Versions are set only through that script; do not add a `<release>` by hand.
+
+`set` also drops the changelog and AppStream entries of every version equal to or higher than the
+one it sets (it prints each), and refuses if a tag `v<that version>` exists. It reads **local tags
+only**, so run `git fetch --tags` first; when it cannot look (git missing, or the tree is not the
+top level of a git repository) it says so on stderr and goes on. `SOURCE_DATE_EPOCH` fixes the date
+it writes.

@@ -69,6 +69,12 @@ changes with GitHub's archive code, while the release asset is made once and fix
 by hand; the script is the only place the mapping from the upstream version to the RPM version is
 written.
 
+`set` also drops the changelog and AppStream entries of every version equal to or higher than the
+one it sets (it prints each), and refuses if a tag `v<that version>` exists. It reads **local tags
+only**, so run `git fetch --tags` first; when it cannot look (git missing, or the tree is not the
+top level of a git repository) it says so on stderr and goes on. `SOURCE_DATE_EPOCH` fixes the date
+it writes.
+
 ## Build strategy: plain `cargo build`, not cargo2rpm
 
 This workspace pulls in the Tauri/webkit2gtk-rs binding stack (`gui/src-tauri`), which is not

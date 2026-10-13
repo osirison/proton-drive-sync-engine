@@ -87,6 +87,12 @@ updpkgsums            # from pacman-contrib; rewrites sha256sums=('SKIP') with t
 compared against the root `Cargo.toml` by `packaging/version.sh check`. Versions are set only
 through that script; do not edit these lines by hand.
 
+`set` also drops the changelog and AppStream entries of every version equal to or higher than the
+one it sets (it prints each), and refuses if a tag `v<that version>` exists. It reads **local tags
+only**, so run `git fetch --tags` first; when it cannot look (git missing, or the tree is not the
+top level of a git repository) it says so on stderr and goes on. `pkgrel` is reset to 1 only when
+the upstream version changes. `SOURCE_DATE_EPOCH` fixes the date it writes.
+
 ## Validation performed here
 
 - `bash -n PKGBUILD` and `bash -n proton-drive-sync-engine.install` — **passed** (syntax only).
