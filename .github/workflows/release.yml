@@ -78,23 +78,23 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           name: source-tarball
-          path: assets
+          path: release-files
       - uses: actions/download-artifact@v8
         with:
           name: rpm-packages
-          path: assets
+          path: release-files
       - uses: actions/download-artifact@v8
         with:
           name: deb-packages
-          path: assets
+          path: release-files
       - uses: actions/download-artifact@v8
         with:
           name: arch-package
-          path: assets
+          path: release-files
       - name: Create or replace the draft
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          ls -l assets
-          packaging/release/draft.sh "$TAG" assets
+          ls -l release-files
+          packaging/release/draft.sh "$TAG" release-files

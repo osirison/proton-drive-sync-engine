@@ -492,24 +492,24 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           name: source-tarball
-          path: assets
+          path: release-files
       - uses: actions/download-artifact@v8
         with:
           name: rpm-packages
-          path: assets
+          path: release-files
       - uses: actions/download-artifact@v8
         with:
           name: deb-packages
-          path: assets
+          path: release-files
       - uses: actions/download-artifact@v8
         with:
           name: arch-package
-          path: assets
+          path: release-files
       - name: Check the asset set
         run: |
           set -euo pipefail
-          ls -l assets
-          packaging/release/draft.sh --check-assets assets "$(packaging/version.sh current)"
+          ls -l release-files
+          packaging/release/draft.sh --check-assets release-files "$(packaging/version.sh current)"
 
   # The one required check. It runs on every run (`always()`) and reads what the others did:
   # a skipped build or smoke job is fine when `changes` said no build was needed, and nothing else

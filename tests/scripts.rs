@@ -3567,7 +3567,7 @@ impl DraftTree {
         command
     }
 
-    /// `draft.sh --check-assets assets <version>`.
+    /// `draft.sh --check-assets <assets dir> <version>`.
     fn check_assets(&self, version: &str) -> std::process::Output {
         let mut command = self.command();
         command.arg("--check-assets").arg(&self.assets).arg(version);
@@ -4369,7 +4369,7 @@ fn the_release_workflow_pins_its_permissions_and_its_other_settings_exactly() {
     assert!(release.contains("\ndefaults:\n  run:\n    shell: bash\n"));
     let draft = job_block(&release, "draft");
     assert_eq!(
-        draft.matches("          path: assets\n").count(),
+        draft.matches("          path: release-files\n").count(),
         4,
         "{draft}"
     );
@@ -4412,7 +4412,7 @@ fn packages_checks_the_release_asset_set_on_every_build() {
     // The release's own check, with the version Cargo.toml states.
     assert!(
         job.contains(
-            r#"packaging/release/draft.sh --check-assets assets "$(packaging/version.sh current)""#
+            r#"packaging/release/draft.sh --check-assets release-files "$(packaging/version.sh current)""#
         ),
         "{job}"
     );
@@ -4422,6 +4422,27 @@ fn packages_checks_the_release_asset_set_on_every_build() {
             .iter()
             .any(|name| name == "release-assets")
     );
+}
+
+#[test]
+fn the_asset_download_directory_is_not_a_directory_of_the_repository() {
+    // The artifacts are downloaded into the checkout. The first version used `assets`, which the
+    // repository has (assets/icon.svg), and the asset check found the icon among the packages.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for (file, job) in [("packages.yml", "release-assets"), ("release.yml", "draft")] {
+        let block = job_block(&workflow(file), job);
+        let paths: Vec<&str> = block
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("path: "))
+            .collect();
+        assert_eq!(paths.len(), 4, "{file} {job}: {paths:?}");
+        for path in paths {
+            assert!(
+                !root.join(path).exists(),
+                "{file}: {path} exists in the repository"
+            );
+        }
+    }
 }
 
 #[test]
