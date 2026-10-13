@@ -39,6 +39,7 @@ RECONSTRUCT_FUZZ_SCENARIOS=300000 cargo test --lib reconstruct::model_tests -- -
 cargo test daemon::tests        # reconciliation with injected fake ProtonClient + fake EventSource
 packaging/version.sh check      # every file that states the version agrees with the root Cargo.toml (also in CI's `rust` job and tests/scripts.rs)
 packaging/version.sh set 0.1.0-beta.1   # the ONLY way to change the version: writes all of them, the packaging changelogs and both lockfiles (needs cargo and npm)
+packaging/version.sh spell deb 0.1.0-beta.1   # read-only: one format's spelling of an upstream version (0.1.0~beta.1-1); packaging/name-assets.sh asks it before renaming a built package
 packaging/arch/aur.sh beta <assets-dir>   # the AUR tree (PKGBUILD, .SRCINFO, install script) from the release tarball; needs makepkg, so Arch only (the `arch` job in .github/workflows/packages.yml runs it; tests/scripts.rs covers it with a stub makepkg)
 cargo test --test dry_run_cli   # integration test in tests/
 cargo test --test ipc_cli

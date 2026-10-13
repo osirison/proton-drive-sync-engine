@@ -91,7 +91,12 @@ out="${3:-aur-$name}"
 if [[ -e "$out" ]]; then
   [[ -d "$out" && -z "$(ls -A "$out")" ]] || die "$out exists and is not an empty directory"
 fi
-mkdir -p "$out"
+
+# The tree is written to a staging directory beside [out-dir] and moved into place only when
+# every step has worked, so a failure leaves nothing behind and a re-run is not refused.
+mkdir -p "$(dirname "$out")"
+stage="$(mktemp -d "${out%/}.partial.XXXXXX")"
+trap 'rm -rf -- "$stage"' EXIT
 
 if [[ "$channel" == beta ]]; then
   pkgname_lines="pkgname=${name}\nprovides=(${pkgbase})\nconflicts=(${pkgbase})"
@@ -102,10 +107,17 @@ fi
 sed \
   -e "s|^pkgname=\"\${_pkgbase}\"\$|${pkgname_lines}|" \
   -e "s|^sha256sums=('SKIP')\$|sha256sums=('${actual}')|" \
-  "$pkgbuild" >"$out/PKGBUILD"
-cp "$install_script" "$out/"
+  "$pkgbuild" >"$stage/PKGBUILD"
+cp "$install_script" "$stage/"
 
-(cd "$out" && makepkg --printsrcinfo >.SRCINFO) ||
-  die "makepkg --printsrcinfo failed on the generated PKGBUILD in $out"
+(cd "$stage" && makepkg --printsrcinfo >.SRCINFO) ||
+  die "makepkg --printsrcinfo failed on the generated PKGBUILD (nothing was written to $out)"
+
+# mktemp makes the directory private; the tree is an ordinary one.
+chmod 755 "$stage"
+if [[ -d "$out" ]]; then
+  rmdir "$out"
+fi
+mv -- "$stage" "$out"
 
 echo "aur.sh: wrote $out ($name $upstream, sha256 $actual)" >&2

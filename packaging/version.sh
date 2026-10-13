@@ -52,6 +52,7 @@ usage() {
   cat >&2 <<'EOF'
 usage: packaging/version.sh check
        packaging/version.sh set <upstream version>
+       packaging/version.sh spell <rpm|deb|arch> <upstream version>
 
 The upstream version is X.Y.Z or X.Y.Z-(alpha|beta|rc).N, for example 0.1.0 or 0.1.0-beta.1.
 EOF
@@ -574,7 +575,27 @@ cmd_set() {
   echo "version.sh: set $upstream (RPM $rpm, Debian $rpm-$deb_rev, Arch $arch)."
 }
 
+# Prints one format's spelling of an upstream version and writes nothing. For a built package's
+# name-assets.sh: it asks here what the package's own version must be instead of repeating the
+# mapping. The deb spelling carries the revision `set` writes for a new version (-1); a caller
+# comparing a built package ignores the revision, which a packaging-only rebuild raises.
+cmd_spell() {
+  [[ $# -eq 2 ]] || { usage; exit 2; }
+  valid_shape "$2" || die "'$2' is not an upstream version (X.Y.Z or X.Y.Z-(alpha|beta|rc).N)"
+  case "$1" in
+    rpm) rpm_version "$2" ;;
+    deb) deb_version "$2" ;;
+    arch) arch_version "$2" ;;
+    *) die "unknown format '$1' (rpm, deb or arch)" ;;
+  esac
+  echo
+}
+
 case "${1:-}" in
+  spell)
+    shift
+    cmd_spell "$@"
+    ;;
   check)
     [[ $# -eq 1 ]] || { usage; exit 2; }
     cmd_check

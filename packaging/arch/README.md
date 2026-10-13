@@ -59,9 +59,17 @@
   `undefined symbol: sqlite3_*`. Without `!debug`, makepkg also produced a second,
   `-debug` package of dangling symlinks (the release profile has no debug info), whose symlinks
   `namcap` reports as errors; the build must produce one package.
-- **`python` is in `depends`.** `namcap` reports the Nautilus/Nemo extension scripts as needing it
-  (`import sqlite3`), as an error. The extensions load only once the optdepends are installed, but
-  the files this package installs are Python.
+- **`python` is an `optdepends`, and `dbus` is in `depends`.** `namcap` reports the Nautilus/Nemo
+  extension scripts as needing `python` (`import sqlite3`): as an error when it is in neither list,
+  as `W: Dependency python detected but optional` when it is an optdepend. The extensions run only
+  inside the two file managers, whose bindings depend on python, so a hard dependency would put it
+  on every headless install. Measured on the built package with its `.PKGINFO` edited (first
+  build, then `namcap`): python in `depends` gives no error; python in neither list gives
+  `E: Dependency python detected and not included` and, because python had been supplying it,
+  `E: Dependency dbus detected and not included (libraries ['usr/lib/libdbus-1.so.3'] needed in
+  files ['usr/bin/proton-sync-gui'])`; `dbus` in `depends` plus python as an optdepend gives the
+  `W` line above and no error. `python-nautilus` is not an Arch package (`pacman -Si` says so);
+  `nautilus-python` and `nemo-python` are.
 - **No `git` in `makedepends`.** The source is a tarball and nothing in the build runs git; a
   build in a clean `archlinux:base-devel` container (which has no git) passes without it.
 - **`prepare()` runs `cargo fetch --locked`** so `build()` can use `--frozen` (fully offline)
@@ -123,7 +131,7 @@ PKGBUILD, each described under "Design choices" above:
 | --- | --- | --- |
 | `makepkg` | link of `proton-syncd` failed: `ld.lld: error: undefined symbol: sqlite3_*` | `options=('!lto')` |
 | `makepkg` | two packages: the main one and `proton-drive-sync-engine-debug` | `options=('!debug')` |
-| `namcap` on the package | `E: Dependency python detected and not included` (Nautilus/Nemo scripts) | `python` in `depends` |
+| `namcap` on the package | `E: Dependency python detected and not included` (Nautilus/Nemo scripts) | `python` as an `optdepends` and `dbus` in `depends` (first fix was `python` in `depends`) |
 
 A fourth item was cleaned up, not a failure: `git` was in `makedepends` and nothing needs it.
 

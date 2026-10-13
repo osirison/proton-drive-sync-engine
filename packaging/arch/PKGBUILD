@@ -55,10 +55,9 @@ depends=(
   'curl'
   'libayatana-appindicator'
   'hicolor-icon-theme'
-  # The Nautilus and Nemo extensions are Python scripts (`import sqlite3`), so namcap reports
-  # the package as missing `python`. It is a real dependency of the files this package installs,
-  # even though the extensions only load once the optdepends below are present.
-  'python'
+  # proton-sync-gui links libdbus-1. It used to arrive through `python`, which was a hard
+  # dependency; with python optional, namcap reports dbus as missing.
+  'dbus'
 )
 makedepends=(
   'cargo'
@@ -70,6 +69,11 @@ makedepends=(
   'pkgconf'
 )
 optdepends=(
+  # The extension scripts import sqlite3, so namcap wants python named: as an error if absent, as
+  # a warning ("detected but optional") if it is an optdepend. The extensions run only inside the
+  # two file managers below, whose bindings depend on python themselves, so it is not a hard
+  # dependency of the package. (`python-nautilus` is not an Arch package name; this one is.)
+  'python: runs the Nautilus and Nemo emblem extensions'
   'nautilus-python: sync-status emblems in GNOME Files (Nautilus)'
   'nemo-python: sync-status emblems in Cinnamon Nemo'
 )

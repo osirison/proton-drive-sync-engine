@@ -33,6 +33,9 @@ defaults:
 # A new push to a pull request replaces the run for the old one. Every other run gets its own group:
 # a scheduled run is never cancelled, and a run called from another workflow must not share a group
 # with its caller (a group named after `github.workflow` would be the caller's own and cancel it).
+# Assumption: no workflow triggered by `pull_request` calls this one. If one did, `github.event_name`
+# would read `pull_request` here and in the `changes` job, so the caller and this file would share
+# one group (the caller could be cancelled) and the filter would apply to a called run.
 concurrency:
   group: packages-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -75,7 +78,10 @@ jobs:
           fi
           # No rename detection, so a renamed file counts under both its old and new name.
           files="$(git diff --no-renames --name-only HEAD^1 HEAD)"
-          filter='^packaging/|^Cargo\.lock$|(^|/)Cargo\.toml$|^gui/src-tauri/tauri\.conf\.json$|^\.github/workflows/packages\.yml$'
+          # packaging/ and the build inputs, and the files outside packaging/ that the three
+          # packages install (the rpm spec's %license/%doc, the PKGBUILD's install lines, the
+          # debian copyright and debhelper's README). Not src/ or the GUI sources: CI builds those.
+          filter='^packaging/|^Cargo\.lock$|(^|/)Cargo\.toml$|^gui/src-tauri/tauri\.conf\.json$|^\.github/workflows/packages\.yml$|^LICENSE$|^README\.md$|^examples/proton-sync\.toml$|^gui/src/fonts/OFL-[^/]*\.txt$'
           matched="$(grep -E "$filter" <<<"$files" || true)"
           if [[ -n "$matched" ]]; then
             echo "Package builds are needed, because the pull request changes:"
