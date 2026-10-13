@@ -360,8 +360,14 @@ package depends on the old names. The jammy-built `.deb` has twelve `Depends` en
 `libgtk-3-0`, `libgtk-layer-shell0`, `libjavascriptcoregtk-4.1-0`, `libsoup-3.0-0`,
 `libwebkit2gtk-4.1-0`, `init-system-helpers`). Installed with `apt-get install ./…deb` in clean
 containers of Ubuntu 22.04, 24.04 and 26.04 and Debian 12 and 13, it installed on all five, and in
-each every one of the twelve names was an installed package under that exact name (none was
-satisfied only by a `Provides`), and `ldd /usr/bin/proton-sync-gui` found every library. The fallback below is not needed for this
+each, checked after the install with `dpkg-query` (installed status of the exact name, else the
+installed packages whose `Provides` list it): ten names were installed packages under their own
+name on every release, and two, `libglib2.0-0` and `libgtk-3-0`, were satisfied **only through a
+versioned `Provides`** on Ubuntu 24.04 and 26.04 and Debian 13 (the installed packages are
+`libglib2.0-0t64` and `libgtk-3-0t64`, e.g. `Provides: libglib2.0-0 (= 2.80.0-6ubuntu3.9)` on
+24.04). On Ubuntu 22.04 and Debian 12 all twelve are direct. A versioned `Provides` satisfies the
+versioned dependency (`libglib2.0-0 (>= 2.65.1)`), which is why `apt` resolved the jammy-built
+names to the renamed packages and installed. `ldd /usr/bin/proton-sync-gui` found every library. The fallback below is not needed for this
 package; the `smoke-deb` matrix keeps checking it on every run.
 
 **Fallback if they fail.** Add a second build on `ubuntu:24.04` for 24.04, 26.04 and Debian 13,

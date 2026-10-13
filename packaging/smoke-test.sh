@@ -16,6 +16,13 @@
 # runs, and SMOKE_PROC replaces /proc. Nothing else is overridable.
 set -uo pipefail
 
+# SMOKE_PROC marks a run by tests/scripts.rs. There an empty SMOKE_ROOT would run the host's real
+# binaries, so it is an error before anything runs.
+if [[ -n "${SMOKE_PROC:-}" && -z "${SMOKE_ROOT:-}" ]]; then
+  echo "smoke-test.sh: SMOKE_PROC is set but SMOKE_ROOT is empty: refusing to run the host's binaries" >&2
+  exit 64
+fi
+
 root="${SMOKE_ROOT:-}"
 proc="${SMOKE_PROC:-/proc}"
 cli_url="https://proton.me/drive/download"
@@ -96,7 +103,7 @@ fi
 
 # 4. Installing does not enable the unit for anyone (a deb postinst enables it unless the unit was
 # installed with --no-enable). Any wants/requires link to it, in any of the places systemd reads
-# one, counts; so does the exact path the spec names.
+# one, counts (the spec's /etc/systemd/user/default.target.wants/ is under the first directory).
 search=()
 for directory in etc/systemd etc/xdg/systemd usr/lib/systemd; do
   [[ -d "$root/$directory" ]] && search+=("$root/$directory")
@@ -105,11 +112,7 @@ enabled=""
 if ((${#search[@]})); then
   enabled="$(find "${search[@]}" \( -path '*.wants/proton-syncd.service' -o -path '*.requires/proton-syncd.service' \) 2>/dev/null)"
 fi
-if [[ "$enabled" != *default.target.wants/proton-syncd.service* ]] &&
-  [[ -e "$root/etc/systemd/user/default.target.wants/proton-syncd.service" || -L "$root/etc/systemd/user/default.target.wants/proton-syncd.service" ]]; then
-  enabled+=$'\n'"/etc/systemd/user/default.target.wants/proton-syncd.service"
-fi
-if [[ -n "${enabled//$'\n'/}" ]]; then
+if [[ -n "$enabled" ]]; then
   fail "the install enabled the unit: ${enabled//$'\n'/ }"
 else
   ok "the unit is installed and not enabled"
@@ -117,10 +120,13 @@ fi
 
 # 5. Every shared library the GUI links resolves. ldd loads no program code of the GUI.
 if [[ -x "$gui" ]]; then
-  if linked="$(ldd "$gui" 2>&1)" && ! grep -q 'not found' <<<"$linked"; then
+  # A non-zero ldd (for example "not a dynamic executable") fails too, whatever it printed.
+  status=0
+  linked="$(ldd "$gui" 2>&1)" || status=$?
+  if ((status == 0)) && ! grep -q 'not found' <<<"$linked"; then
     ok "ldd proton-sync-gui resolves every library"
   else
-    fail "ldd proton-sync-gui: $(grep -E 'not found|not a dynamic' <<<"$linked" | tr -s ' \t' ' ' | paste -sd ';' || true)"
+    fail "ldd proton-sync-gui (exit $status): $(tr -s ' \t\n' ' ' <<<"$linked" | cut -c1-300)"
   fi
 fi
 
@@ -131,14 +137,20 @@ done
 
 # 7. The freedesktop files validate, where the tool is installed.
 if command -v desktop-file-validate >/dev/null 2>&1; then
-  desktop-file-validate "$root/usr/share/applications/app.protondrivesync.engine.desktop" ||
+  if desktop-file-validate "$root/usr/share/applications/app.protondrivesync.engine.desktop"; then
+    ok "desktop-file-validate accepts the desktop entry"
+  else
     fail "desktop-file-validate rejects the desktop entry"
+  fi
 else
   echo "skipped: desktop-file-validate is not installed"
 fi
 if command -v appstreamcli >/dev/null 2>&1; then
-  appstreamcli validate --no-net "$root/usr/share/metainfo/app.protondrivesync.engine.metainfo.xml" ||
+  if appstreamcli validate --no-net "$root/usr/share/metainfo/app.protondrivesync.engine.metainfo.xml"; then
+    ok "appstreamcli accepts the metainfo"
+  else
     fail "appstreamcli rejects the metainfo"
+  fi
 else
   echo "skipped: appstreamcli is not installed"
 fi
@@ -199,7 +211,9 @@ else
   if ! grep -qF "$cli_url" <<<"$report"; then
     fail "proton-sync doctor did not print $cli_url"
   fi
-  if ! grep -i 'proton-drive' <<<"$report" | grep -qiE 'missing|not found|not installed'; then
+  # The real report line is `  missing  proton-drive  proton-drive was not found on PATH` (no
+  # colour when not a terminal): the status word and the check id, matched as written.
+  if ! grep -Eq '^ *missing +proton-drive( |$)' <<<"$report"; then
     fail "proton-sync doctor did not report proton-drive as missing"
   fi
   if running; then

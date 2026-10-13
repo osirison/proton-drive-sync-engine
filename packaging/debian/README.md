@@ -165,9 +165,17 @@ passed in all five (the `smoke-deb` job of `.github/workflows/packages.yml`).
 - **The t64 renames are not a problem for this package.** All twelve `Depends` entries
   (`libc6`, `libcairo2`, `libdbus-1-3`, `libgcc-s1`, `libgdk-pixbuf-2.0-0`, `libglib2.0-0`,
   `libgtk-3-0`, `libgtk-layer-shell0`, `libjavascriptcoregtk-4.1-0`, `libsoup-3.0-0`,
-  `libwebkit2gtk-4.1-0`, `init-system-helpers`) are installed packages under those exact names on
-  every one of the five releases, and `ldd /usr/bin/proton-sync-gui` finds every library. One
-  `.deb` serves all five; no second build base is needed.
+  `libwebkit2gtk-4.1-0`, `init-system-helpers`) were checked after the install. On Ubuntu 22.04 and
+  Debian 12 all twelve are installed under their own names. On Ubuntu 24.04 and 26.04 and Debian
+  13 ten are, and two are satisfied **only through a versioned `Provides`**: `libglib2.0-0` by
+  `libglib2.0-0t64` (`Provides: libglib2.0-0 (= 2.80.0-6ubuntu3.9)` on 24.04, `2.88.0-1ubuntu0.1`
+  on 26.04, `2.84.4-3~deb13u5` on Debian 13) and `libgtk-3-0` by `libgtk-3-0t64` (`= 3.24.41-4ubuntu1.3`,
+  `3.24.52-0ubuntu1`, `3.24.49-3`). A versioned `Provides` satisfies the versioned dependency
+  (`libglib2.0-0 (>= 2.65.1)`), so `apt` installs the renamed package, and
+  `ldd /usr/bin/proton-sync-gui` finds every library. One `.deb` serves all five; no second build
+  base is needed. (An earlier version of this note said all twelve were direct installs; that was
+  wrong, from a check that did not distinguish an installed package from a name some other package
+  provides.)
 - **A first install enables nothing.** `/etc/systemd/user/default.target.wants/proton-syncd.service`
   does not exist after the install on any of the five, so the `was-enabled` block in the
   `postinst` (which `--no-enable` leaves) creates no link. Proof that the check can see the

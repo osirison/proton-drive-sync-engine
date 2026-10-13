@@ -180,6 +180,15 @@
       every smoke cell passes on a pull request, and a one-off run with the expected URL edited
       fails every cell on this check
 
+      Done: every smoke cell passed on PR #474. The one-off was run locally in podman on all 8
+      cells (`fedora:43`, `fedora:44`, `ubuntu:22.04`, `24.04`, `26.04`, `debian:12`, `debian:13`,
+      `archlinux:latest`), each with the package from the PR 2a artifacts installed and a copy of
+      `smoke-test.sh` whose line `cli_url="https://proton.me/drive/download"` read
+      `.../drive/downloads`. All 8 exited 1. Seven printed `FAIL: proton-sync doctor did not print
+      https://proton.me/drive/downloads`; the Arch cell printed that line and also `FAIL: pacman -U
+      did not print https://proton.me/drive/downloads` (it checks the install note against the same
+      URL). This was not run as a pull request, so it is not in CI.
+
 ## 4. Tag workflow and draft release
 
 - [ ] 4.1 Create `.github/workflows/release.yml`, triggered on pushed `v*` tags. Its gate job checks

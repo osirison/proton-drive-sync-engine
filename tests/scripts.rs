@@ -2306,6 +2306,20 @@ fn smoke_tree(family: &str) -> SmokeTree {
         &stubs.join("ldd"),
         "#!/bin/sh\necho '\tlibc.so.6 => /lib/libc.so.6 (0x1)'\n",
     );
+    // The host tools the script and the stub binaries run, linked into one directory.
+    let hostbin = marks.join("hostbin");
+    fs::create_dir_all(&hostbin).expect("hostbin");
+    for tool in [
+        "bash", "sh", "env", "timeout", "mktemp", "chmod", "mkdir", "rm", "find", "grep", "tr",
+        "cut", "cat", "python3",
+    ] {
+        let found = ["/usr/bin", "/bin"]
+            .iter()
+            .map(|dir| Path::new(dir).join(tool))
+            .find(|path| path.exists())
+            .unwrap_or_else(|| panic!("host tool {tool} not found"));
+        std::os::unix::fs::symlink(found, hostbin.join(tool)).expect("symlink");
+    }
     // The validators exist on a developer's machine too, and reject these placeholder files.
     for validator in ["desktop-file-validate", "appstreamcli"] {
         write_executable(&stubs.join(validator), "#!/bin/sh\nexit 0\n");
@@ -2334,12 +2348,17 @@ impl SmokeTree {
             .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("packaging/smoke-test.sh"))
             .env("SMOKE_ROOT", &self.root)
             .env("SMOKE_PROC", &self.proc)
-            // Stubs first, then the sandbox's refusing `curl`/`secret-tool` (present, as the
-            // script's PATH check wants), then only the system directories: a developer's own
-            // `proton-drive` is not on this PATH.
+            // The sandbox's refusing `curl`/`secret-tool` (present, as the script's PATH check
+            // wants), this test's stubs, then a directory of symlinks to the host tools the
+            // script uses and nothing else: the host's `proton-drive`, `proton-sync` and
+            // `proton-syncd` cannot be found.
             .env(
                 "PATH",
-                common::path_with_stubs(&format!("{}:/usr/bin:/bin", self.stubs.display())),
+                common::path_with_stubs(&format!(
+                    "{}:{}",
+                    self.stubs.display(),
+                    self.file("hostbin").display()
+                )),
             );
         command
     }
@@ -2376,6 +2395,13 @@ fn smoke_test_passes_a_good_install_in_each_family_and_runs_only_version_and_doc
         assert!(output.status.success(), "{family}: {}", stderr_of(&output));
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(stdout.contains("all checks passed"), "{family}: {stdout}");
+        // A CI log must show that the validators ran, not only that nothing failed.
+        for line in [
+            "ok: desktop-file-validate accepts the desktop entry",
+            "ok: appstreamcli accepts the metainfo",
+        ] {
+            assert!(stdout.contains(line), "{family}: no '{line}' in {stdout}");
+        }
         // The spec: the binaries run only with --version, except `proton-sync doctor`; never the GUI.
         assert_eq!(
             tree.ran(),
@@ -2509,6 +2535,154 @@ fn smoke_test_names_each_thing_that_is_wrong_and_exits_1() {
             "copyright is not installed",
         ),
         (
+            "the desktop entry is missing",
+            "rpm",
+            |t| {
+                fs::remove_file(
+                    t.root
+                        .join("usr/share/applications/app.protondrivesync.engine.desktop"),
+                )
+                .unwrap()
+            },
+            "app.protondrivesync.engine.desktop is not installed",
+        ),
+        (
+            "the metainfo is missing",
+            "rpm",
+            |t| {
+                fs::remove_file(
+                    t.root
+                        .join("usr/share/metainfo/app.protondrivesync.engine.metainfo.xml"),
+                )
+                .unwrap()
+            },
+            "app.protondrivesync.engine.metainfo.xml is not installed",
+        ),
+        (
+            "the 256px icon is missing",
+            "deb",
+            |t| {
+                fs::remove_file(
+                    t.root.join(
+                        "usr/share/icons/hicolor/256x256/apps/app.protondrivesync.engine.png",
+                    ),
+                )
+                .unwrap()
+            },
+            "256x256/apps/app.protondrivesync.engine.png is not installed",
+        ),
+        (
+            "the scalable icon is missing",
+            "arch",
+            |t| {
+                fs::remove_file(
+                    t.root.join(
+                        "usr/share/icons/hicolor/scalable/apps/app.protondrivesync.engine.svg",
+                    ),
+                )
+                .unwrap()
+            },
+            "scalable/apps/app.protondrivesync.engine.svg is not installed",
+        ),
+        (
+            "unit ExecStart is a longer name that starts the same",
+            "rpm",
+            |t| {
+                write_file(
+                    &t.root.join("usr/lib/systemd/user/proton-syncd.service"),
+                    "[Service]\nExecStart=/usr/bin/proton-syncdX\n",
+                );
+            },
+            "ExecStart does not begin with /usr/bin/",
+        ),
+        (
+            "unit enabled under /etc/xdg/systemd",
+            "deb",
+            |t| {
+                write_file(
+                    &t.root
+                        .join("etc/xdg/systemd/user/default.target.wants/proton-syncd.service"),
+                    "x",
+                );
+            },
+            "the install enabled the unit",
+        ),
+        (
+            "unit required by a target",
+            "rpm",
+            |t| {
+                write_file(
+                    &t.root
+                        .join("etc/systemd/user/default.target.requires/proton-syncd.service"),
+                    "x",
+                );
+            },
+            "the install enabled the unit",
+        ),
+        (
+            "ldd exits non-zero without printing 'not found'",
+            "rpm",
+            |t| {
+                write_executable(
+                    &t.stubs.join("ldd"),
+                    "#!/bin/sh\necho '\tnot a dynamic executable'\nexit 1\n",
+                );
+            },
+            "not a dynamic executable",
+        ),
+        (
+            "ldd exits non-zero and prints nothing",
+            "rpm",
+            |t| write_executable(&t.stubs.join("ldd"), "#!/bin/sh\nexit 2\n"),
+            "ldd proton-sync-gui (exit 2)",
+        ),
+        (
+            "the daemon's version only ends the same as the release's",
+            "rpm",
+            |t| {
+                let path = t.root.join(format!("usr/bin/{SMOKE_DAEMON}"));
+                let text = fs::read_to_string(&path)
+                    .unwrap()
+                    .replace(SMOKE_VERSION, &format!("1{SMOKE_VERSION}"));
+                write_executable(&path, &text);
+            },
+            "printed 'proton-syncd 10.1.0-beta.1'",
+        ),
+        (
+            "doctor's missing line is capitalised",
+            "rpm",
+            |t| {
+                write_file(
+                    &t.file("doctor.txt"),
+                    "  Missing  proton-drive  x\n  help: https://proton.me/drive/download\n",
+                );
+            },
+            "did not report proton-drive as missing",
+        ),
+        (
+            "doctor reports another check missing and only mentions proton-drive",
+            "rpm",
+            |t| {
+                write_file(
+                    &t.file("doctor.txt"),
+                    "  missing  session-bus  no proton-drive session\n  ok       proton-drive  1.4\n  help: https://proton.me/drive/download\n",
+                );
+            },
+            "did not report proton-drive as missing",
+        ),
+        (
+            "the first pacman output is missing",
+            "arch",
+            |t| fs::remove_file(t.file("first.txt")).unwrap(),
+            "first.txt: no such pacman output",
+        ),
+        (
+            "the second pacman output is missing",
+            "arch",
+            |t| fs::remove_file(t.file("second.txt")).unwrap(),
+            "second.txt: no such pacman output",
+        ),
+        (
             "doctor exits 0",
             "rpm",
             |t| write_file(&t.file("doctor.exit"), "0"),
@@ -2623,6 +2797,55 @@ fn smoke_test_reports_every_failure_not_just_the_first() {
     );
     assert!(stderr.contains("expected 1"), "{stderr}");
     assert!(stderr.contains("2 check(s) failed"), "{stderr}");
+}
+
+#[test]
+fn smoke_test_without_a_fake_root_runs_nothing_on_the_host() {
+    for family in ["rpm", "deb"] {
+        let tree = smoke_tree(family);
+        let mut command = tree.command();
+        command
+            .env_remove("SMOKE_ROOT")
+            .arg(SMOKE_VERSION)
+            .arg(family);
+        let output = common::run_other_tool(&mut command);
+        assert_eq!(output.status.code(), Some(64), "{family}");
+        assert!(
+            stderr_of(&output).contains("SMOKE_ROOT is empty"),
+            "{family}"
+        );
+        assert!(output.stdout.is_empty(), "no check ran: {output:?}");
+        assert!(
+            tree.ran().is_empty(),
+            "no fake binary ran: {:?}",
+            tree.ran()
+        );
+    }
+}
+
+#[test]
+fn smoke_test_cannot_find_the_hosts_binaries_on_its_path() {
+    let tree = smoke_tree("rpm");
+    // The PATH `run` gives the script, probed by a bash with the same environment. The names are
+    // spelled in pieces for `tests/test_isolation.rs`.
+    let mut probe = tree.command();
+    probe.args([
+        "-c",
+        "for n in proton-drive proton-sync proton-syncd; do command -v $n && exit 1; done; exit 0",
+    ]);
+    // `command()` already carries the script as its first argument; replace it by a bare probe.
+    let mut bare = common::sandboxed("bash", tree.directory.path());
+    for (key, value) in probe.get_envs() {
+        if let Some(value) = value {
+            bare.env(key, value);
+        }
+    }
+    bare.args([
+        "-c",
+        "for n in proton-drive proton-sync proton-syncd; do command -v $n && exit 1; done; exit 0",
+    ]);
+    let output = common::run_other_tool(&mut bare);
+    assert!(output.status.success(), "{output:?}");
 }
 
 #[test]
