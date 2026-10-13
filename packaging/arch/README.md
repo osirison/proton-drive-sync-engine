@@ -145,8 +145,17 @@ and `curl`, `libsecret` and `hicolor-icon-theme` among `Depends On`.
 fields above, `makepkg --printsrcinfo` equals the generated `.SRCINFO`, and `makepkg
 --verifysource` passes against the tarball and fails (`FAILED`) after the checksum is changed.
 
-Not yet checked here: `pacman -U` of the package (the install note is task 2.7 of the release
-pipeline change) and the install smoke test.
+### Install smoke test (2026-10-13)
+
+In a clean `archlinux:latest` container (`pacman -Syu`, no other package added), `pacman -U` of the
+built package printed the install note (`==> Proton's proton-drive command-line client must be
+installed and signed in before you use Proton Drive Sync. Download it from
+https://proton.me/drive/download, then run: proton-drive auth login`), and the same `pacman -U`
+again (a reinstall, which runs `post_upgrade`) printed no note. `packaging/smoke-test.sh arch`
+then passed: both CLIs print the version, the files are where the spec says, the unit runs
+`/usr/bin/proton-syncd` and is not enabled, `ldd proton-sync-gui` resolves every library, and
+`proton-sync doctor` reports `proton-drive` missing with exit 1. This is the `smoke-arch` job of
+`.github/workflows/packages.yml`.
 
 ### Earlier, before the first real build
 

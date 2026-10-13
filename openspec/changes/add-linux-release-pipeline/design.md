@@ -353,10 +353,22 @@ Alternatives rejected:
 - **One build per release:** five builds and five suites to serve one set of binaries.
 - **Building on `ubuntu-latest`:** its glibc rules out 22.04 and Debian 12.
 
-**Not settled until the smoke test runs: the t64 renames.** Ubuntu 24.04+ and Debian 13 renamed
-libraries such as `libglib2.0-0` to `libglib2.0-0t64`. The jammy-built package depends on the old
-names. Whether the new packages `Provide` them on amd64 is what the 24.04/26.04/Debian 13 smoke
-tests decide.
+**The t64 renames: settled by the smoke test (2026-10-13), no second build needed.** Ubuntu 24.04+
+and Debian 13 renamed libraries such as `libglib2.0-0` to `libglib2.0-0t64`, and the jammy-built
+package depends on the old names. The jammy-built `.deb` has twelve `Depends` entries
+(`libc6`, `libcairo2`, `libdbus-1-3`, `libgcc-s1`, `libgdk-pixbuf-2.0-0`, `libglib2.0-0`,
+`libgtk-3-0`, `libgtk-layer-shell0`, `libjavascriptcoregtk-4.1-0`, `libsoup-3.0-0`,
+`libwebkit2gtk-4.1-0`, `init-system-helpers`). Installed with `apt-get install ./…deb` in clean
+containers of Ubuntu 22.04, 24.04 and 26.04 and Debian 12 and 13, it installed on all five, and in
+each, checked after the install with `dpkg-query` (installed status of the exact name, else the
+installed packages whose `Provides` list it): ten names were installed packages under their own
+name on every release, and two, `libglib2.0-0` and `libgtk-3-0`, were satisfied **only through a
+versioned `Provides`** on Ubuntu 24.04 and 26.04 and Debian 13 (the installed packages are
+`libglib2.0-0t64` and `libgtk-3-0t64`, e.g. `Provides: libglib2.0-0 (= 2.80.0-6ubuntu3.9)` on
+24.04). On Ubuntu 22.04 and Debian 12 all twelve are direct. A versioned `Provides` satisfies the
+versioned dependency (`libglib2.0-0 (>= 2.65.1)`), which is why `apt` resolved the jammy-built
+names to the renamed packages and installed. `ldd /usr/bin/proton-sync-gui` found every library. The fallback below is not needed for this
+package; the `smoke-deb` matrix keeps checking it on every run.
 
 **Fallback if they fail.** Add a second build on `ubuntu:24.04` for 24.04, 26.04 and Debian 13,
 and give the apt repository one suite per base. That changes the "one `.deb`" scenario in the
@@ -588,7 +600,9 @@ manager has installed the package. It checks, and does nothing else:
 - that `/etc/systemd/user/default.target.wants/proton-syncd.service` is absent;
 - `ldd` of the GUI;
 - that `curl` and `secret-tool` are on `PATH`;
-- `desktop-file-validate` and `appstreamcli validate --no-net` where the tool exists;
+- `desktop-file-validate` and `appstreamcli validate --no-net` where the tool exists (the workflow
+  installs both after the package, except on Ubuntu 22.04 and Debian 12, whose versions reject
+  Desktop Entry 1.5 and newer AppStream tags that the current tools accept);
 - that `proton-sync doctor`, with no `proton-drive` on `PATH`, names `proton-drive` as missing,
   prints `https://proton.me/drive/download` and exits non-zero, and that no `proton-syncd`
   process and no control socket appear.

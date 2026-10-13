@@ -156,8 +156,40 @@ job of `.github/workflows/packages.yml`, which runs on every pull request that t
   libgtk-layer-shell-dev` and compiles nothing. The profile therefore skips only the two Rust
   entries.
 
-Not yet checked here: that the jammy-built `.deb` installs on Ubuntu 24.04 and 26.04 and Debian
-12 and 13 (the t64 library renames; the install smoke tests decide), and `lintian`.
+### Install smoke test (2026-10-13)
+
+The jammy-built `.deb` was installed with `apt-get update && apt-get install ./…deb` in clean
+containers of Ubuntu 22.04, 24.04 and 26.04 and Debian 12 and 13, and `packaging/smoke-test.sh deb`
+passed in all five (the `smoke-deb` job of `.github/workflows/packages.yml`).
+
+- **The t64 renames are not a problem for this package.** All twelve `Depends` entries
+  (`libc6`, `libcairo2`, `libdbus-1-3`, `libgcc-s1`, `libgdk-pixbuf-2.0-0`, `libglib2.0-0`,
+  `libgtk-3-0`, `libgtk-layer-shell0`, `libjavascriptcoregtk-4.1-0`, `libsoup-3.0-0`,
+  `libwebkit2gtk-4.1-0`, `init-system-helpers`) were checked after the install. On Ubuntu 22.04 and
+  Debian 12 all twelve are installed under their own names. On Ubuntu 24.04 and 26.04 and Debian
+  13 ten are, and two are satisfied **only through a versioned `Provides`**: `libglib2.0-0` by
+  `libglib2.0-0t64` (`Provides: libglib2.0-0 (= 2.80.0-6ubuntu3.9)` on 24.04, `2.88.0-1ubuntu0.1`
+  on 26.04, `2.84.4-3~deb13u5` on Debian 13) and `libgtk-3-0` by `libgtk-3-0t64` (`= 3.24.41-4ubuntu1.3`,
+  `3.24.52-0ubuntu1`, `3.24.49-3`). A versioned `Provides` satisfies the versioned dependency
+  (`libglib2.0-0 (>= 2.65.1)`), so `apt` installs the renamed package, and
+  `ldd /usr/bin/proton-sync-gui` finds every library. One `.deb` serves all five; no second build
+  base is needed. (An earlier version of this note said all twelve were direct installs; that was
+  wrong, from a check that did not distinguish an installed package from a name some other package
+  provides.)
+- **A first install enables nothing.** `/etc/systemd/user/default.target.wants/proton-syncd.service`
+  does not exist after the install on any of the five, so the `was-enabled` block in the
+  `postinst` (which `--no-enable` leaves) creates no link. Proof that the check can see the
+  opposite: the built `.deb` was repacked with the `postinst` block `dh_installsystemduser`
+  generates WITHOUT `--no-enable` (jammy debhelper 13.6) and installed; the smoke test then
+  failed with `the install enabled the unit: /etc/systemd/user/default.target.wants/proton-syncd.service`.
+  (`deb-systemd-helper --user enable` run by hand outside dpkg only writes its state under
+  `/var/lib/systemd/` and is no evidence either way: the link appears only from the `postinst`.)
+- `desktop-file-validate` and `appstreamcli validate --no-net` pass on Ubuntu 24.04 and 26.04 and
+  Debian 13. On Ubuntu 22.04 and Debian 12 the distribution's versions reject the desktop entry
+  (`value "1.5" for key "Version" … is not a known version`) and, on 22.04, warn on the metainfo
+  (`url-invalid-type vcs-browser`); those two cells do not install the validators.
+
+Not yet checked here: `lintian`.
 
 ### Earlier, in a Fedora sandbox (before the first real build)
 

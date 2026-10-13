@@ -131,6 +131,15 @@ The `%{?dist}` is part of the file names: `proton-drive-sync-engine-0.1.0-1.fc43
 workflow renames outputs with `packaging/name-assets.sh`, which replaces only the version
 (`0.1.0~beta.1` becomes `0.1.0-beta.1`) and leaves the release and `.fc43` alone.
 
+### Install smoke test (2026-10-13)
+
+The RPM built on Fedora 43 was installed with `dnf install` in clean `fedora:43` and `fedora:44`
+containers, and `packaging/smoke-test.sh rpm` passed in both (the `smoke-rpm` job of
+`.github/workflows/packages.yml`): both CLIs print the version, the files are where the spec says,
+the unit runs `/usr/bin/proton-syncd` and no `*.wants` link to it exists after the install,
+`ldd proton-sync-gui` resolves every library, and `desktop-file-validate` and
+`appstreamcli validate --no-net` accept the desktop entry and the metainfo.
+
 ### Earlier, in the development sandbox
 
 This sandbox turned out to already have every devel package the spec required **at the time**
