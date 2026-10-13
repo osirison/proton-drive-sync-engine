@@ -342,8 +342,13 @@
       Verify: `https://osirison.github.io/proton-drive-sync-engine-apt/` serves a placeholder
       file
 - [ ] 5.5 Create environment `release` with the maintainer as required reviewer, holding the four
-      secrets. Verify: a `workflow_dispatch` dry run of the publish workflow waits for approval
-      before any job reads a secret, and asks for exactly one approval
+      secrets. Set the environment's deployment branches and tags to `main` and tags matching
+      `v*` only (Settings, Environments, release, Deployment branches and tags): without that, a
+      run dispatched from any branch with an edited `publish.yml` reaches the secrets after one
+      click, and for a solo maintainer that click is a self-approval, not a code review. Verify: a
+      `workflow_dispatch` dry run of the publish workflow waits for approval before any job reads
+      a secret, and asks for exactly one approval; a dispatch with `--ref` some other branch is
+      refused before approval
 
 ## 6. Publish workflow
 
@@ -428,9 +433,20 @@
       `master` and the push creates the package. The commit identity is `AUR_GIT_NAME` and
       `AUR_GIT_EMAIL` from the workflow's `env:` (no personal address in the repository). The test
       uses local bare repositories: the first run makes one commit, the same run again none, a
-      changed tarball exactly one; a dry run clones and compares but pushes nothing. The
-      container step was also run by hand in podman with the real `makepkg` on a `git archive`
-      tarball (both channels, `.SRCINFO` printed, pkgbase as expected). Left: the live run against
+      changed tarball exactly one; a dry run clones and compares but pushes nothing. What
+      was run by hand (2026-10-13), in the first PR the container script alone, from a directory
+      made by hand: that missed that `aur-publish.sh` makes its work directory with `mktemp -d`
+      (mode 0700, owned by the runner), which the container's `builder` user cannot enter
+      (`cd /work: Permission denied`; found in review). Fixed (`chmod 755` on the work directory,
+      and in `aur-container.sh`), and then run by hand end to end: the real `aur-publish.sh`,
+      default generator (the container), a `docker` shim that calls podman (adds `:z` to the two
+      mounts, the full image name, and `HOST_UID=0`, because under rootless podman the container's
+      root is the host user, as the runner's uid is under rootful docker), a stub `gh` serving a
+      `git archive` tarball and `SHA256SUMS`, local bare repositories as the AUR, a `makepkg`
+      that is the real one in `archlinux:base-devel`. Both packages were pushed (one commit each,
+      three files). The same run with the two `chmod` lines deleted fails with `cd: /work:
+      Permission denied`. Under rootless podman the container is not a real uid split on the
+      runner; a run on GitHub's runner is still to be seen. Left: the live run against
       the AUR (5.2), and a re-run showing no new commit there.
 - [ ] 6.5 Add the COPR step:
       - run `copr-cli build --nowait` on the release's source RPM URL, in every non-EOL chroot of
@@ -453,11 +469,18 @@
       (the only call that gives each build's state and version): a succeeded build whose version
       before the last dash equals `version.sh spell rpm` skips the project; a build still running is
       waited for and not submitted again; a failed or cancelled one is built again; a read that
-      fails or is not a JSON list fails the project (never read as "no builds"). COPR returns only
-      the newest ten builds per package, so an old version's build outside them is not seen and is
-      built again: a cost, never a wrong skip. The final step is `aggregate.sh preflight aur copr`:
-      each step records `ok` or `failed` and a missing record counts as failed. `copr-cli` is
-      installed from PyPI at 2.6 (no hashes). Left: the live run (5.1), the re-run Verify, and
+      fails or is not a JSON list fails the project (never read as "no builds"). The per-package
+      `builds` list is limited by the server (10 for most packages of @copr/copr, 18 for one, newest
+      first there; copr-cli sends no limit or order), so `latest_build` and `latest_succeeded_build`,
+      which the server computes, are read as well: a limited list can hide only an older build of the
+      version, which costs a build, never a wrong skip. A just-submitted build with no version yet
+      counts as this version when it is not over and its source URL ends in the release's source RPM
+      file name. The final step is `aggregate.sh preflight aur copr`: each step records `ok` or
+      `failed` and a missing record counts as failed. `copr-cli` is installed from
+      `packaging/release/copr-cli-requirements.txt`, every dependency pinned with SHA-256
+      (`pip install --require-hashes --no-deps`), made with `pip-compile --generate-hashes
+      --allow-unsafe --strip-extras` in `python:3.12-slim` from the one line `copr-cli==2.6`
+      (it pulls `copr` 2.7). Left: the live run (5.1), the re-run Verify, and
       whether COPR stops building in a chroot once its Fedora release is end of life (not checked;
       5.1 creates the chroots).
 - [ ] 6.6 Add one verification job per channel. Each runs after `publish`, outside the environment,

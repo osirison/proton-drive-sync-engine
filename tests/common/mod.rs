@@ -42,7 +42,7 @@ const EVENTS_OPT_IN_ENV: &str = "PROTON_SYNC_TEST_EVENTS_OPT_IN";
 /// `gh`, `copr-cli` and `ssh` are the rest: a script that calls one (the release scripts) would use the host's logged-in
 /// GitHub session. A test of such a script puts its own `gh` stub AHEAD of this directory; one that
 /// loses it reaches this refusing stub, which records the call, and the test fails on that.
-const STUBBED_TOOLS: [&str; 5] = ["secret-tool", "curl", "gh", "copr-cli", "ssh"];
+pub const STUBBED_TOOLS: [&str; 6] = ["secret-tool", "curl", "gh", "copr-cli", "ssh", "docker"];
 
 /// The file names of this crate's two binaries, for a test that compares them as **data** (a
 /// packaging manifest, an archive script). They are constants here so that no other test file

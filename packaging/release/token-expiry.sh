@@ -12,6 +12,8 @@
 #   check   the publish workflow's preflight. Exits 1 when the variable is empty or unparseable, or
 #           the day has passed. The message names COPR_TOKEN_EXPIRES and the renewal steps. A date
 #           within WARN_DAYS only prints a notice.
+#           A date more than 200 days ahead is refused too (a token lasts 180, so it is a typo that
+#           would switch the check off; `warn` mentions it).
 #   warn    release.yml. NEVER exits non-zero: it prints a GitHub warning annotation when the
 #           variable is empty, unparseable, passed, or within WARN_DAYS (14) days, and nothing
 #           otherwise. The variable does not exist until the maintainer creates it (task 5.1), and a
@@ -23,6 +25,7 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/publish-lib.sh"
 
 WARN_DAYS=14
+MAX_DAYS=200
 RENEW="renew it: sign in at https://copr.fedorainfracloud.org/api/ with the Fedora account, copy the new ~/.config/copr text into the environment secret COPR_CONFIG (environment 'release'), then set the repository variable COPR_TOKEN_EXPIRES to the new token's last day (YYYY-MM-DD, 180 days from today); docs/releasing.md has the steps"
 
 mode="${1-}"
@@ -60,6 +63,14 @@ if ((left < 0)); then
     die "COPR: the token expired on $expiry ($((-left)) days ago): $RENEW"
   fi
   echo "::warning title=COPR token expired::The COPR token expired on $expiry. $RENEW"
+  exit 0
+fi
+# A token lasts 180 days, so a date further ahead is a typo (9999-12-31 would switch the check off).
+if ((left > MAX_DAYS)); then
+  if [[ "$mode" == check ]]; then
+    die "COPR: COPR_TOKEN_EXPIRES is $expiry, $left days away, but a token lasts 180 days (the limit here is $MAX_DAYS): fix the repository variable COPR_TOKEN_EXPIRES. $RENEW"
+  fi
+  echo "::warning title=COPR_TOKEN_EXPIRES::COPR_TOKEN_EXPIRES is $expiry, $left days away, but a COPR token lasts 180 days: check the repository variable."
   exit 0
 fi
 if ((left <= WARN_DAYS)); then

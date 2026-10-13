@@ -512,7 +512,13 @@ Alternatives rejected:
 
 All publish credentials are secrets of a GitHub environment named `release`, whose required
 reviewer is the maintainer. That approval is the second human step after publishing the draft.
-It is what stops a `workflow_dispatch`, or a workflow edited on a branch, from reading the keys.
+The approval is a click on a run, not a review of the code that run executes: for a solo maintainer
+it is a self-click, so it does not by itself stop a `workflow_dispatch` of a workflow edited on a
+branch from reading the keys. What does is the environment's **deployment branches and tags**
+setting, limited to `main` and tags matching `v*` (task 5.5); the file that runs is then main's or a
+tag's. The publish job also checks out the tag's commit and runs the release gate on it before it
+writes a secret (`tag-checkout.sh`), so a dispatch from any ref publishes the tag's own scripts and
+packaging, and a tag made by hand on a commit that is not on `main` publishes nothing.
 
 | Secret | Purpose | Lifetime |
 | --- | --- | --- |
@@ -639,12 +645,21 @@ stubs like `draft.sh`; the workflow only calls them):
 - **COPR skip rule:** `list-packages --with-all-builds --output-format json` is read, and a build
   counts when its state is `succeeded` and its version before the last dash equals the RPM spelling
   of the upstream version (the release part carries a dist tag that changes). A running build is
-  waited for, not repeated. COPR gives only the newest ten builds, so an old version may be built
-  again; a failed read fails the project.
+  waited for, not repeated. The server limits the per-package build list (newest first in
+  the project looked at), and `latest_build` and `latest_succeeded_build` are read too, so an old
+  version may at worst be built again; a failed read fails the project.
 - **AUR tree from the tarball.** The tree is made by the `aur.sh` and PKGBUILD inside the release's
   own tarball, so a dispatch for an older tag from any checkout publishes that tag's packaging. It
   runs in an `archlinux:base-devel` container with only the work directory mounted. The push is
   `HEAD:refs/heads/master` (the AUR takes master only), made only when git sees a difference.
+- **The tag is checked out and gated before any secret is written.** `tag-checkout.sh` fetches
+  `main` and the tag, checks out the tag's commit and runs `gate.sh` on it (tag = Cargo.toml
+  version, commit on `main`, `version.sh check`). It is a `run:` step with the tag taken from
+  `PUBLISH_TAG` (validated by `route.sh`), so no `with:` expression is needed and the pinned
+  expression rule is unchanged. Every later step then runs the tag's scripts, whichever ref the run
+  was dispatched from. A tag from before these scripts cannot be published by this workflow.
+- **The tree from the container is untrusted.** The AUR step refuses a tree or an entry that is not a
+  plain file or directory, and any name but the three expected, then copies without following links.
 - **Pinned host keys.** `packaging/release/known_hosts` holds the Ed25519 keys of
   `aur.archlinux.org` and `github.com`; ssh runs with `StrictHostKeyChecking=yes` and no other
   known-hosts file.
@@ -653,7 +668,7 @@ stubs like `draft.sh`; the workflow only calls them):
   `copr-cli build` or `watch-build`, and never commits or pushes. A dispatch's `dry_run` defaults to
   true.
 - **Known limits.** GitHub keeps one pending run per concurrency group, so a third run for a tag
-  replaces the waiting second; `copr-cli` is pinned to 2.6 from PyPI without hashes; the two
+  replaces the waiting second; `copr-cli` is installed from a hash-locked requirements file (Python 3.12 markers); the two
   verification jobs and the apt step (6.3, 6.6) are a later change and have marked places in the
   file.
 

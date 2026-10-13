@@ -22,9 +22,11 @@
 # release), so this script keeps no list that could go stale. `copr-cli get` has no JSON output to
 # read them from. Removing a release that reached end of life is done on the project.
 #
-# THE SKIP RULE reads only the builds `list-packages` returns (the newest ten per package, plus the
-# latest and latest succeeded), so a succeeded build of an old version that is no longer among them
-# is not seen and the build is submitted again. That costs a build, never a wrong skip.
+# THE SKIP RULE reads the builds `list-packages` returns. What is known: the list of a package's
+# `builds` is limited by the server (10 for most packages in @copr/copr, 18 for one; newest first
+# there; the order and limit are the server's, copr-cli sends none) and `latest_build` and
+# `latest_succeeded_build` are the server's own. All three are read, so a limited or oldest-first
+# list can only hide an OLDER build of this version, which costs a build, never a wrong skip.
 # A read that fails, or is not a JSON array, fails the project: it is never read as "no builds".
 #
 # A dry run does every read (the release, the project's builds) and logs what it would do; it never
@@ -56,6 +58,7 @@ srpm_url="$(jq -r --arg prefix "${PACKAGE_BASE}-${upstream}-" '
 [[ "$srpm_url" == https://* ]] ||
   die "the release $tag must hold exactly one source RPM named ${PACKAGE_BASE}-${upstream}-*.src.rpm, with an https download URL"
 
+srpm_name="${srpm_url##*/}"
 failed=()
 declare -A build_ids=()
 
@@ -73,11 +76,19 @@ for channel in "${channels[@]}"; do
     continue
   fi
   # Every build of this package at this version: "<id> <state>" per line.
-  builds="$(jq -r --arg name "$PACKAGE_BASE" --arg version "$rpm_version" '
+  # A build just submitted may not have a version yet: a build that is not over, has no version and
+  # whose source URL names this release's source RPM file is this version too (else a re-run would
+  # submit a duplicate). Any other build without a version is not counted.
+  builds="$(jq -r --arg name "$PACKAGE_BASE" --arg version "$rpm_version" --arg srpm "$srpm_name" '
+    def over: . as $s | ["succeeded", "failed", "canceled", "skipped", "forked"] | index($s) != null;
     [ .[] | select(.name == $name)
       | (.builds[]?, .latest_build?, .latest_succeeded_build?)
       | select(. != null)
-      | select((.source_package.version // "") | sub("-[^-]*$"; "") == $version)
+      | select(
+          ((.source_package.version // "") | sub("-[^-]*$"; "")) == $version
+          or (((.source_package.version // "") == "")
+              and ((.state // "") | over | not)
+              and ((.source_package.url // "") | endswith("/" + $srpm))))
       | "\(.id) \(.state)" ] | unique | .[]' <<<"$packages")"
   if grep -q ' succeeded$' <<<"$builds"; then
     echo "copr.sh: $project already has a succeeded build of $rpm_version: nothing to submit" >&2
@@ -113,7 +124,7 @@ done
 # All the builds are in the queue; now wait for each, one project after the other.
 for project in "${!build_ids[@]}"; do
   if [[ "$PUBLISH_DRY_RUN" == true ]]; then
-    echo "copr.sh: DRY RUN: would watch builds ${build_ids[$project]} of $project" >&2
+    echo "copr.sh: DRY RUN: would wait for builds ${build_ids[$project]} of $project (no watch-build is run)" >&2
     continue
   fi
   echo "copr.sh: waiting for $project builds ${build_ids[$project]}" >&2

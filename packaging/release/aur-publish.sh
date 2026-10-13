@@ -40,6 +40,9 @@ generator="${AUR_GENERATOR:-docker}"
 case "$generator" in docker | host) ;; *) die "AUR_GENERATOR is '$generator': docker or host" ;; esac
 
 work="$(mktemp -d)"
+# mktemp makes it 0700, owned by the runner; the container user is another uid and must be able to
+# enter it. It holds the tarball and the trees and nothing secret (the credentials are elsewhere).
+chmod 755 "$work"
 trap 'rm -rf -- "$work"' EXIT
 tarball="${PACKAGE_BASE}-${upstream}.tar.gz"
 
@@ -58,7 +61,6 @@ tar -xzf "$work/assets/$tarball" -C "$work/src" --strip-components=1
 
 # 2. The trees.
 if [[ "$generator" == docker ]]; then
-  mkdir -p "$work/trees"
   docker run --rm --network none -e "HOST_UID=$(id -u)" \
     -v "$work:/work" -v "$publish_here/aur-container.sh:/aur-container.sh:ro" \
     archlinux:base-devel bash /aur-container.sh "${channels[@]}"
@@ -76,10 +78,19 @@ export GIT_TERMINAL_PROMPT=0
 failed=()
 
 publish_channel() {
-  local channel="$1" tree="$work/trees/$1" expected package clone
+  local channel="$1" tree="$work/trees/$1" expected package clone odd names changes
   expected="$(channel_name "$channel")"
-  [[ -f "$tree/PKGBUILD" && -f "$tree/.SRCINFO" && -f "$tree/${PACKAGE_BASE}.install" ]] ||
-    { echo "aur-publish.sh: the $channel tree lacks PKGBUILD, .SRCINFO or the install script" >&2; return 1; }
+  # The tree came out of a script from the release tarball, and a symlink in it would be followed
+  # by the reads and the copy below (to a file of the runner, then to the public AUR). So the tree
+  # and every entry in it must be a plain directory and plain files, and exactly the three names.
+  [[ ! -L "$work/trees" && ! -L "$tree" && -d "$tree" ]] ||
+    { echo "aur-publish.sh: the $channel tree is missing or a link" >&2; return 1; }
+  odd="$(find "$tree" ! -type f ! -type d)" || return 1
+  [[ -z "$odd" ]] ||
+    { echo "aur-publish.sh: the $channel tree holds something that is not a plain file or directory: $odd" >&2; return 1; }
+  names="$(find "$tree" -mindepth 1 -printf '%P\n' | LC_ALL=C sort)" || return 1
+  [[ "$names" == "$(printf '%s\n' .SRCINFO PKGBUILD "${PACKAGE_BASE}.install")" ]] ||
+    { echo "aur-publish.sh: the $channel tree must hold exactly PKGBUILD, .SRCINFO and ${PACKAGE_BASE}.install, not: $(tr '\n' ' ' <<<"$names")" >&2; return 1; }
   package="$(sed -n 's/^pkgbase = //p' "$tree/.SRCINFO" | head -n1)"
   [[ "$package" == "$expected" ]] ||
     { echo "aur-publish.sh: the $channel tree is for the package '$package', not '$expected'" >&2; return 1; }
@@ -97,9 +108,11 @@ publish_channel() {
   # no longer has goes away. (set -e does not reach into a function run under `if`, so every step
   # that can fail says `|| return 1`.)
   git -C "$clone" ls-files -z | xargs -0 -r git -C "$clone" rm -q -- || return 1
-  cp -p -- "$tree/PKGBUILD" "$tree/.SRCINFO" "$tree/${PACKAGE_BASE}.install" "$clone/" || return 1
+  cp -p --no-dereference -- "$tree/PKGBUILD" "$tree/.SRCINFO" "$tree/${PACKAGE_BASE}.install" "$clone/" || return 1
   git -C "$clone" add -A || return 1
-  if [[ -z "$(git -C "$clone" status --porcelain)" ]]; then
+  # A failing `git status` is a failure, not "nothing changed".
+  changes="$(git -C "$clone" status --porcelain)" || { echo "aur-publish.sh: git status failed in the $channel clone" >&2; return 1; }
+  if [[ -z "$changes" ]]; then
     echo "aur-publish.sh: $package: the generated tree equals the AUR head: no commit" >&2
     return 0
   fi

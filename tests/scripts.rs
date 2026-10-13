@@ -4789,6 +4789,51 @@ case "$STUB_SSH_MODE" in
 esac
 "#;
 
+/// Stands in for `docker run`: logs the arguments, refuses a work directory the container user could
+/// not enter (what a real container's uid split does), then plays the container by running the
+/// mounted script on the work directory with the container stubs first on PATH.
+const DOCKER_STUB: &str = r#"#!/bin/bash
+printf '%s\n' "$*" >> "$STUB_DOCKER_LOG"
+[ "$1" = run ] || { echo "stub docker: unexpected: $*" >&2; exit 98; }
+work=""; script=""; uid=""; channels=()
+shift
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --rm) shift ;;
+    --network) shift 2 ;;
+    -e) uid="${2#HOST_UID=}"; shift 2 ;;
+    -v)
+      case "$2" in
+        *:/work) work="${2%:/work}" ;;
+        *:/aur-container.sh:ro) script="${2%:/aur-container.sh:ro}" ;;
+      esac
+      shift 2 ;;
+    archlinux:base-devel) shift; shift; shift; channels=("$@"); break ;;
+    *) shift ;;
+  esac
+done
+mode=$(stat -c %a "$work")
+case "$mode" in
+  *[1357]) ;;
+  *) echo "bash: line 1: cd: /work: Permission denied (the work directory is mode $mode)" >&2; exit 1 ;;
+esac
+AUR_WORK_DIR="$work" HOST_UID="$uid" PATH="$STUB_CONTAINER_BIN:$PATH" exec bash "$script" "${channels[@]}"
+"#;
+
+/// A tool aur-container.sh calls as root in the container: logged, does nothing.
+const CONTAINER_LOG_STUB: &str =
+    "#!/bin/sh\nprintf '%s %s\\n' \"$(basename \"$0\")\" \"$*\" >> \"$STUB_CONTAINER_LOG\"\n";
+
+/// `su builder -s /bin/bash -c CMD`: logged; runs CMD as the current user unless $STUB_SU_SKIP, and
+/// fails when $STUB_SU_FAILS.
+const CONTAINER_SU_STUB: &str = r#"#!/bin/sh
+printf 'su %s\n' "$*" >> "$STUB_CONTAINER_LOG"
+[ -z "$STUB_SU_FAILS" ] || exit 1
+[ -z "$STUB_SU_SKIP" ] || exit 0
+shift 3
+exec bash "$@"
+"#;
+
 /// The secret half of a throwaway Ed25519 key, armored, made once per test binary.
 fn test_signing_key() -> &'static str {
     static KEY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
@@ -4851,6 +4896,13 @@ impl PublishTree {
         write_executable(&stubs.join("gh"), PUBLISH_GH_STUB);
         write_executable(&stubs.join("copr-cli"), COPR_STUB);
         write_executable(&stubs.join("ssh"), SSH_STUB);
+        write_executable(&stubs.join("docker"), DOCKER_STUB);
+        // What aur-container.sh calls inside the container: it must not run as root here.
+        let container = directory.path().join("container-stubs");
+        fs::create_dir(&container).expect("container stubs");
+        write_executable(&container.join("useradd"), CONTAINER_LOG_STUB);
+        write_executable(&container.join("chown"), CONTAINER_LOG_STUB);
+        write_executable(&container.join("su"), CONTAINER_SU_STUB);
         fs::create_dir(directory.path().join("packages")).expect("packages");
         PublishTree { directory, stubs }
     }
@@ -4886,6 +4938,9 @@ impl PublishTree {
             .env("STUB_COPR_LOG", self.path("copr.log"))
             .env("STUB_COPR_PACKAGES", self.path("packages"))
             .env("STUB_SSH_LOG", self.path("ssh.log"))
+            .env("STUB_DOCKER_LOG", self.path("docker.log"))
+            .env("STUB_CONTAINER_LOG", self.path("container.log"))
+            .env("STUB_CONTAINER_BIN", self.path("container-stubs"))
             .env("TODAY", "2027-01-01");
         for name in [
             "DRY_RUN",
@@ -5900,6 +5955,12 @@ impl PublishTree {
     /// The release's tarball and SHA256SUMS in `assets/`. `variant` changes the tarball's bytes and
     /// so its checksum, which is what the PKGBUILD carries.
     fn aur_assets(&self, variant: &str) -> String {
+        self.aur_assets_with(variant, "")
+    }
+
+    /// As [`Self::aur_assets`], but the `aur.sh` in the tarball runs the real one and then `hook`
+    /// (shell, with `$tree` the channel's output directory): a hostile script in a tagged tarball.
+    fn aur_assets_with(&self, variant: &str, hook: &str) -> String {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         let pkgbuild = fs::read_to_string(root.join("packaging/arch/PKGBUILD")).expect("PKGBUILD");
         let upstream = pkgbuild
@@ -5919,6 +5980,16 @@ impl PublishTree {
             .expect(file);
         }
         fs::write(top.join("variant"), variant).expect("variant");
+        if !hook.is_empty() {
+            let arch = top.join("packaging/arch");
+            fs::rename(arch.join("aur.sh"), arch.join("aur-real.sh")).expect("rename");
+            write_executable(
+                &arch.join("aur.sh"),
+                &format!(
+                    "#!/usr/bin/env bash\nset -e\nbash \"$(dirname \"$0\")/aur-real.sh\" \"$@\"\ntree=\"$3\"\n{hook}\n"
+                ),
+            );
+        }
         fs::create_dir_all(self.path("assets")).expect("assets");
         let tarball = format!("proton-drive-sync-engine-{upstream}.tar.gz");
         let mut tar = common::sandboxed("tar", self.directory.path());
@@ -6431,6 +6502,7 @@ fn the_publish_steps_run_in_order_and_each_channel_runs_after_a_good_preflight_e
     };
     let order = [
         "name: Choose the channels",
+        "name: Check out the tag and run its gate",
         "name: Install copr-cli",
         "name: Write the credentials",
         "name: Preflight",
@@ -6469,6 +6541,7 @@ fn the_publish_steps_run_in_order_and_each_channel_runs_after_a_good_preflight_e
     // Each step calls a script; the logic is not in the workflow.
     for call in [
         "packaging/release/route.sh \"$TAG\"",
+        "packaging/release/tag-checkout.sh \"$PUBLISH_TAG\"",
         "packaging/release/preflight.sh",
         "packaging/release/aur-publish.sh \"$PUBLISH_TAG\"",
         "packaging/release/copr.sh \"$PUBLISH_TAG\"",
@@ -6573,6 +6646,645 @@ fn a_tree_for_another_package_than_the_channel_names_is_never_pushed() {
     assert_eq!(output.status.code(), Some(1));
     assert!(
         stderr_of(&output).contains("is for the package 'some-other-package'"),
+        "{}",
+        stderr_of(&output)
+    );
+    assert_eq!(tree.commits("proton-drive-sync-engine-beta"), 0);
+}
+
+// --- fix round 1 ---------------------------------------------------------------------------------
+
+fn uid_of(path: &Path) -> u32 {
+    use std::os::unix::fs::MetadataExt;
+    fs::metadata(path).expect("metadata").uid()
+}
+
+// F1 -----------------------------------------------------------------------------------------------
+
+#[test]
+fn the_container_path_gets_a_work_directory_the_container_user_can_enter_and_exact_docker_arguments()
+ {
+    let tree = PublishTree::new();
+    tree.aur_remote(&["proton-drive-sync-engine-beta", "proton-drive-sync-engine"]);
+    let upstream = tree.aur_assets("one");
+    // The default generator is the container; the stub docker refuses a work directory whose mode
+    // leaves out the others' execute bit (mktemp makes 0700, which a user of another uid cannot enter).
+    let output = tree.aur(
+        &upstream,
+        "beta stable",
+        false,
+        &[("AUR_GENERATOR", "docker")],
+    );
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    assert_eq!(tree.commits("proton-drive-sync-engine-beta"), 1);
+    assert_eq!(tree.commits("proton-drive-sync-engine"), 1);
+
+    let log = tree.log("docker.log");
+    assert_eq!(log.len(), 1, "{log:?}");
+    let words: Vec<&str> = log[0].split_whitespace().collect();
+    let uid = uid_of(&tree.path("tree")).to_string();
+    let script = format!(
+        "{}:/aur-container.sh:ro",
+        tree.script("aur-container.sh").display()
+    );
+    // The whole argument list: network off, the runner's uid as the only environment variable, two
+    // mounts (the work directory and the read-only script), the image, the script and the channels.
+    assert_eq!(
+        &words[..5],
+        ["run", "--rm", "--network", "none", "-e"],
+        "{log:?}"
+    );
+    assert_eq!(words[5], format!("HOST_UID={uid}"), "{log:?}");
+    assert_eq!(words[6], "-v");
+    let work = words[7].strip_suffix(":/work").expect("the work mount");
+    assert_eq!(words[8], "-v");
+    assert_eq!(words[9], script);
+    assert_eq!(
+        &words[10..13],
+        ["archlinux:base-devel", "bash", "/aur-container.sh"]
+    );
+    assert_eq!(&words[13..], ["beta", "stable"]);
+    // Nothing else is shared: not the home directory, not the credentials, not the key.
+    let home = tree.directory.path().display().to_string();
+    assert_ne!(work, home);
+    assert!(
+        !work.contains("credentials") && !work.starts_with(&format!("{home}/")),
+        "{work}"
+    );
+    assert!(
+        !log[0].contains("aur-key") && !log[0].contains("credentials"),
+        "{log:?}"
+    );
+    assert_eq!(log[0].matches(" -v ").count(), 2);
+    assert_eq!(log[0].matches(" -e ").count(), 1);
+}
+
+#[test]
+fn aur_container_makes_the_work_directory_traversable_and_hands_it_back_at_exit_even_on_failure() {
+    let tree = PublishTree::new();
+    let work = tree.path("cwork");
+    for name in ["src", "assets"] {
+        fs::create_dir_all(work.join(name)).expect("dir");
+    }
+    fs::set_permissions(&work, fs::Permissions::from_mode(0o700)).expect("mode");
+    let run = |channels: &[&str], uid: &str, extra: &[(&str, &str)]| {
+        let mut command = tree.command("aur-container.sh");
+        command.args(channels);
+        let mut path = std::ffi::OsString::from(tree.path("container-stubs"));
+        path.push(":");
+        path.push(std::env::var("PATH").expect("PATH"));
+        command
+            .env("PATH", path)
+            .env("AUR_WORK_DIR", &work)
+            .env("HOST_UID", uid)
+            .env("STUB_SU_SKIP", "1");
+        for (name, value) in extra {
+            command.env(name, value);
+        }
+        common::run_other_tool(&mut command)
+    };
+    let output = run(&["beta", "stable"], "4242", &[]);
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    let mode = fs::metadata(&work).expect("metadata").permissions().mode() & 0o777;
+    assert_eq!(
+        mode, 0o755,
+        "the container user must be able to enter /work"
+    );
+    let log = tree.log("container.log");
+    let w = work.display();
+    assert_eq!(log[0], "useradd -m builder");
+    assert!(log.contains(&format!("chown builder {w}/trees")), "{log:?}");
+    assert!(
+        log.contains(&format!("chown -R builder {w}/src {w}/assets")),
+        "{log:?}"
+    );
+    assert_eq!(
+        log.iter()
+            .filter(|line| line.starts_with("su builder"))
+            .count(),
+        2,
+        "{log:?}"
+    );
+    assert_eq!(
+        log.last().expect("log"),
+        &format!("chown -R 4242 {w}"),
+        "{log:?}"
+    );
+
+    // aur.sh failing still hands the directory back, and the exit is non-zero.
+    let _ = fs::remove_file(tree.path("container.log"));
+    let _ = fs::remove_dir(work.join("trees"));
+    let failed = run(&["beta"], "4242", &[("STUB_SU_FAILS", "1")]);
+    assert_ne!(failed.status.code(), Some(0));
+    assert_eq!(
+        tree.log("container.log").last().expect("log"),
+        &format!("chown -R 4242 {w}")
+    );
+}
+
+#[test]
+fn aur_container_refuses_an_unknown_channel_or_a_bad_uid_before_it_touches_anything() {
+    let tree = PublishTree::new();
+    let work = tree.path("cwork");
+    fs::create_dir_all(work.join("src")).expect("dir");
+    for (what, channels, uid) in [
+        ("an unknown channel", vec!["nightly"], "1"),
+        ("one unknown among good ones", vec!["beta", "nightly"], "1"),
+        ("a path as channel", vec!["../x"], "1"),
+        ("a non-numeric uid", vec!["beta"], "abc"),
+        ("an empty uid", vec!["beta"], ""),
+        ("no channel", vec![], "1"),
+    ] {
+        let mut command = tree.command("aur-container.sh");
+        command.args(&channels);
+        let mut path = std::ffi::OsString::from(tree.path("container-stubs"));
+        path.push(":");
+        path.push(std::env::var("PATH").expect("PATH"));
+        command
+            .env("PATH", path)
+            .env("AUR_WORK_DIR", &work)
+            .env("HOST_UID", uid);
+        let output = common::run_other_tool(&mut command);
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{what}: {}",
+            stderr_of(&output)
+        );
+        assert!(
+            tree.log("container.log").is_empty(),
+            "{what}: ran {:?}",
+            tree.log("container.log")
+        );
+    }
+}
+
+// F2 -----------------------------------------------------------------------------------------------
+
+#[test]
+fn a_tree_with_a_link_or_anything_but_the_three_plain_files_is_refused_and_nothing_is_pushed() {
+    let bait_text = "BAIT-FILE-TEXT";
+    // (what, hook run by the hostile aur.sh in the tree directory $tree)
+    let cases = [
+        (
+            "a symlinked PKGBUILD",
+            "rm \"$tree/PKGBUILD\"; ln -s \"$BAIT\" \"$tree/PKGBUILD\"",
+        ),
+        (
+            "a symlinked .SRCINFO",
+            "rm \"$tree/.SRCINFO\"; ln -s \"$BAIT\" \"$tree/.SRCINFO\"",
+        ),
+        (
+            "a symlinked install script",
+            "rm \"$tree/proton-drive-sync-engine.install\"; ln -s \"$BAIT\" \"$tree/proton-drive-sync-engine.install\"",
+        ),
+        (
+            "a symlinked tree directory",
+            "mv \"$tree\" \"$tree.real\"; ln -s \"$tree.real\" \"$tree\"",
+        ),
+        (
+            "a FIFO",
+            "rm \"$tree/proton-drive-sync-engine.install\"; mkfifo \"$tree/proton-drive-sync-engine.install\"",
+        ),
+        ("an extra file", "echo x > \"$tree/extra\""),
+        ("an extra directory", "mkdir \"$tree/sub\""),
+    ];
+    for (what, hook) in cases {
+        let tree = PublishTree::new();
+        tree.aur_remote(&["proton-drive-sync-engine-beta"]);
+        let bait = tree.path("the-bait");
+        fs::write(&bait, bait_text).expect("bait");
+        let hook = format!("BAIT='{}'\n{hook}", bait.display());
+        let upstream = tree.aur_assets_with("one", &hook);
+        let output = tree.aur(&upstream, "beta", false, &[]);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{what}: {}",
+            stderr_of(&output)
+        );
+        assert_eq!(
+            tree.commits("proton-drive-sync-engine-beta"),
+            0,
+            "{what} was pushed"
+        );
+        assert!(
+            !stderr_of(&output).contains(bait_text),
+            "{what}: the bait reached the log"
+        );
+        assert_eq!(tree.results("aur").as_deref(), Some("failed"), "{what}");
+    }
+}
+
+// F3 -----------------------------------------------------------------------------------------------
+
+impl GateTree {
+    /// A repository with the publish scripts, an `origin` that is a bare repository next to it, and
+    /// `main` pushed. Returns the origin's path.
+    fn with_origin(&self) -> std::path::PathBuf {
+        let release = self.tree.join("packaging/release");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("packaging/release");
+        for file in ["tag-checkout.sh", "publish-lib.sh"] {
+            fs::copy(root.join(file), release.join(file)).expect(file);
+        }
+        self.commit("publish scripts");
+        let origin = self.directory.path().join("origin.git");
+        let mut init = common::sandboxed("git", self.directory.path());
+        init.env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .args(["init", "--bare", "-q", "-b", "main"])
+            .arg(&origin);
+        assert!(common::run_other_tool(&mut init).status.success());
+        self.git(&["remote", "add", "origin", &origin.display().to_string()]);
+        self.git(&["push", "-q", "origin", "main"]);
+        origin
+    }
+
+    fn tag_checkout(&self, tag: &str) -> std::process::Output {
+        let mut command = common::sandboxed("bash", self.directory.path());
+        command
+            .arg(self.tree.join("packaging/release/tag-checkout.sh"))
+            .arg(tag)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env_remove("GH_TOKEN");
+        common::run_other_tool(&mut command)
+    }
+}
+
+#[test]
+fn the_tag_is_checked_out_and_gated_before_anything_else_and_a_hand_made_tag_off_main_fails() {
+    // A tag on a commit that main does not hold, dispatched from the branch that has it.
+    let gate = gate_tree();
+    gate.with_origin();
+    gate.git(&["checkout", "-q", "-b", "side"]);
+    let side = gate.commit("only on side");
+    gate.git(&["tag", "v0.1.0", &side]);
+    gate.git(&["push", "-q", "origin", "side", "v0.1.0"]);
+    let output = gate.tag_checkout("v0.1.0");
+    assert_eq!(output.status.code(), Some(1), "{}", stderr_of(&output));
+    assert!(
+        stderr_of(&output).contains("is not an ancestor of"),
+        "{}",
+        stderr_of(&output)
+    );
+}
+
+#[test]
+fn a_tag_on_main_is_checked_out_over_the_dispatched_branch_and_a_bad_tag_is_refused() {
+    let gate = gate_tree();
+    gate.with_origin();
+    let on_main = gate.git(&["rev-parse", "HEAD"]);
+    gate.git(&["tag", "v0.1.0", &on_main]);
+    gate.git(&["tag", "v0.2.0", &on_main]);
+    gate.git(&["push", "-q", "origin", "v0.1.0", "v0.2.0"]);
+    // The run was started from a branch with a newer commit; the tag's tree is what runs.
+    gate.git(&["checkout", "-q", "-b", "side"]);
+    fs::write(gate.tree.join("only-on-side"), "x").expect("file");
+    gate.commit("side");
+    let output = gate.tag_checkout("v0.1.0");
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    assert_eq!(gate.git(&["rev-parse", "HEAD"]), on_main);
+    assert!(!gate.tree.join("only-on-side").exists());
+    // A tag that is not the Cargo.toml version, one that does not exist, one of the wrong shape.
+    let mismatch = gate.tag_checkout("v0.2.0");
+    assert_eq!(mismatch.status.code(), Some(1));
+    assert!(stderr_of(&mismatch).contains("0.2.0") && stderr_of(&mismatch).contains("0.1.0"));
+    let missing = gate.tag_checkout("v0.1.5");
+    assert_eq!(missing.status.code(), Some(1));
+    assert!(
+        stderr_of(&missing).contains("cannot fetch the tag"),
+        "{}",
+        stderr_of(&missing)
+    );
+    assert_eq!(gate.tag_checkout("v0.1").status.code(), Some(1));
+}
+
+// F4 -----------------------------------------------------------------------------------------------
+
+fn assert_pinned_ssh_options(tree: &PublishTree, line: &str, key: &Path) {
+    for needle in [
+        format!("-i {} ", key.display()),
+        "IdentitiesOnly=yes".to_owned(),
+        "BatchMode=yes".to_owned(),
+        "StrictHostKeyChecking=yes".to_owned(),
+        format!(
+            "UserKnownHostsFile={}",
+            tree.script("known_hosts").display()
+        ),
+        "GlobalKnownHostsFile=/dev/null".to_owned(),
+    ] {
+        assert!(line.contains(&needle), "'{needle}' missing from: {line}");
+    }
+}
+
+#[test]
+fn every_ssh_use_pins_the_host_keys_and_the_key_for_the_aur_probe_the_apt_check_and_the_aur_clone()
+{
+    let tree = PublishTree::new();
+    let good = tree.good_credentials();
+    let deploy = tree.path("creds/deploy");
+    let aur_key = tree.path("creds/aur");
+    // The apt remote is an ssh URL, so git runs GIT_SSH_COMMAND, which resolves to the stub ssh.
+    let environment = with(&good, "APT_REMOTE_URL", "ssh://git@apt.invalid/apt.git");
+    let output = tree.preflight(&environment);
+    assert_eq!(output.status.code(), Some(1));
+    let ssh = tree.log("ssh.log");
+    assert_eq!(ssh.len(), 2, "{ssh:?}");
+    assert!(ssh[0].contains("-T aur@aur.archlinux.org"), "{}", ssh[0]);
+    assert_pinned_ssh_options(&tree, &ssh[0], &aur_key);
+    assert!(ssh[1].contains("apt.invalid"), "{}", ssh[1]);
+    assert_pinned_ssh_options(&tree, &ssh[1], &deploy);
+
+    // The AUR clone: an ssh base URL.
+    let tree = PublishTree::new();
+    tree.aur_remote(&["proton-drive-sync-engine-beta"]);
+    let upstream = tree.aur_assets("one");
+    let output = tree.aur(
+        &upstream,
+        "beta",
+        false,
+        &[
+            ("AUR_REMOTE_BASE", "ssh://aur@aur.invalid"),
+            ("STUB_SSH_MODE", "greeting"),
+        ],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let ssh = tree.log("ssh.log");
+    assert!(!ssh.is_empty(), "git did not run the ssh command");
+    assert_pinned_ssh_options(&tree, &ssh[0], &tree.path("aur-key"));
+}
+
+#[test]
+fn the_throwaway_gnupg_home_is_removed_whether_the_signing_check_passes_or_fails() {
+    let tree = PublishTree::new();
+    let base = tree.path("gpg-tmp");
+    fs::create_dir(&base).expect("tmp");
+    let good = with(
+        &tree.good_credentials(),
+        "PUBLISH_GPG_TMPDIR",
+        &base.display().to_string(),
+    );
+    let output = tree.preflight(&good);
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    assert_eq!(
+        fs::read_dir(&base).expect("dir").count(),
+        0,
+        "a gpg home was left behind"
+    );
+    let bad = with(
+        &good,
+        "APT_SIGNING_KEY_FILE",
+        &good_path(&good, "AUR_SSH_KEY_FILE"),
+    );
+    let output = tree.preflight(&bad);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        fs::read_dir(&base).expect("dir").count(),
+        0,
+        "a gpg home was left behind"
+    );
+}
+
+#[test]
+fn credentials_are_private_even_when_the_caller_has_umask_zero() {
+    let tree = PublishTree::new();
+    let mut command = common::sandboxed("bash", tree.directory.path());
+    command
+        .arg("-c")
+        .arg("umask 000; exec bash \"$0\" write")
+        .arg(tree.script("credentials.sh"))
+        .env("PUBLISH_CREDENTIALS_DIR", tree.path("credentials"))
+        .env("GITHUB_ENV", tree.path("github-env"))
+        .env("COPR_CONFIG", "a")
+        .env("AUR_SSH_KEY", "b")
+        .env("APT_SIGNING_KEY", "c")
+        .env("APT_DEPLOY_KEY", "d");
+    let output = common::run_other_tool(&mut command);
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    let mode = |path: &Path| fs::metadata(path).expect("metadata").permissions().mode() & 0o777;
+    assert_eq!(mode(&tree.path("credentials")), 0o700);
+    for file in [
+        "copr-config",
+        "aur-ssh-key",
+        "apt-signing-key",
+        "apt-deploy-key",
+    ] {
+        assert_eq!(mode(&tree.path("credentials").join(file)), 0o600, "{file}");
+    }
+}
+
+#[test]
+fn every_release_script_starts_with_set_euo_pipefail() {
+    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("packaging/release");
+    let mut checked = 0;
+    for entry in fs::read_dir(&directory).expect("release dir") {
+        let path = entry.expect("entry").path();
+        if path.extension().is_none_or(|extension| extension != "sh") {
+            continue;
+        }
+        let text = fs::read_to_string(&path).expect("script");
+        let first_code = text
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty() && !line.starts_with('#'));
+        if path
+            .file_name()
+            .is_some_and(|name| name == "publish-lib.sh")
+        {
+            // Sourced, never run: it sets nothing of its own.
+            assert_ne!(first_code, Some("set -euo pipefail"));
+            continue;
+        }
+        assert_eq!(first_code, Some("set -euo pipefail"), "{}", path.display());
+        assert!(
+            text.starts_with("#!/usr/bin/env bash\n"),
+            "{}",
+            path.display()
+        );
+        checked += 1;
+    }
+    assert!(checked >= 11, "only {checked} scripts found");
+}
+
+#[test]
+fn the_sandbox_replaces_every_tool_a_publish_script_could_reach_the_host_with() {
+    for tool in ["gh", "copr-cli", "ssh", "docker", "secret-tool", "curl"] {
+        assert!(
+            common::STUBBED_TOOLS.contains(&tool),
+            "{tool} is not a refusing stub"
+        );
+    }
+}
+
+#[test]
+fn the_publish_checkout_keeps_no_credentials_and_fetches_the_history_the_gate_needs() {
+    let publish = workflow("publish.yml");
+    assert!(
+        publish.contains("      - uses: actions/checkout@v7\n        with:\n          persist-credentials: false\n          fetch-depth: 0\n"),
+        "the checkout step"
+    );
+}
+
+// F5, F6 -------------------------------------------------------------------------------------------
+
+impl PublishTree {
+    /// One package with one build in `state`, no version yet, and the given source URL (if any).
+    fn unversioned_build(&self, project: &str, state: &str, url: Option<&str>) {
+        let mut source = serde_json::json!({ "name": "proton-drive-sync-engine", "version": null });
+        if let Some(url) = url {
+            source["url"] = url.into();
+        }
+        fs::write(
+            self.path("packages")
+                .join(format!("{}.json", project.replace('/', "_"))),
+            serde_json::json!([{
+                "name": "proton-drive-sync-engine",
+                "builds": [{ "id": 9, "state": state, "source_package": source }],
+                "latest_build": null,
+                "latest_succeeded_build": null
+            }])
+            .to_string(),
+        )
+        .expect("packages");
+    }
+}
+
+#[test]
+fn a_running_build_with_no_version_yet_is_this_release_only_when_its_source_names_the_srpm() {
+    let ours = format!("https://copr.example.invalid/results/x/srpm-builds/9/{SRPM}");
+    let other = "https://copr.example.invalid/results/x/srpm-builds/9/proton-drive-sync-engine-0.1.0-beta.2-1.fc43.src.rpm";
+    // (what, state, url, builds submitted, watched)
+    for (what, state, url, builds, watched) in [
+        (
+            "running, our file",
+            "running",
+            Some(ours.as_str()),
+            0,
+            vec!["watch-build 9"],
+        ),
+        (
+            "importing, our file",
+            "importing",
+            Some(ours.as_str()),
+            0,
+            vec!["watch-build 9"],
+        ),
+        (
+            "running, another file",
+            "running",
+            Some(other),
+            1,
+            vec!["watch-build 7001"],
+        ),
+        (
+            "running, no source URL",
+            "running",
+            None,
+            1,
+            vec!["watch-build 7001"],
+        ),
+        (
+            "succeeded without a version is not a success to rely on",
+            "succeeded",
+            Some(ours.as_str()),
+            1,
+            vec!["watch-build 7001"],
+        ),
+        (
+            "failed, our file",
+            "failed",
+            Some(ours.as_str()),
+            1,
+            vec!["watch-build 7001"],
+        ),
+    ] {
+        let tree = PublishTree::new();
+        let setup = tree.copr_setup("v0.1.0-beta.1", &[SRPM]);
+        tree.unversioned_build("ns/proton-drive-sync-engine-beta", state, url);
+        let output = tree.copr("v0.1.0-beta.1", "beta", &[], &setup);
+        assert!(output.status.success(), "{what}: {}", stderr_of(&output));
+        assert_eq!(tree.copr_calls("build").len(), builds, "{what}");
+        assert_eq!(tree.copr_calls("watch-build"), watched, "{what}");
+    }
+}
+
+#[test]
+fn a_dry_run_that_meets_a_running_build_says_it_would_wait_and_never_calls_watch_build() {
+    let tree = PublishTree::new();
+    let mut setup = tree.copr_setup("v0.1.0-beta.1", &[SRPM]);
+    setup.retain(|(name, _)| *name != "PUBLISH_DRY_RUN" && *name != "STUB_COPR_ALLOW_BUILD");
+    setup.push(("PUBLISH_DRY_RUN", "true".to_owned()));
+    tree.packages_json(
+        "ns/proton-drive-sync-engine-beta",
+        &[(9, "running", "0.1.0~beta.1-1")],
+    );
+    let output = tree.copr("v0.1.0-beta.1", "beta", &[], &setup);
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    assert!(
+        stderr_of(&output).contains("would wait for builds 9"),
+        "{}",
+        stderr_of(&output)
+    );
+    assert!(tree.copr_calls("watch-build").is_empty() && tree.copr_calls("build").is_empty());
+}
+
+#[test]
+fn a_token_date_far_beyond_a_tokens_life_is_refused_by_the_check_and_warned_by_the_warning() {
+    let tree = PublishTree::new();
+    let check = |value: &str| {
+        tree.run(
+            "token-expiry.sh",
+            &["check"],
+            &[("COPR_TOKEN_EXPIRES", value)],
+        )
+    };
+    // TODAY is 2027-01-01: 2027-07-20 is 200 days away and fine, the next day is not.
+    assert!(check("2027-07-20").status.success());
+    for value in ["2027-07-21", "9999-12-31"] {
+        let output = check(value);
+        assert_eq!(output.status.code(), Some(1), "{value}");
+        let text = stderr_of(&output);
+        assert!(
+            text.contains("COPR_TOKEN_EXPIRES") && text.contains("180 days"),
+            "{value}: {text}"
+        );
+    }
+    let warn = |value: &str| {
+        tree.run(
+            "token-expiry.sh",
+            &["warn"],
+            &[("COPR_TOKEN_EXPIRES", value)],
+        )
+    };
+    assert_eq!(stdout_of(&warn("2027-07-20")), "");
+    for value in ["2027-07-21", "9999-12-31"] {
+        let output = warn(value);
+        assert!(output.status.success());
+        assert_eq!(
+            stdout_of(&output).matches("::warning").count(),
+            1,
+            "{value}"
+        );
+        assert!(stdout_of(&output).contains("COPR_TOKEN_EXPIRES"));
+    }
+}
+
+#[test]
+fn a_failing_git_status_fails_the_aur_channel_instead_of_reading_as_no_change() {
+    let tree = PublishTree::new();
+    tree.aur_remote(&["proton-drive-sync-engine-beta"]);
+    let upstream = tree.aur_assets("one");
+    // A git that behaves except for `status`.
+    let wrapper = format!(
+        "#!/bin/sh\nfor argument in \"$@\"; do [ \"$argument\" = status ] && exit 1; done\nexec {} \"$@\"\n",
+        real_git().display()
+    );
+    write_executable(&tree.stubs.join("git"), &wrapper);
+    let output = tree.aur(&upstream, "beta", false, &[]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr_of(&output));
+    assert!(
+        stderr_of(&output).contains("git status failed"),
         "{}",
         stderr_of(&output)
     );

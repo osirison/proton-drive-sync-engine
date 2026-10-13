@@ -87,7 +87,8 @@ check_signing() {
   fi
   # The directory is short because gpg-agent's socket path has a length limit.
   local home result=0
-  home="$(mktemp -d /tmp/pdse-gpg.XXXXXX)"
+  # PUBLISH_GPG_TMPDIR (default /tmp) is where it is made; the tests look there afterwards.
+  home="$(mktemp -d "${PUBLISH_GPG_TMPDIR:-/tmp}/pdse-gpg.XXXXXX")"
   chmod 700 "$home"
   (
     export GNUPGHOME="$home"

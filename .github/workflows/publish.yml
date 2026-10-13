@@ -7,6 +7,8 @@ name: Publish
 #   publish   ONE job, in the environment `release`, the only job that can read the four secrets,
 #             so a run asks for ONE approval. Its steps, in order:
 #               route       the release's prerelease flag (from the API) picks the channels
+#               gate        the tag is checked out and passes release.yml's gate
+#               credentials the four secrets are written to files (the only step that reads them)
 #               preflight   every credential is tried and every failure listed, before any channel
 #               apt         (not built yet: the next change adds it here)
 #               AUR         aur-publish.sh
@@ -22,13 +24,20 @@ name: Publish
 # THE ENVIRONMENT. GitHub creates an environment, with NO protection, the first time a workflow
 # names it. The maintainer must create `release` with a required reviewer and the four secrets
 # (COPR_CONFIG, AUR_SSH_KEY, APT_SIGNING_KEY, APT_DEPLOY_KEY; task 5.5) BEFORE any release is
-# published, or the first run reads whatever the unprotected environment holds.
+# published, or the first run reads whatever the unprotected environment holds. They must also set
+# the environment's deployment branches and tags to `main` and tags matching `v*` only (Settings,
+# Environments, release, Deployment branches and tags). Without that, anyone who can push a branch
+# can dispatch THIS file as edited on that branch, and the only thing between that run and the
+# secrets is the reviewer's click. That click is an approval, not a code review, and for a solo
+# maintainer it is a click on one's own run.
 #
 # NEVER PUBLISH A RELEASE FROM A WORKFLOW. A release published with GITHUB_TOKEN fires no other
 # workflow, so this one would never run.
 #
-# RUNNING IT BY HAND. Run it from the tag (`gh workflow run publish.yml --ref <tag> -f tag=<tag>`),
-# not from main: a run on main uses main's scripts and its packaging. dry_run defaults to TRUE; a
+# RUNNING IT BY HAND. `gh workflow run publish.yml --ref main -f tag=<tag>` (or --ref <tag>).
+# The "Check out the tag and run its gate" step switches the run to the tag's own commit, so the
+# scripts and packaging used are the tag's, not the dispatched branch's, and a tag that is not on
+# main or does not match Cargo.toml fails before any secret is written. dry_run defaults to TRUE; a
 # dry run reads everything and writes nothing (see packaging/release/route.sh and the channel
 # scripts). The run still waits for the environment's approval.
 on:
@@ -83,6 +92,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       - name: Choose the channels
         id: route
@@ -91,11 +101,20 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run }}
         run: packaging/release/route.sh "$TAG"
 
-      # copr-cli is not on the runner. Pinned: 2.6 is the newest on PyPI (2026-10-13).
+      # Everything after this step runs the scripts and the packaging of the TAG, whatever branch the
+      # run was started from, and only if the tag passes release.yml's gate (v plus the Cargo.toml
+      # version, the commit on main, version.sh check). A tag made by hand on a commit that is not on
+      # main stops here, before a secret is written. The tag was validated by route.sh.
+      - name: Check out the tag and run its gate
+        id: gate
+        run: packaging/release/tag-checkout.sh "$PUBLISH_TAG"
+
+      # copr-cli is not on the runner. Installed from a hash-locked file (every dependency pinned by
+      # version and SHA-256; made with pip-compile, see the file's header), so nothing else is fetched.
       - name: Install copr-cli
         run: |
           python3 -m venv "$RUNNER_TEMP/copr-venv"
-          "$RUNNER_TEMP/copr-venv/bin/pip" install --quiet copr-cli==2.6
+          "$RUNNER_TEMP/copr-venv/bin/pip" install --quiet --require-hashes --no-deps -r packaging/release/copr-cli-requirements.txt
           echo "$RUNNER_TEMP/copr-venv/bin" >> "$GITHUB_PATH"
 
       # The secrets are read here and in no other step, and written to files in a directory only

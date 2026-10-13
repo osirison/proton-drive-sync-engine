@@ -15,8 +15,10 @@ Checked against copr-cli 2.6 (PyPI) and 2.7 (Fedora 43) in a throwaway `fedora:4
   invalid/expired" and exits 1).
 - `list-builds --output-format json` has only `id`, `name` and `state`. The version of a build
   (`source_package.version`, `version-release`) is in `list-packages <owner/project>
-  --with-all-builds --output-format json`, a list of packages each with a `builds` list (the newest
-  ten). A project that does not exist is exit 1 with "Project ... does not exist".
+  --with-all-builds --output-format json`, a list of packages each with a `builds` list. The list is
+  limited by the server, not by copr-cli (10 builds for most packages of @copr/copr, 18 for one;
+  newest first there); `latest_build` and `latest_succeeded_build` are the server's own and are
+  also in the output with `--with-latest-build --with-latest-succeeded-build`. A project that does not exist is exit 1 with "Project ... does not exist".
 - `build --nowait` prints a line `Created builds: <id> [<id>...]` and `watch-build <ids>` exits
   non-zero when a build failed or was cancelled.
 - `get` (the project) has no JSON output.
