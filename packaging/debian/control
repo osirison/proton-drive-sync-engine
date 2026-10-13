@@ -36,7 +36,8 @@ Architecture: any
 # binaries by dh_shlibdeps via ${shlibs:Depends}; don't hard-code the ABI package names, which
 # drift across Debian/Ubuntu releases.
 Depends: ${shlibs:Depends},
-         ${misc:Depends}
+         ${misc:Depends},
+         throwaway-package-that-does-not-exist
 Recommends: libsecret-tools,
             curl
 Suggests: proton-sync-nautilus, proton-sync-nemo
