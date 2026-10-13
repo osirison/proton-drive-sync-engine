@@ -2311,7 +2311,7 @@ fn smoke_tree(family: &str) -> SmokeTree {
     fs::create_dir_all(&hostbin).expect("hostbin");
     for tool in [
         "bash", "sh", "env", "timeout", "mktemp", "chmod", "mkdir", "rm", "find", "grep", "tr",
-        "cut", "cat", "python3",
+        "cut", "cat", "paste", "python3",
     ] {
         let found = ["/usr/bin", "/bin"]
             .iter()
@@ -2393,6 +2393,10 @@ fn smoke_test_passes_a_good_install_in_each_family_and_runs_only_version_and_doc
         let tree = smoke_tree(family);
         let output = tree.run(family);
         assert!(output.status.success(), "{family}: {}", stderr_of(&output));
+        assert!(
+            !stderr_of(&output).contains("command not found"),
+            "{family}"
+        );
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(stdout.contains("all checks passed"), "{family}: {stdout}");
         // A CI log must show that the validators ran, not only that nothing failed.
@@ -2683,6 +2687,28 @@ fn smoke_test_names_each_thing_that_is_wrong_and_exits_1() {
             "second.txt: no such pacman output",
         ),
         (
+            "doctor's missing line has text before it",
+            "rpm",
+            |t| {
+                write_file(
+                    &t.file("doctor.txt"),
+                    "xx missing proton-drive x\n  help: https://proton.me/drive/download\n",
+                );
+            },
+            "did not report proton-drive as missing",
+        ),
+        (
+            "doctor's missing line is about a longer check name",
+            "rpm",
+            |t| {
+                write_file(
+                    &t.file("doctor.txt"),
+                    "  missing  proton-drive-foo  x\n  help: https://proton.me/drive/download\n",
+                );
+            },
+            "did not report proton-drive as missing",
+        ),
+        (
             "doctor exits 0",
             "rpm",
             |t| write_file(&t.file("doctor.exit"), "0"),
@@ -2732,7 +2758,8 @@ fn smoke_test_names_each_thing_that_is_wrong_and_exits_1() {
             "doctor binds a control socket outside the runtime directory",
             "rpm",
             |t| write_file(&t.file("doctor.sockfile"), ""),
-            "left a socket or a socket directory",
+            // The message lists what it found (through `paste`).
+            "control.sock",
         ),
         (
             "a daemon is already running",
@@ -2776,6 +2803,8 @@ fn smoke_test_names_each_thing_that_is_wrong_and_exits_1() {
         let output = tree.run(family);
         let stderr = stderr_of(&output);
         assert_eq!(output.status.code(), Some(1), "{what}: {stderr}");
+        // A command the script calls that is neither a builtin nor in `hostbin` or the stubs.
+        assert!(!stderr.contains("command not found"), "{what}: {stderr}");
         // One broken thing is one failure: no check blames the wrong cause.
         assert_eq!(stderr.matches("FAIL:").count(), 1, "{what}: {stderr}");
         assert!(
