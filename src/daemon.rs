@@ -29140,10 +29140,11 @@ mod tests {
                 "{asked:?}"
             );
             // The two checks the daemon runs and nothing else: not the keyring, the bus, the
-            // service manager, the config file or the lock (this process holds it).
+            // service manager, the config file or the lock (this process holds it). `$HOME` is read to
+            // expand a `~` in the CLI path.
             let extra: Vec<&String> = asked
                 .iter()
-                .filter(|name| !matches!(name.as_str(), "proton-drive" | "curl"))
+                .filter(|name| !matches!(name.as_str(), "proton-drive" | "curl" | "$HOME"))
                 .collect();
             assert!(extra.is_empty(), "streams={streams}: {extra:?}");
             assert_eq!(

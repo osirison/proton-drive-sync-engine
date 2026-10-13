@@ -171,7 +171,7 @@ The program is resolved first:
   is a relative path (X); the service resolves it against its own working directory", fix "Set
   proton_cli to an absolute path"). The service resolves it against its own working directory,
   which is not this process's, so any answer from here would be `ok` in one directory and
-  `missing` in another. `~` is expanded as the config reader does it, in `--proton-cli` and in the file alike (`~user` is refused);
+  `missing` in another. `~` is expanded by the config reader's own function, in `--proton-cli` and in the file alike; a form it refuses (`~user`, or `~` with no `HOME`) is `failed` with its sentence and the fix "Write the full path, starting with / or ~/";
 - a bare name is searched on `PATH`;
 - not found means `missing`, without spawning anything.
 
@@ -183,7 +183,7 @@ The resolved absolute path is then run with the single argument `version`, with 
 | --- | --- | --- |
 | exit 0 | ok | first line of stdout (the version) and the absolute path |
 | `NotFound` (on `PATH` or at the path) | missing | install from the download page, then `proton-drive auth login`; if it is installed off `PATH`, set `proton_cli` to its full path |
-| `NotExecutable` (`EACCES`) | failed | "found at P but not executable": reinstall from the download page |
+| `NotExecutable` (`EACCES`) | failed | "P was found but is not executable": reinstall from the download page |
 | `NotExecutable` and P is a directory | failed | "P is a directory, not the proton-drive program": point `proton_cli` at the program file |
 | `ExecFormat` (`ENOEXEC`) | failed | "not a program this system can run": download the Linux x64 build |
 | `Signalled(SIGILL)` | failed | "crashed with an illegal instruction": the CPU probably lacks AVX2, so use the `linux/x64-baseline` build |
@@ -227,7 +227,7 @@ The steps run in order, and the first that applies decides the result:
    - exit 0 → `ok`, "A sign-in is stored";
    - non-zero with empty stderr → `missing`;
    - non-zero with stderr → `unknown`, quoting the first line;
-   - `TimedOut` → `unknown`, "the keyring did not answer within 60 s (an unlock prompt may be
+   - `TimedOut` → `unknown`, "The keyring did not answer within 60 s (an unlock prompt may be
      waiting)".
 
 **stdout goes to `/dev/null`, so the secret is never in this process.** It is not read, kept,

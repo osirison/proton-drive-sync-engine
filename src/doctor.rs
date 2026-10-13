@@ -655,36 +655,61 @@ fn first_line<R: Read + Send + 'static>(pipe: R) -> mpsc::Receiver<String> {
     rx
 }
 
-/// `text` without its ANSI escape sequences: CSI (`ESC [ ... final 0x40-0x7E`), OSC (`ESC ] ...`
-/// up to BEL or `ESC \`) and two-byte `ESC x`. A sequence cut off by the end of the text is dropped
-/// to the end.
+/// `text` without its escape sequences: CSI (`ESC [` or U+009B, up to a final 0x40-0x7E), strings
+/// (OSC `ESC ]` / U+009D, DCS `ESC P`, SOS `ESC X`, PM `ESC ^`, APC `ESC _`, up to BEL or `ESC \`),
+/// ESC + intermediates 0x20-0x2F + a final 0x30-0x7E, and two-byte `ESC x`. An ESC inside a
+/// sequence ends it and starts the next; one cut off by the end of the text is dropped to the end.
 fn strip_escape_sequences(text: &str) -> Vec<char> {
+    const ESC: char = '\u{1b}';
     let mut kept = Vec::new();
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {
-        if c != '\u{1b}' {
-            kept.push(c);
-            continue;
-        }
-        match chars.next() {
-            Some('[') => {
-                for c in chars.by_ref() {
-                    if ('\u{40}'..='\u{7e}').contains(&c) {
-                        break;
-                    }
+        match c {
+            ESC => match chars.peek().copied() {
+                None | Some(ESC) => {}
+                Some('[') => {
+                    chars.next();
+                    skip_csi(&mut chars);
                 }
-            }
-            Some(']') => {
-                while let Some(c) = chars.next() {
-                    if c == '\u{7}' || (c == '\u{1b}' && chars.next_if_eq(&'\\').is_some()) {
-                        break;
-                    }
+                Some(']' | 'P' | 'X' | '^' | '_') => {
+                    chars.next();
+                    skip_string(&mut chars);
                 }
-            }
-            _ => {}
+                Some('\u{20}'..='\u{2f}') => {
+                    while chars
+                        .next_if(|c| ('\u{20}'..='\u{2f}').contains(c))
+                        .is_some()
+                    {}
+                    chars.next_if(|c| ('\u{30}'..='\u{7e}').contains(c));
+                }
+                Some(_) => {
+                    chars.next();
+                }
+            },
+            '\u{9b}' => skip_csi(&mut chars),
+            '\u{9d}' => skip_string(&mut chars),
+            c => kept.push(c),
         }
     }
     kept
+}
+
+/// Past a CSI's final byte; stops before an ESC, which starts the next sequence.
+fn skip_csi(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+    while let Some(c) = chars.next_if(|c| *c != '\u{1b}') {
+        if ('\u{40}'..='\u{7e}').contains(&c) {
+            return;
+        }
+    }
+}
+
+/// Past a string's BEL or `ESC \`.
+fn skip_string(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+    while let Some(c) = chars.next() {
+        if c == '\u{7}' || (c == '\u{1b}' && chars.next_if_eq(&'\\').is_some()) {
+            return;
+        }
+    }
 }
 
 fn head(rx: mpsc::Receiver<String>) -> String {
@@ -758,8 +783,20 @@ pub fn run(inputs: &Inputs, env: &dyn Environment) -> Report {
     for id in CheckId::ALL.into_iter().filter(|id| wants(*id)) {
         checks.push(match id {
             CheckId::ProtonDrive => {
-                let (cli, note) = choose_cli(inputs, config.as_ref());
-                check_proton_drive(inputs, env, &cli, note)
+                let (cli, note) = choose_cli(inputs, env, config.as_ref());
+                match cli {
+                    Ok(cli) => check_proton_drive(inputs, env, &cli, note),
+                    Err(refusal) => finding(
+                        CheckId::ProtonDrive,
+                        Outcome::Failed,
+                        match note {
+                            Some(note) => format!("{refusal} ({note})"),
+                            None => refusal,
+                        },
+                        "Write the full path, starting with / or ~/".to_owned(),
+                        Vec::new(),
+                    ),
+                }
             }
             CheckId::SignedIn => check_signed_in(env),
             CheckId::Config => config
@@ -781,7 +818,7 @@ pub fn run(inputs: &Inputs, env: &dyn Environment) -> Report {
 struct ConfigEval {
     result: CheckResult,
     /// The file's `proton_cli`, when the file validated.
-    proton_cli: Option<PathBuf>,
+    proton_cli: Option<Result<PathBuf, String>>,
     /// The file was read and validated (or is the absent default).
     usable: bool,
 }
@@ -854,7 +891,7 @@ fn check_config(inputs: &Inputs, env: &dyn Environment) -> ConfigEval {
     let proton_cli = config::parse_file_config(&text)
         .ok()
         .and_then(|file| file.proton_cli().map(Path::to_path_buf))
-        .and_then(|cli| config::expand_tilde(cli, "proton_cli").ok());
+        .map(|cli| expand_cli(env, cli));
     ConfigEval {
         result: ok_result(CheckId::Config, shown.to_string()),
         proton_cli,
@@ -862,27 +899,41 @@ fn check_config(inputs: &Inputs, env: &dyn Environment) -> ConfigEval {
     }
 }
 
+/// `~` expanded by the engine's own function, with the `HOME` this environment reports; the error
+/// is the daemon's own sentence for a form it refuses (`~user`, or `~` with no `HOME`).
+fn expand_cli(env: &dyn Environment, cli: PathBuf) -> Result<PathBuf, String> {
+    let refused = |e: Box<dyn std::error::Error + Send + Sync>| {
+        let text = e.to_string();
+        let mut chars = text.chars();
+        chars
+            .next()
+            .map_or(text.clone(), |c| c.to_uppercase().chain(chars).collect())
+    };
+    config::expand_tilde_with_home(cli, "proton_cli", env.var("HOME")).map_err(refused)
+}
+
 /// `--proton-cli`, else a validated file's `proton_cli`, else `proton-drive`; with a note when the
-/// file could not be read, so the statement says what was checked instead.
-fn choose_cli(inputs: &Inputs, config: Option<&ConfigEval>) -> (PathBuf, Option<&'static str>) {
+/// file could not be read, so the statement says what was checked instead. `Err` is a value the
+/// daemon refuses.
+fn choose_cli(
+    inputs: &Inputs,
+    env: &dyn Environment,
+    config: Option<&ConfigEval>,
+) -> (Result<PathBuf, String>, Option<&'static str>) {
     match (&inputs.cli, config) {
-        // Expanded as the daemon expands the flag; `~user` stays as written and is refused later.
-        (CliSource::Explicit(path), _) => (
-            config::expand_tilde(path.clone(), "proton_cli").unwrap_or_else(|_| path.clone()),
-            None,
-        ),
+        (CliSource::Explicit(path), _) => (expand_cli(env, path.clone()), None),
         (CliSource::FromConfig, Some(config)) if !config.usable => (
-            PathBuf::from("proton-drive"),
+            Ok(PathBuf::from("proton-drive")),
             Some("checked proton-drive on PATH because the config file could not be read"),
         ),
         (CliSource::FromConfig, Some(config)) => (
             config
                 .proton_cli
                 .clone()
-                .unwrap_or_else(|| PathBuf::from("proton-drive")),
+                .unwrap_or_else(|| Ok(PathBuf::from("proton-drive"))),
             None,
         ),
-        (CliSource::FromConfig, None) => (PathBuf::from("proton-drive"), None),
+        (CliSource::FromConfig, None) => (Ok(PathBuf::from("proton-drive")), None),
     }
 }
 
@@ -1346,6 +1397,42 @@ mod tests {
     }
 
     #[test]
+    fn every_escape_form_is_stripped_whole() {
+        let stripped = |text: &str| strip_escape_sequences(text).into_iter().collect::<String>();
+        let cases = [
+            // ESC + intermediates + final (charset selection)
+            ("a\u{1b}(Bb", "ab"),
+            ("a\u{1b}(0b\u{1b} Fc", "abc"),
+            // DCS / SOS / PM / APC strings, up to ST, BEL or the end
+            ("a\u{1b}Pq1;2\u{1b}\\b", "ab"),
+            ("a\u{1b}Xsos\u{7}b", "ab"),
+            ("a\u{1b}^pm\u{1b}\\b", "ab"),
+            ("a\u{1b}_apc\u{7}b", "ab"),
+            ("a\u{1b}Pcut off", "a"),
+            // a nested ESC ends the sequence it is in and starts a new one
+            ("a\u{1b}[\u{1b}[31mb", "ab"),
+            ("a\u{1b}[1;\u{1b}]0;t\u{7}b", "ab"),
+            ("a\u{1b}\u{1b}[31mb", "ab"),
+            ("a\u{1b}(\u{1b}[0mb", "ab"),
+            // 8-bit CSI and OSC
+            ("a\u{9b}31mb", "ab"),
+            ("a\u{9d}0;title\u{7}b", "ab"),
+            ("a\u{9d}0;t\u{1b}\\b", "ab"),
+            // truncated anywhere: dropped, no panic
+            ("a\u{1b}", "a"),
+            ("a\u{1b}(", "a"),
+            ("a\u{1b}[1;", "a"),
+            ("a\u{9b}1;", "a"),
+            // the old forms and plain text
+            ("a\u{1b}[31mb\u{1b}]0;t\u{7}c\u{1b}Md", "abcd"),
+            ("plain é text", "plain é text"),
+        ];
+        for (text, want) in cases {
+            assert_eq!(stripped(text), want, "{text:?}");
+        }
+    }
+
+    #[test]
     fn a_colour_coded_version_line_loses_its_escape_sequences_whole() {
         let Ran::Exited { stdout_head, .. } = sh(
             "printf '\\033[31mproton-drive 1.4.2\\033[0m\\n'",
@@ -1369,19 +1456,17 @@ mod tests {
 
     #[test]
     fn a_cancel_flag_raised_before_the_run_spawns_nothing() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let marker = dir.path().join("ran");
+        // A program that cannot exec answers `NotFound` if it is spawned at all, so `Cancelled`
+        // can only come from the check before the spawn.
         let flag = AtomicBool::new(true);
         let ran = SystemEnvironment.run_cancellable(
-            Path::new("/bin/sh"),
-            &["-c", &format!("touch {}", marker.display())],
+            Path::new("/nonexistent/x"),
+            &[],
             Duration::from_secs(10),
             Stdout::Keep,
             Some(&flag),
         );
         assert_eq!(ran, Ran::Cancelled);
-        std::thread::sleep(Duration::from_millis(200));
-        assert!(!marker.exists(), "the child was spawned");
     }
 
     #[test]
@@ -1866,27 +1951,68 @@ mod tests {
 
     #[test]
     fn a_tilde_in_the_flag_is_expanded_as_the_config_expands_it() {
-        let home = std::env::var_os("HOME").expect("HOME is set for the tests");
+        let mut fake = healthy();
+        fake.vars.insert("HOME", OsString::from("/home/someone"));
         let mut explicit = inputs();
         explicit.cli = CliSource::Explicit(PathBuf::from("~/stubs/proton-drive"));
-        let fake = healthy();
         let found = result(&fake, explicit, CheckId::ProtonDrive);
         assert_eq!(found.outcome, Outcome::Ok, "{}", found.statement);
         assert_eq!(
             calls_to(&fake, "proton-drive")[0].program,
-            PathBuf::from(home).join("stubs/proton-drive")
+            PathBuf::from("/home/someone/stubs/proton-drive")
         );
+    }
 
-        // `~user` is refused, as config refuses it: it stays a relative path.
-        let mut other = inputs();
-        other.cli = CliSource::Explicit(PathBuf::from("~someone/proton-drive"));
-        let found = result(&healthy(), other, CheckId::ProtonDrive);
-        assert_eq!(found.outcome, Outcome::Failed);
-        assert!(
-            found.statement.contains("relative path"),
-            "{}",
-            found.statement
-        );
+    #[test]
+    fn a_tilde_form_the_daemon_refuses_is_failed_in_the_daemons_words() {
+        const FIX: &str = "Write the full path, starting with / or ~/";
+        // (value, HOME, what the daemon's own sentence contains)
+        let cases = [
+            (
+                "~someone",
+                Some("/home/x"),
+                "`~user` paths are not supported",
+            ),
+            (
+                "~someone/x",
+                Some("/home/x"),
+                "`~user` paths are not supported",
+            ),
+            ("~/x", None, "the HOME environment variable is not set"),
+            ("~/x", Some(""), "the HOME environment variable is not set"),
+        ];
+        for (value, home, words) in cases {
+            // A `~user` in the file is the config check's finding and sends this one to PATH.
+            for from_file in [false, true] {
+                if from_file && value.starts_with("~some") {
+                    continue;
+                }
+                let mut fake = healthy();
+                if let Some(home) = home {
+                    fake.vars.insert("HOME", OsString::from(home));
+                }
+                let mut inputs = inputs();
+                if from_file {
+                    fake.files.insert(
+                        PathBuf::from(CONFIG),
+                        Ok(format!("proton_cli = \"{value}\"\n")),
+                    );
+                } else {
+                    inputs.cli = CliSource::Explicit(PathBuf::from(value));
+                }
+                let found = result(&fake, inputs, CheckId::ProtonDrive);
+                let label = format!("{value} {home:?} file={from_file}");
+                assert_eq!(found.outcome, Outcome::Failed, "{label}");
+                assert!(
+                    found.statement.contains(words),
+                    "{label}: {}",
+                    found.statement
+                );
+                assert!(!found.statement.contains("relative path"), "{label}");
+                assert_eq!(found.fix.as_deref(), Some(FIX), "{label}");
+                assert!(fake.calls.borrow().is_empty(), "{label}: nothing is run");
+            }
+        }
     }
 
     #[test]

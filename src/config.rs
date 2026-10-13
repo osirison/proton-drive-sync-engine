@@ -2691,7 +2691,7 @@ pub fn expand_tilde(path: PathBuf, field_name: &str) -> AppResult<PathBuf> {
     expand_tilde_with_home(path, field_name, std::env::var_os("HOME"))
 }
 
-fn expand_tilde_with_home(
+pub(crate) fn expand_tilde_with_home(
     path: PathBuf,
     field_name: &str,
     home: Option<OsString>,
