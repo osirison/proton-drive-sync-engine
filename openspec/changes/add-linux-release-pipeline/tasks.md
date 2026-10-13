@@ -206,7 +206,7 @@
 
 ## 4. Tag workflow and draft release
 
-- [ ] 4.1 Create `.github/workflows/release.yml`, triggered on pushed `v*` tags. Its gate job checks
+- [x] 4.1 Create `.github/workflows/release.yml`, triggered on pushed `v*` tags. Its gate job checks
       the tag regex, that the tag equals `v` plus the `Cargo.toml` version, that the commit is an
       ancestor of `origin/main`, and `version.sh check`. Verify with throwaway test tags on this
       repository (the maintainer's decision of 2026-10-13: a user cannot fork their own repository,
@@ -224,8 +224,15 @@
       by name first. `tests/scripts.rs` runs the gate in a temporary repository: a match on `main`
       and a commit behind its tip pass; a branch commit, a missing `origin/main`, a `git` that
       answers 128, a version mismatch (the message names both versions), a tag of the wrong shape
-      and a drifted version site all fail. Left: the live runs on test tags, after this merges
-      (they need the workflow on `main`).
+      and a drifted version site all fail. Live runs, 2026-10-13, on `main` at `9532681` (each
+      tag deleted afterwards, no release created by any of them, checked in the API listing):
+      - `v0.1` (run 38444673055): `gate` failed with "'v0.1' is not a release tag ...", `ci`,
+        `packages` and `draft` skipped;
+      - `v0.1.0-beta.2` (run 38444761099): `gate` failed with "the tag v0.1.0-beta.2 names
+        version 0.1.0-beta.2, but Cargo.toml at this commit says 0.1.0", later jobs skipped;
+      - `v0.1.0` on a throwaway commit `5403b6b` on top of `main`, never pushed as a branch (run
+        38444919037): `gate` failed with "commit 5403b6b... is not an ancestor of
+        refs/remotes/origin/main (9532681...)", later jobs skipped.
 - [ ] 4.2 Add the `ci` and `packages` jobs as calls to the two reusable workflows. Add the `draft`
       job, the only one with `contents: write`:
       - write `SHA256SUMS`;
@@ -262,16 +269,28 @@
       request and not the first release. Replacing a draft touches its assets only: for one tag the
       pre-release flag and the notes header cannot change, so only the notes GitHub generated at
       creation can go stale, and no refresh is built. Left, after this merges:
-      - the live checks: `v0.1.0` on `main` gives a draft that is not a pre-release with the ten
-        assets, `sha256sum -c` passes on them, no name has `~`, and a re-run of the run leaves one
-        draft with replaced assets;
+      Live runs, 2026-10-13 (`v0.1.0` at `9532681`, run 38445051252, re-run as attempt 2; the
+      draft and tag were deleted afterwards with `gh release delete --cleanup-tag`):
+      - every job succeeded (`gate`, `ci`, `packages` with `release-assets` and `packages-ok`,
+        `draft`); exactly one release for the tag, a draft and not a pre-release, with the ten
+        assets (tarball, source RPM, three RPMs, three debs, Arch package, `SHA256SUMS`) and no
+        `~` in any name;
+      - `gh release download` worked on the draft; `sha256sum -c SHA256SUMS` passed on the nine
+        files, and `SHA256SUMS` listed exactly those nine;
+      - a junk asset was uploaded (eleven assets) and the run re-run: it succeeded, still one
+        draft and not a pre-release, ten assets, the junk file gone, every asset id changed (for
+        example the tarball 637899865 to 637945487), and `sha256sum -c` passed again.
+
+      4.2 stays unticked because two of its Verify lines cannot be shown yet (below).
+
+      Left, after this merges:
       - "a beta tag gives a draft pre-release" cannot be shown live before the first release: `main`
         says `0.1.0`, so only `v0.1.0` passes the gate until 7.1. The stub test covers the
         `--prerelease` decision; the live check is 7.3;
       - "a re-run after publishing fails and leaves the release unchanged" needs a published
         release, which a test must not make; the stub test covers it, and it is shown live at the
         first release
-- [ ] 4.3 Write `packaging/release-notes.md`, the draft's notes header:
+- [x] 4.3 Write `packaging/release-notes.md`, the draft's notes header:
       - a link to the docs packages page (not a copy of its commands);
       - the `proton-drive` prerequisite: install it from `https://proton.me/drive/download` and
         run `proton-drive auth login` before installing this app, with no other link for the CLI
@@ -285,10 +304,20 @@
       markers, for a pre-release), so a `v0.1.0` draft carries no pre-release warning.
       `tests/scripts.rs` checks both versions' notes as `gh` receives them. `gh release create
       --help` says notes given with `--notes` are prepended to generated ones; it does not say the
-      same of `--notes-file`. Left: look at the first test draft (`v0.1.0`) to see the notes file
-      above the generated notes.
-- [ ] 4.4 Add a tag ruleset limiting who may create `v*` tags. Verify:
+      same of `--notes-file`. Live, on the `v0.1.0` test draft (2026-10-13): `gh release view
+      --json body` shows the header first (the `proton-drive` prerequisite with
+      `https://proton.me/drive/download` and `proton-drive auth login`, then the packages page
+      link, then the `SHA256SUMS` line) and GitHub's generated "What's Changed" list after it,
+      so `--notes-file` lands above `--generate-notes`. There is no pre-release warning, as
+      expected for a final version.
+- [x] 4.4 Add a tag ruleset limiting who may create `v*` tags. Verify:
       `gh api repos/osirison/proton-drive-sync-engine/rulesets` lists it
+
+      Done: the listing shows ruleset 25018911, "Release tags v*", active, target tag, on
+      `refs/tags/v*`, with the rules creation, update and deletion and a bypass for the repository
+      admin role. The coordinator added it on 2026-10-13. The live runs in 4.1 showed that an
+      admin push and an admin delete of a `v*` tag go through (the server printed "Bypassed rule
+      violations").
 
 ## 5. Accounts, keys and the release environment (maintainer, outside the repo)
 
