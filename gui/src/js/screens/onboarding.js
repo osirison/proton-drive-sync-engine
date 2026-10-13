@@ -1094,10 +1094,29 @@ function cliLink(spec, props) {
   });
 }
 
+/**
+ * The engine's sentences quote commands and names in backticks (`proton-sync doctor` prints them
+ * as they are). Split here into pieces the row draws as plain text or as `<code>`. Pure, so the
+ * rule is testable without a DOM. An odd number of backticks pairs nothing: the text stays whole,
+ * backticks and all, rather than a guess about which one is stray.
+ */
+export function codeSpansOf(text) {
+  const pieces = String(text ?? "").split("`");
+  if (pieces.length % 2 === 0) return [{ code: false, text: String(text) }];
+  return pieces.map((piece, i) => ({ code: i % 2 === 1, text: piece })).filter((piece) => piece.text !== "");
+}
+
+/** `codeSpansOf` as nodes: built, never parsed from markup, so a statement cannot inject any. */
+function richText(text) {
+  return codeSpansOf(text).map((piece) =>
+    piece.code ? el("code", { class: "ob-cli-code" }, piece.text) : piece.text,
+  );
+}
+
 function cliRowNode(row, props) {
   const node = el("div", { class: `ob-cli-row is-${row.group}` });
-  node.append(el("div", { class: "ob-cli-statement" }, row.statement));
-  if (row.fix) node.append(el("div", { class: "ob-cli-fix" }, row.fix));
+  node.append(el("div", { class: "ob-cli-statement" }, richText(row.statement)));
+  if (row.fix) node.append(el("div", { class: "ob-cli-fix" }, richText(row.fix)));
   if (row.links.length) {
     node.append(el("div", { class: "ob-cli-links" }, ...row.links.map((spec) => cliLink(spec, props))));
   }

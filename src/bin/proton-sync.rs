@@ -228,7 +228,7 @@ fn run_doctor(cli: &Cli, proton_cli: Option<&Path>) -> ExitCode {
     }
     let config = match &cli.config {
         Some(path) => ConfigFile::Named(path.clone()),
-        None => ConfigFile::Default(proton_drive_sync_engine::paths::default_config_path()),
+        None => ConfigFile::default_at(proton_drive_sync_engine::paths::default_config_path()),
     };
     let mut inputs = Inputs::new(config);
     inputs.daemon_lock = DaemonLock::user_default();

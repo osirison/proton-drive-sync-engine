@@ -67,6 +67,42 @@ pub fn default_global_lock_path() -> AppResult<PathBuf> {
     Ok(global_lock_path_in(user_state_dir()?))
 }
 
+/// [`default_global_lock_path`] for a caller that only looks at the lock (`doctor`'s probe): it
+/// creates **nothing**, on any path.
+///
+/// With `XDG_STATE_HOME` or `HOME` usable the path is the same one, and a probe never creates the
+/// file. With neither, the daemon's lock would be under the per-uid temp directory, which only the
+/// daemon makes. If that directory is not there, or is not a real directory this user owns at
+/// 0700, no daemon of this user holds a lock there, so there is nothing to probe: `None`, which
+/// the caller reads as "no daemon" and skips the probe.
+pub fn existing_global_lock_path() -> Option<PathBuf> {
+    existing_global_lock_path_in(
+        env::var_os("XDG_STATE_HOME"),
+        env::var_os("HOME"),
+        &env::temp_dir(),
+        effective_uid(),
+    )
+}
+
+/// [`existing_global_lock_path`] with the environment values passed in, so it is testable without
+/// changing process-wide variables.
+fn existing_global_lock_path_in(
+    state_home: Option<OsString>,
+    home: Option<OsString>,
+    temp_dir: &Path,
+    owner_uid: u32,
+) -> Option<PathBuf> {
+    match (absolute_dir(state_home), absolute_dir(home)) {
+        (Some(dir), _) => Some(global_lock_path_in(dir)),
+        (None, Some(home)) => Some(global_lock_path_in(home.join(".local").join("state"))),
+        (None, None) => {
+            let dir = temp_dir.join(format!("{APP_STATE_DIR}-{owner_uid}"));
+            require_private_dir(&dir, owner_uid, Some(RUNTIME_DIR_MODE)).ok()?;
+            Some(global_lock_path_in(dir))
+        }
+    }
+}
+
 /// The global lock's layout under a given state directory. Split out so it can be tested without
 /// mutating process-wide environment variables (which races other tests).
 fn global_lock_path_in(state_dir: PathBuf) -> PathBuf {
@@ -208,22 +244,30 @@ fn effective_uid() -> u32 {
 /// The config file the desktop app owns and `proton-sync doctor` reads when no `--config` is
 /// given: `$XDG_CONFIG_HOME/proton-sync/proton-sync.toml`, else
 /// `$HOME/.config/proton-sync/proton-sync.toml`. Each variable counts only when it is absolute
-/// ([`absolute_dir`]).
-pub fn default_config_path() -> PathBuf {
-    default_config_path_in(env::var_os("XDG_CONFIG_HOME"), env::var_os("HOME"))
+/// ([`absolute_dir`]). `None` when neither is: there is no default config file to name, and a
+/// reader must not look in the shared temp directory, where any local user can plant one.
+pub fn default_config_path() -> Option<PathBuf> {
+    usable_config_path_in(env::var_os("XDG_CONFIG_HOME"), env::var_os("HOME"))
 }
 
 /// [`default_config_path`] with the environment values passed in, so the rule is testable without
 /// changing process-wide variables.
-///
-/// With neither value usable the last resort is the temp directory, not a relative path: a
-/// relative one would be written under, and re-read from, whatever directory each launch had.
-pub fn default_config_path_in(config_home: Option<OsString>, home: Option<OsString>) -> PathBuf {
+pub fn usable_config_path_in(
+    config_home: Option<OsString>,
+    home: Option<OsString>,
+) -> Option<PathBuf> {
     absolute_dir(config_home)
         .or_else(|| absolute_dir(home).map(|home| home.join(".config")))
-        .unwrap_or_else(env::temp_dir)
-        .join("proton-sync")
-        .join("proton-sync.toml")
+        .map(|base| base.join("proton-sync").join("proton-sync.toml"))
+}
+
+/// [`usable_config_path_in`] for the desktop app, which must still name a file to write: with
+/// neither value usable the last resort is the temp directory, not a relative path (a relative one
+/// would be written under, and re-read from, whatever directory each launch had). Nothing that
+/// RUNS a program named in the file reads from there: `doctor` uses [`usable_config_path_in`].
+pub fn default_config_path_in(config_home: Option<OsString>, home: Option<OsString>) -> PathBuf {
+    usable_config_path_in(config_home, home)
+        .unwrap_or_else(|| env::temp_dir().join("proton-sync").join("proton-sync.toml"))
 }
 
 /// A base-directory environment value, honoured **only when it is absolute** (#286). The one rule
@@ -289,6 +333,75 @@ mod tests {
         assert_eq!(
             path,
             env::temp_dir().join("proton-sync").join("proton-sync.toml")
+        );
+    }
+
+    #[test]
+    fn with_no_usable_home_there_is_no_default_config_to_read() {
+        // The temp-directory fallback of `default_config_path_in` is for the app to write to; a
+        // reader that runs a program named in the file must not take it from there.
+        assert_eq!(
+            usable_config_path_in(Some(OsString::new()), Some(OsString::from("home/me"))),
+            None
+        );
+        assert_eq!(usable_config_path_in(None, None), None);
+        assert_eq!(
+            usable_config_path_in(None, Some(OsString::from("/home/me"))),
+            Some(PathBuf::from(
+                "/home/me/.config/proton-sync/proton-sync.toml"
+            ))
+        );
+    }
+
+    #[test]
+    fn looking_for_the_global_lock_creates_nothing() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let uid = effective_uid();
+        let some = |value: &str| Some(OsString::from(value));
+
+        // No usable home and no fallback directory: nothing to probe, and nothing is made.
+        assert_eq!(
+            existing_global_lock_path_in(some(""), some("home/me"), temp.path(), uid),
+            None
+        );
+        assert_eq!(
+            fs::read_dir(temp.path()).expect("read").count(),
+            0,
+            "a lookup made the fallback directory"
+        );
+
+        // A directory that is not private to this user is no lock either, and is left alone.
+        let dir = temp.path().join(format!("{APP_STATE_DIR}-{uid}"));
+        fs::create_dir(&dir).expect("dir");
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).expect("mode");
+        assert_eq!(
+            existing_global_lock_path_in(None, None, temp.path(), uid),
+            None
+        );
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).expect("mode");
+        assert_eq!(
+            existing_global_lock_path_in(None, None, temp.path(), uid.wrapping_add(1)),
+            None
+        );
+
+        // One that is: the daemon's own path.
+        assert_eq!(
+            existing_global_lock_path_in(None, None, temp.path(), uid),
+            Some(global_lock_path_in(dir))
+        );
+
+        // With a usable home it is the daemon's path.
+        assert_eq!(
+            existing_global_lock_path_in(some("/state"), None, temp.path(), uid),
+            Some(PathBuf::from(
+                "/state/proton-drive-sync/single-instance.lock"
+            ))
+        );
+        assert_eq!(
+            existing_global_lock_path_in(None, some("/home/me"), temp.path(), uid),
+            Some(PathBuf::from(
+                "/home/me/.local/state/proton-drive-sync/single-instance.lock"
+            ))
         );
     }
 

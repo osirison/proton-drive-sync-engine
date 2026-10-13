@@ -760,6 +760,26 @@ fn gui_setup_runs_doctor_without_a_config_and_continues_on_a_required_problem() 
 }
 
 #[test]
+fn gui_setup_passes_the_cli_path_it_was_given_and_still_no_config() {
+    let run = SetupRun::new(0);
+    let outcome = run.run(
+        "run_gui_setup",
+        &["--gui", "--no-build", "--proton-cli", "/opt/proton-drive"],
+    );
+    assert_eq!(outcome.status, 0, "{}", outcome.text);
+    assert_eq!(
+        outcome.argv,
+        Some(vec![
+            "doctor".into(),
+            "--proton-cli".into(),
+            "/opt/proton-drive".into()
+        ]),
+        "{}",
+        outcome.text
+    );
+}
+
+#[test]
 fn sourcing_setup_runs_no_check_and_the_other_scripts_never_call_it() {
     let run = SetupRun::new(1);
     let outcome = run.run("true", &[]);

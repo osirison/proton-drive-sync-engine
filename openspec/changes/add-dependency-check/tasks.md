@@ -337,6 +337,29 @@
       Verify: the transcript is in the PR, and the sibling change's task 3.10 can use the same
       commands
 
+## 10. Review fixes
+
+- [x] 10.1 `doctor` creates nothing on any path: the lock probe uses
+      `paths::existing_global_lock_path` (D8). Verify: `with_no_home_doctor_creates_nothing_in_the_shared_temp_directory`
+- [x] 10.2 No home directory means no default config and no `proton_cli` from the temp directory
+      (D6), in `doctor` and in the desktop app. Verify:
+      `with_no_home_a_config_planted_in_the_temp_directory_is_neither_read_nor_run`
+- [x] 10.3 Record that `list` can answer `busy` for up to 10 s after start-up (Risks)
+- [x] 10.4 Shutdown cancels the start-up check's child and joins its thread (D12). Verify:
+      `a_shutdown_kills_the_start_up_check_and_run_waits_for_it`
+- [x] 10.5 A relative `proton_cli` is `failed` (D3). Verify:
+      `a_relative_path_is_failed_whichever_directory_it_is_read_from`
+- [x] 10.6 Capitalised sentences, and backtick spans drawn as code in the app (D3). Verify:
+      `every_statement_and_fix_starts_with_a_capital_unless_it_starts_with_a_name_or_path`, `codeSpansOf` tests
+- [x] 10.7 Control characters in a child's output are replaced at capture (D3). Verify:
+      `control_characters_in_a_childs_output_never_leave_the_capture`
+- [x] 10.8 A directory as `proton_cli` has its own statement and fix (D3). Verify:
+      `a_directory_is_not_called_unexecutable`
+- [x] 10.9 `setup.sh --gui --proton-cli P` passes `P` to `doctor` (D11). Verify:
+      `gui_setup_passes_the_cli_path_it_was_given_and_still_no_config`
+- [x] 10.10 The `check_cli` comment states what a failed join does (the page logs it and carries
+      on; nothing depends on the check)
+
 ## Workflow follow-up
 
 - Open the PR. Merge after review and green CI, per the repository's workflow.

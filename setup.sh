@@ -316,7 +316,9 @@ resolve_gui_bin() {
 # Run the `proton-sync doctor` this script just installed; the checks live in the binary, not here.
 # MODE is "terminal" (against the config just written; stops on a required problem) or "gui" (the
 # default config path, which the wizard writes later; reports only, because the app runs the same
-# check and shows the fixes). `--config` goes before the verb: it is not a global flag. Exit codes:
+# check and shows the fixes). `--config` goes before the verb: it is not a global flag. A
+# `--proton-cli` given to setup is passed in both modes: it names the CLI the user wants checked.
+# Exit codes:
 # 0 ok, 1 a required problem, 3 could not check; anything else (2 = an older proton-sync without
 # `doctor`, clap's usage error) is not a result.
 run_dependency_check() {
@@ -327,7 +329,7 @@ run_dependency_check() {
     args+=(--config "${config_path}")
   fi
   args+=(doctor)
-  if [[ "${mode}" == "terminal" && -n "${proton_cli}" ]]; then
+  if [[ -n "${proton_cli}" ]]; then
     args+=(--proton-cli "${proton_cli}")
   fi
 

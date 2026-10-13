@@ -416,9 +416,9 @@ line per check:
 
 | Check | Required | What it looks at |
 | --- | --- | --- |
-| `proton-drive` | yes | The CLI is found and `proton-drive version` runs and exits `0`. A crash, a non-executable file or a non-zero exit is reported as such, not as missing. |
+| `proton-drive` | yes | The CLI is found and `proton-drive version` runs and exits `0`. A crash, a non-executable file, a directory or a non-zero exit is reported as such, not as missing. A relative `proton_cli` path (one with a `/` that is not absolute) is a problem: the service resolves it against its own working directory, so the answer would depend on where you ran `doctor`. |
 | `signed in` | yes | A `proton-drive` sign-in is stored in the desktop keyring. Only whether it exists is read; the stored session is never printed. |
-| `config` | yes | The config file reads and validates. No file at the default path is fine. |
+| `config` | yes | The config file reads and validates. No file at the default path is fine. With no home directory (no absolute `XDG_CONFIG_HOME` or `HOME`) nothing is read and the check says it could not be made. |
 | `secret-tool`, `curl`, `session bus` | no | The tools and the session bus the daemon uses to follow changes. Without them sync still works but walks the whole folder on every pass. |
 | `service` | no | `proton-syncd.service` is installed for your user. |
 

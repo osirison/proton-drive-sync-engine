@@ -23,6 +23,7 @@ import {
   onboardingBarShape,
   cliBlocksFirstRun,
   cliChecklistOf,
+  codeSpansOf,
   cliTitleOf,
 } from "../src/js/screens/onboarding.js";
 import { ONBOARDING } from "../src/js/ui/copy.js";
@@ -487,6 +488,26 @@ test("a link is the pair of ids openHelpLink takes, with words for it, and never
   ]);
   // Nothing a click hands on can be an address: the reply's `url` is not carried at all.
   assert.ok(!JSON.stringify(rows).includes("elsewhere.example"));
+});
+
+test("backtick spans in a sentence become code pieces, and the backticks do not reach the screen", () => {
+  assert.deepEqual(codeSpansOf("Run `proton-drive auth login` and then check again."), [
+    { code: false, text: "Run " },
+    { code: true, text: "proton-drive auth login" },
+    { code: false, text: " and then check again." },
+  ]);
+  assert.deepEqual(codeSpansOf("`a` and `b`"), [
+    { code: true, text: "a" },
+    { code: false, text: " and " },
+    { code: true, text: "b" },
+  ]);
+  assert.deepEqual(codeSpansOf("No quotes here"), [{ code: false, text: "No quotes here" }]);
+  // An unpaired backtick pairs nothing: the text is kept whole.
+  assert.deepEqual(codeSpansOf("odd ` one"), [{ code: false, text: "odd ` one" }]);
+  assert.deepEqual(codeSpansOf(""), []);
+  assert.deepEqual(codeSpansOf(null), []);
+  // Markup is text, not markup: nothing here is ever parsed into nodes.
+  assert.deepEqual(codeSpansOf("<b>x</b>"), [{ code: false, text: "<b>x</b>" }]);
 });
 
 test("an old-shaped or empty reply lists nothing and does not throw", () => {

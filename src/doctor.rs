@@ -13,8 +13,9 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use wait_timeout::ChildExt;
@@ -342,8 +343,20 @@ pub enum CliSource {
 pub enum ConfigFile {
     /// The default file: absent is fine ("no config file yet").
     Default(PathBuf),
+    /// There is no default file to name (no absolute `XDG_CONFIG_HOME` or `HOME`). Nothing is
+    /// read: a file in the shared temp directory could be planted by any local user, and its
+    /// `proton_cli` would be run. The check says it could not be made and the CLI is looked up on
+    /// `PATH`.
+    NoHome,
     /// `--config`: absent is a problem.
     Named(PathBuf),
+}
+
+impl ConfigFile {
+    /// The default file at `path`, or [`Self::NoHome`] when there is none to name.
+    pub fn default_at(path: Option<PathBuf>) -> Self {
+        path.map_or(Self::NoHome, Self::Default)
+    }
 }
 
 /// Whether the `proton-drive` check looks at the user-global lock before it runs `version`.
@@ -361,10 +374,13 @@ pub enum DaemonLock {
 }
 
 impl DaemonLock {
-    /// The default global lock, or [`Self::Skip`] when its path cannot be resolved. That is the
-    /// same as the probe answering `Unknown`, which does not stop the check from running.
+    /// The default global lock, or [`Self::Skip`] when there is none to look at. The check creates
+    /// nothing, so with no usable `XDG_STATE_HOME` or `HOME` the lock would be under a per-uid
+    /// temp directory that only a daemon makes: when it is not there, no daemon of this user is
+    /// running and there is nothing to probe. Skipping is the same as the probe answering
+    /// `Unknown` or `Free`, which does not stop the check from running.
     pub fn user_default() -> Self {
-        crate::paths::default_global_lock_path().map_or(Self::Skip, Self::Probe)
+        crate::paths::existing_global_lock_path().map_or(Self::Skip, Self::Probe)
     }
 }
 
@@ -376,10 +392,14 @@ pub struct Inputs {
     /// When set, the `version` spawn is made while holding this gate (the daemon passes its
     /// client's, so the check never overlaps a `list` request's child, #23).
     pub gate: Option<Arc<CliGate>>,
+    /// When set and raised, a running `version` is killed and reaped at once (the daemon's cancel
+    /// flag), so no child outlives the daemon that started it (#23).
+    pub cancel: Option<Arc<AtomicBool>>,
 }
 
 impl Inputs {
-    /// Every check, the CLI taken from the config, the default lock probed, no gate.
+    /// Every check, the CLI taken from the config, the default lock probed, no gate, not
+    /// cancellable.
     pub fn new(config: ConfigFile) -> Self {
         Self {
             cli: CliSource::FromConfig,
@@ -387,6 +407,7 @@ impl Inputs {
             checks: CheckId::ALL.to_vec(),
             daemon_lock: DaemonLock::user_default(),
             gate: None,
+            cancel: None,
         }
     }
 }
@@ -413,6 +434,8 @@ pub enum Ran {
     ExecFormat,
     SpawnError(io::ErrorKind),
     TimedOut,
+    /// The caller's cancel flag was raised; the child was killed and reaped.
+    Cancelled,
 }
 
 pub trait Environment {
@@ -424,6 +447,23 @@ pub trait Environment {
     fn probe_lock(&self, path: &Path) -> GlobalLockProbe;
     /// stdin is always `/dev/null`.
     fn run(&self, program: &Path, args: &[&str], limit: Duration, stdout: Stdout) -> Ran;
+    /// [`Self::run`] that stops early, killing and reaping the child, once `cancel` is raised
+    /// ([`Ran::Cancelled`]). The default ignores the flag, which is right for an environment that
+    /// starts no real child.
+    fn run_cancellable(
+        &self,
+        program: &Path,
+        args: &[&str],
+        limit: Duration,
+        stdout: Stdout,
+        _cancel: Option<&AtomicBool>,
+    ) -> Ran {
+        self.run(program, args, limit, stdout)
+    }
+    /// Whether `path` is a directory (a stat, nothing executed). The default says no.
+    fn is_directory(&self, _path: &Path) -> bool {
+        false
+    }
     /// An environment that cannot look at anything ([`InertEnvironment`]): a caller that would
     /// report its answers as problems skips the check instead.
     fn is_inert(&self) -> bool {
@@ -468,6 +508,10 @@ const HEAD_CHARS: usize = 200;
 /// How long to wait for a pipe's first line once the child is gone. A grandchild that kept the
 /// pipe open must not hold the check up.
 const HEAD_WAIT: Duration = Duration::from_millis(500);
+/// How often a cancellable wait looks at its flag.
+const CANCEL_POLL: Duration = Duration::from_millis(50);
+/// What stands in for a control character in text a child printed.
+const CONTROL_PLACEHOLDER: char = '\u{FFFD}';
 
 impl Environment for SystemEnvironment {
     fn find_program(&self, name: &str) -> Option<PathBuf> {
@@ -497,6 +541,17 @@ impl Environment for SystemEnvironment {
     }
 
     fn run(&self, program: &Path, args: &[&str], limit: Duration, stdout: Stdout) -> Ran {
+        self.run_cancellable(program, args, limit, stdout, None)
+    }
+
+    fn run_cancellable(
+        &self,
+        program: &Path,
+        args: &[&str],
+        limit: Duration,
+        stdout: Stdout,
+        cancel: Option<&AtomicBool>,
+    ) -> Ran {
         #[cfg(test)]
         refuse_real_tool(program);
         let spawned = Command::new(program)
@@ -514,8 +569,26 @@ impl Environment for SystemEnvironment {
         };
         let out = child.stdout.take().map(first_line);
         let err = child.stderr.take().map(first_line);
-        match child.wait_timeout(limit) {
-            Ok(Some(status)) => match status.signal() {
+        // Waits in short slices only when there is a flag to watch; otherwise one wait.
+        let deadline = Instant::now() + limit;
+        let waited = loop {
+            if cancel.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+                break Err(Ran::Cancelled);
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let slice = match cancel {
+                Some(_) => remaining.min(CANCEL_POLL),
+                None => remaining,
+            };
+            match child.wait_timeout(slice) {
+                Ok(Some(status)) => break Ok(status),
+                Ok(None) if remaining <= slice => break Err(Ran::TimedOut),
+                Ok(None) => {}
+                Err(error) => break Err(Ran::SpawnError(error.kind())),
+            }
+        };
+        match waited {
+            Ok(status) => match status.signal() {
                 Some(signal) => Ran::Signalled(signal),
                 None => Ran::Exited {
                     code: status.code().unwrap_or(-1),
@@ -523,17 +596,18 @@ impl Environment for SystemEnvironment {
                     stderr_head: err.map(head).unwrap_or_default(),
                 },
             },
-            outcome => {
-                // Timed out, or the wait itself failed: stop the child and reap it, so nothing is
-                // left running or zombied. Only the direct child is killed.
+            Err(ran) => {
+                // Timed out, cancelled, or the wait itself failed: stop the child and reap it, so
+                // nothing is left running or zombied. Only the direct child is killed.
                 let _ = child.kill();
                 let _ = child.wait();
-                match outcome {
-                    Ok(_) => Ran::TimedOut,
-                    Err(error) => Ran::SpawnError(error.kind()),
-                }
+                ran
             }
         }
+    }
+
+    fn is_directory(&self, path: &Path) -> bool {
+        path.is_dir()
     }
 }
 
@@ -557,10 +631,20 @@ fn first_line<R: Read + Send + 'static>(pipe: R) -> mpsc::Receiver<String> {
         let mut line = Vec::new();
         let _ = Read::take(&mut reader, 4096).read_until(b'\n', &mut line);
         let text = String::from_utf8_lossy(&line);
+        // The text is a child's, so untrusted: an escape sequence in a version line would be
+        // interpreted by the terminal and the log viewer it reaches. Cleaned here, at the one
+        // capture point, before anything else sees it.
         let first: String = text
             .trim_end_matches(['\r', '\n'])
             .chars()
             .take(HEAD_CHARS)
+            .map(|c| {
+                if c.is_control() {
+                    CONTROL_PLACEHOLDER
+                } else {
+                    c
+                }
+            })
             .collect();
         let _ = tx.send(first);
         let _ = io::copy(&mut reader, &mut io::sink());
@@ -671,6 +755,23 @@ fn check_config(inputs: &Inputs, env: &dyn Environment) -> ConfigEval {
     let (path, named) = match &inputs.config {
         ConfigFile::Named(path) => (path, true),
         ConfigFile::Default(path) => (path, false),
+        ConfigFile::NoHome => {
+            // Nothing is read, and the CLI is looked up on PATH: there is no file whose
+            // `proton_cli` could be trusted.
+            return ConfigEval {
+                result: finding(
+                    CheckId::Config,
+                    Outcome::Unknown,
+                    "No home directory, so the default config file cannot be located".to_owned(),
+                    "Set HOME or XDG_CONFIG_HOME to an absolute path, or pass --config, then \
+                     check again"
+                        .to_owned(),
+                    Vec::new(),
+                ),
+                proton_cli: None,
+                usable: true,
+            };
+        }
     };
     let shown = path.display();
     let failed = |statement: String, fix: &str| ConfigEval {
@@ -690,7 +791,7 @@ fn check_config(inputs: &Inputs, env: &dyn Environment) -> ConfigEval {
             return ConfigEval {
                 result: ok_result(
                     CheckId::Config,
-                    format!("no config file yet (the default is {shown})"),
+                    format!("No config file yet (the default is {shown})"),
                 ),
                 proton_cli: None,
                 usable: true,
@@ -698,21 +799,21 @@ fn check_config(inputs: &Inputs, env: &dyn Environment) -> ConfigEval {
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             return failed(
-                format!("the config file {shown} does not exist"),
-                "check the path given to --config, or leave --config out to use the default file",
+                format!("The config file {shown} does not exist"),
+                "Check the path given to --config, or leave --config out to use the default file",
             );
         }
         Err(error) => {
             return failed(
-                format!("the config file {shown} cannot be read: {error}"),
-                "make the file readable by this user, then check again",
+                format!("The config file {shown} cannot be read: {error}"),
+                "Make the file readable by this user, then check again",
             );
         }
     };
     if let Err(error) = config::validate_file_config_text(&text) {
         return failed(
-            format!("the config file {shown} is not valid: {error}"),
-            "correct the setting named above, then check again",
+            format!("The config file {shown} is not valid: {error}"),
+            "Correct the setting named above, then check again",
         );
     }
     let proton_cli = config::parse_file_config(&text)
@@ -781,6 +882,23 @@ fn check_proton_drive(
     };
     let proton_links = || vec![Link::proton_download(), Link::proton_cli_docs()];
 
+    // A relative path is resolved against the working directory of whoever runs it, and the
+    // service's is not this process's: it would read `ok` from one directory and `missing` from
+    // another. Refused outright; a bare name is a PATH lookup and stays one.
+    if cli.as_os_str().as_bytes().contains(&b'/') && !cli.is_absolute() {
+        return finding(
+            id,
+            Outcome::Failed,
+            say(format!(
+                "proton_cli is a relative path ({}); the service resolves it against its own \
+                 working directory",
+                cli.display()
+            )),
+            "Set proton_cli to an absolute path, then check again".to_owned(),
+            Vec::new(),
+        );
+    }
+
     // Found by looking, not running: a CLI that is not there is missing whatever a daemon is doing.
     let Some(program) = resolve_program(env, cli) else {
         return finding(
@@ -802,8 +920,8 @@ fn check_proton_drive(
         return finding(
             id,
             Outcome::Unknown,
-            say("the daemon is running; its start-up log checks the CLI".to_owned()),
-            "read the proton-drive line of the daemon's start-up log, or stop the daemon and check \
+            say("The daemon is running; its start-up log checks the CLI".to_owned()),
+            "Read the proton-drive line of the daemon's start-up log, or stop the daemon and check \
              again"
                 .to_owned(),
             proton_links(),
@@ -813,7 +931,13 @@ fn check_proton_drive(
     let shown = program.display();
     let ran = {
         let _gate = inputs.gate.as_ref().map(|gate| gate.enter());
-        env.run(&program, &["version"], CLI_LIMIT, Stdout::Keep)
+        env.run_cancellable(
+            &program,
+            &["version"],
+            CLI_LIMIT,
+            Stdout::Keep,
+            inputs.cancel.as_deref(),
+        )
     };
     match ran {
         Ran::Exited {
@@ -850,8 +974,17 @@ fn check_proton_drive(
         Ran::NotFound => finding(
             id,
             Outcome::Missing,
-            say(format!("no executable was found at {shown}")),
+            say(format!("No executable was found at {shown}")),
             install,
+            proton_links(),
+        ),
+        Ran::NotExecutable if env.is_directory(&program) => finding(
+            id,
+            Outcome::Failed,
+            say(format!(
+                "{shown} is a directory, not the proton-drive program"
+            )),
+            "Point proton_cli at the program file, then check again".to_owned(),
             proton_links(),
         ),
         Ran::NotExecutable => finding(
@@ -859,6 +992,15 @@ fn check_proton_drive(
             Outcome::Failed,
             say(format!("{shown} was found but is not executable")),
             reinstall("Reinstall it"),
+            proton_links(),
+        ),
+        Ran::Cancelled => finding(
+            id,
+            Outcome::Unknown,
+            say(format!(
+                "{shown} was not asked to finish: the check was cancelled"
+            )),
+            "Check again".to_owned(),
             proton_links(),
         ),
         Ran::ExecFormat => finding(
@@ -893,7 +1035,7 @@ fn check_proton_drive(
                 "{shown} did not answer `version` within {} s",
                 CLI_LIMIT.as_secs()
             )),
-            "check again; `version` asks proton.me for the newest version, so it can be slow \
+            "Check again; `version` asks proton.me for the newest version, so it can be slow \
              offline"
                 .to_owned(),
             proton_links(),
@@ -902,7 +1044,7 @@ fn check_proton_drive(
             id,
             Outcome::Unknown,
             say(format!("{shown} could not be started: {kind}")),
-            "check that the file can be run by this user, then check again".to_owned(),
+            "Check that the file can be run by this user, then check again".to_owned(),
             proton_links(),
         ),
     }
@@ -933,7 +1075,7 @@ fn check_signed_in(env: &dyn Environment) -> CheckResult {
                      the sign-in only from the default keychain store"
                 ),
                 format!(
-                    "to let the daemon follow changes, unset it and run `{sign_in}`; otherwise \
+                    "To let the daemon follow changes, unset it and run `{sign_in}`; otherwise \
                      nothing is needed"
                 ),
             );
@@ -942,7 +1084,7 @@ fn check_signed_in(env: &dyn Environment) -> CheckResult {
     let Some(secret_tool) = env.find_program("secret-tool") else {
         return could_not(
             "secret-tool is not installed, so the keyring cannot be asked".to_owned(),
-            "install secret-tool (libsecret-tools on Debian and Ubuntu, libsecret on Fedora) and \
+            "Install secret-tool (libsecret-tools on Debian and Ubuntu, libsecret on Fedora) and \
              check again"
                 .to_owned(),
         );
@@ -952,8 +1094,8 @@ fn check_signed_in(env: &dyn Environment) -> CheckResult {
         .is_none_or(|address| address.is_empty())
     {
         return could_not(
-            "no session bus in this shell, so the keyring cannot be asked".to_owned(),
-            "run this from your desktop session (an SSH shell has no session bus), then check \
+            "No session bus in this shell, so the keyring cannot be asked".to_owned(),
+            "Run this from your desktop session (an SSH shell has no session bus), then check \
              again"
                 .to_owned(),
         );
@@ -966,34 +1108,34 @@ fn check_signed_in(env: &dyn Environment) -> CheckResult {
         Stdout::Discard,
     );
     match ran {
-        Ran::Exited { code: 0, .. } => ok_result(id, "a sign-in is stored".to_owned()),
+        Ran::Exited { code: 0, .. } => ok_result(id, "A sign-in is stored".to_owned()),
         Ran::Exited { stderr_head, .. } if stderr_head.is_empty() => finding(
             id,
             Outcome::Missing,
-            "no proton-drive sign-in is stored in the keyring".to_owned(),
+            "No proton-drive sign-in is stored in the keyring".to_owned(),
             format!(
-                "run `{sign_in}` and then check again. If you were asked to unlock the keyring \
+                "Run `{sign_in}` and then check again. If you were asked to unlock the keyring \
                  and dismissed it, unlock it and check again"
             ),
             vec![Link::proton_cli_docs()],
         ),
         Ran::Exited { stderr_head, .. } => could_not(
-            format!("the keyring could not be asked: {stderr_head}"),
-            "unlock the keyring or start the Secret Service, then check again".to_owned(),
+            format!("The keyring could not be asked: {stderr_head}"),
+            "Unlock the keyring or start the Secret Service, then check again".to_owned(),
         ),
         Ran::TimedOut => could_not(
             format!(
-                "the keyring did not answer within {} s (an unlock prompt may be waiting)",
+                "The keyring did not answer within {} s (an unlock prompt may be waiting)",
                 LOOKUP_LIMIT.as_secs()
             ),
-            "answer the unlock prompt, then check again".to_owned(),
+            "Answer the unlock prompt, then check again".to_owned(),
         ),
         other => could_not(
             format!(
-                "the keyring lookup could not run ({})",
+                "The keyring lookup could not run ({})",
                 describe_failure(&other)
             ),
-            "check that secret-tool works for this user, then check again".to_owned(),
+            "Check that secret-tool works for this user, then check again".to_owned(),
         ),
     }
 }
@@ -1006,6 +1148,7 @@ fn describe_failure(ran: &Ran) -> String {
         Ran::ExecFormat => "not a runnable program".to_owned(),
         Ran::SpawnError(kind) => kind.to_string(),
         Ran::TimedOut => "timed out".to_owned(),
+        Ran::Cancelled => "cancelled".to_owned(),
         Ran::Exited { code, .. } => format!("exit status {code}"),
     }
 }
@@ -1021,10 +1164,10 @@ fn check_presence(env: &dyn Environment, id: CheckId, name: &str) -> CheckResult
             format!("{name} is not installed; {SLOW_SYNC}"),
             match id {
                 CheckId::SecretTool => {
-                    "install secret-tool (libsecret-tools on Debian and Ubuntu, libsecret on \
+                    "Install secret-tool (libsecret-tools on Debian and Ubuntu, libsecret on \
                      Fedora)"
                 }
-                _ => "install curl with your package manager",
+                _ => "Install curl with your package manager",
             }
             .to_owned(),
             Vec::new(),
@@ -1036,15 +1179,15 @@ fn check_session_bus(env: &dyn Environment) -> CheckResult {
     let id = CheckId::SessionBus;
     match env.var("DBUS_SESSION_BUS_ADDRESS") {
         Some(address) if !address.is_empty() => {
-            ok_result(id, "a session bus address is set".to_owned())
+            ok_result(id, "A session bus address is set".to_owned())
         }
         _ => finding(
             id,
             Outcome::Missing,
             format!(
-                "no session bus in this shell; without one in the daemon's environment, {SLOW_SYNC}"
+                "No session bus in this shell; without one in the daemon's environment, {SLOW_SYNC}"
             ),
-            "run this from your desktop session; a service started by systemd --user has one \
+            "Run this from your desktop session; a service started by systemd --user has one \
              already, so an SSH shell lacking it does not mean the service does"
                 .to_owned(),
             Vec::new(),
@@ -1059,7 +1202,7 @@ fn check_service(env: &dyn Environment) -> CheckResult {
             id,
             Outcome::Unknown,
             statement,
-            "this only matters for the desktop app's Start button; check again from your desktop \
+            "This only matters for the desktop app's Start button; check again from your desktop \
              session"
                 .to_owned(),
             Vec::new(),
@@ -1096,14 +1239,14 @@ fn check_service(env: &dyn Environment) -> CheckResult {
                 "proton-syncd.service is not installed; the daemon can still run without it, but \
                  the desktop app's Start button needs it"
                     .to_owned(),
-                "install the user unit (setup.sh does, and so do the packages)".to_owned(),
+                "Install the user unit (setup.sh does, and so do the packages)".to_owned(),
                 Vec::new(),
             ),
             "masked" => finding(
                 id,
                 Outcome::Failed,
                 "proton-syncd.service is masked, so it cannot be started".to_owned(),
-                "run `systemctl --user unmask proton-syncd.service`".to_owned(),
+                "Run `systemctl --user unmask proton-syncd.service`".to_owned(),
                 Vec::new(),
             ),
             other => could_not(format!(
@@ -1194,6 +1337,84 @@ mod tests {
     }
 
     #[test]
+    fn a_raised_cancel_flag_kills_and_reaps_the_child() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pid_file = dir.path().join("pid");
+        let flag = Arc::new(AtomicBool::new(false));
+        let raiser = {
+            let flag = Arc::clone(&flag);
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(300));
+                flag.store(true, Ordering::SeqCst);
+            })
+        };
+        let started = std::time::Instant::now();
+        let ran = SystemEnvironment.run_cancellable(
+            Path::new("/bin/sh"),
+            &[
+                "-c",
+                &format!("echo $$ > {}; exec sleep 20", pid_file.display()),
+            ],
+            Duration::from_secs(60),
+            Stdout::Keep,
+            Some(&flag),
+        );
+        raiser.join().expect("raiser");
+        assert_eq!(ran, Ran::Cancelled);
+        assert!(started.elapsed() < Duration::from_secs(5));
+        let pid: i32 = fs::read_to_string(&pid_file)
+            .expect("the script wrote its pid")
+            .trim()
+            .parse()
+            .expect("a pid");
+        // Reaped: a zombie would still answer signal 0.
+        assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
+        assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
+    }
+
+    #[test]
+    fn a_flag_never_raised_changes_nothing() {
+        let flag = AtomicBool::new(false);
+        let ran = SystemEnvironment.run_cancellable(
+            Path::new("/bin/sh"),
+            &["-c", "echo hi"],
+            Duration::from_secs(10),
+            Stdout::Keep,
+            Some(&flag),
+        );
+        assert_eq!(
+            ran,
+            Ran::Exited {
+                code: 0,
+                stdout_head: "hi".to_owned(),
+                stderr_head: String::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn control_characters_in_a_childs_output_never_leave_the_capture() {
+        // An escape sequence in a version line would reach the terminal, the log and the app.
+        let Ran::Exited {
+            stdout_head,
+            stderr_head,
+            ..
+        } = sh(
+            "printf '\\033[31mv1.2\\033[0m\\001\\177\\n'; printf 'bad\\033]0;x\\007\\n' >&2",
+            Duration::from_secs(10),
+            Stdout::Keep,
+        )
+        else {
+            panic!("expected an exit");
+        };
+        for text in [&stdout_head, &stderr_head] {
+            assert!(!text.chars().any(char::is_control), "{text:?}");
+        }
+        assert!(stdout_head.contains("v1.2"), "{stdout_head:?}");
+        assert!(stderr_head.starts_with("bad"), "{stderr_head:?}");
+    }
+
+    #[test]
     fn discard_leaves_stdout_empty() {
         let Ran::Exited { stdout_head, .. } =
             sh("echo secret", Duration::from_secs(10), Stdout::Discard)
@@ -1276,6 +1497,10 @@ mod tests {
         calls: RefCell<Vec<Call>>,
         lock_probes: RefCell<Vec<PathBuf>>,
         during_run: Option<Box<dyn Fn()>>,
+        directories: Vec<PathBuf>,
+        reads: RefCell<Vec<PathBuf>>,
+        /// For each `run_cancellable` call: was a flag handed in, and was it raised.
+        cancels: RefCell<Vec<Option<bool>>>,
     }
 
     impl Environment for Fake {
@@ -1286,6 +1511,7 @@ mod tests {
             self.vars.get(name).cloned()
         }
         fn read_file(&self, path: &Path) -> io::Result<String> {
+            self.reads.borrow_mut().push(path.to_path_buf());
             match self.files.get(path) {
                 Some(Ok(text)) => Ok(text.clone()),
                 Some(Err(kind)) => Err(io::Error::from(*kind)),
@@ -1299,6 +1525,22 @@ mod tests {
                 Some(FakeLock::Unknown) => GlobalLockProbe::Unknown("fake".to_owned()),
                 Some(FakeLock::Free) | None => GlobalLockProbe::Free,
             }
+        }
+        fn is_directory(&self, path: &Path) -> bool {
+            self.directories.iter().any(|d| d == path)
+        }
+        fn run_cancellable(
+            &self,
+            program: &Path,
+            args: &[&str],
+            limit: Duration,
+            stdout: Stdout,
+            cancel: Option<&AtomicBool>,
+        ) -> Ran {
+            self.cancels
+                .borrow_mut()
+                .push(cancel.map(|flag| flag.load(Ordering::SeqCst)));
+            self.run(program, args, limit, stdout)
         }
         fn run(&self, program: &Path, args: &[&str], limit: Duration, stdout: Stdout) -> Ran {
             self.calls.borrow_mut().push(Call {
@@ -1510,6 +1752,112 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_relative_path_is_failed_whichever_directory_it_is_read_from() {
+        // `ok` from one directory and `missing` from another is no answer; the service resolves it
+        // against its own directory in any case.
+        let fake = healthy();
+        let mut explicit = inputs();
+        explicit.cli = CliSource::Explicit(PathBuf::from("bin/proton-drive"));
+        let found = result(&fake, explicit, CheckId::ProtonDrive);
+        assert_eq!(found.outcome, Outcome::Failed);
+        assert_eq!(
+            found.statement,
+            "proton_cli is a relative path (bin/proton-drive); the service resolves it against \
+             its own working directory"
+        );
+        assert_eq!(
+            found.fix.as_deref(),
+            Some("Set proton_cli to an absolute path, then check again")
+        );
+        assert!(fake.calls.borrow().is_empty(), "nothing is run");
+
+        // The same from a config file's value, and for a `./` spelling.
+        for value in ["../proton-drive", "./proton-drive"] {
+            let mut fake = healthy();
+            fake.files.insert(
+                PathBuf::from(CONFIG),
+                Ok(format!("proton_cli = \"{value}\"\n")),
+            );
+            let found = drive(&fake);
+            assert_eq!(found.outcome, Outcome::Failed, "{value}");
+            assert!(found.statement.contains("relative path"), "{value}");
+            assert!(fake.calls.borrow().is_empty(), "{value}");
+        }
+    }
+
+    #[test]
+    fn a_directory_is_not_called_unexecutable() {
+        let mut fake = healthy();
+        fake.answers.insert("proton-drive", Ran::NotExecutable);
+        fake.directories
+            .push(PathBuf::from("/opt/proton/proton-drive"));
+        let mut inputs = inputs();
+        inputs.cli = CliSource::Explicit(PathBuf::from("/opt/proton/proton-drive"));
+        let found = result(&fake, inputs, CheckId::ProtonDrive);
+        assert_eq!(found.outcome, Outcome::Failed);
+        assert_eq!(
+            found.statement,
+            "/opt/proton/proton-drive is a directory, not the proton-drive program"
+        );
+        assert_eq!(
+            found.fix.as_deref(),
+            Some("Point proton_cli at the program file, then check again")
+        );
+    }
+
+    #[test]
+    fn with_no_home_no_config_is_read_and_the_cli_is_looked_up_on_path() {
+        let mut fake = healthy();
+        // A file at the temp-directory spot would name another program; it must never be read.
+        fake.files.insert(
+            PathBuf::from("/tmp/proton-sync/proton-sync.toml"),
+            Ok("proton_cli = \"/tmp/planted/proton-drive\"\n".to_owned()),
+        );
+        let mut inputs = inputs();
+        inputs.config = ConfigFile::default_at(None);
+        let report = run(&inputs, &fake);
+        assert!(fake.reads.borrow().is_empty(), "{:?}", fake.reads.borrow());
+        let config = &report.checks[2];
+        assert_eq!(config.id, CheckId::Config);
+        assert_eq!(config.outcome, Outcome::Unknown);
+        assert_eq!(
+            config.statement,
+            "No home directory, so the default config file cannot be located"
+        );
+        let cli = &report.checks[0];
+        assert_eq!(cli.outcome, Outcome::Ok);
+        assert!(
+            cli.statement.ends_with("at /usr/bin/proton-drive"),
+            "{}",
+            cli.statement
+        );
+        assert_eq!(report.verdict, Verdict::Unknown);
+    }
+
+    #[test]
+    fn the_cancel_flag_reaches_the_version_run() {
+        let fake = healthy();
+        let flag = Arc::new(AtomicBool::new(true));
+        let mut with = inputs();
+        with.cancel = Some(Arc::clone(&flag));
+        result(&fake, with, CheckId::ProtonDrive);
+        assert_eq!(*fake.cancels.borrow(), vec![Some(true)]);
+
+        let fake = healthy();
+        drive(&fake);
+        assert_eq!(*fake.cancels.borrow(), vec![None]);
+    }
+
+    #[test]
+    fn a_cancelled_run_is_unknown_and_says_so() {
+        let mut fake = healthy();
+        fake.answers.insert("proton-drive", Ran::Cancelled);
+        let found = drive(&fake);
+        assert_eq!(found.outcome, Outcome::Unknown);
+        assert!(found.statement.contains("cancelled"), "{}", found.statement);
+    }
+
     // ---- 3.7: the lock probe and the gate --------------------------------------------------
 
     fn with_lock(lock: Option<FakeLock>) -> (Fake, Inputs) {
@@ -1528,7 +1876,7 @@ mod tests {
         assert!(
             found
                 .statement
-                .contains("the daemon is running; its start-up log checks the CLI")
+                .contains("The daemon is running; its start-up log checks the CLI")
         );
         assert!(found.fix.is_some() && !found.links.is_empty());
         assert!(fake.calls.borrow().is_empty(), "nothing may be spawned");
@@ -1611,7 +1959,7 @@ mod tests {
         let fake = healthy();
         let found = signed_in(&fake);
         assert_eq!(found.outcome, Outcome::Ok);
-        assert_eq!(found.statement, "a sign-in is stored");
+        assert_eq!(found.statement, "A sign-in is stored");
         let calls = calls_to(&fake, "secret-tool");
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].stdout, Stdout::Discard);
@@ -1661,7 +2009,7 @@ mod tests {
             }
             let found = signed_in(&fake);
             assert_eq!(found.outcome, Outcome::Unknown);
-            assert!(found.statement.contains("no session bus"));
+            assert!(found.statement.contains("No session bus"));
             assert!(fake.calls.borrow().is_empty());
         }
     }
@@ -1817,7 +2165,7 @@ mod tests {
     fn an_absent_default_file_is_ok_and_says_so() {
         let found = result(&healthy(), inputs(), CheckId::Config);
         assert_eq!(found.outcome, Outcome::Ok);
-        assert!(found.statement.contains("no config file yet"));
+        assert!(found.statement.contains("No config file yet"));
     }
 
     #[test]
@@ -2069,6 +2417,91 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn every_statement_and_fix_starts_with_a_capital_unless_it_starts_with_a_name_or_path() {
+        let mut reports = reports();
+        // Reports the table above does not reach: the ones that cannot look, and the rest of the
+        // proton-drive endings.
+        let mut bare = Fake::default();
+        bare.vars
+            .insert("PROTON_DRIVE_CREDENTIALS_STORE", OsString::from("pass"));
+        reports.push(run(&inputs(), &bare));
+        reports.push(run(&inputs(), &Fake::default()));
+        let mut store = healthy();
+        store
+            .vars
+            .insert("PROTON_DRIVE_CREDENTIALS_STORE", OsString::from("pass"));
+        reports.push(run(&inputs(), &store));
+        let mut nobus = healthy();
+        nobus.vars.clear();
+        reports.push(run(&inputs(), &nobus));
+        let mut broken = healthy();
+        broken
+            .answers
+            .insert("secret-tool", exited(1, "", "locked"));
+        broken.answers.insert("systemctl", exited(1, "", "no bus"));
+        reports.push(run(&inputs(), &broken));
+        let mut timed = healthy();
+        timed.answers.insert("secret-tool", Ran::TimedOut);
+        timed.answers.insert("systemctl", exited(0, "odd", ""));
+        reports.push(run(&inputs(), &timed));
+        for ran in [
+            Ran::NotFound,
+            Ran::NotExecutable,
+            Ran::ExecFormat,
+            Ran::Signalled(libc::SIGSEGV),
+            Ran::SpawnError(io::ErrorKind::OutOfMemory),
+            Ran::Cancelled,
+        ] {
+            let mut fake = healthy();
+            fake.answers.insert("proton-drive", ran);
+            reports.push(run(&inputs(), &fake));
+        }
+        let mut no_home = inputs();
+        no_home.config = ConfigFile::NoHome;
+        reports.push(run(&no_home, &healthy()));
+        let mut relative = inputs();
+        relative.cli = CliSource::Explicit(PathBuf::from("bin/proton-drive"));
+        reports.push(run(&relative, &healthy()));
+        let mut named = inputs();
+        named.config = ConfigFile::Named(PathBuf::from("/nope.toml"));
+        reports.push(run(&named, &healthy()));
+        let mut unreadable = healthy();
+        unreadable
+            .files
+            .insert(PathBuf::from(CONFIG), Err(io::ErrorKind::PermissionDenied));
+        reports.push(run(&inputs(), &unreadable));
+
+        // A program, a path, an environment variable or the config key: not a sentence's first word.
+        let names = [
+            "proton-drive",
+            "proton-syncd",
+            "proton_cli",
+            "secret-tool",
+            "curl",
+            "systemctl",
+            "/",
+        ];
+        let mut seen = 0;
+        for report in reports {
+            for check in report.checks {
+                for text in [Some(check.statement.as_str()), check.fix.as_deref()]
+                    .into_iter()
+                    .flatten()
+                {
+                    seen += 1;
+                    let first = text.chars().next().expect("not empty");
+                    assert!(
+                        first.is_uppercase() || names.iter().any(|name| text.starts_with(name)),
+                        "{:?}: {text}",
+                        check.id
+                    );
+                }
+            }
+        }
+        assert!(seen > 60, "only {seen} sentences were looked at");
     }
 
     #[test]

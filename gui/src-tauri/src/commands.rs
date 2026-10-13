@@ -3541,12 +3541,15 @@ pub async fn check_cli(app: tauri::AppHandle) -> Result<CliCheck, String> {
         let paths = paths.lock().unwrap();
         (paths.proton_cli.clone(), paths.config_path.clone())
     };
+    // With no config home the app's config path is in the shared temp directory: the check reads
+    // no file there and takes no `proton_cli` from it.
+    let config_path = gui_core::ipc::has_config_home().then_some(config_path);
     // `spawn_blocking`: the check waits on child processes, and a command that blocks the GTK main
     // loop aborts WebKit.
     tauri::async_runtime::spawn_blocking(move || {
         let checked = gui_core::doctor::check(
             &proton_cli,
-            &config_path,
+            config_path.as_deref(),
             gui_core::doctor::DaemonLock::user_default(),
             &check_environment(),
         );
@@ -3557,8 +3560,9 @@ pub async fn check_cli(app: tauri::AppHandle) -> Result<CliCheck, String> {
         }
     })
     .await
-    // A failed join is not an answer. The screen must render, so this rejects and the page shows
-    // its own "could not run the check" state rather than a made-up verdict.
+    // A failed join is not an answer, so this rejects instead of inventing a verdict. The page only
+    // logs the rejection (`console.error`) and carries on without the dependency screen: the user
+    // can continue, and nothing destructive depends on the check (it only reads).
     .map_err(|error| format!("dependency check task failed: {error}"))
 }
 

@@ -576,6 +576,17 @@
   color: var(--text-3);
   overflow-wrap: anywhere;
 }
+/* A command or name the engine's sentence quoted in backticks. */
+.ob-cli-code {
+  padding: 0 4px;
+  font-family: var(--font-mono);
+  font-size: 0.95em;
+  color: var(--text-bright);
+  background: var(--panel-alt);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-5);
+  overflow-wrap: anywhere;
+}
 .ob-cli-links {
   display: flex;
   flex-wrap: wrap;

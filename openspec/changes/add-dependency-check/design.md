@@ -166,7 +166,12 @@ sandbox's refusing stubs from being reached, and it is how the shell's `command 
 
 The program is resolved first:
 
-- a value containing `/` is used as it is;
+- an absolute value is used as it is;
+- a value containing `/` that is not absolute is `failed` without spawning anything ("proton_cli
+  is a relative path (X); the service resolves it against its own working directory", fix "Set
+  proton_cli to an absolute path"). The service resolves it against its own working directory,
+  which is not this process's, so any answer from here would be `ok` in one directory and
+  `missing` in another. `~` is expanded as the config reader does it;
 - a bare name is searched on `PATH`;
 - not found means `missing`, without spawning anything.
 
@@ -179,14 +184,27 @@ The resolved absolute path is then run with the single argument `version`, with 
 | exit 0 | ok | first line of stdout (the version) and the absolute path |
 | `NotFound` (on `PATH` or at the path) | missing | install from the download page, then `proton-drive auth login`; if it is installed off `PATH`, set `proton_cli` to its full path |
 | `NotExecutable` (`EACCES`) | failed | "found at P but not executable": reinstall from the download page |
+| `NotExecutable` and P is a directory | failed | "P is a directory, not the proton-drive program": point `proton_cli` at the program file |
 | `ExecFormat` (`ENOEXEC`) | failed | "not a program this system can run": download the Linux x64 build |
 | `Signalled(SIGILL)` | failed | "crashed with an illegal instruction": the CPU probably lacks AVX2, so use the `linux/x64-baseline` build |
 | other signal | failed | "crashed (signal N)": reinstall from the download page |
 | exit ≠ 0 | failed | "`version` exited with status N: <first stderr line>": reinstall or update from the download page |
 | `TimedOut` | unknown | "did not answer within 10 s" |
+| `Cancelled` (the daemon's start-up check at shutdown only) | unknown | "was not asked to finish: the check was cancelled" |
 | other `SpawnError` | unknown | the error kind |
 
 SIGILL is detected with `ExitStatusExt::signal() == Some(libc::SIGILL)`, never from stderr text.
+
+**The text a child prints is untrusted.** `SystemEnvironment` captures the first line of each pipe
+and replaces every control character in it (C0 including ESC, DEL and C1) with U+FFFD at that
+point, before anything else sees it. A version line holding `\033[31m` would otherwise reach the
+terminal in `doctor`, the daemon's log and the desktop app.
+
+**Wording.** Every statement and fix starts with a capital letter unless it starts with a program
+name or a path ("No executable was found at …", "Run `proton-drive auth login` and then check
+again…", but "curl is not installed", "/opt/x is a directory …"). Commands are quoted in
+backticks; the command line prints them as they are and the desktop app draws each span as a
+`<code>` element, built as nodes and never parsed from markup.
 
 **This reverses DEVIATIONS §72's "presence, not health".** That rule existed so that a CLI that
 was installed but broken would not be sent to an install screen. A separate "found but does not
@@ -259,7 +277,15 @@ Which file is read:
 
 - `--config` if given;
 - otherwise the default `$XDG_CONFIG_HOME/proton-sync/proton-sync.toml`, else
-  `~/.config/proton-sync/proton-sync.toml`.
+  `~/.config/proton-sync/proton-sync.toml`;
+- with neither an absolute `XDG_CONFIG_HOME` nor an absolute `HOME` there is **no default file**
+  (`paths::default_config_path` returns `None`, `ConfigFile::NoHome`). The desktop app's own path
+  falls back to the temp directory, which is right for a file it writes and wrong for one whose
+  `proton_cli` gets run: any local user can plant `$TMPDIR/proton-sync/proton-sync.toml`. Nothing
+  is read; `config` is `unknown` ("No home directory, so the default config file cannot be
+  located") and the CLI is `proton-drive` on `PATH`. The desktop app does the same: with no config
+  home it passes no config path to the check and does not use a `proton_cli` that came from the
+  temp-directory file. Its other behaviour with no home is unchanged.
 
 That default is defined today in `gui/src-tauri/src/config_path.rs` (`gui_config_path`), in
 `setup.sh` (`default_config_path`) and in the packaged units (`%h/.config/...`). The Rust
@@ -274,6 +300,7 @@ The results:
 | default file absent | ok, "no config file yet" (normal before first run) |
 | named file absent | failed |
 | file present and invalid | failed, quoting the validator's error |
+| no home directory and no `--config` | unknown, nothing read |
 
 **Which CLI is checked:** `--proton-cli`, else the file's `proton_cli` when the file validated,
 else `proton-drive`. When the file did not validate, the `proton-drive` statement says it checked
@@ -334,8 +361,8 @@ Human output on stdout, one line per check:
 proton-sync doctor: what this machine needs before the first sync
 
   ok       proton-drive   proton-drive 1.4.2 at /home/me/.local/bin/proton-drive
-  missing  signed in      no proton-drive sign-in is stored in the keyring
-           fix:  run `proton-drive auth login`, then run `proton-sync doctor` again
+  missing  signed in      No proton-drive sign-in is stored in the keyring
+           fix:  Run `proton-drive auth login`, then run `proton-sync doctor` again
            help: https://proton.me/support/drive-cli
            docs: https://osirison.github.io/proton-drive-sync-engine/reference/troubleshooting/#no-proton-drive-sign-in-is-stored
   ok       config         /home/me/.config/proton-sync/proton-sync.toml
@@ -348,6 +375,13 @@ because the service may resolve a bare `proton_cli` against a different `PATH` (
 "After a reboot …").
 
 Colour follows the existing `Style::for_stdout()` rule.
+
+**Nothing is created on any path.** The lock probe takes its path from
+`paths::existing_global_lock_path`, not `default_global_lock_path`. With `XDG_STATE_HOME` or
+`HOME` usable it is the same path (a probe never creates the file). With neither, the daemon's
+lock would be under the per-uid temp directory, which only a daemon makes (`create_dir_all`): if
+that directory is not there, or is not a real directory this user owns at 0700, there is no daemon
+lock to probe, so `DaemonLock::user_default()` is `Skip` and the check reads it as "no daemon".
 
 ### D9. One set of links, and a test that every anchor exists
 
@@ -461,7 +495,8 @@ A new function, `run_dependency_check MODE`:
   global flag (D8);
 - in `--gui` mode passes no `--config`, because no config is written yet. `doctor` then reads the
   default path, the one the wizard writes to, and an absent file reads as "no config file yet"
-  rather than as a named file that is missing;
+  rather than as a named file that is missing. The one flag that is passed is `--proton-cli`, when
+  setup's flag was given: it names the CLI the user wants checked, and no config exists to say so;
 - shows the output;
 - branches on the status:
 
@@ -539,6 +574,14 @@ It skips `config` (already validated, and fatal) and `service` (the daemon may b
 
 This can be added later, additively and with `#[serde(default)]`, if the app needs the daemon's
 view.
+
+**Shutdown.** The check's thread is not detached. `Inputs.cancel` carries the daemon's cancel
+flag to `Environment::run_cancellable`, which `SystemEnvironment` implements by waiting on the
+child in 50 ms slices and, once the flag is raised, killing and reaping it (`Ran::Cancelled`).
+`Daemon::run` joins the thread before it returns, for at most 2 s (a thread parked on the gate
+behind another child is left, with a warning). So no `proton-drive version` child outlives the
+daemon, which would overlap the next daemon's first child after the global lock is released (#23).
+A check cut short logs nothing.
 
 **`CliGate` and the lock probe.** The start-up `version` call goes through the client's `CliGate`
 and skips the lock probe (assumption A2, settled). The gate matters because a `list` request on
@@ -622,6 +665,9 @@ sibling change's.
 - **[The check raises a keyring prompt at first run or in `doctor`]** → That is the same prompt
   the daemon raises at its first start. A 60 s limit applies, and the wording says a prompt may be
   waiting.
+- **[`list` can answer `busy` for up to 10 s after start-up]** The start-up `version` holds the
+  `CliGate`. → Accepted. It is the same as any other CLI child holding the gate (#23: the gate
+  exists so two `proton-drive` children never overlap), and the desktop app already handles `busy`.
 - **[A wording change breaks the sibling's smoke test]** → That test compares only the URL, the
   exit status and the name `proton-drive`. All three are fixed by the spec.
 - **[A future CLI changes `version`]** → `setup.sh --ignore-checks` covers it, and the desktop app

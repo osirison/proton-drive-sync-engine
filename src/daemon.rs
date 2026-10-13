@@ -83,6 +83,9 @@ const IPC_IO_TIMEOUT: Duration = Duration::from_secs(5);
 /// inside a client's own round-trip budget (`proton-sync`'s is 10s), so a refusal arrives as an
 /// answer rather than as a timeout.
 const BROWSE_GATE_WAIT: Duration = Duration::from_secs(2);
+/// How long shutdown waits for the start-up check's thread once it has been told to stop (its
+/// child is killed within one 50 ms poll; the bound only covers a thread parked on the gate).
+const STARTUP_CHECK_JOIN_BOUND: Duration = Duration::from_secs(2);
 /// How often the daemon polls the volume event stream while event-driven detection is **live** —
 /// `events_driven` on *and* an event source built. Matches the ~30s cadence Proton's own client
 /// uses (ADR 0001). Only the incremental (O(changes)) path runs at this cadence: a pair's cadence
@@ -3206,7 +3209,7 @@ impl<C: ProtonClient> Daemon<C> {
         let (watch_tx, watch_rx) = mpsc::unbounded_channel();
         let mut watcher = build_watcher(watch_tx)?;
         self.register_root_watches(&mut watcher);
-        self.start_startup_check();
+        let startup_check = self.start_startup_check();
         let mut inputs = LoopInputs {
             loop_rx,
             watch_rx,
@@ -3252,6 +3255,7 @@ impl<C: ProtonClient> Daemon<C> {
 
         ipc_task.abort();
         remove_control_socket(&self.process.socket_path);
+        self.finish_startup_check(startup_check);
         info!("daemon stopped");
         Ok(())
     }
@@ -3263,12 +3267,14 @@ impl<C: ProtonClient> Daemon<C> {
     ///
     /// On its own thread, not awaited: `version` may take its full 10 s, and nothing about the loop
     /// depends on the answer, so a shutdown, a control request or the first pass never waits for
-    /// it (the gate may delay the first pass's first child by at most that long). The thread is
-    /// detached for the same reason: a runtime that is dropping must not join it. The spawn goes
+    /// it (the gate may delay the first pass's first child by at most that long). The spawn goes
     /// through the client's gate and skips the lock probe, because this process holds the lock.
-    fn start_startup_check(&self) {
+    /// The cancel flag reaches the run, so a shutdown kills a `version` still running;
+    /// [`Self::finish_startup_check`] then joins the thread, so no child outlives the daemon and
+    /// overlaps the next daemon's first one (#23).
+    fn start_startup_check(&self) -> Option<std::thread::JoinHandle<()>> {
         if self.environment.is_inert() {
-            return;
+            return None;
         }
         let mut checks = vec![doctor::CheckId::ProtonDrive];
         if self.any_pair_streams {
@@ -3276,11 +3282,13 @@ impl<C: ProtonClient> Daemon<C> {
         }
         let inputs = doctor::Inputs {
             cli: doctor::CliSource::Explicit(self.process.proton_cli.clone()),
-            config: doctor::ConfigFile::Default(crate::paths::default_config_path()),
+            config: doctor::ConfigFile::default_at(crate::paths::default_config_path()),
             checks,
             daemon_lock: doctor::DaemonLock::Skip,
             gate: self.proton.cli_gate(),
+            cancel: Some(Arc::clone(&self.cancel_flag)),
         };
+        let cancelled = Arc::clone(&self.cancel_flag);
         let environment = Arc::clone(&self.environment);
         // A new thread has no default subscriber of its own; the caller's goes with it.
         let dispatch = tracing::Dispatch::default();
@@ -3288,10 +3296,34 @@ impl<C: ProtonClient> Daemon<C> {
             .name("startup-check".to_owned())
             .spawn(move || {
                 let report = doctor::run(&inputs, &*environment);
-                tracing::dispatcher::with_default(&dispatch, || log_startup_report(&report));
+                // A check cut short by a shutdown says nothing about the CLI.
+                if !cancelled.load(Ordering::SeqCst) {
+                    tracing::dispatcher::with_default(&dispatch, || log_startup_report(&report));
+                }
             });
-        if let Err(error) = spawned {
-            warn!(%error, "the start-up check could not be started; the daemon keeps running");
+        match spawned {
+            Ok(handle) => Some(handle),
+            Err(error) => {
+                warn!(%error, "the start-up check could not be started; the daemon keeps running");
+                None
+            }
+        }
+    }
+
+    /// Ends the start-up check at shutdown: raises the cancel flag (the check kills its child
+    /// within one poll) and waits for the thread, but only so long: a thread stuck on the gate
+    /// behind another child is abandoned rather than holding the exit up.
+    fn finish_startup_check(&self, handle: Option<std::thread::JoinHandle<()>>) {
+        let Some(handle) = handle else { return };
+        self.cancel_flag.store(true, Ordering::SeqCst);
+        let give_up = Instant::now() + STARTUP_CHECK_JOIN_BOUND;
+        while !handle.is_finished() && Instant::now() < give_up {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        if handle.is_finished() {
+            let _ = handle.join();
+        } else {
+            warn!("the start-up check did not end within the shutdown bound; leaving it");
         }
     }
 
@@ -28835,6 +28867,10 @@ mod tests {
         /// `Some(false)` blocks `run` until the test sets it to `true`.
         release: Arc<(Mutex<Option<bool>>, std::sync::Condvar)>,
         entered_run: AtomicBool,
+        /// `run_cancellable` saw its flag raised and ended the blocked `version` early.
+        cancelled: AtomicBool,
+        /// `run` or `run_cancellable` has returned (the check's thread is about to end).
+        finished: AtomicBool,
     }
 
     impl StartupEnvironment {
@@ -28898,8 +28934,19 @@ mod tests {
             &self,
             program: &Path,
             args: &[&str],
+            limit: Duration,
+            stdout: doctor::Stdout,
+        ) -> doctor::Ran {
+            self.run_cancellable(program, args, limit, stdout, None)
+        }
+
+        fn run_cancellable(
+            &self,
+            program: &Path,
+            args: &[&str],
             _limit: Duration,
             _stdout: doctor::Stdout,
+            cancel: Option<&AtomicBool>,
         ) -> doctor::Ran {
             self.entered_run.store(true, Ordering::SeqCst);
             self.ran.lock().expect("lock").push(format!(
@@ -28911,12 +28958,21 @@ mod tests {
             let mut state = state.lock().expect("lock");
             let deadline = Instant::now() + Duration::from_secs(30);
             while *state == Some(false) {
+                if cancel.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+                    self.cancelled.store(true, Ordering::SeqCst);
+                    self.finished.store(true, Ordering::SeqCst);
+                    return doctor::Ran::Cancelled;
+                }
                 let left = deadline.saturating_duration_since(Instant::now());
                 if left.is_zero() {
                     break;
                 }
-                state = wake.wait_timeout(state, left).expect("wait").0;
+                state = wake
+                    .wait_timeout(state, left.min(Duration::from_millis(10)))
+                    .expect("wait")
+                    .0;
             }
+            self.finished.store(true, Ordering::SeqCst);
             doctor::Ran::Exited {
                 code: 0,
                 stdout_head: "proton-drive 1.2.3".to_owned(),
@@ -29158,6 +29214,44 @@ mod tests {
         );
         assert!(environment.entered_run.load(Ordering::SeqCst));
         environment.release();
+    }
+
+    #[test]
+    fn a_shutdown_kills_the_start_up_check_and_run_waits_for_it() {
+        // The daemon's global lock is released when `run` returns; a `version` child still alive
+        // then would overlap the next daemon's first one (#23). The cancel flag reaches the run
+        // and `run` joins the thread, so the child is gone by the time it returns.
+        let directory = tempdir().expect("tempdir");
+        let environment = StartupEnvironment::blocking(&["proton-drive"]);
+        let daemon = startup_daemon(
+            directory.path(),
+            false,
+            MultiRootClient::default(),
+            &environment,
+        );
+        let probe = Arc::clone(&environment);
+        let started = Instant::now();
+        let log = run_daemon_logged(daemon, |_, _| async move {
+            wait_for("version to be running", || {
+                probe.entered_run.load(Ordering::SeqCst)
+            })
+            .await;
+        });
+        assert!(
+            environment.cancelled.load(Ordering::SeqCst),
+            "the run never saw the cancel flag"
+        );
+        assert!(
+            environment.finished.load(Ordering::SeqCst),
+            "run() returned with the check still running"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "shutdown waited {:?} for the check",
+            started.elapsed()
+        );
+        // A check cut short says nothing about the CLI, so it logs nothing about it.
+        assert!(!log.contains("check="), "{log}");
     }
 
     #[test]

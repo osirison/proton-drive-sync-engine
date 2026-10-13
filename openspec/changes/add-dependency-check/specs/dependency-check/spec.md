@@ -85,6 +85,27 @@ reported as a distinct problem with its own fix.
 - **THEN** `proton-drive` is reported as ok, with the version it printed and the full path of the
   executable that ran
 
+#### Scenario: The CLI path is relative
+
+- **WHEN** the configured or given `proton_cli` contains a `/` and is not absolute
+- **THEN** `proton-drive` is reported as a problem that says the service resolves a relative path
+  against its own working directory, and the fix says to set an absolute path
+- **AND** nothing is run, and the answer does not depend on the directory `doctor` runs in
+- **AND** a bare name with no `/` is still searched on `PATH`
+
+#### Scenario: The CLI path is a directory
+
+- **WHEN** `proton_cli` names a directory
+- **THEN** `proton-drive` is reported as a problem that says it is a directory and not the
+  proton-drive program, and the fix says to point `proton_cli` at the program file
+- **AND** it is not reported as "not executable"
+
+#### Scenario: The CLI prints control characters
+
+- **WHEN** the CLI's first output line holds an escape sequence or another control character
+- **THEN** each control character is replaced where the output is captured, so no report line, log
+  line or app screen carries it
+
 ### Requirement: Only the version command is run against the CLI
 
 The dependency check SHALL NOT run any `proton-drive` command other than `version`. It SHALL NOT
@@ -152,6 +173,15 @@ reported as ok and worded as "no config file yet".
 - **WHEN** `--config` names a file that does not exist
 - **THEN** `config` is reported as a problem naming that path
 
+#### Scenario: There is no home directory
+
+- **WHEN** neither `XDG_CONFIG_HOME` nor `HOME` is set to an absolute path and no `--config` is given
+- **THEN** no config file is read, including any file in the shared temporary directory
+- **AND** `config` is reported as could not check, saying that no home directory means the default
+  file cannot be located
+- **AND** the `proton-drive` check runs `proton-drive` from `PATH`, never a `proton_cli` taken from a
+  file in a directory other users can write
+
 ### Requirement: Every problem carries its fix and links, and CLI links are Proton's
 
 Every problem and every could-not-check result SHALL carry a one-line fix and a link to its own
@@ -178,6 +208,11 @@ be printed as a full `https://` URL with no punctuation attached to it.
 
 - **WHEN** any result gives the command to sign in
 - **THEN** the command is `proton-drive auth login`
+
+#### Scenario: Sentences start with a capital
+
+- **WHEN** any statement or fix is read
+- **THEN** it starts with a capital letter, unless it starts with a program name or a path
 
 ### Requirement: Every docs link the check emits resolves
 
@@ -210,6 +245,13 @@ and SHALL refuse `--socket-path`, `--pair` and `--all-pairs`.
 - **THEN** its output names `proton-drive` as missing and contains `https://proton.me/drive/download`
 - **AND** it exits with status 1
 - **AND** no `proton-syncd` process is started, and no control socket or socket directory is created
+
+#### Scenario: Nothing is created on any path
+
+- **WHEN** `proton-sync doctor` runs with `HOME` and `XDG_STATE_HOME` unset
+- **THEN** no directory or file is created, including the per-user directory under the shared
+  temporary directory where a daemon's lock would be
+- **AND** a daemon lock that is not there is read as "no daemon is running"
 
 #### Scenario: A pair selector is refused
 
@@ -284,6 +326,12 @@ could-not-check result or on a recommended problem.
 - **THEN** the screen says the CLI was found but does not run, with its fix
 - **AND** it does not say the CLI is not installed
 
+#### Scenario: Quoted commands are drawn as code
+
+- **WHEN** a statement or fix quotes a command or name in backticks
+- **THEN** the screen draws it as a code span and shows no backtick
+- **AND** `proton-sync doctor` prints the backticks as they are
+
 #### Scenario: Credentials outside the keyring do not block
 
 - **WHEN** `PROTON_DRIVE_CREDENTIALS_STORE` is `pass` and every other required check is ok
@@ -349,6 +397,12 @@ the checks in shell.
 - **THEN** `setup.sh` prints the report, says the app will run the same check, and continues to
   build and open the app
 
+#### Scenario: A CLI given to setup is checked in either mode
+
+- **WHEN** `setup.sh --gui --proton-cli /opt/proton-drive` runs
+- **THEN** the check it runs is `proton-sync doctor --proton-cli /opt/proton-drive`, with no
+  `--config`
+
 ### Requirement: The daemon reports a missing dependency at start-up and keeps running
 
 At start-up the daemon SHALL check that its configured CLI runs in its own environment and, when
@@ -366,6 +420,13 @@ daemon's existing sign-in state.
 
 - **WHEN** the daemon keeps running with the CLI still missing
 - **THEN** the start-up warning is not repeated by later passes
+
+#### Scenario: Shutdown ends the start-up check
+
+- **WHEN** the daemon is told to stop while `proton-drive version` is still running
+- **THEN** the child is killed and reaped, and the daemon does not exit until the check has ended
+  (for a short, bounded wait)
+- **AND** no `proton-drive` child started by the check outlives the daemon
 
 #### Scenario: A signed-out session names the right command
 

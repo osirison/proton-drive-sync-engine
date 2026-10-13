@@ -274,6 +274,9 @@ Then run `proton-drive auth login` to sign in.
 
 - If it crashes with an illegal instruction, your CPU probably lacks AVX2. Use the
   `linux/x64-baseline` build.
+- `proton_cli` is either a bare name (searched on `PATH`) or an absolute path. A relative path with
+  a `/` is a problem, because the service resolves it against its own working directory. A
+  directory is not the program: point it at the file.
 - If it is installed but the service cannot find it, set an absolute `proton_cli` in
   `~/.config/proton-sync/proton-sync.toml`, e.g. `proton_cli = "~/.local/bin/proton-drive"`. See
   [After a reboot the daemon fails every sync](#after-a-reboot-the-daemon-fails-every-sync-until-i-restart-it).
@@ -296,7 +299,9 @@ walks the whole folder on every pass.
 The daemon will not start with a config it cannot parse. The check reports the parser's own
 sentence: fix the key it names in `~/.config/proton-sync/proton-sync.toml`, or the file you passed
 with `--config`, then check again. A missing default file is fine; it only means nothing has been
-configured yet.
+configured yet. With no home directory (neither `XDG_CONFIG_HOME` nor `HOME` set to an absolute
+path) there is no default file to read, so the check reports that it could not be made and
+`proton-drive` is looked up on `PATH`.
 
 ### secret-tool is missing
 

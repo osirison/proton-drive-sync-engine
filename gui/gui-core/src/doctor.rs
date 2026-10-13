@@ -41,9 +41,17 @@ pub fn inert_environment() -> impl Environment {
 
 /// The engine's inputs for the app: its configured CLI (an absolute path stays one, a bare name is
 /// searched on `PATH`), its config file (absent is fine: first run has none), and the lock probe.
-pub fn inputs(proton_cli: &str, config_path: &Path, daemon_lock: DaemonLock) -> Inputs {
-    let mut inputs = Inputs::new(ConfigFile::Default(config_path.to_path_buf()));
-    inputs.cli = CliSource::Explicit(proton_cli.into());
+///
+/// `config_path` is `None` when the app has no config home (no absolute `XDG_CONFIG_HOME` or
+/// `HOME`), where its own config path falls back to the shared temp directory. A file there could
+/// be planted by any local user, so none is read and its `proton_cli` is not used: the CLI is
+/// `proton-drive` on `PATH`.
+pub fn inputs(proton_cli: &str, config_path: Option<&Path>, daemon_lock: DaemonLock) -> Inputs {
+    let mut inputs = Inputs::new(ConfigFile::default_at(config_path.map(Path::to_path_buf)));
+    inputs.cli = CliSource::Explicit(match config_path {
+        Some(_) => proton_cli.into(),
+        None => "proton-drive".into(),
+    });
     inputs.daemon_lock = daemon_lock;
     inputs
 }
@@ -51,7 +59,7 @@ pub fn inputs(proton_cli: &str, config_path: &Path, daemon_lock: DaemonLock) -> 
 /// Run every check. Blocking: up to the engine's per-tool limits, so call it off the UI thread.
 pub fn check(
     proton_cli: &str,
-    config_path: &Path,
+    config_path: Option<&Path>,
     daemon_lock: DaemonLock,
     env: &dyn Environment,
 ) -> Checked {
@@ -82,6 +90,7 @@ mod tests {
         keyring: Ran,
         programs: Vec<&'static str>,
         asked: RefCell<Vec<String>>,
+        ran: RefCell<Vec<PathBuf>>,
     }
 
     impl Fake {
@@ -99,6 +108,7 @@ mod tests {
                 },
                 programs: vec!["secret-tool", "curl", "systemctl"],
                 asked: RefCell::new(Vec::new()),
+                ran: RefCell::new(Vec::new()),
             }
         }
     }
@@ -128,6 +138,7 @@ mod tests {
         fn run(&self, program: &Path, _args: &[&str], _limit: Duration, _out: Stdout) -> Ran {
             let name = program.file_name().unwrap().to_string_lossy().into_owned();
             self.asked.borrow_mut().push(name.clone());
+            self.ran.borrow_mut().push(program.to_path_buf());
             if name == "secret-tool" {
                 self.keyring.clone()
             } else if name == "systemctl" {
@@ -141,10 +152,44 @@ mod tests {
     fn run(fake: &Fake) -> Checked {
         check(
             "/opt/proton/proton-drive",
-            Path::new("/fake/proton-sync.toml"),
+            Some(Path::new("/fake/proton-sync.toml")),
             DaemonLock::Skip,
             fake,
         )
+    }
+
+    #[test]
+    fn with_no_config_home_the_app_reads_no_config_and_checks_proton_drive_on_path() {
+        // The app's own path then points into the shared temp directory, where a file's
+        // `proton_cli` could have been planted: it is neither read nor run.
+        let fake = Fake {
+            programs: vec!["proton-drive", "secret-tool", "curl", "systemctl"],
+            ..Fake::healthy()
+        };
+        let checked = check("/tmp/planted/proton-drive", None, DaemonLock::Skip, &fake);
+        let ran = fake.ran.borrow();
+        assert!(
+            ran.contains(&PathBuf::from("/fake/proton-drive")),
+            "{ran:?}"
+        );
+        assert!(
+            !ran.iter().any(|p| p.starts_with("/tmp/planted")),
+            "{ran:?}"
+        );
+        let config = checked
+            .report
+            .checks
+            .iter()
+            .find(|c| c.id == CheckId::Config)
+            .expect("a config result");
+        assert_eq!(config.outcome, Outcome::Unknown);
+        assert!(
+            !checked
+                .report
+                .checks
+                .iter()
+                .any(|c| c.statement.contains("planted"))
+        );
     }
 
     #[test]

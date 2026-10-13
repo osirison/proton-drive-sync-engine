@@ -200,7 +200,7 @@ fn nothing_a_keyring_lookup_prints_reaches_either_stream() {
     let run = finish(command);
     assert_eq!(run.code, 0, "{}\n{}", run.stdout, run.stderr);
     assert!(
-        line_for(&run.stdout, "signed").contains("a sign-in is stored"),
+        line_for(&run.stdout, "signed").contains("A sign-in is stored"),
         "the lookup ran: {}",
         run.stdout
     );
@@ -251,8 +251,9 @@ fn proton_cli_flag_beats_the_config_files_proton_cli() {
 
 #[test]
 fn the_argument_lists_setup_sh_builds_parse_and_exit_0_when_ready() {
-    // (h) `--config F doctor`, `--config F doctor --proton-cli P` and `doctor` alone: the three
-    // forms `setup.sh` passes in its terminal, terminal-with-a-CLI and `--gui` modes.
+    // (h) `--config F doctor`, `--config F doctor --proton-cli P`, `doctor --proton-cli P` and
+    // `doctor` alone: the forms `setup.sh` passes in its terminal, terminal-with-a-CLI,
+    // `--gui`-with-a-CLI and `--gui` modes.
     let directory = tempdir().expect("tempdir");
     let tools = answering_tools(directory.path());
     let cli = tools.proton_drive_path();
@@ -264,6 +265,7 @@ fn the_argument_lists_setup_sh_builds_parse_and_exit_0_when_ready() {
     for args in [
         vec!["--config", config, "doctor"],
         vec!["--config", config, "doctor", "--proton-cli", cli],
+        vec!["doctor", "--proton-cli", cli],
         vec!["doctor"],
     ] {
         let mut command = doctor(directory.path(), &tools, &args);
@@ -271,6 +273,84 @@ fn the_argument_lists_setup_sh_builds_parse_and_exit_0_when_ready() {
         let run = finish(command);
         assert_eq!(run.code, 0, "{args:?}: {}\n{}", run.stdout, run.stderr);
     }
+}
+
+#[test]
+fn with_no_home_doctor_creates_nothing_in_the_shared_temp_directory() {
+    // (j) With HOME and XDG_STATE_HOME unset the daemon's lock would be in a per-uid directory
+    // under TMPDIR, which only a daemon makes. The check looks at that lock and must not make the
+    // directory (nor the lock).
+    let directory = tempdir().expect("tempdir");
+    let scratch_tmp = directory.path().join("tmp");
+    fs::create_dir(&scratch_tmp).expect("tmp");
+    let tools = answering_tools(directory.path());
+    let mut command = doctor(directory.path(), &tools, &["doctor"]);
+    with_bus(&mut command, directory.path());
+    command
+        .env_remove("HOME")
+        .env_remove("XDG_STATE_HOME")
+        .env("TMPDIR", &scratch_tmp);
+    let run = finish(command);
+
+    assert_eq!(run.code, 0, "{}\n{}", run.stdout, run.stderr);
+    let made: Vec<_> = fs::read_dir(&scratch_tmp)
+        .expect("tmp")
+        .map(|entry| entry.expect("entry").file_name())
+        .collect();
+    assert!(made.is_empty(), "doctor made {made:?} under TMPDIR");
+}
+
+#[test]
+fn with_no_home_a_config_planted_in_the_temp_directory_is_neither_read_nor_run() {
+    // (k) Without HOME or XDG_CONFIG_HOME the app's config path would be in TMPDIR, where any
+    // local user can write. Its `proton_cli` must not be run.
+    let directory = tempdir().expect("tempdir");
+    let scratch_tmp = directory.path().join("tmp");
+    // One literal for the file: the isolation scan reads a bare directory name ending in the
+    // control CLI's name as a launch of it.
+    let planted_config = scratch_tmp.join("proton-sync/proton-sync.toml");
+    fs::create_dir_all(planted_config.parent().expect("parent")).expect("tmp");
+    let marker = directory.path().join("planted-ran");
+    let planted = directory.path().join("planted-proton-drive");
+    fs::write(
+        &planted,
+        format!(
+            "#!/bin/sh\necho ran > '{}'\necho 'proton-drive 9.9'\n",
+            marker.display()
+        ),
+    )
+    .expect("planted cli");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&planted, fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+    fs::write(
+        &planted_config,
+        format!("proton_cli = \"{}\"\n", planted.display()),
+    )
+    .expect("planted config");
+
+    let tools = answering_tools(directory.path());
+    let mut command = doctor(directory.path(), &tools, &["doctor"]);
+    with_bus(&mut command, directory.path());
+    command
+        .env_remove("HOME")
+        .env_remove("XDG_CONFIG_HOME")
+        .env("TMPDIR", &scratch_tmp);
+    let run = finish(command);
+
+    assert!(!marker.exists(), "the planted CLI was run");
+    let cli = line_for(&run.stdout, "proton-drive");
+    assert!(
+        cli.contains("proton-drive 1.4.2 at ") && !cli.contains("9.9"),
+        "{cli}"
+    );
+    let config = line_for(&run.stdout, "config");
+    assert!(
+        config.contains("unknown") && config.contains("No home directory"),
+        "{config}"
+    );
+    assert_eq!(run.code, 3, "{}\n{}", run.stdout, run.stderr);
 }
 
 #[test]
