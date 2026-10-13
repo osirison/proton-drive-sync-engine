@@ -171,7 +171,7 @@ The program is resolved first:
   is a relative path (X); the service resolves it against its own working directory", fix "Set
   proton_cli to an absolute path"). The service resolves it against its own working directory,
   which is not this process's, so any answer from here would be `ok` in one directory and
-  `missing` in another. `~` is expanded as the config reader does it;
+  `missing` in another. `~` is expanded as the config reader does it, in `--proton-cli` and in the file alike (`~user` is refused);
 - a bare name is searched on `PATH`;
 - not found means `missing`, without spawning anything.
 
@@ -220,11 +220,11 @@ The steps run in order, and the first that applies decides the result:
 1. `PROTON_DRIVE_CREDENTIALS_STORE` is set to `pass` or `unsafe_file` → `unknown`. The sign-in is
    kept where neither this check nor the daemon's change detection reads it.
 2. `secret-tool` is not on `PATH` → `unknown` ("secret-tool is not installed").
-3. `DBUS_SESSION_BUS_ADDRESS` is unset or empty → `unknown` ("no session bus in this shell"). The
+3. `DBUS_SESSION_BUS_ADDRESS` is unset or empty → `unknown` ("No session bus in this shell, so the keyring cannot be asked"). The
    lookup is not run, which also keeps sandboxed tests from reaching the stub.
 4. Otherwise run `secret-tool lookup service ch.proton.drive/drive-sdk-cli account auth-session`
    with stdout to `/dev/null`, stderr captured, and a 60 s limit:
-   - exit 0 → `ok`, "a sign-in is stored";
+   - exit 0 → `ok`, "A sign-in is stored";
    - non-zero with empty stderr → `missing`;
    - non-zero with stderr → `unknown`, quoting the first line;
    - `TimedOut` → `unknown`, "the keyring did not answer within 60 s (an unlock prompt may be
@@ -297,7 +297,7 @@ The results:
 
 | Case | Result |
 | --- | --- |
-| default file absent | ok, "no config file yet" (normal before first run) |
+| default file absent | ok, "No config file yet (the default is <path>)" (normal before first run) |
 | named file absent | failed |
 | file present and invalid | failed, quoting the validator's error |
 | no home directory and no `--config` | unknown, nothing read |
@@ -494,7 +494,7 @@ A new function, `run_dependency_check MODE`:
   `doctor` when setup's flag was given. `--config` comes before the verb, because it is not a
   global flag (D8);
 - in `--gui` mode passes no `--config`, because no config is written yet. `doctor` then reads the
-  default path, the one the wizard writes to, and an absent file reads as "no config file yet"
+  default path, the one the wizard writes to, and an absent file reads as "No config file yet"
   rather than as a named file that is missing. The one flag that is passed is `--proton-cli`, when
   setup's flag was given: it names the CLI the user wants checked, and no config exists to say so;
 - shows the output;

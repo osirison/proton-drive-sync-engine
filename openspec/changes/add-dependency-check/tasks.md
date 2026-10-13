@@ -112,7 +112,7 @@
 
       Validation goes through `config::validate_file_config_text`. Verify: unit tests for each
       case:
-      - default file absent → ok, "no config file yet";
+      - default file absent → ok, "No config file yet";
       - named file absent → failed;
       - invalid file → failed, quoting the validator, while the CLI check runs `proton-drive`
         and says so;

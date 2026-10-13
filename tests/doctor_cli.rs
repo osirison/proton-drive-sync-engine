@@ -250,6 +250,30 @@ fn proton_cli_flag_beats_the_config_files_proton_cli() {
 }
 
 #[test]
+fn a_quoted_tilde_in_the_proton_cli_flag_is_expanded_like_the_daemon_does() {
+    // `setup.sh --proton-cli '~/x'` writes the tilde as given; the daemon expands it, so doctor
+    // must too. The sandbox HOME is the test's directory.
+    let directory = tempdir().expect("tempdir");
+    let tools = answering_tools(directory.path());
+    let stubs = directory.path().join("stubs");
+    fs::create_dir(&stubs).expect("stubs");
+    fs::copy(tools.proton_drive_path(), stubs.join("proton-drive")).expect("copy the stub");
+    let mut command = doctor(
+        directory.path(),
+        &tools,
+        &["doctor", "--proton-cli", "~/stubs/proton-drive"],
+    );
+    with_bus(&mut command, directory.path());
+    let run = finish(command);
+    assert_eq!(run.code, 0, "{}\n{}", run.stdout, run.stderr);
+    assert!(
+        line_for(&run.stdout, "proton-drive").contains(stubs.to_str().expect("utf-8")),
+        "{}",
+        run.stdout
+    );
+}
+
+#[test]
 fn the_argument_lists_setup_sh_builds_parse_and_exit_0_when_ready() {
     // (h) `--config F doctor`, `--config F doctor --proton-cli P`, `doctor --proton-cli P` and
     // `doctor` alone: the forms `setup.sh` passes in its terminal, terminal-with-a-CLI,

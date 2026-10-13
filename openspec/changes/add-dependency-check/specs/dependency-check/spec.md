@@ -127,7 +127,7 @@ it.
 #### Scenario: A sign-in is stored
 
 - **WHEN** the keyring holds an entry for the CLI's session
-- **THEN** `signed-in` is reported as ok, worded as "a sign-in is stored"
+- **THEN** `signed-in` is reported as ok, worded as "A sign-in is stored"
 - **AND** no part of the stored secret appears in the output, in `--json`, or in any log
 
 #### Scenario: No sign-in is stored
@@ -154,7 +154,7 @@ it.
 The `config` check SHALL read the config file named by `--config`, or else the default config file
 that the desktop app and the packaged service use. It SHALL report a file that exists but cannot be
 read or does not validate as a problem, quoting the error. No file at the default location SHALL be
-reported as ok and worded as "no config file yet".
+reported as ok and worded as "No config file yet (the default is <path>)".
 
 #### Scenario: The config file does not validate
 

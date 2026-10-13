@@ -554,6 +554,10 @@ impl Environment for SystemEnvironment {
     ) -> Ran {
         #[cfg(test)]
         refuse_real_tool(program);
+        // Raised before the start (the gate was taken after shutdown began): nothing to spawn.
+        if cancel.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+            return Ran::Cancelled;
+        }
         let spawned = Command::new(program)
             .args(args)
             .stdin(Stdio::null())
@@ -634,9 +638,8 @@ fn first_line<R: Read + Send + 'static>(pipe: R) -> mpsc::Receiver<String> {
         // The text is a child's, so untrusted: an escape sequence in a version line would be
         // interpreted by the terminal and the log viewer it reaches. Cleaned here, at the one
         // capture point, before anything else sees it.
-        let first: String = text
-            .trim_end_matches(['\r', '\n'])
-            .chars()
+        let first: String = strip_escape_sequences(text.trim_end_matches(['\r', '\n']))
+            .into_iter()
             .take(HEAD_CHARS)
             .map(|c| {
                 if c.is_control() {
@@ -650,6 +653,38 @@ fn first_line<R: Read + Send + 'static>(pipe: R) -> mpsc::Receiver<String> {
         let _ = io::copy(&mut reader, &mut io::sink());
     });
     rx
+}
+
+/// `text` without its ANSI escape sequences: CSI (`ESC [ ... final 0x40-0x7E`), OSC (`ESC ] ...`
+/// up to BEL or `ESC \`) and two-byte `ESC x`. A sequence cut off by the end of the text is dropped
+/// to the end.
+fn strip_escape_sequences(text: &str) -> Vec<char> {
+    let mut kept = Vec::new();
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            kept.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('[') => {
+                for c in chars.by_ref() {
+                    if ('\u{40}'..='\u{7e}').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            Some(']') => {
+                while let Some(c) = chars.next() {
+                    if c == '\u{7}' || (c == '\u{1b}' && chars.next_if_eq(&'\\').is_some()) {
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    kept
 }
 
 fn head(rx: mpsc::Receiver<String>) -> String {
@@ -831,7 +866,11 @@ fn check_config(inputs: &Inputs, env: &dyn Environment) -> ConfigEval {
 /// file could not be read, so the statement says what was checked instead.
 fn choose_cli(inputs: &Inputs, config: Option<&ConfigEval>) -> (PathBuf, Option<&'static str>) {
     match (&inputs.cli, config) {
-        (CliSource::Explicit(path), _) => (path.clone(), None),
+        // Expanded as the daemon expands the flag; `~user` stays as written and is refused later.
+        (CliSource::Explicit(path), _) => (
+            config::expand_tilde(path.clone(), "proton_cli").unwrap_or_else(|_| path.clone()),
+            None,
+        ),
         (CliSource::FromConfig, Some(config)) if !config.usable => (
             PathBuf::from("proton-drive"),
             Some("checked proton-drive on PATH because the config file could not be read"),
@@ -1304,6 +1343,45 @@ mod tests {
             panic!("expected an exit");
         };
         assert_eq!(stdout_head.chars().count(), 200);
+    }
+
+    #[test]
+    fn a_colour_coded_version_line_loses_its_escape_sequences_whole() {
+        let Ran::Exited { stdout_head, .. } = sh(
+            "printf '\\033[31mproton-drive 1.4.2\\033[0m\\n'",
+            Duration::from_secs(10),
+            Stdout::Keep,
+        ) else {
+            panic!("expected an exit");
+        };
+        assert_eq!(stdout_head, "proton-drive 1.4.2");
+        // An OSC title (BEL- and ST-terminated) and a two-byte escape go the same way; a bare
+        // control character is still replaced.
+        let Ran::Exited { stdout_head, .. } = sh(
+            "printf 'a\\033]0;title\\007b\\033]0;t\\033\\\\c\\033Md\\001e\\n'",
+            Duration::from_secs(10),
+            Stdout::Keep,
+        ) else {
+            panic!("expected an exit");
+        };
+        assert_eq!(stdout_head, "abcd\u{FFFD}e");
+    }
+
+    #[test]
+    fn a_cancel_flag_raised_before_the_run_spawns_nothing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let marker = dir.path().join("ran");
+        let flag = AtomicBool::new(true);
+        let ran = SystemEnvironment.run_cancellable(
+            Path::new("/bin/sh"),
+            &["-c", &format!("touch {}", marker.display())],
+            Duration::from_secs(10),
+            Stdout::Keep,
+            Some(&flag),
+        );
+        assert_eq!(ran, Ran::Cancelled);
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!marker.exists(), "the child was spawned");
     }
 
     #[test]
@@ -1784,6 +1862,31 @@ mod tests {
             assert!(found.statement.contains("relative path"), "{value}");
             assert!(fake.calls.borrow().is_empty(), "{value}");
         }
+    }
+
+    #[test]
+    fn a_tilde_in_the_flag_is_expanded_as_the_config_expands_it() {
+        let home = std::env::var_os("HOME").expect("HOME is set for the tests");
+        let mut explicit = inputs();
+        explicit.cli = CliSource::Explicit(PathBuf::from("~/stubs/proton-drive"));
+        let fake = healthy();
+        let found = result(&fake, explicit, CheckId::ProtonDrive);
+        assert_eq!(found.outcome, Outcome::Ok, "{}", found.statement);
+        assert_eq!(
+            calls_to(&fake, "proton-drive")[0].program,
+            PathBuf::from(home).join("stubs/proton-drive")
+        );
+
+        // `~user` is refused, as config refuses it: it stays a relative path.
+        let mut other = inputs();
+        other.cli = CliSource::Explicit(PathBuf::from("~someone/proton-drive"));
+        let found = result(&healthy(), other, CheckId::ProtonDrive);
+        assert_eq!(found.outcome, Outcome::Failed);
+        assert!(
+            found.statement.contains("relative path"),
+            "{}",
+            found.statement
+        );
     }
 
     #[test]
