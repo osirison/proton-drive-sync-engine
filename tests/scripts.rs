@@ -831,11 +831,21 @@ fn version_script(
     stubs: Option<&Path>,
     args: &[&str],
 ) -> std::process::Output {
+    // The entry date is today's unless SOURCE_DATE_EPOCH is set; a fixed one keeps two runs
+    // byte-identical even across midnight. 1700000000 is Tue, 14 Nov 2023 22:13:20 UTC.
+    version_script_with_epoch(root, directory, stubs, args, "1700000000")
+}
+
+fn version_script_with_epoch(
+    root: &Path,
+    directory: &Path,
+    stubs: Option<&Path>,
+    args: &[&str],
+    epoch: &str,
+) -> std::process::Output {
     let mut command = common::sandboxed("bash", directory);
     command.arg(root.join("packaging/version.sh")).args(args);
-    // The entry date is today's unless this is set; a fixed one keeps two runs byte-identical
-    // even across midnight. 1700000000 is Tue, 14 Nov 2023 22:13:20 UTC.
-    command.env("SOURCE_DATE_EPOCH", "1700000000");
+    command.env("SOURCE_DATE_EPOCH", epoch);
     if let Some(stubs) = stubs {
         let path = std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".to_owned());
         command.env(
@@ -1327,4 +1337,82 @@ fn the_tag_check_says_when_it_cannot_run_and_that_it_reads_local_tags_only() {
         stderr.contains("tag check skipped") && stderr.contains("is not in a git repository"),
         "{stderr}"
     );
+}
+
+// --- packaging/version.sh: a bad SOURCE_DATE_EPOCH, two releases on one line -------------------
+
+#[test]
+fn a_source_date_epoch_that_is_not_a_number_of_seconds_is_refused_and_nothing_changes() {
+    for bad in [
+        "garbage",
+        "-5",
+        " 5",
+        "1e3",
+        "0x10",
+        "@5",
+        "99999999999999999999",
+    ] {
+        let directory = tempdir().expect("tempdir");
+        let (tree, stubs) = copy_of_the_version_sites(directory.path());
+        let before = contents(&tree);
+        let output = version_script_with_epoch(
+            &tree,
+            directory.path(),
+            Some(&stubs),
+            &["set", "0.1.0-beta.1"],
+            bad,
+        );
+        assert_eq!(output.status.code(), Some(2), "{bad:?}: {output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("SOURCE_DATE_EPOCH") && stderr.contains(bad),
+            "{bad:?}: {stderr}"
+        );
+        assert_eq!(before, contents(&tree), "{bad:?} changed a file");
+    }
+}
+
+#[test]
+fn an_empty_source_date_epoch_falls_back_to_today() {
+    let directory = tempdir().expect("tempdir");
+    let (tree, stubs) = copy_of_the_version_sites(directory.path());
+    let output = version_script_with_epoch(
+        &tree,
+        directory.path(),
+        Some(&stubs),
+        &["set", "0.1.0-beta.1"],
+        "",
+    );
+    assert!(output.status.success(), "{output:?}");
+    let meta = fs::read_to_string(tree.join(META_FILE)).expect("metainfo");
+    assert!(!meta.contains("date=\"\""), "{meta}");
+}
+
+#[test]
+fn two_release_tags_on_one_metainfo_line_are_refused_and_nothing_changes() {
+    let directory = tempdir().expect("tempdir");
+    let (tree, stubs) = copy_of_the_version_sites(directory.path());
+    let metainfo = tree.join(META_FILE);
+    let text = fs::read_to_string(&metainfo).expect("metainfo");
+    fs::write(
+        &metainfo,
+        text.replace(
+            "  </releases>",
+            "    <release version=\"9.0.0\" date=\"2026-01-01\"/> <release version=\"0.0.5\" date=\"2026-01-01\"/>\n  </releases>",
+        ),
+    )
+    .expect("write");
+    let before = contents(&tree);
+    let output = version_script(
+        &tree,
+        directory.path(),
+        Some(&stubs),
+        &["set", "0.1.0-beta.1"],
+    );
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("more than one <release"),
+        "{output:?}"
+    );
+    assert_eq!(before, contents(&tree));
 }

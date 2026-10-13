@@ -240,13 +240,32 @@ entry_date() {
     LC_ALL=C date "$@"
   fi
 }
+# SOURCE_DATE_EPOCH must be digits that `date` accepts; anything else is refused before a write.
+# Unset or empty means today.
+check_source_date_epoch() {
+  [[ -n "${SOURCE_DATE_EPOCH:-}" ]] || return 0
+  if [[ ! "$SOURCE_DATE_EPOCH" =~ ^[0-9]+$ ]] ||
+    ! LC_ALL=C TZ=UTC date -d "@$SOURCE_DATE_EPOCH" +%F >/dev/null 2>&1; then
+    echo "version.sh: SOURCE_DATE_EPOCH='$SOURCE_DATE_EPOCH' is not a number of seconds since the epoch (digits only)." >&2
+    exit 2
+  fi
+}
+
+# The three spellings of the entry date, read once before the first write. A `date` that fails or
+# prints nothing stops the run (and rolls it back) instead of writing an empty date.
+DATE_RPM="" DATE_RFC2822="" DATE_ISO=""
+read_entry_dates() {
+  DATE_RPM="$(today_rpm)" && DATE_RFC2822="$(today_rfc2822)" && DATE_ISO="$(today_iso)" ||
+    die "date failed while reading the entry date"
+  [[ -n "$DATE_RPM" && -n "$DATE_RFC2822" && -n "$DATE_ISO" ]] || die "date printed nothing for the entry date"
+}
 today_rpm() { entry_date +'%a %b %d %Y'; }
 today_rfc2822() { entry_date -R; }
 today_iso() { entry_date +%F; }
 
 add_spec_changelog() {
   local upstream="$1" rpm="$2" revision="$3" who="$4" file="$root/$SPEC"
-  awk -v entry="* $(today_rpm) $who - $rpm-$revision" -v note="- Release $upstream." '
+  awk -v entry="* $DATE_RPM $who - $rpm-$revision" -v note="- Release $upstream." '
     { print }
     /^%changelog/ { print entry; print note; print "" }
   ' "$file" >"$file.new"
@@ -258,7 +277,7 @@ add_deb_changelog() {
   {
     printf '%s (%s-%s) unstable; urgency=medium\n\n' "$PACKAGE" "$rpm" "$revision"
     printf '  * Release %s.\n\n' "$upstream"
-    printf ' -- %s  %s\n\n' "$who" "$(today_rfc2822)"
+    printf ' -- %s  %s\n\n' "$who" "$DATE_RFC2822"
     cat "$file"
   } >"$file.new"
   command mv -f "$file.new" "$file"
@@ -267,7 +286,7 @@ add_deb_changelog() {
 add_metainfo_release() {
   local upstream="$1" rpm="$2" file="$root/$METAINFO"
   grep -q -E '^[[:space:]]*<releases>' "$file" || die "$METAINFO: no <releases> element"
-  awk -v v="$rpm" -v d="$(today_iso)" -v t="$(appstream_type "$upstream")" -v up="$upstream" '
+  awk -v v="$rpm" -v d="$DATE_ISO" -v t="$(appstream_type "$upstream")" -v up="$upstream" '
     { print }
     /^[[:space:]]*<releases>/ {
       print "    <release version=\"" v "\" date=\"" d "\" type=\"" t "\">"
@@ -427,6 +446,7 @@ cmd_set() {
     echo "version.sh: X.Y.Z-(alpha|beta|rc).N with N a positive integer (0.1.0-beta.1)." >&2
     exit 2
   fi
+  check_source_date_epoch
   local rpm arch file kind
   rpm="$(rpm_version "$upstream")"
   arch="$(arch_version "$upstream")"
@@ -440,6 +460,13 @@ cmd_set() {
   done
   command -v cargo >/dev/null || die "cargo is needed to regenerate Cargo.lock"
   command -v npm >/dev/null || die "npm is needed to regenerate gui/package-lock.json"
+
+  # An entry is found by its <release tag; with two on one line the later one would hide the first
+  # (and so its version would never be compared), so refuse rather than guess.
+  if awk 'gsub(/<release[ \t>]/, "&") > 1 { found = 1 } END { exit !found }' "$root/$METAINFO"; then
+    echo "version.sh: $METAINFO: a line holds more than one <release tag; put each on its own line. Nothing was changed." >&2
+    exit 2
+  fi
 
   local spec_who deb_who
   spec_who="$(spec_changelog_author)"
@@ -466,7 +493,10 @@ cmd_set() {
     tag_check="$root is not the top level of its git repository ($top)"
   fi
   if [[ "$tag_check" != yes ]]; then
-    echo "version.sh: tag check skipped: $tag_check, so a tag for a dropped version cannot be looked up." >&2
+    # said only when an entry is going to be dropped: with none, there is no tag to look up
+    if ((${#dropped[@]} > 0)); then
+      echo "version.sh: tag check skipped: $tag_check, so a tag for a dropped version cannot be looked up." >&2
+    fi
   else
     # Local tags only: run `git fetch --tags` first, or a tag that exists only on the remote is missed.
     if ((${#dropped[@]} > 0)); then
@@ -485,6 +515,7 @@ cmd_set() {
   # From here on a failure puts every file back.
   snapshot_dir="$(mktemp -d)"
   trap on_exit EXIT
+  read_entry_dates
   for file in "${SET_FILES[@]}"; do
     mkdir -p "$snapshot_dir/$(dirname "$file")"
     command cp -p "$root/$file" "$snapshot_dir/$file" || die "$file: cannot be read to take a copy; nothing was changed"
