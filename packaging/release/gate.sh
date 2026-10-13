@@ -17,13 +17,16 @@
 # (a ref it cannot read). Only 0 passes. A missing or unreadable ref, a shallow history that hides
 # the answer and any other failure all stop the release; none is read as "fine".
 #
-# GATE_MAIN_REF names the branch tip to compare with (default origin/main); the tests use it.
+# GATE_MAIN_REF names the branch tip to compare with (default refs/remotes/origin/main); the tests
+# use it.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
 version_sh="$root/packaging/version.sh"
-main_ref="${GATE_MAIN_REF:-origin/main}"
+# The full ref name: a bare `origin/main` is looked up under refs/, refs/tags/ and refs/heads/ before
+# refs/remotes/, so a tag or branch called origin/main would be compared with instead of main.
+main_ref="${GATE_MAIN_REF:-refs/remotes/origin/main}"
 
 die() {
   echo "gate.sh: $*" >&2

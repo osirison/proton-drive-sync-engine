@@ -254,8 +254,14 @@
       with a stale asset, a draft on a later page of the listing, two drafts, a published release
       (with and without a draft beside it), a failed listing, bad assets, and the beta and final
       `--prerelease` decisions; on the refusals the stub fails on any write. Other tests hold
-      `release.yml` to the rules above (one `contents: write`, `needs`, the artifacts by name) and
-      check that no other workflow runs on a tag push. Left, after this merges:
+      `release.yml` to the rules above (each `permissions:` block exactly, `needs`, the artifacts
+      by name, no `${{ }}` in any `run:` step) and check that no other workflow runs on a tag push.
+      The asset set is also checked on every package build: `packages.yml` has a `release-assets`
+      job (in `packages-ok`'s `needs`, skipped with the builds) that runs `draft.sh --check-assets`,
+      the draft job's own check, so a new RPM subpackage or a debuginfo package fails the pull
+      request and not the first release. Replacing a draft touches its assets only: for one tag the
+      pre-release flag and the notes header cannot change, so only the notes GitHub generated at
+      creation can go stale, and no refresh is built. Left, after this merges:
       - the live checks: `v0.1.0` on `main` gives a draft that is not a pre-release with the ten
         assets, `sha256sum -c` passes on them, no name has `~`, and a re-run of the run leaves one
         draft with replaced assets;

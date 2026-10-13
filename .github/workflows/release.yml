@@ -70,7 +70,10 @@ jobs:
     permissions:
       contents: write
     steps:
+      # The token that can write is given to the script's environment below, not left in .git.
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       # The four artifacts packages.yml uploads, by name, into one directory.
       - uses: actions/download-artifact@v8
         with:

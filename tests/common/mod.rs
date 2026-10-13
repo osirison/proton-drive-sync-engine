@@ -38,7 +38,11 @@ const EVENTS_OPT_IN_ENV: &str = "PROTON_SYNC_TEST_EVENTS_OPT_IN";
 
 /// The tools by which a daemon with `events_driven` on reaches the real Proton session: `secret-tool`
 /// reads it out of the desktop keyring, `curl` calls the events API with it.
-const STUBBED_TOOLS: [&str; 2] = ["secret-tool", "curl"];
+///
+/// `gh` is the third: a script that calls it (the release scripts) would use the host's logged-in
+/// GitHub session. A test of such a script puts its own `gh` stub AHEAD of this directory; one that
+/// loses it reaches this refusing stub, which records the call, and the test fails on that.
+const STUBBED_TOOLS: [&str; 3] = ["secret-tool", "curl", "gh"];
 
 /// The file names of this crate's two binaries, for a test that compares them as **data** (a
 /// packaging manifest, an archive script). They are constants here so that no other test file
