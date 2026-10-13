@@ -69,6 +69,20 @@ pub mod links {
             .find(|(id, _)| *id == check)
             .map(|(_, anchor)| format!("{DOCS_SITE}{TROUBLESHOOTING_PAGE}#{anchor}"))
     }
+
+    /// The URL behind a link id on a check's result, for a caller that was handed only the two ids
+    /// (the desktop app's `open_help_link`). `None` for a check or link this module never emits,
+    /// and for a Proton page on a check that carries none.
+    pub fn url_for(check: &str, link: &str) -> Option<String> {
+        let docs = docs_url(check)?;
+        let on_proton_page = matches!(check, "proton-drive" | "signed-in");
+        match link {
+            "docs" => Some(docs),
+            "proton-download" if on_proton_page => Some(PROTON_DOWNLOAD.to_owned()),
+            "proton-cli-docs" if on_proton_page => Some(PROTON_SUPPORT.to_owned()),
+            _ => None,
+        }
+    }
 }
 
 // ---- the result types -------------------------------------------------------------------------
@@ -2099,5 +2113,22 @@ mod tests {
             )
         );
         assert_eq!(links::docs_url("no-such-check"), None);
+    }
+
+    #[test]
+    fn a_link_id_resolves_only_to_a_url_this_module_emits() {
+        assert_eq!(
+            links::url_for("proton-drive", "proton-download").as_deref(),
+            Some(links::PROTON_DOWNLOAD)
+        );
+        assert_eq!(
+            links::url_for("signed-in", "proton-cli-docs").as_deref(),
+            Some(links::PROTON_SUPPORT)
+        );
+        assert_eq!(links::url_for("curl", "docs"), links::docs_url("curl"));
+        // A Proton page on a check that never carries one, an unknown link and an unknown check.
+        assert_eq!(links::url_for("curl", "proton-download"), None);
+        assert_eq!(links::url_for("signed-in", "https://evil.example/"), None);
+        assert_eq!(links::url_for("no-such-check", "docs"), None);
     }
 }

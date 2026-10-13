@@ -14,9 +14,11 @@
 //     `You have 214 GB` and NOT `Needs 38.4 GB free`, which has no source at all: no level of the
 //     dry-run surface carries a file size (G6, #206). That half is pinned separately, as
 //     `neededBytes`, so nothing reads it as something the command answers.
-//   · the distribution — `check_cli` returns `{ installed, distro: { id, name } | null }` (C5,
-//     #178). `null` is the tarball branch, which the docs require rather than guessing a package
-//     manager. ⚠ The drawn `sudo apt install proton-drive` works on no distribution — see #218.
+//   · the dependency check — `check_cli` returns `{ ready, report, distro: { id, name } | null }`
+//     (`add-dependency-check`, D10): `report` is `proton-sync doctor --json`'s object and `ready` is
+//     false only for a `failed` verdict. `distro` is C5's (#178) and only words the `Detected …`
+//     line. ⚠ The drawn `sudo apt install proton-drive` works on no distribution (#218) and the
+//     checklist replaced it — DEVIATIONS §113.
 //
 // The rest has no command and no issue, and is flagged where it is pinned: the per-side folder
 // counts and sizes on `9a Folders`, the account line beside them, `9a Review`'s already-matching
@@ -32,6 +34,29 @@
 import { ago } from "./clock.js";
 import { onboardingFids } from "./fids.js";
 import { action, bulk, summaryOf } from "./dryrun.js";
+
+/**
+ * `check_cli`'s reply when `proton-drive` is not there: the shape the Rust command sends. The links carry
+ * `id` only — the page reads ids and hands them to `openHelpLink`, and an address in a fixture would be
+ * one more place for it to be spelled.
+ */
+export const CLI_MISSING_REPLY = {
+  ready: false,
+  report: {
+    verdict: "failed",
+    checks: [
+      {
+        id: "proton-drive",
+        severity: "required",
+        outcome: "missing",
+        statement: "proton-drive was not found on PATH",
+        fix: "Install it from the Proton Drive download page and then run `proton-drive auth login`. If it is installed off PATH, set `proton_cli` to its full path",
+        links: [{ id: "docs" }, { id: "proton-download" }, { id: "proton-cli-docs" }],
+      },
+    ],
+  },
+  distro: { id: "debian", name: "Debian" },
+};
 
 /**
  * The first-sync merge `9a Review` previews: 471 rows, of which the frame draws only four counts.
@@ -397,15 +422,13 @@ export const ONBOARDING_FIXTURES = {
   /**
    * The precondition that only ever appears when it fails.
    *
-   * C5 (#178) supplies `distro` from `/etc/os-release`. `cliMissingBody` takes the detection result
-   * — `id` is the package family, unused now that there is no per-distro command; `name` is the
-   * short brand name the `Detected …` clause writes. The fixture pins the detection result; the
-   * string stays the deck's.
+   * C5 (#178) supplies `distro` from `/etc/os-release`; `cliDetected` takes the detection result.
+   * `id` is the package family, unused now that there is no per-distro command; `name` is the short
+   * brand name the `Detected …` clause writes. The fixture pins the detection result.
    *
-   * There was a per-distro install command here through C5; #218 retired it (DEVIATIONS §102) —
-   * `proton-drive` is in no distro repository, by this project's own documentation, so Debian's row
-   * was exactly as untrue as the other four. `cliMissingBody` now names the manual path for
-   * everyone, and `Detected …` stays as the half of this screen that was always true.
+   * The reply is the dependency check's (`CLI_MISSING_REPLY`): the one required problem a machine
+   * with no `proton-drive` has. The frame's command box is not drawn; the checklist row stands where
+   * it did (DEVIATIONS §113, reversing §72 and §102).
    *
    * There is no daemon and no config here: the CLI check runs before either exists, which is why
    * this dialog can precede step 1.
@@ -413,7 +436,7 @@ export const ONBOARDING_FIXTURES = {
   "9a CLI missing": {
     status: NO_DAEMON,
     config: NO_CONFIG,
-    cli: { installed: false, distro: { id: "debian", name: "Debian" } },
+    cli: CLI_MISSING_REPLY,
     route: "onboarding",
     fids: onboardingFids("cliMissing"),
     ui: { step: "cliMissing", dialog: "cliMissing" },

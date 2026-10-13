@@ -454,13 +454,42 @@ test("a stopped daemon is offered the row that starts it, not the one that retri
 
 test("the two states that ARE answering keep the retry", () => {
   // `syncnow` reaches a daemon that replies, so `Try again now` does what it says for both of these
-  // — which is why they stayed behind when `unreachable` moved out of the shared branch.
+  // — which is why they stayed behind when `unreachable` moved out of the shared branch. It stays the
+  // FIRST control in both; the signed-out one has a second (below).
   for (const hero of ["failed", "authExpired"]) {
     const actions = heroActionsOf({ hero });
-    assert.equal(actions.length, 1, hero);
     assert.equal(actions[0].label, TRAY.tryAgain, hero);
     assert.equal(actions[0].on, "onSyncNow", hero);
   }
+  assert.equal(heroActionsOf({ hero: "failed" }).length, 1);
+});
+
+test("an expired sign-in says how to sign in, and offers the help page beside the retry", () => {
+  // The words: the command, where to run it, and what to do after (add-dependency-check, D10).
+  assert.equal(MAIN.signInHow.command, "proton-drive auth login");
+  assert.match(MAIN.signInHow.before + MAIN.signInHow.command + MAIN.signInHow.after, /in a terminal/);
+  // The control: a LIVE one. `on` names a handler, and the kind is not a disabled one (which drops
+  // its listener, so a button armed later would be dead).
+  const actions = heroActionsOf({ hero: "authExpired" });
+  assert.equal(actions.length, 2);
+  assert.equal(actions[1].label, MAIN.signInHelp);
+  assert.equal(actions[1].on, "onSignInHelp");
+  assert.ok(!actions[1].disabled);
+  assert.ok(!/Disabled$/.test(actions[1].kind), actions[1].kind);
+  // No other hero offers it: it is about a signed-out CLI and nothing else.
+  for (const hero of ["failed", "unreachable", "settled", "syncing", "paused"]) {
+    assert.ok(!heroActionsOf({ hero }).some((a) => a.on === "onSignInHelp"), hero);
+  }
+});
+
+test("the sign-in sentence is under the hero, not in its sub-line, and a refused link is quoted", () => {
+  // The hero is a fixed block that centres its contents: a longer sub-line would move the mark.
+  assert.equal(subOf({ hero: "authExpired", pending: 3 }), MAIN.authExpiredSub(3));
+  assert.ok(!subOf({ hero: "authExpired", pending: 3 }).includes("auth login"));
+  assert.equal(quotedError({ hero: "authExpired", helpError: "no opener" }), "no opener");
+  assert.equal(quotedError({ hero: "authExpired" }), null);
+  assert.equal(quotedError({ hero: "settled", helpError: "no opener" }), null);
+  assert.equal(mainView({ daemonState: "authExpired", helpError: "x" }).helpError, "x");
 });
 
 test("the start button goes inert while the start is in flight, and carries no handler when it does", () => {

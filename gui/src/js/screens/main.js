@@ -162,6 +162,9 @@ export function mainView(props = {}) {
     remoteRoot = null,
     starting = false,
     startError = null,
+    // Why the last "Sign-in help" did not open, or null: the opener's own message, quoted under the
+    // sign-in sentence. Owned by the caller like `startError`.
+    helpError = null,
     // How many folder pairs there are. Only ever read to decide whether a never-synced pair may be
     // drawn as one (`heroStateOf`'s `drawsFirstRun`); 0 is every caller written before pairs.
     pairCount = 0,
@@ -232,6 +235,7 @@ export function mainView(props = {}) {
     // #224 and #227 record: pressed, nothing visible, no reason given.
     starting,
     startError,
+    helpError,
     pair,
     waitingFor,
     notice,
@@ -518,7 +522,15 @@ export function heroActionsOf(v) {
         : { label: TRAY.start, kind: "secondaryOutlined", on: "onStartService" },
     ];
   }
-  if (v.hero === "authExpired" || v.hero === "failed") {
+  if (v.hero === "authExpired") {
+    // `Sign-in help` opens Proton's CLI page by id, beside the retry. The retry stays the first
+    // control: once the person has signed in in a terminal it is the only one that does anything.
+    return [
+      { label: TRAY.tryAgain, kind: "secondaryOutlined", on: "onSyncNow" },
+      { label: MAIN.signInHelp, kind: "quietOutlined", on: "onSignInHelp" },
+    ];
+  }
+  if (v.hero === "failed") {
     // `Try again now` and not `11a Outage`'s `Sign in`: NOTHING IN THE COMMAND SURFACE SIGNS IN.
     // Re-authentication is `proton-drive auth login` in a terminal — the daemon reuses that CLI's keyring
     // session — so a `Sign in` button here would be a control with no action behind it, which is
@@ -826,10 +838,13 @@ function blocksOf(v) {
 export function quotedError(v) {
   if (v.hero === "failed") return v.error ?? null;
   if (v.hero === "unreachable") return v.startError ?? null;
+  // Not the daemon's string: the reason a help link did not open. Quoted in the same block.
+  if (v.hero === "authExpired") return v.helpError ?? null;
   return null;
 }
 
-const quotingError = (v) => Boolean(quotedError(v));
+/** Whether the block under the hero is the failed/guidance one rather than the empty spacer. */
+const quotingError = (v) => v.hero === "authExpired" || Boolean(quotedError(v));
 
 /** Only write when it changed: an unchanged assignment still invalidates layout for the whole line. */
 function setText(node, text) {
@@ -1000,14 +1015,32 @@ function fillColumns(v) {
  */
 function fillFailed(v) {
   const quoted = quotedError(v);
-  const sig = quoted ?? "";
+  const guiding = v.hero === "authExpired";
+  const sig = `${guiding ? "sign-in|" : ""}${quoted ?? ""}`;
   if (view.failedSig === sig) return;
   view.failedSig = sig;
-  if (!quoted) {
-    view.failed.replaceChildren();
+  const error = quoted ? el("div", { class: "main-failed-error" }, quoted) : null;
+  if (!guiding) {
+    view.failed.replaceChildren(...(error ? [error] : []));
     return;
   }
-  view.failed.replaceChildren(el("div", { class: "main-failed-error" }, quoted));
+  // What to do about an expired sign-in. Under the hero and not in its sub-line: the hero is a
+  // fixed block that centres its contents, and a second line in it moves the mark.
+  const how = MAIN.signInHow;
+  view.failed.replaceChildren(
+    el(
+      "div",
+      { class: "main-signin" },
+      el(
+        "div",
+        { class: "main-signin-how" },
+        how.before,
+        el("span", { class: "main-signin-command" }, how.command),
+        how.after,
+      ),
+      error,
+    ),
+  );
 }
 
 /**

@@ -230,7 +230,7 @@
 
 ## 7. Desktop app
 
-- [ ] 7.1 Add a `doctor` module to `gui-core` that maps `RuntimePaths`' `proton_cli` and config
+- [x] 7.1 Add a `doctor` module to `gui-core` that maps `RuntimePaths`' `proton_cli` and config
       path to `Inputs`, takes an `&dyn Environment`, and re-exports the types. In
       `gui/src-tauri/src/commands.rs`:
       - `check_cli` returns `{ ready, report, distro }`, run on `spawn_blocking` with
@@ -246,7 +246,7 @@
       - a gui-core test that `ready` is false only for a `failed` verdict;
       - an `open_help_link` test that an unknown id spawns nothing;
       - the `pair_tests` classification passing
-- [ ] 7.2 Frontend (`gui/src/js`):
+- [x] 7.2 Frontend (`gui/src/js`):
       - `api.js`: `checkCli`, the fixture lookup, the default payload `{ ready: true, … }`, and
         `openHelpLink`.
       - `app.js`: `cliPresence?.ready === false` picks the dialog.
@@ -259,7 +259,7 @@
       Verify: `(cd gui && npm run check)` is green, with new cases in `test/onboarding.test.js`
       (missing, crashed, signed out, could-not-check-only not blocking, links passing ids only)
       and `test/main-screen.test.js` (the auth-expired sentence and link)
-- [ ] 7.3 Fixtures and fidelity:
+- [x] 7.3 Fixtures and fidelity:
       - the `9a CLI missing` fixture gets the new reply shape;
       - `fids.js` gets the new nodes;
       - `tools/fidelity/check-n1-identity.mjs` and `check-pair-routing.mjs` get the new mocked
@@ -273,7 +273,7 @@
       before and after in the PR. Render `npm run screenshots -- --out <scratch> --frame "9a CLI
       missing"` for review only. The published screenshots are not regenerated, because none
       shows these states
-- [ ] 7.4 Docs:
+- [x] 7.4 Docs:
       - `website/src/content/docs/desktop/overview.md`: the Auth expired row gets "Sign-in help"
         and the paragraph at line 70 gets the command.
       - `website/src/content/docs/desktop/screens.md`: the line 49 paragraph, and the first-run

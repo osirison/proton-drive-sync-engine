@@ -10,6 +10,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readdirSync, readFileSync } from "node:fs";
 
 import {
   actionsModel,
@@ -20,6 +21,9 @@ import {
   mergeFooterText,
   mergeOutcomeOf,
   onboardingBarShape,
+  cliBlocksFirstRun,
+  cliChecklistOf,
+  cliTitleOf,
 } from "../src/js/screens/onboarding.js";
 import { ONBOARDING } from "../src/js/ui/copy.js";
 import { bytes } from "../src/js/ui/format.js";
@@ -349,4 +353,167 @@ test("a plan nobody has fetched yet draws an empty list rather than throwing", (
   assert.deepEqual(model.rows, []);
   assert.equal(model.total, 0);
   assert.equal(model.hidden, 0);
+});
+
+// ---- 9a CLI missing, as the dependency check fills it (add-dependency-check, 7.2) ---------------
+//
+// The fidelity gate draws ONE reply (the CLI is not installed). Everything below is a reply it does not.
+
+const result = (id, severity, outcome, over = {}) => ({
+  id,
+  severity,
+  outcome,
+  statement: `${id} ${outcome}`,
+  fix: outcome === "ok" ? null : `fix ${id}`,
+  links: outcome === "ok" ? [] : [{ id: "docs", url: "u" }],
+  ...over,
+});
+
+const cliReply = (checks, ready) => ({
+  ready,
+  report: { checks, verdict: ready ? "ok" : "failed" },
+  distro: null,
+});
+
+test("a missing CLI is titled 'isn't installed' and a crashing one 'doesn't run'", () => {
+  const missing = cliReply([result("proton-drive", "required", "missing")], false);
+  const crashed = cliReply([result("proton-drive", "required", "failed")], false);
+  assert.equal(cliTitleOf(missing), ONBOARDING.cliMissingTitle);
+  assert.equal(cliTitleOf(crashed), ONBOARDING.cliFailedTitle);
+  // The point of the split (spec: "A CLI that crashes is not called 'not installed'").
+  assert.notEqual(cliTitleOf(crashed), ONBOARDING.cliMissingTitle);
+  assert.ok(!cliTitleOf(crashed).includes("installed"));
+});
+
+test("a signed-out CLI and an unreadable settings file each get their own title", () => {
+  assert.equal(
+    cliTitleOf(
+      cliReply([result("proton-drive", "required", "ok"), result("signed-in", "required", "missing")], false),
+    ),
+    ONBOARDING.cliSignInTitle,
+  );
+  assert.equal(
+    cliTitleOf(
+      cliReply([result("proton-drive", "required", "ok"), result("config", "required", "failed")], false),
+    ),
+    ONBOARDING.cliConfigTitle,
+  );
+});
+
+test("the title names the FIRST required problem, in the report's order", () => {
+  const both = cliReply(
+    [result("proton-drive", "required", "missing"), result("signed-in", "required", "missing")],
+    false,
+  );
+  assert.equal(cliTitleOf(both), ONBOARDING.cliMissingTitle);
+  // A recommended problem or a could-not-check result never names the dialog.
+  const only = cliReply(
+    [result("curl", "recommended", "missing"), result("signed-in", "required", "unknown")],
+    true,
+  );
+  assert.equal(cliTitleOf(only), ONBOARDING.cliOtherTitle);
+});
+
+test("the checklist lists every result that is not ok: required problems, recommended problems, then could-not-check", () => {
+  const rows = cliChecklistOf(
+    cliReply(
+      [
+        result("proton-drive", "required", "ok"),
+        result("signed-in", "required", "unknown"),
+        result("config", "required", "ok"),
+        result("secret-tool", "recommended", "missing"),
+        result("curl", "recommended", "unknown"),
+        result("service", "recommended", "missing"),
+        result("session-bus", "recommended", "ok"),
+      ],
+      true,
+    ),
+  );
+  assert.deepEqual(
+    rows.map((r) => [r.id, r.group]),
+    [
+      ["secret-tool", "recommended"],
+      ["service", "recommended"],
+      ["signed-in", "unknown"],
+      ["curl", "unknown"],
+    ],
+  );
+  const required = cliChecklistOf(
+    cliReply([result("curl", "recommended", "missing"), result("proton-drive", "required", "failed")], false),
+  );
+  assert.deepEqual(
+    required.map((r) => r.group),
+    ["required", "recommended"],
+  );
+  // Each row carries the engine's own statement and fix, unedited.
+  assert.equal(required[0].statement, "proton-drive failed");
+  assert.equal(required[0].fix, "fix proton-drive");
+});
+
+test("a reply that could only not-check is not a block, and neither is a recommended problem", () => {
+  const unknownOnly = cliReply(
+    [result("signed-in", "required", "unknown"), result("curl", "recommended", "missing")],
+    true,
+  );
+  assert.equal(cliBlocksFirstRun(unknownOnly), false);
+  assert.equal(cliBlocksFirstRun(cliReply([result("proton-drive", "required", "failed")], false)), true);
+  // No answer yet, or a round trip that failed (`cliPresence` stays null): not a block.
+  assert.equal(cliBlocksFirstRun(null), false);
+  assert.equal(cliBlocksFirstRun(undefined), false);
+  // The list is still there for a caller that wants to show it.
+  assert.equal(cliChecklistOf(unknownOnly).length, 2);
+});
+
+test("a link is the pair of ids openHelpLink takes, with words for it, and never an address", () => {
+  const rows = cliChecklistOf(
+    cliReply(
+      [
+        result("proton-drive", "required", "missing", {
+          links: [
+            { id: "docs", url: "https://elsewhere.example/a" },
+            { id: "proton-download", url: "https://elsewhere.example/b" },
+            { id: "proton-cli-docs", url: "https://elsewhere.example/c" },
+            { id: "a-link-this-build-has-no-words-for", url: "https://elsewhere.example/d" },
+          ],
+        }),
+      ],
+      false,
+    ),
+  );
+  assert.deepEqual(rows[0].links, [
+    { check: "proton-drive", link: "docs", label: ONBOARDING.cliLinks.docs },
+    { check: "proton-drive", link: "proton-download", label: ONBOARDING.cliLinks["proton-download"] },
+    { check: "proton-drive", link: "proton-cli-docs", label: ONBOARDING.cliLinks["proton-cli-docs"] },
+  ]);
+  // Nothing a click hands on can be an address: the reply's `url` is not carried at all.
+  assert.ok(!JSON.stringify(rows).includes("elsewhere.example"));
+});
+
+test("an old-shaped or empty reply lists nothing and does not throw", () => {
+  assert.deepEqual(cliChecklistOf(null), []);
+  assert.deepEqual(cliChecklistOf({ installed: false, distro: null }), []);
+  assert.equal(cliBlocksFirstRun({ installed: false, distro: null }), false);
+});
+
+test("no page script holds an address of its own", () => {
+  // The links are opened by id (the spec's "no URL is passed from the page to the opener"), so a
+  // literal address anywhere under src/js would be a second copy of the engine's table.
+  const root = new URL("../src/js/", import.meta.url);
+  const found = [];
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = new URL(entry.name + (entry.isDirectory() ? "/" : ""), dir);
+      if (entry.isDirectory()) walk(path);
+      else if (entry.name.endsWith(".js")) {
+        for (const [i, line] of readFileSync(path, "utf8").split("\n").entries()) {
+          const code = line.trim();
+          if (code.startsWith("//") || code.startsWith("*") || code.startsWith("/*")) continue; // prose
+          if (/https?:\/\//.test(line.replace("http://www.w3.org/2000/svg", "")))
+            found.push(`${entry.name}:${i + 1}`);
+        }
+      }
+    }
+  };
+  walk(root);
+  assert.deepEqual(found, []);
 });

@@ -1657,12 +1657,9 @@ export function foldersFids(view) {
 //   #244 gave each one a sub-screen inside the takeover to open; both are declared below.)
 //   (`9a First sync` has nothing undeclared left: the split progress bar it was waiting on is drawn
 //   since #243, and every node of it is mapped below.)
-//   · `9a CLI missing` — the command box (`div/div/div[2]`, #218) and `Installation help`
-//     (`div/div/div[3]/button[1]`). #244 gave the other two buttons a destination and deliberately
-//     did NOT give this one: #231 shipped the opener and the blocker was never the opener. There is
-//     no true instruction to put in the box and no URL to send a help button to — this project's own
-//     documentation says `proton-drive` is in no distribution's repository — which is #218, still
-//     open and still a design decision rather than a code one.
+//   · `9a CLI missing` — the command box (`div/div/div[2]`, #218). `Installation help` was here
+//     until the dependency check gave it Proton's download page (DEVIATIONS §113); the box stays
+//     undrawn, its place taken by the checklist.
 //
 // The two window frames' header has no `menu` slot — onboarding drops the ⋯ — and no `chipDot`:
 // `step N of 2` is text only.
@@ -1821,6 +1818,8 @@ const ONBOARDING_CLI_FIDS = {
   cliBody: "div/div/div[1]",
   cliButtons: "div/div/div[3]",
   cliCheckAgain: "div/div/div[3]/button[0]",
+  // Drawn since the dependency check (DEVIATIONS §113): it opens Proton's download page by id.
+  cliInstallHelp: "div/div/div[3]/button[1]",
 };
 
 /**

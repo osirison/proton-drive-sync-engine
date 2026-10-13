@@ -398,6 +398,43 @@ const NOT_DRAWN = new Map([
     "FOLDERS.startOver.confirm",
     "the button of the confirmation of a changed Proton folder, drawn in no frame (§112)",
   ],
+  // `add-dependency-check` (DEVIATIONS §113). `9a CLI missing` draws one cause (the CLI is not installed),
+  // a command box where the build draws a checklist, and a sentence the build no longer says. What the
+  // frame DOES draw and the build renders — the title of that cause, `Check again`, `Installation help`,
+  // `Detected Debian` — is checked as before. The rest is written, not measured:
+  [
+    "ONBOARDING.cliFailedTitle",
+    "the title of a CLI that is found and does not run; the frame draws the missing cause",
+  ],
+  ["ONBOARDING.cliSignInTitle", "the title of a signed-out CLI; the frame draws the missing cause"],
+  [
+    "ONBOARDING.cliConfigTitle",
+    "the title of an unreadable settings file; the frame draws the missing cause",
+  ],
+  [
+    "ONBOARDING.cliOtherTitle",
+    "the title for a blocked check with no required problem to name; unreachable from the engine's reply",
+  ],
+  [
+    "ONBOARDING.cliIntro",
+    "the sentence under the title. The frame draws the pre-#218 one (`Install it once and setup will carry on`), which the checklist replaced",
+  ],
+  [
+    "ONBOARDING.cliDetectedNote",
+    "the tail of `Detected Debian`; the frame's tail is `other distributions are in the help`, which the build no longer says",
+  ],
+  ["ONBOARDING.cliGroups.required", "a heading of the checklist, which replaced the frame's command box"],
+  ["ONBOARDING.cliGroups.recommended", "a heading of the checklist, which replaced the frame's command box"],
+  ["ONBOARDING.cliGroups.unknown", "a heading of the checklist, which replaced the frame's command box"],
+  ["ONBOARDING.cliLinks.docs", "a link on a checklist row; the frame has no row"],
+  ["ONBOARDING.cliLinks.proton-download", "a link on a checklist row; the frame has no row"],
+  ["ONBOARDING.cliLinks.proton-cli-docs", "a link on a checklist row; the frame has no row"],
+  ["ONBOARDING.checking", "the label of `Check again` while it runs, a moment no frame holds still"],
+  // The auth-expired hero's how-to. `authExpired` is drawn in no frame (`11a Outage` is a notification).
+  ["MAIN.signInHow.before", "the sign-in how-to under the auth-expired hero, drawn in no frame"],
+  ["MAIN.signInHow.command", "the sign-in how-to under the auth-expired hero, drawn in no frame"],
+  ["MAIN.signInHow.after", "the sign-in how-to under the auth-expired hero, drawn in no frame"],
+  ["MAIN.signInHelp", "the auth-expired hero's second button, drawn in no frame"],
 ]);
 
 /**
@@ -547,19 +584,6 @@ const UNGATED_TEMPLATES = new Map([
         "would go green by pointing the deck's chip at another sentence's words \u2014 the " +
         "`CONFLICTS.kindFolder` near-miss this gate exists to prevent.",
       absent: null,
-    },
-  ],
-  [
-    "ONBOARDING.cliMissingBody",
-    {
-      why:
-        "The app renders it, but `9a CLI missing` draws the pre-#218 sentence \u2014 `This app drives the " +
-        "official tool rather than talking to Proton directly. Install it once and setup will carry " +
-        "on. Detected Debian \u2014 other distributions are in the help.` \u2014 and neither branch of the " +
-        "current text appears in any of the 55 frames. #218 settled the drawn install command as true " +
-        "for no distribution, so the deck deliberately no longer holds a string that matches the " +
-        "frame.",
-      absent: "and no Linux distribution packages it",
     },
   ],
   [
@@ -861,6 +885,9 @@ const DRAWN = [
   // Drawn on a NOTIFICATION rather than on the main screen: `11a Outage` is the only place the
   // design writes this sentence, and S1's sign-in hero quotes it because there is no second one.
   ["MAIN.authExpiredSub", [61], "11a Outage"],
+  // `9a CLI missing`: `Detected Debian`, the part of the frame's line the build still says (its tail,
+  // `other distributions are in the help`, is not ours: `ONBOARDING.cliDetectedNote` is in NOT_DRAWN).
+  ["ONBOARDING.cliDetected", [{ name: "Debian" }], "9a CLI missing"],
   ["MAIN.band.conflictTitle", [1], "2a Needs you"],
   ["MAIN.band.conflictSub", ["notes/todo.txt"], "2a Needs you"],
   ["MAIN.band.deletionTitle", [2], "2a Needs you"],
@@ -899,11 +926,9 @@ const DRAWN = [
   ["CONFLICTS.absentLine", ["mine"], "3a Conflict diff"],
   ["CONFLICTS.clearedSub", [{ total: 3, keptBoth: 2, tookProton: 1 }], "3a Conflicts cleared"],
   // `ONBOARDING.cliMissingBody` and `.cliInstallCommand` WERE HERE, checking the deck against the
-  // frame's own `sudo apt install proton-drive` text. Retired with it (#218, DEVIATIONS §102): the
-  // decision this closes settles the drawn command as permanently wrong, so the deck no longer
-  // holds a string that matches it — `cliInstallCommand` is deleted outright, and `cliMissingBody`
-  // now names the manual install path instead of the frame's "other distributions are in the
-  // help", which is nowhere in the frozen `9a CLI missing` capture to match against.
+  // frame's own `sudo apt install proton-drive` text. Retired with it (#218, DEVIATIONS §102):
+  // `cliInstallCommand` is deleted outright. `cliMissingBody` followed it when the dependency check
+  // replaced it with `cliIntro` and `cliDetected` (DEVIATIONS §113); the latter is the row above.
   // Was a template with ONE argument and a hard-coded tail — `${n} files can't be synced — a socket
   // and two shortcuts` — so it rendered the frame's kinds whatever the machine held, and the app
   // drew a different, shorter sentence (`cannotSyncPlain`) because it could not produce them. #315

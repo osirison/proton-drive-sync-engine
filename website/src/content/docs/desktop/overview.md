@@ -56,7 +56,7 @@ the tray icon, and whether counters are shown:
 | **Idle** | Reachable, not paused, nothing pending — up to date. With two or more folders, a folder is Idle only once a pass has finished for it since the daemon started; until then it is **Queued**. A single folder is one step looser: right after the daemon restarts it can read Idle for the moment before its first pass finishes. | Sync now, Pause |
 | **Queued** | Only with two or more folders. A folder that has not finished a pass since the daemon started and is not running one. The daemon syncs one folder at a time, so it is either waiting for the folder that is running (the window names it) or about to start, which the daemon does by itself when it reaches it. It asks nothing of you, so its mark is the syncing one, not the needs-you one. | Sync now, Pause |
 | **Paused** | Sync is paused. The daemon remembers it, so a restart (including the one after saving settings) keeps the pair paused, unless the pause was made while the pair was unavailable: that pause is kept in memory only. To make it stick, resume the pair once its folder is back and pause it again. | Resume |
-| **Auth expired** | The daemon's own sign-in verdict says the Proton session is gone — or, only while it has no verdict yet, a fallback match against the last error's wording. | Try again now |
+| **Auth expired** | The daemon's own sign-in verdict says the Proton session is gone — or, only while it has no verdict yet, a fallback match against the last error's wording. | Try again now, Sign-in help |
 | **Failed** | Reachable, but the last pass failed for some other reason — a timeout, a missing `proton-drive` binary, a transfer error. | Try again now |
 | **Unreachable** | The control socket can't be reached, or the reply couldn't be trusted. | Start the sync service |
 | **First run** | Nothing has synced yet, and this is the only folder. | None — the onboarding takeover covers the window; there is no Home screen to offer buttons on. (With two or more folders the takeover does not open, and the same facts are **Queued**; see [First run](/desktop/screens/#first-run).) |
@@ -68,7 +68,9 @@ daemon's own and are not blanked in this state; only the state itself used to be
 
 Nothing in the app can sign you in — an expired session is fixed by running
 `proton-drive auth login` yourself in a terminal, which is why **Auth expired** offers no
-sign-in button of its own.
+sign-in button of its own. It says so instead: the command, where to run it, and **Sign-in help**,
+a button that opens Proton's page about the command line tool. **Try again now** stays for after
+you have signed in.
 
 In the **Unreachable** and **First run** states, counters render as **em-dashes** rather
 than a fake zero — unknown is not zero.

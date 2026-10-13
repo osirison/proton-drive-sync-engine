@@ -100,6 +100,8 @@ import {
   renderFirstSync,
   renderConsent,
   renderCliMissing,
+  cliBlocksFirstRun,
+  cliTitleOf,
 } from "./screens/onboarding.js";
 import {
   BUSY_PHASES,
@@ -2609,8 +2611,11 @@ function mainProps(localRoot, remoteRoot) {
     remoteRoot,
     starting: serviceStarting,
     startError: serviceStartError,
+    helpError: openerError,
     handlers: {
       onSyncNow: () => command(() => api.syncNow({ pair })),
+      // The ids the check gave the sign-in row. A refused open is quoted under the sign-in sentence.
+      onSignInHelp: () => runOpener(() => api.openHelpLink("signed-in", "proton-cli-docs")),
       onPause: () => setPaused(pair, true),
       onResume: () => setPaused(pair, false),
       // The folder the notice that holds this button is about: where the outcome of the restart is filed.
@@ -4104,7 +4109,7 @@ function onboardingDialog() {
   // NOT `cliChecking ||`: the first check is in flight on every first run, and holding the dialog up
   // for it flashes "the command line tool isn't installed" before anything has been checked. A
   // RE-check keeps the dialog because `cliPresence` still holds the answer it is re-asking.
-  if (cliPresence?.installed === false) return "cliMissing";
+  if (cliBlocksFirstRun(cliPresence)) return "cliMissing";
   return onboardingStage;
 }
 
@@ -4119,6 +4124,11 @@ async function ensureCliCheck(again = false) {
   if (cliChecking || (cliAsked && !again)) return;
   cliAsked = true;
   cliChecking = true;
+  // Only a RE-check has a dialog to relabel; the first one has none up yet (see `onboardingDialog`).
+  if (again) {
+    openerError = null; // a refused link was about the last answer
+    render();
+  }
   try {
     // Assigned only on success: `Check again` on a machine where the round trip itself fails must
     // leave the dialog saying what it said, not flip to the tarball branch as though detection had
@@ -4418,13 +4428,21 @@ function folderMergeDialog() {
 /** What each of the flow's three dialogs draws. */
 function onboardingDialogContent(id) {
   if (id === "cliMissing") {
+    const cli = activeFixture()?.cli ?? cliPresence;
     return {
       head: false,
-      label: ONBOARDING.cliMissingTitle,
-      signature: JSON.stringify(cliPresence),
+      label: cliTitleOf(cli),
+      // The reply, whether a re-check is running and a refused link: what the dialog draws.
+      signature: JSON.stringify([cliPresence, cliChecking, openerError]),
       children: renderCliMissing({
-        cli: activeFixture()?.cli ?? cliPresence,
-        handlers: { onCheckCli: () => ensureCliCheck(true) },
+        cli,
+        checking: cliChecking,
+        openError: openerError,
+        handlers: {
+          onCheckCli: () => ensureCliCheck(true),
+          // By the ids the reply carried. The page holds no address; Rust looks it up.
+          onHelpLink: (check, link) => runOpener(() => api.openHelpLink(check, link)),
+        },
       }),
     };
   }

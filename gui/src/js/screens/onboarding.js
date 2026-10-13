@@ -7,8 +7,8 @@
 // Phase 1 omissions, each in DEVIATIONS §79 with its issue: every per-side file count and byte total
 // (#240), the account line (#241), `Needs 38.4 GB free` (#206 — C4 answers the other half), the
 // already-matching count (#242), the ETA (#229), the merged totals (#207), the install command box
-// (#218), and two buttons with no destination — `Installation help` (#218: no true instruction and
-// no URL this project's own docs can name) and `Browse Proton Drive…` (#99).
+// (replaced by the dependency check's checklist, DEVIATIONS §113) and `Browse Proton Drive…` (#99).
+// `Installation help` was on this list until §113 gave it Proton's download page.
 //
 // `Add skip rules` and `See all N actions` were on that list until #244 gave each one a sub-screen
 // inside the takeover — see "the two detours" below for why a detour rather than a door out.
@@ -1030,16 +1030,91 @@ export function renderConsent(props = {}) {
 }
 
 /**
+ * The dependency check's reply, as the dialog lists it (`add-dependency-check`, D10): every result
+ * that is not ok, required problems first, then recommended problems, then the ones that could not
+ * be checked. Pure, and exported because the order and the links are decisions, not layout.
+ *
+ * A link is `{ check, link, label }`: the two ids `openHelpLink` takes, and the words for it. The
+ * page never holds an address. A link id this build has no words for is dropped rather than drawn
+ * with a made-up label.
+ */
+export function cliChecklistOf(reply) {
+  const rank = (result) => (result.outcome === "unknown" ? 2 : result.severity === "required" ? 0 : 1);
+  const groups = ["required", "recommended", "unknown"];
+  return (reply?.report?.checks ?? [])
+    .filter((result) => result.outcome !== "ok")
+    .map((result, order) => ({ result, order }))
+    .sort((a, b) => rank(a.result) - rank(b.result) || a.order - b.order)
+    .map(({ result }) => ({
+      id: result.id,
+      group: groups[rank(result)],
+      outcome: result.outcome,
+      statement: result.statement,
+      fix: result.fix ?? null,
+      links: (result.links ?? [])
+        .filter((link) => ONBOARDING.cliLinks[link.id])
+        .map((link) => ({ check: result.id, link: link.id, label: ONBOARDING.cliLinks[link.id] })),
+    }));
+}
+
+/**
+ * Whether the dependency check stops first run. Only `ready === false` does: a required check that
+ * could not be checked and every recommended problem leave it true (D10), so a user whose setup the
+ * check cannot see is not locked out. `null` (no answer yet, or the round trip failed) is not a block
+ * either — "we could not ask" is not "it is missing".
+ */
+export function cliBlocksFirstRun(reply) {
+  return reply?.ready === false;
+}
+
+/**
+ * The dialog's title: the first REQUIRED PROBLEM's, so a CLI that crashes is never called "not
+ * installed". A required result that could not be checked does not block (D10) and names nothing.
+ */
+export function cliTitleOf(reply) {
+  const first = (reply?.report?.checks ?? []).find(
+    (result) =>
+      result.severity === "required" && (result.outcome === "missing" || result.outcome === "failed"),
+  );
+  if (first?.id === "proton-drive") {
+    return first.outcome === "missing" ? ONBOARDING.cliMissingTitle : ONBOARDING.cliFailedTitle;
+  }
+  if (first?.id === "signed-in") return ONBOARDING.cliSignInTitle;
+  if (first?.id === "config") return ONBOARDING.cliConfigTitle;
+  return ONBOARDING.cliOtherTitle;
+}
+
+/** One link on a row. A real button with a handler: it is never drawn inert. */
+function cliLink(spec, props) {
+  return button({
+    kind: "quietOutlined",
+    size: "small",
+    label: spec.label,
+    onClick: () => props.handlers?.onHelpLink?.(spec.check, spec.link),
+  });
+}
+
+function cliRowNode(row, props) {
+  const node = el("div", { class: `ob-cli-row is-${row.group}` });
+  node.append(el("div", { class: "ob-cli-statement" }, row.statement));
+  if (row.fix) node.append(el("div", { class: "ob-cli-fix" }, row.fix));
+  if (row.links.length) {
+    node.append(el("div", { class: "ob-cli-links" }, ...row.links.map((spec) => cliLink(spec, props))));
+  }
+  return node;
+}
+
+/**
  * `9a CLI missing` — the precondition that only appears when it fails.
  *
- * The command box stays gone, permanently now (#218, DEVIATIONS §102): no distribution packages
- * `proton-drive`, so there was never a true command to put in one. `cliMissingBody` carries the
- * manual path instead. `Installation help` stays undrawn too, and #231 closing did NOT change that:
- * the command surface can open a URL now (`open_remote` proves it), but this project names no
- * install page to send it to — inventing one would be worse than the takeover this has (#244).
+ * The frame draws a copyable `sudo apt install proton-drive` box. The checklist replaced it
+ * (DEVIATIONS §113, reversing §72 and §102): one row per result that is not ok, each with the
+ * engine's own statement and fix, so the screen and `proton-sync doctor` say the same thing.
+ * `Installation help` is drawn since Proton's download page is the one address both sides name.
  */
 export function renderCliMissing(props = {}) {
   const distro = props.cli?.distro ?? null;
+  const rows = cliChecklistOf(props.cli);
   const row = fid(el("div", { class: "ob-cli" }), "cliRow");
   const mark = fid(
     renderHexagon({
@@ -1053,26 +1128,58 @@ export function renderCliMissing(props = {}) {
   );
   for (const [i, path] of [...mark.querySelectorAll("path")].entries()) fid(path, "cliMarkPath", i);
   fid(mark.querySelector("circle"), "cliMarkDot");
-  const col = fid(el("div", { class: "ob-cli-col" }), "cliCol");
-  col.append(
-    fid(el("div", { class: "ob-cli-title" }, ONBOARDING.cliMissingTitle), "cliTitle"),
-    fid(el("div", { class: "ob-cli-body" }, ONBOARDING.cliMissingBody(distro)), "cliBody"),
-    fid(
-      el(
-        "div",
-        { class: "ob-cli-buttons" },
-        fid(
-          button({
-            kind: "primarySoft",
-            size: "standard",
-            label: ONBOARDING.checkAgain,
-            onClick: () => props.handlers?.onCheckCli?.(),
-          }),
-          "cliCheckAgain",
+
+  const list = el("div", { class: "ob-cli-list" });
+  let group = null;
+  for (const item of rows) {
+    if (item.group !== group) {
+      group = item.group;
+      list.append(el("div", { class: "ob-cli-group" }, ONBOARDING.cliGroups[group]));
+    }
+    list.append(cliRowNode(item, props));
+  }
+
+  const checking = Boolean(props.checking);
+  // `el` skips an absent child. A bare `append(null)` would print the word "null".
+  const col = fid(
+    el(
+      "div",
+      { class: "ob-cli-col" },
+      fid(el("div", { class: "ob-cli-title" }, cliTitleOf(props.cli)), "cliTitle"),
+      fid(el("div", { class: "ob-cli-body" }, ONBOARDING.cliIntro), "cliBody"),
+      el("div", { class: "ob-cli-detected" }, ONBOARDING.cliDetected(distro) + ONBOARDING.cliDetectedNote),
+      rows.length ? list : null,
+      props.openError ? el("div", { class: "ob-cli-open-error" }, props.openError) : null,
+      fid(
+        el(
+          "div",
+          { class: "ob-cli-buttons" },
+          fid(
+            button({
+              kind: "primarySoft",
+              size: "standard",
+              // Live while a check runs only in the sense that it cannot be queued twice: the click
+              // handler is dropped by `disabled`, and the label says why.
+              label: checking ? ONBOARDING.checking : ONBOARDING.checkAgain,
+              disabled: checking,
+              onClick: () => props.handlers?.onCheckCli?.(),
+            }),
+            "cliCheckAgain",
+          ),
+          fid(
+            button({
+              kind: "quietOutlined",
+              size: "standard",
+              label: ONBOARDING.installHelp,
+              onClick: () => props.handlers?.onHelpLink?.("proton-drive", "proton-download"),
+            }),
+            "cliInstallHelp",
+          ),
         ),
+        "cliButtons",
       ),
-      "cliButtons",
     ),
+    "cliCol",
   );
   row.append(mark, col);
   return [row];

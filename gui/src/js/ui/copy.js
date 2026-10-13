@@ -158,6 +158,19 @@ export const MAIN = {
    */
   authExpired: "Proton Drive is asking you to sign in again",
   authExpiredSub: (n) => `${count(n)} ${plural(n, "change is", "changes are")} waiting — nothing is lost.`,
+  /**
+   * What to do about it, under the hero (`add-dependency-check`, D10). The command is drawn in mono
+   * between the two halves, so it can be selected and copied. Not in the sub-line: the hero is a
+   * fixed block that centres its contents, and a second line there moves the mark. No frame draws
+   * the state (`authExpired` is undrawn), so none of this is gated against one.
+   */
+  signInHow: {
+    before: "Run ",
+    command: "proton-drive auth login",
+    after: " in a terminal, then try again.",
+  },
+  /** Opens Proton's CLI page by id (`openHelpLink`), beside `Try again now`. */
+  signInHelp: "Sign-in help",
 
   /**
    * The hero for a pass that FAILED for any non-auth reason — #246, and no frame draws it either.
@@ -1537,27 +1550,44 @@ export const ONBOARDING = {
       ? `Nothing was deleted, and ${count(conflicts)} ${plural(conflicts, "file is", "files are")} waiting for you to pick a version.`
       : "Nothing was deleted.",
 
+  /**
+   * `9a CLI missing`'s title is chosen by the FIRST REQUIRED PROBLEM the dependency check found
+   * (`add-dependency-check` D10), so a CLI that crashes is never called "not installed". The first
+   * is the drawn sentence; the other four are the same screen's other causes, undrawn.
+   */
   cliMissingTitle: "Proton Drive's command line tool isn't installed",
+  cliFailedTitle: "Proton Drive's command line tool doesn't run",
+  cliSignInTitle: "Sign in to Proton Drive's command line tool",
+  cliConfigTitle: "Your settings file can't be read",
+  /** A blocked check with no required problem to name. Not reachable from the engine's reply. */
+  cliOtherTitle: "Something this app needs isn't working",
 
   /**
-   * MAINTAINER DECISION, 2026-08-17 (#218): no distribution packages `proton-drive` — this
-   * project's own `installation.md` says so twice — so the per-distro command this used to draw
-   * (`CLI_INSTALL_COMMANDS`, retired with this decision) was never true for anyone, Debian included.
-   * The manual path replaces it, for every distribution alike; `Detected X` stays, because it still
-   * tells someone the app knows their system, even though the instruction after it no longer
-   * depends on the answer.
-   *
-   * No URL: #231 can open one, but nothing this project publishes names an install page for
-   * `proton-drive` itself (DEVIATIONS §102) — it is Proton's own tool, installed "following its own
-   * documentation" per `installation.md`. Inventing a link would be less honest than naming none.
+   * The sentence under the title. The checklist under it replaced the frame's command box
+   * (DEVIATIONS §113): the engine says what is wrong and what to do, one row per result, so this
+   * only says why the app cares. `Detected X` is its own line because nothing in it is false.
    */
-  cliMissingBody: (distro) =>
-    "This app drives the official proton-drive tool rather than talking to Proton directly, and no Linux distribution packages it — install it yourself, following its own instructions, then sign in and check again. " +
-    (distro
-      ? `Detected ${distro.name} — that doesn't change what to do here.`
-      : "We couldn't tell which distribution this is — that doesn't change what to do here either."),
-  copy: "Copy",
+  cliIntro:
+    "This app drives the official proton-drive tool rather than talking to Proton directly. Fix what is listed here, then check again.",
+  cliDetected: (distro) =>
+    distro ? `Detected ${distro.name}` : "We couldn't tell which distribution this is",
+  /** Joined to `cliDetected`. The frame draws `Detected Debian — other distributions are in the help`. */
+  cliDetectedNote: " — that doesn't change what to do here.",
+  /** The three groups the checklist falls into, in the order it is drawn. */
+  cliGroups: {
+    required: "Needed before syncing",
+    recommended: "Recommended",
+    unknown: "Couldn't check",
+  },
+  /** The label of each link a result can carry, by the id the engine gives it. */
+  cliLinks: {
+    docs: "How to fix",
+    "proton-download": "Proton's download page",
+    "proton-cli-docs": "Proton's help page",
+  },
   checkAgain: "Check again",
+  /** While a re-check is running: the button is a no-op meanwhile, and says so. */
+  checking: "Checking…",
   installHelp: "Installation help",
 };
 

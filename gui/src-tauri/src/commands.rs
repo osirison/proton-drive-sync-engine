@@ -3496,101 +3496,89 @@ pub async fn free_space<R: tauri::Runtime>(
         .map_err(|error| format!("free-space task failed: {error}"))?
 }
 
-/// Whether the `proton-drive` CLI is installed, and which distribution this is (C5, #178).
+/// The dependency check (`add-dependency-check`, D10) and which distribution this is (C5, #178).
 ///
 /// Two facts in one reply because they are drawn on one dialog and answered at one moment. The
-/// screen only ever appears when `installed` is false — the CLI check is otherwise a silent
-/// precondition, which is what let onboarding drop from four steps to two.
+/// screen only ever appears when `ready` is false: the check is otherwise a silent precondition,
+/// which is what let onboarding drop from four steps to two.
+///
+/// `ready` is false exactly when a required check is missing or failed (the engine's `failed`
+/// verdict). A required check that could not be checked, and every recommended result, leave it
+/// true: a user whose setup the check cannot see is not locked out. `report` is the engine's own
+/// report, the one `proton-sync doctor --json` prints.
 ///
 /// **Never cached.** This backs both the silent precondition and the `Check again` button, and the
-/// user is expected to install the tool between two calls.
+/// user is expected to fix something between two calls. It uses the **configured** `proton_cli`,
+/// which may be an absolute path (#158's boot-PATH fix), so a tool that is installed and merely off
+/// the launcher's PATH is not reported missing.
 ///
-/// `installed` is *presence*, not health: a CLI that is installed but logged out is `true`. Sending
-/// an authenticated-but-failing user to an install screen would answer a question they do not have.
-/// The probe uses the **configured** `proton_cli`, which may be an absolute path (#158's boot-PATH
-/// fix), so a tool that is installed and merely off the launcher's PATH is not reported missing.
+/// The daemon-lock probe is on: this runs beside a live daemon far more often than `doctor` does,
+/// and `proton-drive version` is not proven to leave the CLI's shared state alone (design A2).
 #[derive(serde::Serialize)]
-pub struct CliPresence {
-    installed: bool,
+pub struct CliCheck {
+    ready: bool,
+    report: gui_core::doctor::Report,
     distro: Option<gui_core::distro::Distro>,
 }
 
-/// How long the CLI probe waits before giving up on it. Generous for a `--version`, short enough
-/// that onboarding does not appear to have died.
-const CLI_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
-
-#[tauri::command]
-pub async fn check_cli(app: tauri::AppHandle) -> CliPresence {
-    let proton_cli = app
-        .state::<Mutex<RuntimePaths>>()
-        .lock()
-        .unwrap()
-        .proton_cli
-        .clone();
-    tauri::async_runtime::spawn_blocking(move || CliPresence {
-        installed: probe_cli(&proton_cli),
-        distro: gui_core::distro::detect_here(),
-    })
-    .await
-    // A failed join is not "no CLI and no distribution" — but this command cannot reject (the
-    // screen must render), so it degrades to the state that shows the install dialog, which is the
-    // safe direction: it tells the user to check something rather than assuming it is fine.
-    .unwrap_or(CliPresence {
-        installed: false,
-        distro: None,
-    })
+/// The environment the check runs against. **A test build gets one that finds and runs nothing**:
+/// the real one runs `secret-tool lookup` on the desktop keyring and `systemctl --user show` on the
+/// live session. `isolation_scan` holds every other mention of the real one out of both GUI crates.
+#[cfg(not(test))]
+fn check_environment() -> impl gui_core::doctor::Environment {
+    gui_core::doctor::system_environment()
 }
 
-/// Is the CLI there? Bounded by [`CLI_PROBE_TIMEOUT`], because nothing else in this command is.
-///
-/// **A probe that never returns is the failure mode this screen cannot have.** `check_cli` is the
-/// silent precondition *and* the `Check again` button, so a `proton_cli` that hangs — a stale
-/// keyring prompt, a wedged network mount holding the binary, an absolute path pointing at a FIFO —
-/// would park a `spawn_blocking` thread forever, leave the JS promise unresolved, and let every
-/// press of `Check again` park another. `Command::status()` on its own has no timeout, which is why
-/// this polls instead.
-///
-/// **A successful spawn IS the answer**, and the exit status is deliberately ignored. `installed`
-/// means the executable is there, and a `proton-drive` that exits non-zero on `--version` — a
-/// wrapper script, a missing shared library, a broken install — is present and broken, not absent.
-/// Routing that user to an install screen would answer a question they do not have, which is the
-/// same mistake as doing it for a CLI that is merely logged out. Only a failed spawn (`ENOENT`, not
-/// executable) is "isn't installed".
-///
-/// So the wait exists purely to **reap**: an unwaited child stays a zombie for the life of the GUI,
-/// and `Check again` can be pressed repeatedly.
-fn probe_cli(proton_cli: &str) -> bool {
-    let mut child = match Command::new(proton_cli)
-        .arg("--version")
-        // **stdin is nulled, not inherited.** `Command::status()`/`spawn()` inherit stdin by
-        // default, while every other subprocess here uses `.output()` (which pipes it) — so this
-        // was the one place a CLI that reads stdin before exiting could block on the GUI's own
-        // terminal, forever, with no keyboard attached to answer it. Null makes that an immediate
-        // EOF.
-        .stdin(std::process::Stdio::null())
-        // Null rather than inherited, so a chatty CLI can neither fill a pipe nobody drains nor
-        // print into the GUI's own stdout.
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-    {
-        Ok(child) => child,
-        Err(_) => return false,
-    };
+#[cfg(test)]
+fn check_environment() -> impl gui_core::doctor::Environment {
+    gui_core::doctor::inert_environment()
+}
 
-    let deadline = std::time::Instant::now() + CLI_PROBE_TIMEOUT;
-    loop {
-        // `Err` here means the child is unwaitable — still not a statement about presence.
-        if matches!(child.try_wait(), Ok(Some(_)) | Err(_)) {
-            return true;
+#[tauri::command]
+pub async fn check_cli(app: tauri::AppHandle) -> Result<CliCheck, String> {
+    let (proton_cli, config_path) = {
+        let paths = app.state::<Mutex<RuntimePaths>>();
+        let paths = paths.lock().unwrap();
+        (paths.proton_cli.clone(), paths.config_path.clone())
+    };
+    // `spawn_blocking`: the check waits on child processes, and a command that blocks the GTK main
+    // loop aborts WebKit.
+    tauri::async_runtime::spawn_blocking(move || {
+        let checked = gui_core::doctor::check(
+            &proton_cli,
+            &config_path,
+            gui_core::doctor::DaemonLock::user_default(),
+            &check_environment(),
+        );
+        CliCheck {
+            ready: checked.ready,
+            report: checked.report,
+            distro: gui_core::distro::detect_here(),
         }
-        if std::time::Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return true;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(25));
-    }
+    })
+    .await
+    // A failed join is not an answer. The screen must render, so this rejects and the page shows
+    // its own "could not run the check" state rather than a made-up verdict.
+    .map_err(|error| format!("dependency check task failed: {error}"))
+}
+
+/// Open one of the check's help links. The page names a check and a link id and never a URL: the
+/// address is looked up in the engine's own table, so the webview has nothing to inject (as with
+/// `open_remote`).
+#[tauri::command]
+pub async fn open_help_link(check: String, link: String) -> Result<(), String> {
+    open_help_link_with(OPENER, &check, &link).await
+}
+
+/// [`open_help_link`] with the opener named, so a test can pass a program that records or refuses.
+/// An id the table does not have spawns nothing.
+async fn open_help_link_with(opener: &str, check: &str, link: &str) -> Result<(), String> {
+    let url = gui_core::doctor::links::url_for(check, link)
+        .ok_or_else(|| format!("there is no help link `{link}` for the check `{check}`"))?;
+    let opener = opener.to_owned();
+    tauri::async_runtime::spawn_blocking(move || open_target(&opener, std::ffi::OsStr::new(&url)))
+        .await
+        .map_err(|error| format!("open task failed: {error}"))?
 }
 
 /// What each skip rule is hiding right now (C2, #175).
@@ -4339,7 +4327,7 @@ pub fn hide_tray_panel(app: tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::{
-        daemon_ignored_paths, daemon_plans_the_same_roots, probe_cli, relative_query,
+        daemon_ignored_paths, daemon_plans_the_same_roots, relative_query,
         status_error_proves_no_daemon, strip_ansi,
     };
     use gui_core::ipc::IpcError;
@@ -4517,24 +4505,6 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_binary_is_the_only_thing_that_reads_as_not_installed() {
-        assert!(
-            !probe_cli("proton-drive-that-is-definitely-not-installed-xyzzy"),
-            "a failed spawn is the real 'isn't installed'"
-        );
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn a_present_binary_that_exits_non_zero_is_still_present() {
-        // `installed` is presence, not health. A wrapper script, a missing shared library, or a
-        // `--version` this tool does not implement all exit non-zero — and routing that user to an
-        // install screen answers a question they do not have. `/bin/false` stands in for all three.
-        assert!(probe_cli("/bin/false"));
-        assert!(probe_cli("/bin/true"));
-    }
-
-    #[test]
     fn the_ignored_set_matches_the_daemons_when_there_is_an_index_and_is_empty_when_there_is_not() {
         assert!(daemon_ignored_paths(None).is_empty());
         let db = std::path::PathBuf::from("/x/.sync/sync_index.db");
@@ -4550,6 +4520,87 @@ mod tests {
                 std::path::PathBuf::from("/x/.sync/sync_index.metrics.json"),
             ]
         );
+    }
+
+    /// The help-link opener (`add-dependency-check`, 7.1). The opener is a script that records its
+    /// argument, so what is asserted is the address that would have been opened.
+    #[cfg(unix)]
+    fn recording_opener(dir: &Path) -> (String, std::path::PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let log = dir.join("opened");
+        let script = dir.join("opener.sh");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\necho \"$1\" >> {}\n", log.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (script.to_string_lossy().into_owned(), log)
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn an_unknown_help_link_spawns_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let (opener, log) = recording_opener(dir.path());
+        for (check, link) in [
+            ("proton-drive", "https://evil.example/"),
+            ("no-such-check", "docs"),
+            ("curl", "proton-download"),
+            ("", ""),
+        ] {
+            let error =
+                tauri::async_runtime::block_on(super::open_help_link_with(&opener, check, link))
+                    .expect_err("an id the table does not have must be refused");
+            assert!(error.contains("no help link"), "got {error}");
+        }
+        assert!(!log.exists(), "the opener ran for an unknown id");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_known_help_link_opens_the_address_the_engines_table_holds() {
+        let dir = tempfile::tempdir().unwrap();
+        let (opener, log) = recording_opener(dir.path());
+        for (check, link, url) in [
+            (
+                "proton-drive",
+                "proton-download",
+                gui_core::doctor::links::PROTON_DOWNLOAD.to_owned(),
+            ),
+            (
+                "signed-in",
+                "proton-cli-docs",
+                gui_core::doctor::links::PROTON_SUPPORT.to_owned(),
+            ),
+            (
+                "curl",
+                "docs",
+                gui_core::doctor::links::docs_url("curl").unwrap(),
+            ),
+        ] {
+            tauri::async_runtime::block_on(super::open_help_link_with(&opener, check, link))
+                .unwrap();
+            // The opener is a child that may still be writing when the call returns.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !std::fs::read_to_string(&log).is_ok_and(|text| text.contains(&url)) {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "{url} was never opened"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+    }
+
+    #[test]
+    fn the_test_build_checks_nothing_on_the_real_machine() {
+        // `check_environment` is the only place the app picks an environment, and a test build's
+        // finds and runs nothing, so a command test that gets as far as the check cannot reach the
+        // keyring or the session manager.
+        use gui_core::doctor::Environment;
+        assert!(super::check_environment().is_inert());
+        assert!(super::check_environment().find_program("sh").is_none());
     }
 
     // The openers (#220/#231). `open_target` takes its program as a parameter precisely so these

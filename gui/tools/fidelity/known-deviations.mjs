@@ -860,36 +860,27 @@ export const KNOWN_DEVIATIONS = [
     issue: "#207",
     why: "the head block, one wrapped line shorter for the same reason",
   },
-  // MAINTAINER DECISION, 2026-08-17 (#218): the drawn command box (`sudo apt install proton-drive`)
-  // never worked on any distribution, so it is dropped rather than made conditional — the frame
-  // itself is unchanged and still draws it (DEVIATIONS §102). `cliMissingBody` grew a manual-path
-  // sentence in its place, which is taller than the two sentences it replaced but still far short
-  // of a command box plus its own Copy/Installation-help buttons, so the gap moved (60px → 40px)
-  // rather than closing. All three rows are `decision`, not `issue`: #218 closes on this PR and
-  // nothing further will shrink the gap.
+  // The dependency check's checklist stands where the frame's command box was (DEVIATIONS §113,
+  // reversing §72 and §102). The box is declared undrawn below; its replacement is a list whose height
+  // is the engine's statement and fix wrapped at the dialog's width, so the text column and the row
+  // around it are taller than the frame's 176px. Measured with the fixture's one row (the CLI is
+  // missing, three links). A machine with more to fix grows the list inside its own capped scroll.
+  // Both rows are `decision`. The body paragraph is one sentence again and matches the frame.
   {
     frame: "9a CLI missing",
     key: "div/div",
     props: ["box.h"],
-    detail: "176 vs 136",
+    detail: "176 vs 319.75",
     decision: true,
-    why: "the text column without the command box, 40px taller than before the manual-path sentence — still short of the frame's command box and its buttons",
+    why: "the text column with the checklist where the frame draws the command box",
   },
   {
     frame: "9a CLI missing",
     key: "div",
     props: ["box.h"],
-    detail: "176 vs 136",
+    detail: "176 vs 319.75",
     decision: true,
-    why: "the row around it, the same 40px",
-  },
-  {
-    frame: "9a CLI missing",
-    key: "div/div/div[1]",
-    props: ["box.h"],
-    detail: "40 vs 60",
-    decision: true,
-    why: "the body paragraph itself: the manual-path sentence wraps to more lines than the two it replaced, which happened to fit the frame's 40px within tolerance. Not previously a separate row because it was not previously a mismatch",
+    why: "the row around it, the same height",
   },
 
   // ---- S10 · the light theme. FIVE ROWS, AND EVERY ONE IS A DARK ROW SEEN TWICE.
@@ -1752,17 +1743,11 @@ export const KNOWN_UNCLAIMED = [
     frame: "9a CLI missing",
     class: "decision",
     why:
-      "the copyable `sudo apt install proton-drive` box and the `Installation help` button, neither " +
-      "of which the app renders. The frozen frame draws a command this project cannot stand behind " +
-      "for every distribution, and DEVIATIONS \u00a7102 records the decision to send people to Proton's " +
-      "own instructions instead.",
-    keys: [
-      "div/div/div[2]",
-      "div/div/div[2]/span[0]",
-      "div/div/div[2]/span[1]",
-      "div/div/div[2]/button",
-      "div/div/div[3]/button[1]",
-    ],
+      "the copyable `sudo apt install proton-drive` box, which the app does not render (`Installation help` is " +
+      "drawn since DEVIATIONS \u00a7113). The frozen frame draws a command this project cannot stand behind " +
+      "for every distribution, and DEVIATIONS \u00a7102 records the decision to send people to Proton's own instructions, and \u00a7113 " +
+      "replaces the box with a checklist.",
+    keys: ["div/div/div[2]", "div/div/div[2]/span[0]", "div/div/div[2]/span[1]", "div/div/div[2]/button"],
   },
   {
     frame: "5a Checking",
