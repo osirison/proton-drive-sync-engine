@@ -109,7 +109,29 @@ debug info (Cargo's default), so `find-debuginfo` finds nothing to split out and
 fails on an empty `debugsourcefiles.list`. Producing real Rust debuginfo (`RUSTFLAGS=-Cdebuginfo=2`
 plus a working debugsource layout) is a reasonable follow-up but out of scope here.
 
-## Validation done in this environment
+## Validation
+
+### Built in CI's container (2026-10-13)
+
+The spec was built from the `git archive` tarball in a `fedora:43` container (the oldest release
+that is not end of life that day: Fedora 43 until 2026-12-09, 44 until 2027-06-02, from
+`https://endoflife.date/api/fedora.json`), with Fedora's own `rust` and `cargo` packages and
+`dnf builddep` on the spec. These are the steps of the `rpm` job of
+`.github/workflows/packages.yml`. **No defect was found in the spec**: it built as written and
+produced the source RPM, the main RPM and the `-nautilus` and `-nemo` RPMs.
+
+On the main RPM, `rpm -qp --requires` lists `curl`, `libsecret` and `hicolor-icon-theme` beside the
+generated sonames (`libgtk-layer-shell.so.0` among them), no `proton-drive`, and `rpm -qip` shows
+the prerequisite text with `https://proton.me/drive/download` and `proton-drive auth login`.
+`rpm -qlp` shows the three binaries, the user unit, the desktop entry, the metainfo, the icons and
+the three licence texts; the scriptlets enable nothing themselves (`systemd-update-helper
+install-user-units` applies the distribution's presets).
+
+The `%{?dist}` is part of the file names: `proton-drive-sync-engine-0.1.0-1.fc43.x86_64.rpm`. The
+workflow renames outputs with `packaging/name-assets.sh`, which replaces only the version
+(`0.1.0~beta.1` becomes `0.1.0-beta.1`) and leaves the release and `.fc43` alone.
+
+### Earlier, in the development sandbox
 
 This sandbox turned out to already have every devel package the spec required **at the time**
 installed (`webkit2gtk4.1-devel`, `libsoup3-devel`, `gtk3-devel`, `glib2-devel`,

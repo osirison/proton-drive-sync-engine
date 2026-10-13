@@ -94,7 +94,10 @@ dpkg-buildpackage -us -uc -b --build-profiles=pkg.proton-drive-sync-engine.rustu
 ```
 
 The same profile is `-P pkg.proton-drive-sync-engine.rustup` to `dpkg-checkbuilddeps` (it has no
-long form) and `apt-get build-dep` reads it from `DEB_BUILD_PROFILES`.
+long form), and `apt-get build-dep -o APT::Build-Profiles=pkg.proton-drive-sync-engine.rustup ./`
+installs everything except the two Rust entries (run from the tree with `./debian` in place; the
+workflow `.github/workflows/packages.yml` runs exactly this, then the `dpkg-buildpackage` line
+above).
 
 Only binary packages are built (`-b`). No source package is built or published: the source format
 is `3.0 (native)` with the revision `-1` in the version, and `dpkg-source -b` from dpkg 1.22
@@ -126,7 +129,37 @@ vendored/pre-fetched into the source package) — this tree does not attempt Deb
 archive-quality reproducibility/offline builds; it targets a locally-built,
 locally-installable `.deb`.
 
-## Validation actually run in this sandbox
+## Validation
+
+### First real build (2026-10-13)
+
+The tree was built for the first time in an `ubuntu:22.04` container, with the commands of
+"Building a real `.deb`" above and `rustup` stable (1.99.0) from `https://sh.rustup.rs`, from the
+`git archive` tarball (the source the release uses, not a checkout). The same steps are the `deb`
+job of `.github/workflows/packages.yml`, which runs on every pull request that touches
+`packaging/`.
+
+- `apt-get build-dep -o APT::Build-Profiles=pkg.proton-drive-sync-engine.rustup ./` installed every
+  `Build-Depends` entry except `cargo` and `rustc` (neither was installed from apt, which would
+  have been 1.75).
+- `dpkg-buildpackage -b -us -uc --build-profiles=pkg.proton-drive-sync-engine.rustup` produced
+  `proton-drive-sync-engine_0.1.0-1_amd64.deb`, `proton-sync-nautilus_0.1.0-1_all.deb` and
+  `proton-sync-nemo_0.1.0-1_all.deb`. **No defect was found in the tree**: it built as written.
+- `dpkg-deb -I` shows the `proton-drive` prerequisite and `https://proton.me/drive/download`,
+  `Recommends: libsecret-tools, curl`, and no relation naming the CLI. `dpkg-deb -c` shows the
+  three binaries, the user unit at `/usr/lib/systemd/user/proton-syncd.service`, and nothing under
+  `/etc/systemd`. The `postinst` has only the `deb-systemd-helper --user … was-enabled` block
+  `--no-enable` leaves, which only re-creates links the user had already enabled (the install
+  smoke test checks that a first install enables nothing).
+- With `libgtk-layer-shell-dev` removed after `apt-get build-dep`, the same
+  `dpkg-buildpackage` stops at once with `dpkg-checkbuilddeps: error: Unmet build dependencies:
+  libgtk-layer-shell-dev` and compiles nothing. The profile therefore skips only the two Rust
+  entries.
+
+Not yet checked here: that the jammy-built `.deb` installs on Ubuntu 24.04 and 26.04 and Debian
+12 and 13 (the t64 library renames; the install smoke tests decide), and `lintian`.
+
+### Earlier, in a Fedora sandbox (before the first real build)
 
 This is a Fedora sandbox with no `apt`/root, so none of the build-deps above (webkit2gtk
 dev headers, a Rust >= 1.90 toolchain, `lintian`) could

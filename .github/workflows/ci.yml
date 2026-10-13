@@ -7,6 +7,13 @@ on:
       - master
       - "copilot/**"
   pull_request:
+  # The tag workflow (release.yml) calls this file so a release runs the same suite as a pull
+  # request, not a copy of it. A called workflow sees the CALLER's event (a tag push, later), so
+  # nothing here may key on `github.event_name`, `github.ref` or a base branch: checked on
+  # 2026-10-13, no job, `if:` or `concurrency` group in this file does. Keep it that way, or a
+  # job would be skipped on the one run that gates a release. A caller can only narrow
+  # `permissions`, never widen them, and this file asks for `contents: read`.
+  workflow_call:
 
 permissions:
   contents: read

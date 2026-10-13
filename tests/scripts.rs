@@ -1416,3 +1416,787 @@ fn two_release_tags_on_one_metainfo_line_are_refused_and_nothing_changes() {
     );
     assert_eq!(before, contents(&tree));
 }
+
+// --- packaging/arch/aur.sh ---------------------------------------------------------------------
+//
+// The script writes the AUR tree from the repository's PKGBUILD. `makepkg` exists only on Arch, so
+// a stub that answers `--printsrcinfo` stands in; what these cases pin is the PKGBUILD the script
+// writes and what it refuses, not makepkg (the Arch job in `packages.yml` runs the real one).
+
+struct AurTree {
+    directory: tempfile::TempDir,
+    stubs: std::path::PathBuf,
+    assets: std::path::PathBuf,
+    upstream: String,
+}
+
+fn aur_tree() -> AurTree {
+    let directory = tempdir().expect("tempdir");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let arch = directory.path().join("tree/packaging/arch");
+    fs::create_dir_all(&arch).expect("tree");
+    for file in ["aur.sh", "PKGBUILD", "proton-drive-sync-engine.install"] {
+        fs::copy(root.join("packaging/arch").join(file), arch.join(file)).expect(file);
+    }
+    let pkgbuild = fs::read_to_string(arch.join("PKGBUILD")).expect("PKGBUILD");
+    let upstream = pkgbuild
+        .lines()
+        .find_map(|line| line.strip_prefix("_upstream_ver="))
+        .expect("_upstream_ver")
+        .to_owned();
+    let stubs = directory.path().join("tool-stubs");
+    fs::create_dir(&stubs).expect("stub directory");
+    let makepkg = stubs.join("makepkg");
+    fs::write(
+        &makepkg,
+        "#!/bin/sh\n[ \"$1\" = --printsrcinfo ] && { echo 'pkgbase = stub'; exit 0; }\nexit 1\n",
+    )
+    .expect("stub");
+    fs::set_permissions(&makepkg, fs::Permissions::from_mode(0o700)).expect("stub mode");
+    let assets = directory.path().join("assets");
+    fs::create_dir(&assets).expect("assets");
+    fs::write(
+        assets.join(format!("proton-drive-sync-engine-{upstream}.tar.gz")),
+        b"not really a tarball\n",
+    )
+    .expect("tarball");
+    AurTree {
+        directory,
+        stubs,
+        assets,
+        upstream,
+    }
+}
+
+fn aur_script(tree: &AurTree, args: &[&str]) -> std::process::Output {
+    let mut command = common::sandboxed("bash", tree.directory.path());
+    command
+        .arg(tree.directory.path().join("tree/packaging/arch/aur.sh"))
+        .args(args);
+    let path = std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".to_owned());
+    command.env(
+        "PATH",
+        common::path_with_stubs(&format!("{}:{path}", tree.stubs.display())),
+    );
+    common::run_other_tool(&mut command)
+}
+
+fn sha256_of(path: &Path) -> String {
+    let mut command = std::process::Command::new("sha256sum");
+    command.arg(path);
+    let output = common::run_other_tool(&mut command);
+    String::from_utf8(output.stdout)
+        .expect("utf-8")
+        .split_whitespace()
+        .next()
+        .expect("a sum")
+        .to_owned()
+}
+
+#[test]
+fn the_beta_tree_renames_the_package_and_carries_the_real_checksum() {
+    let tree = aur_tree();
+    let out = tree.directory.path().join("out");
+    let output = aur_script(
+        &tree,
+        &[
+            "beta",
+            tree.assets.to_str().expect("utf-8"),
+            out.to_str().expect("utf-8"),
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let generated = fs::read_to_string(out.join("PKGBUILD")).expect("PKGBUILD");
+    assert!(
+        generated.contains(
+            "\npkgname=proton-drive-sync-engine-beta\nprovides=(proton-drive-sync-engine)\nconflicts=(proton-drive-sync-engine)\n"
+        ),
+        "{generated}"
+    );
+    let sum = sha256_of(
+        &tree
+            .assets
+            .join(format!("proton-drive-sync-engine-{}.tar.gz", tree.upstream)),
+    );
+    assert!(
+        generated.contains(&format!("\nsha256sums=('{sum}')\n")),
+        "{generated}"
+    );
+    assert!(!generated.contains("sha256sums=('SKIP')"), "{generated}");
+    assert!(out.join("proton-drive-sync-engine.install").is_file());
+    assert_eq!(
+        fs::read_to_string(out.join(".SRCINFO")).expect(".SRCINFO"),
+        "pkgbase = stub\n"
+    );
+
+    // Nothing else differs: every other line of the repository PKGBUILD is still there, in order.
+    let original = fs::read_to_string(tree.directory.path().join("tree/packaging/arch/PKGBUILD"))
+        .expect("original");
+    let changed = |line: &&str| {
+        line.starts_with("pkgname=")
+            || line.starts_with("sha256sums=")
+            || line.starts_with("provides=")
+            || line.starts_with("conflicts=")
+    };
+    let kept = |text: &str| {
+        text.lines()
+            .filter(|line| !changed(line))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert_eq!(kept(&original), kept(&generated));
+}
+
+#[test]
+fn the_stable_tree_keeps_the_name_and_adds_no_provides() {
+    let tree = aur_tree();
+    let out = tree.directory.path().join("out");
+    let output = aur_script(
+        &tree,
+        &[
+            "stable",
+            tree.assets.to_str().expect("utf-8"),
+            out.to_str().expect("utf-8"),
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let generated = fs::read_to_string(out.join("PKGBUILD")).expect("PKGBUILD");
+    assert!(
+        generated.contains("\npkgname=proton-drive-sync-engine\n"),
+        "{generated}"
+    );
+    assert!(!generated.contains("\nprovides=") && !generated.contains("\nconflicts="));
+}
+
+#[test]
+fn the_aur_script_refuses_what_it_cannot_make_a_correct_tree_from() {
+    let tree = aur_tree();
+    let assets = tree.assets.to_str().expect("utf-8").to_owned();
+    let out = tree.directory.path().join("out");
+    let out = out.to_str().expect("utf-8").to_owned();
+    let refused = |args: &[&str], needle: &str| {
+        let output = aur_script(&tree, args);
+        assert!(!output.status.success(), "{args:?} was accepted");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(needle), "{args:?}: {stderr}");
+    };
+    refused(&["nightly", &assets, &out], "not stable or beta");
+    refused(&["beta", "/no/such/directory", &out], "does not exist");
+
+    // A SHA256SUMS that disagrees with the tarball it lists.
+    let tarball = format!("proton-drive-sync-engine-{}.tar.gz", tree.upstream);
+    fs::write(
+        tree.assets.join("SHA256SUMS"),
+        format!("{}  {tarball}\n", "0".repeat(64)),
+    )
+    .expect("SHA256SUMS");
+    refused(&["beta", &assets, &out], "SHA-256 is");
+    // A SHA256SUMS that does not list it at all.
+    fs::write(
+        tree.assets.join("SHA256SUMS"),
+        format!("{}  other.rpm\n", "0".repeat(64)),
+    )
+    .expect("SHA256SUMS");
+    refused(&["beta", &assets, &out], "does not list");
+    fs::remove_file(tree.assets.join("SHA256SUMS")).expect("remove");
+
+    // No tarball.
+    fs::remove_file(tree.assets.join(&tarball)).expect("remove");
+    refused(&["beta", &assets, &out], "is missing");
+
+    // An output directory that already holds something.
+    fs::write(tree.assets.join(&tarball), b"x").expect("tarball");
+    fs::create_dir(&out).expect("out");
+    fs::write(Path::new(&out).join("leftover"), b"x").expect("leftover");
+    refused(&["beta", &assets, &out], "not an empty directory");
+}
+
+#[test]
+fn a_sha256sums_that_agrees_with_the_tarball_is_accepted() {
+    let tree = aur_tree();
+    let tarball = format!("proton-drive-sync-engine-{}.tar.gz", tree.upstream);
+    let sum = sha256_of(&tree.assets.join(&tarball));
+    fs::write(
+        tree.assets.join("SHA256SUMS"),
+        format!("{sum}  {tarball}\n"),
+    )
+    .expect("SHA256SUMS");
+    let out = tree.directory.path().join("out");
+    let output = aur_script(
+        &tree,
+        &[
+            "beta",
+            tree.assets.to_str().expect("utf-8"),
+            out.to_str().expect("utf-8"),
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+// --- packaging/name-assets.sh ------------------------------------------------------------------
+//
+// The script reads a package's own version with `rpm`, `dpkg-deb` or `bsdtar`, asks
+// `version.sh spell` what that version must be, and renames the file to the upstream version. The
+// stubs below stand in for the three tools and print what the real ones printed for the packages
+// built in podman on 2026-10-13: `rpm -qp --qf '%{VERSION}'` prints the version with no newline,
+// `dpkg-deb -f <file> Version` prints `<version>-<revision>` and a newline, and `bsdtar -xOf <file>
+// .PKGINFO` prints the build metadata with a `pkgver = <pkgver>-<pkgrel>` line. A stub exits 64
+// for any other arguments, so a change to how the script calls a tool fails these cases. A "package"
+// here is a file whose content is the version its stub reports.
+
+struct NameTree {
+    directory: tempfile::TempDir,
+    stubs: std::path::PathBuf,
+    packages: std::path::PathBuf,
+}
+
+const RPM_STUB: &str = "#!/bin/sh\n\
+[ $# -eq 4 ] && [ \"$1\" = -qp ] && [ \"$2\" = --qf ] && [ \"$3\" = '%{VERSION}' ] || exit 64\n\
+printf '%s' \"$(cat \"$4\")\"\n";
+const DEB_STUB: &str = "#!/bin/sh\n\
+[ $# -eq 3 ] && [ \"$1\" = -f ] && [ \"$3\" = Version ] || exit 64\n\
+cat \"$2\"\n";
+const BSDTAR_STUB: &str = "#!/bin/sh\n\
+[ $# -eq 3 ] && [ \"$1\" = -xOf ] && [ \"$3\" = .PKGINFO ] || exit 64\n\
+printf '# Generated by makepkg 7.1.0\\n# using fakeroot version 1.37.2\\n'\n\
+printf 'pkgname = proton-drive-sync-engine\\npkgbase = proton-drive-sync-engine\\nxdata = pkgtype=pkg\\n'\n\
+printf 'pkgver = %s\\n' \"$(cat \"$2\")\"\n\
+printf 'pkgdesc = Two-way file sync between a local folder and Proton Drive\\nsize = 31895616\\narch = x86_64\\n'\n\
+printf 'depend = gcc-libs\\ndepend = curl\\noptdepend = nemo-python: emblems\\n'\n";
+
+fn name_tree() -> NameTree {
+    let directory = tempdir().expect("tempdir");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let packaging = directory.path().join("tree/packaging");
+    fs::create_dir_all(&packaging).expect("tree");
+    for file in ["name-assets.sh", "version.sh"] {
+        fs::copy(root.join("packaging").join(file), packaging.join(file)).expect(file);
+    }
+    let stubs = directory.path().join("tool-stubs");
+    fs::create_dir(&stubs).expect("stub directory");
+    for (name, text) in [
+        ("rpm", RPM_STUB),
+        ("dpkg-deb", DEB_STUB),
+        ("bsdtar", BSDTAR_STUB),
+    ] {
+        let path = stubs.join(name);
+        fs::write(&path, text).expect("stub");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).expect("stub mode");
+    }
+    let packages = directory.path().join("packages");
+    fs::create_dir(&packages).expect("packages");
+    NameTree {
+        directory,
+        stubs,
+        packages,
+    }
+}
+
+impl NameTree {
+    /// A package file called `name` whose stub reports `version` (with the newline `dpkg-deb`
+    /// prints and the others do not).
+    fn package(&self, name: &str, version: &str) -> std::path::PathBuf {
+        let path = self.packages.join(name);
+        let text = if name.ends_with(".deb") {
+            format!("{version}\n")
+        } else {
+            version.to_owned()
+        };
+        fs::write(&path, text).expect("package");
+        path
+    }
+
+    fn run(&self, upstream: &str, files: &[&Path]) -> std::process::Output {
+        let mut command = common::sandboxed("bash", self.directory.path());
+        command
+            .arg(self.directory.path().join("tree/packaging/name-assets.sh"))
+            .arg(upstream)
+            .args(files);
+        let path = std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".to_owned());
+        command.env(
+            "PATH",
+            common::path_with_stubs(&format!("{}:{path}", self.stubs.display())),
+        );
+        common::run_other_tool(&mut command)
+    }
+
+    fn names(&self) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(&self.packages)
+            .expect("read_dir")
+            .map(|entry| {
+                entry
+                    .expect("entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        names.sort();
+        names
+    }
+}
+
+#[test]
+fn each_format_is_renamed_to_the_upstream_version_and_keeps_its_revision() {
+    // (file as the tool names it, version the package reports, upstream, file after)
+    let cases = [
+        (
+            "proton-drive-sync-engine-0.1.0~beta.1-1.fc43.x86_64.rpm",
+            "0.1.0~beta.1",
+            "0.1.0-beta.1",
+            "proton-drive-sync-engine-0.1.0-beta.1-1.fc43.x86_64.rpm",
+        ),
+        (
+            "proton-drive-sync-engine-0.1.0-1.fc43.x86_64.rpm",
+            "0.1.0",
+            "0.1.0",
+            "proton-drive-sync-engine-0.1.0-1.fc43.x86_64.rpm",
+        ),
+        (
+            "proton-drive-sync-engine_0.1.0~beta.1-1_amd64.deb",
+            "0.1.0~beta.1-1",
+            "0.1.0-beta.1",
+            "proton-drive-sync-engine_0.1.0-beta.1-1_amd64.deb",
+        ),
+        (
+            "proton-drive-sync-engine_0.1.0-1_amd64.deb",
+            "0.1.0-1",
+            "0.1.0",
+            "proton-drive-sync-engine_0.1.0-1_amd64.deb",
+        ),
+        // A packaging-only rebuild raises the revision; the upstream part is what is compared.
+        (
+            "proton-drive-sync-engine_0.1.0~beta.1-2_amd64.deb",
+            "0.1.0~beta.1-2",
+            "0.1.0-beta.1",
+            "proton-drive-sync-engine_0.1.0-beta.1-2_amd64.deb",
+        ),
+        (
+            "proton-drive-sync-engine-0.1.0beta1-1-x86_64.pkg.tar.zst",
+            "0.1.0beta1-1",
+            "0.1.0-beta.1",
+            "proton-drive-sync-engine-0.1.0-beta.1-1-x86_64.pkg.tar.zst",
+        ),
+        (
+            "proton-drive-sync-engine-0.1.0-1-x86_64.pkg.tar.zst",
+            "0.1.0-1",
+            "0.1.0",
+            "proton-drive-sync-engine-0.1.0-1-x86_64.pkg.tar.zst",
+        ),
+    ];
+    for (file, reported, upstream, after) in cases {
+        let tree = name_tree();
+        let path = tree.package(file, reported);
+        let output = tree.run(upstream, &[&path]);
+        assert!(
+            output.status.success(),
+            "{file}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(tree.names(), [after], "{file}");
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), after);
+        assert!(!after.contains('~'));
+    }
+}
+
+#[test]
+fn several_files_are_renamed_in_one_call() {
+    let tree = name_tree();
+    let version = "0.1.0~beta.1";
+    let source = tree.package(
+        "proton-drive-sync-engine-0.1.0~beta.1-1.fc43.src.rpm",
+        version,
+    );
+    let main = tree.package(
+        "proton-drive-sync-engine-0.1.0~beta.1-1.fc43.x86_64.rpm",
+        version,
+    );
+    let nemo = tree.package(
+        "proton-drive-sync-engine-nemo-0.1.0~beta.1-1.fc43.noarch.rpm",
+        version,
+    );
+    let output = tree.run("0.1.0-beta.1", &[&source, &main, &nemo]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        tree.names(),
+        [
+            "proton-drive-sync-engine-0.1.0-beta.1-1.fc43.src.rpm",
+            "proton-drive-sync-engine-0.1.0-beta.1-1.fc43.x86_64.rpm",
+            "proton-drive-sync-engine-nemo-0.1.0-beta.1-1.fc43.noarch.rpm",
+        ]
+    );
+}
+
+#[test]
+fn name_assets_refuses_what_it_should_not_rename() {
+    let tree = name_tree();
+    let path = tree.package("proton-drive-sync-engine-0.1.0-1.fc43.x86_64.rpm", "0.1.0");
+    let deb = tree.package("proton-drive-sync-engine_0.1.0-1_amd64.deb", "0.1.0-1");
+    let arch = tree.package(
+        "proton-drive-sync-engine-0.1.0-1-x86_64.pkg.tar.zst",
+        "0.1.0-1",
+    );
+    let refused = |upstream: &str, files: &[&Path], needle: &str| {
+        let output = tree.run(upstream, files);
+        assert!(
+            !output.status.success(),
+            "{upstream} {files:?} was accepted"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(needle), "{upstream} {files:?}: {stderr}");
+    };
+    // An upstream version version.sh would not accept.
+    refused("garbage name", &[&path], "not an upstream version");
+    refused("0.1.0-preview.1", &[&path], "not an upstream version");
+    // A package that is not that version: another release, or a pre-release spelled as the tag.
+    refused(
+        "0.2.0",
+        &[&path],
+        "says version '0.1.0', but 0.2.0 is '0.2.0'",
+    );
+    refused(
+        "0.1.0-beta.1",
+        &[&path],
+        "but 0.1.0-beta.1 is '0.1.0~beta.1' for a .rpm package",
+    );
+    refused("0.2.0", &[&deb], "for a .deb package");
+    refused(
+        "0.1.0-beta.1",
+        &[&arch],
+        "is '0.1.0beta1' for a .pkg.tar.zst package",
+    );
+    // A file that is not a package, a missing file, a name without the version, no arguments.
+    let other = tree.packages.join("notes.txt");
+    fs::write(&other, "x").expect("write");
+    refused("0.1.0", &[&other], "not an .rpm, .deb or .pkg.tar.zst");
+    refused(
+        "0.1.0",
+        &[&tree.packages.join("absent.rpm")],
+        "is not a file",
+    );
+    let nameless = tree.package("proton.rpm", "0.1.0");
+    refused(
+        "0.1.0",
+        &[&nameless],
+        "does not contain the package version",
+    );
+    let usage = tree.run("0.1.0", &[]);
+    assert!(!usage.status.success());
+    assert!(String::from_utf8_lossy(&usage.stderr).contains("usage:"));
+    // None of the refusals renamed a file.
+    assert_eq!(
+        tree.names(),
+        [
+            "notes.txt",
+            "proton-drive-sync-engine-0.1.0-1-x86_64.pkg.tar.zst",
+            "proton-drive-sync-engine-0.1.0-1.fc43.x86_64.rpm",
+            "proton-drive-sync-engine_0.1.0-1_amd64.deb",
+            "proton.rpm",
+        ]
+    );
+}
+
+#[test]
+fn version_spell_prints_each_format_and_refuses_what_it_cannot_spell() {
+    let directory = tempdir().expect("tempdir");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for (format, upstream, spelled) in [
+        ("rpm", "0.1.0-beta.1", "0.1.0~beta.1"),
+        ("deb", "0.1.0-beta.1", "0.1.0~beta.1-1"),
+        ("arch", "0.1.0-beta.1", "0.1.0beta1"),
+        ("rpm", "0.1.0", "0.1.0"),
+        ("deb", "0.1.0", "0.1.0-1"),
+        ("arch", "0.1.0", "0.1.0"),
+    ] {
+        let output = version_script(root, directory.path(), None, &["spell", format, upstream]);
+        assert!(output.status.success(), "{format} {upstream}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            format!("{spelled}\n")
+        );
+    }
+    for args in [
+        ["spell", "rpm", "garbage"],
+        ["spell", "rpm", "0.1.0-preview.1"],
+        ["spell", "snap", "0.1.0"],
+    ] {
+        let output = version_script(root, directory.path(), None, &args);
+        assert!(!output.status.success(), "{args:?} was accepted");
+        assert!(output.stdout.is_empty());
+    }
+}
+
+#[test]
+fn a_failed_srcinfo_leaves_no_half_written_tree_and_a_rerun_works() {
+    let tree = aur_tree();
+    let out = tree.directory.path().join("out");
+    let args = [
+        "beta",
+        tree.assets.to_str().expect("utf-8"),
+        out.to_str().expect("utf-8"),
+    ];
+    let makepkg = tree.stubs.join("makepkg");
+    let working = fs::read_to_string(&makepkg).expect("stub");
+    fs::write(&makepkg, "#!/bin/sh\necho 'makepkg: broken' >&2\nexit 1\n").expect("failing stub");
+
+    let failed = aur_script(&tree, &args);
+    assert!(!failed.status.success());
+    assert!(
+        String::from_utf8_lossy(&failed.stderr).contains("makepkg --printsrcinfo failed"),
+        "{}",
+        String::from_utf8_lossy(&failed.stderr)
+    );
+    assert!(!out.exists(), "a half-written tree was left at the out-dir");
+    let leftovers: Vec<_> = fs::read_dir(tree.directory.path())
+        .expect("read_dir")
+        .map(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .filter(|name| name.contains("partial"))
+        .collect();
+    assert!(leftovers.is_empty(), "staging left behind: {leftovers:?}");
+
+    // An empty directory the caller made first is still there and still usable.
+    fs::create_dir(&out).expect("out");
+    assert!(!aur_script(&tree, &args).status.success());
+    assert!(out.is_dir() && fs::read_dir(&out).expect("read_dir").next().is_none());
+
+    // The same command works once makepkg does, with no clean-up in between.
+    fs::write(&makepkg, working).expect("working stub");
+    let again = aur_script(&tree, &args);
+    assert!(
+        again.status.success(),
+        "{}",
+        String::from_utf8_lossy(&again.stderr)
+    );
+    assert!(out.join("PKGBUILD").is_file() && out.join(".SRCINFO").is_file());
+    let mode = fs::metadata(&out).expect("metadata").permissions().mode() & 0o777;
+    assert_eq!(mode, 0o755);
+}
+
+#[test]
+fn name_assets_compares_versions_exactly_not_by_prefix() {
+    let tree = name_tree();
+    // beta10 starts with beta1, and 0.1.0.1 starts with 0.1.0: neither is the version asked for.
+    let arch = tree.package(
+        "proton-drive-sync-engine-0.1.0beta10-1-x86_64.pkg.tar.zst",
+        "0.1.0beta10-1",
+    );
+    let rpm = tree.package(
+        "proton-drive-sync-engine-0.1.0~beta.10-1.fc43.x86_64.rpm",
+        "0.1.0~beta.10",
+    );
+    let longer = tree.package(
+        "proton-drive-sync-engine-0.1.0.1-1.fc43.x86_64.rpm",
+        "0.1.0.1",
+    );
+    let deb = tree.package(
+        "proton-drive-sync-engine_0.1.0~beta.10-1_amd64.deb",
+        "0.1.0~beta.10-1",
+    );
+    for (file, upstream) in [
+        (&arch, "0.1.0-beta.1"),
+        (&rpm, "0.1.0-beta.1"),
+        (&longer, "0.1.0"),
+        (&deb, "0.1.0-beta.1"),
+    ] {
+        let output = tree.run(upstream, &[file]);
+        assert!(
+            !output.status.success(),
+            "{file:?} was renamed for {upstream}"
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("the package says version"),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    // A pkgrel is a number, optionally "<number>.<number>". Anything else after the last "-" is
+    // not a pkgrel, and the package is refused as unreadable instead of being guessed at.
+    for (reported, accepted) in [
+        ("0.1.0beta1-1", true),
+        ("0.1.0beta1-12", true),
+        ("0.1.0beta1-1.1", true),
+        ("0.1.0beta1-1a", false),
+        ("0.1.0beta1-x", false),
+        ("0.1.0beta1-", false),
+        ("0.1.0beta1", false),
+        ("0.1.0beta1-1.", false),
+    ] {
+        let tree = name_tree();
+        let name = format!("proton-drive-sync-engine-{reported}-x86_64.pkg.tar.zst");
+        let package = tree.package(&name, reported);
+        let output = tree.run("0.1.0-beta.1", &[&package]);
+        assert_eq!(output.status.success(), accepted, "pkgver {reported}");
+        if !accepted {
+            assert!(
+                String::from_utf8_lossy(&output.stderr)
+                    .contains("could not read the package version"),
+                "pkgver {reported}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+}
+
+#[test]
+fn a_bad_file_last_in_the_list_renames_nothing() {
+    let tree = name_tree();
+    let version = "0.1.0~beta.1";
+    let first = tree.package(
+        "proton-drive-sync-engine-0.1.0~beta.1-1.fc43.src.rpm",
+        version,
+    );
+    let second = tree.package(
+        "proton-drive-sync-engine-0.1.0~beta.1-1.fc43.x86_64.rpm",
+        version,
+    );
+    let wrong = tree.package(
+        "proton-drive-sync-engine-nemo-0.2.0-1.fc43.noarch.rpm",
+        "0.2.0",
+    );
+    let output = tree.run("0.1.0-beta.1", &[&first, &second, &wrong]);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("the package says version '0.2.0'"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "names were printed before the refusal"
+    );
+    assert_eq!(
+        tree.names(),
+        [
+            "proton-drive-sync-engine-0.1.0~beta.1-1.fc43.src.rpm",
+            "proton-drive-sync-engine-0.1.0~beta.1-1.fc43.x86_64.rpm",
+            "proton-drive-sync-engine-nemo-0.2.0-1.fc43.noarch.rpm",
+        ]
+    );
+
+    // A rename that would overwrite a file already there is refused up front too.
+    fs::remove_file(&wrong).expect("remove");
+    fs::write(
+        tree.packages
+            .join("proton-drive-sync-engine-0.1.0-beta.1-1.fc43.x86_64.rpm"),
+        "taken",
+    )
+    .expect("taken");
+    let clash = tree.run("0.1.0-beta.1", &[&first, &second]);
+    assert!(!clash.status.success());
+    assert!(String::from_utf8_lossy(&clash.stderr).contains("refusing to overwrite"));
+    assert!(first.exists() && second.exists());
+}
+
+fn aur_script_in(tree: &AurTree, cwd: &Path, args: &[&str]) -> std::process::Output {
+    let mut command = common::sandboxed("bash", tree.directory.path());
+    command
+        .arg(tree.directory.path().join("tree/packaging/arch/aur.sh"))
+        .args(args)
+        .current_dir(cwd);
+    let path = std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".to_owned());
+    command.env(
+        "PATH",
+        common::path_with_stubs(&format!("{}:{path}", tree.stubs.display())),
+    );
+    common::run_other_tool(&mut command)
+}
+
+#[test]
+fn the_current_directory_can_be_the_out_dir() {
+    let tree = aur_tree();
+    let cwd = tree.directory.path().join("work");
+    fs::create_dir(&cwd).expect("cwd");
+    fs::set_permissions(&cwd, fs::Permissions::from_mode(0o700)).expect("mode");
+    let output = aur_script_in(
+        &tree,
+        &cwd,
+        &["beta", tree.assets.to_str().expect("utf-8"), "."],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut names: Vec<String> = fs::read_dir(&cwd)
+        .expect("read_dir")
+        .map(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        [".SRCINFO", "PKGBUILD", "proton-drive-sync-engine.install"]
+    );
+    // A directory the caller made keeps its own mode.
+    let mode = fs::metadata(&cwd).expect("metadata").permissions().mode() & 0o777;
+    assert_eq!(mode, 0o700);
+}
+
+#[test]
+fn a_symlink_to_an_empty_directory_can_be_the_out_dir() {
+    let tree = aur_tree();
+    let target = tree.directory.path().join("target");
+    fs::create_dir(&target).expect("target");
+    let link = tree.directory.path().join("link");
+    std::os::unix::fs::symlink(&target, &link).expect("symlink");
+    let output = aur_script(
+        &tree,
+        &[
+            "stable",
+            tree.assets.to_str().expect("utf-8"),
+            link.to_str().expect("utf-8"),
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        fs::symlink_metadata(&link)
+            .expect("link")
+            .file_type()
+            .is_symlink()
+    );
+    assert!(target.join("PKGBUILD").is_file() && target.join(".SRCINFO").is_file());
+    let leftovers: Vec<_> = fs::read_dir(tree.directory.path())
+        .expect("read_dir")
+        .map(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .filter(|name| name.contains("partial"))
+        .collect();
+    assert!(leftovers.is_empty(), "staging left behind: {leftovers:?}");
+}

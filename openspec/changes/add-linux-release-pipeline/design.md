@@ -207,7 +207,12 @@ release runs the same suite rather than a copy of it.
 
 **Pull-request filter.** The workflow always runs. A first job compares the pull request's
 changed files with the filter in the `linux-packages` spec, and the build and smoke jobs carry an
-`if:` on its answer.
+`if:` on its answer. The filter is: `packaging/`, `Cargo.lock`, any `Cargo.toml`,
+`gui/src-tauri/tauri.conf.json`, `packages.yml` itself, and the files outside `packaging/` that the
+three trees install or read (`LICENSE`, `README.md`, `examples/proton-sync.toml`,
+`gui/src/fonts/OFL-*.txt`; found by reading the spec's `%license`/`%doc`, the PKGBUILD's `install`
+lines and the debian `copyright`). It leaves out `src/` and the GUI sources on purpose: the CI
+suite builds them, and a package build per source change would cost far more than it finds.
 
 **The required check is one aggregator job, `packages-ok`.** It has `needs:` on every build and
 smoke job and `if: always()`. It fails if any of them failed or was cancelled, and passes when

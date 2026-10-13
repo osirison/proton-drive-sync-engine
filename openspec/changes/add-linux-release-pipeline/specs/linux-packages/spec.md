@@ -171,14 +171,24 @@ library `proton-sync-gui` links resolves, and that `proton-sync doctor` reports 
 ### Requirement: Packaging changes are built before they merge
 
 A pull request that changes anything under `packaging/`, `Cargo.lock`, any `Cargo.toml`,
-`gui/src-tauri/tauri.conf.json` or the package-build workflow SHALL build all three packages and
-run their install smoke tests. A pull request that changes none of these SHALL report the same
-check as passed without building, so the check can be required.
+`gui/src-tauri/tauri.conf.json`, the package-build workflow, or a file outside `packaging/` that
+the packages install SHALL build all three packages and run their install smoke tests. A pull
+request that changes none of these SHALL report the same check as passed without building, so the
+check can be required.
 
 #### Scenario: A control-file edit is built
 
 - **WHEN** a pull request edits `packaging/debian/control`
 - **THEN** the RPM, deb and Arch packages are built and smoke-tested on that pull request
+
+#### Scenario: Removing an installed file outside packaging/ is built
+
+- **WHEN** a pull request deletes `examples/proton-sync.toml`
+- **THEN** the RPM, deb and Arch packages are built on that pull request, and the build fails
+- **AND** the same holds for `LICENSE`, `README.md` and the licence texts `gui/src/fonts/OFL-*.txt`,
+  which the packages also install
+- **AND** a change to the Rust or GUI sources alone does not start the package builds, because the
+  CI suite builds them
 
 #### Scenario: A docs-only change skips the build
 

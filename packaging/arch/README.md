@@ -18,6 +18,7 @@
 | `PKGBUILD` | Package build recipe |
 | `proton-drive-sync-engine.install` | post_install/post_upgrade/post_remove scriptlets (icon cache, desktop database, AppStream refresh; `post_install` also prints the `proton-drive` prerequisite note) |
 | `proton-syncd.service` | Packaged systemd user unit (`ExecStart=/usr/bin/proton-syncd`) |
+| `aur.sh` | Writes the AUR tree (`PKGBUILD` with the real checksum, install script, `.SRCINFO`) for the `stable` or `beta` package; see "Building" |
 
 ## Design choices / deviations worth flagging
 
@@ -52,6 +53,25 @@
 - **`sha256sums=('SKIP')` in the repository copy.** The PKGBUILD is inside the tarball it would
   name, so the tarball's own checksum cannot be written into it. The copy published to the AUR
   gets the tarball's real SHA-256 in place of `'SKIP'`.
+- **`options=('!lto' '!debug')`.** Found by the first real build. makepkg's default LTO puts
+  `-flto` in the C flags, so the SQLite that `libsqlite3-sys` compiles is built as GCC LTO objects
+  that rustc's linker (`ld.lld`) cannot read: linking `proton-syncd` failed with
+  `undefined symbol: sqlite3_*`. Without `!debug`, makepkg also produced a second,
+  `-debug` package of dangling symlinks (the release profile has no debug info), whose symlinks
+  `namcap` reports as errors; the build must produce one package.
+- **`python` is an `optdepends`, and `dbus` is in `depends`.** `namcap` reports the Nautilus/Nemo
+  extension scripts as needing `python` (`import sqlite3`): as an error when it is in neither list,
+  as `W: Dependency python detected but optional` when it is an optdepend. The extensions run only
+  inside the two file managers, whose bindings depend on python, so a hard dependency would put it
+  on every headless install. Measured on the built package with its `.PKGINFO` edited (first
+  build, then `namcap`): python in `depends` gives no error; python in neither list gives
+  `E: Dependency python detected and not included` and, because python had been supplying it,
+  `E: Dependency dbus detected and not included (libraries ['usr/lib/libdbus-1.so.3'] needed in
+  files ['usr/bin/proton-sync-gui'])`; `dbus` in `depends` plus python as an optdepend gives the
+  `W` line above and no error. `python-nautilus` is not an Arch package (`pacman -Si` says so);
+  `nautilus-python` and `nemo-python` are.
+- **No `git` in `makedepends`.** The source is a tarball and nothing in the build runs git; a
+  build in a clean `archlinux:base-devel` container (which has no git) passes without it.
 - **`prepare()` runs `cargo fetch --locked`** so `build()` can use `--frozen` (fully offline)
   inside makepkg's chroot, per the Arch Rust packaging guidelines pattern.
 
@@ -68,18 +88,22 @@ and network access to download the release tarball. To build without the downloa
 tarball beside the PKGBUILD under the name `proton-drive-sync-engine-<upstream version>.tar.gz`;
 makepkg uses a file of that name instead of downloading it.
 
-To publish to the AUR, regenerate the metadata file from the directory that holds the tarball's
-real checksum:
+To make the AUR tree, run `aur.sh` on a directory that holds the release tarball (and, for a
+release, its `SHA256SUMS`), as an ordinary user on Arch:
 
 ```sh
-makepkg --printsrcinfo > .SRCINFO
+packaging/arch/aur.sh beta  ./assets ./aur-beta      # proton-drive-sync-engine-beta
+packaging/arch/aur.sh stable ./assets ./aur-stable   # proton-drive-sync-engine
 ```
 
-The checksum is the only difference between this PKGBUILD and the AUR one:
-
-```sh
-updpkgsums            # from pacman-contrib; rewrites sha256sums=('SKIP') with the real hash
-```
+It writes `PKGBUILD`, the install script and `.SRCINFO` (from `makepkg --printsrcinfo`) to the
+third argument. The tarball's real SHA-256 replaces `'SKIP'`; if `SHA256SUMS` is there it must
+list the tarball with the same sum, or the script stops. `beta` also sets
+`pkgname=proton-drive-sync-engine-beta` with `provides` and `conflicts` naming
+`proton-drive-sync-engine`. Nothing else differs from this PKGBUILD. The `arch` job of
+`.github/workflows/packages.yml` runs it for `beta` on every build and checks the three results:
+the fields above, `.SRCINFO` equal to a fresh `makepkg --printsrcinfo`, and `makepkg
+--verifysource` accepting the checksum against the tarball.
 
 ## Version
 
@@ -93,27 +117,42 @@ only**, so run `git fetch --tags` first; when it cannot look (git missing, or th
 top level of a git repository) it says so on stderr and goes on. `pkgrel` is reset to 1 only when
 the upstream version changes. `SOURCE_DATE_EPOCH` fixes the date it writes.
 
-## Validation performed here
+## Validation
 
-- `bash -n PKGBUILD` and `bash -n proton-drive-sync-engine.install` — **passed** (syntax only).
-- `namcap PKGBUILD` — **could not run**: `namcap` is an Arch-only static analysis tool and this
-  sandbox is Fedora-based; it isn't installed and can't reasonably be added here. Run it after
-  a real `makepkg` build on Arch (or in an `archlinux` container):
-  ```sh
-  namcap PKGBUILD
-  namcap *.pkg.tar.zst    # after a successful makepkg build
-  ```
-- A full `makepkg -si` build — **could not run**: it needs the Tauri build dependencies
-  (webkit2gtk-4.1 + libsoup3 + gtk3 + glib2 dev headers via pkg-config), a Rust edition-2024
-  toolchain, and network access to clone the (not-yet-existing) `v0.1.0` tag — none of which are
-  available/appropriate in this non-Arch sandbox. Not faked; see "Building" above for the real
-  command and prerequisites.
+### First real build (2026-10-13)
 
-  That parenthesis is the record of what the attempt needed then, and it is no longer the
-  whole list: `gtk-layer-shell` was added to `depends` and `makedepends` afterwards
-  (#351/#370 — the tray panel becomes a layer surface where the compositor supports one),
-  so a real `makepkg -si` on Arch needs it too. Arch ships the headers in the same package,
-  so there is no separate `-devel` to add alongside it.
+The PKGBUILD was built for the first time in `archlinux:base-devel` (`rust` from the
+repository), as an unprivileged user with `makepkg -s --noconfirm`, from the `git archive`
+tarball beside the PKGBUILD. The same steps are the `arch` job of
+`.github/workflows/packages.yml`. The first build **failed** and three things were fixed in the
+PKGBUILD, each described under "Design choices" above:
+
+| Found by | Symptom | Fix |
+| --- | --- | --- |
+| `makepkg` | link of `proton-syncd` failed: `ld.lld: error: undefined symbol: sqlite3_*` | `options=('!lto')` |
+| `makepkg` | two packages: the main one and `proton-drive-sync-engine-debug` | `options=('!debug')` |
+| `namcap` on the package | `E: Dependency python detected and not included` (Nautilus/Nemo scripts) | `python` as an `optdepends` and `dbus` in `depends` (first fix was `python` in `depends`) |
+
+A fourth item was cleaned up, not a failure: `git` was in `makedepends` and nothing needs it.
+
+After the fixes: one `proton-drive-sync-engine-0.1.0-1-x86_64.pkg.tar.zst`; `namcap PKGBUILD` and
+`namcap` on the package report warnings only (make-dependencies already in `depends`, the
+Python-binding modules the optdepends provide, the install script running tools that hooks
+provide, unused `ld-linux`); `pacman -Qip` shows the `proton-drive` prerequisite in the description
+and `curl`, `libsecret` and `hicolor-icon-theme` among `Depends On`.
+
+`aur.sh beta` and `aur.sh stable` were run on the same tarball: the generated `PKGBUILD` has the
+fields above, `makepkg --printsrcinfo` equals the generated `.SRCINFO`, and `makepkg
+--verifysource` passes against the tarball and fails (`FAILED`) after the checksum is changed.
+
+Not yet checked here: `pacman -U` of the package (the install note is task 2.7 of the release
+pipeline change) and the install smoke test.
+
+### Earlier, before the first real build
+
+- `bash -n PKGBUILD` and `bash -n proton-drive-sync-engine.install` passed (syntax only). The
+  sandbox was Fedora-based, so `namcap` and `makepkg` could not run there; the first real build
+  above superseded this.
 
 ## Post-install
 
