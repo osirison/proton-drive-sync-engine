@@ -163,8 +163,8 @@
       RPM tree turn up, in the trees themselves. Record each fix in that tree's README's validation
       section. Verify: all build and smoke jobs are green on the pull request
 
-      Done: the Arch tree needed `!lto`, `!debug` and `python` in `depends`, and lost `git` from
-      `makedepends`; the deb and RPM trees built as written. Each is in that tree's README. Left:
+      Done: the Arch tree needed `!lto` and `!debug`, `dbus` in `depends` with `python` as an
+      `optdepends` (namcap), and lost `git` from `makedepends`; the deb and RPM trees built as written. Each is in that tree's README. Left:
       the smoke jobs green (3.7).
 - [ ] 3.10 After the separate change `add-dependency-check` is merged, add the doctor check to
       `packaging/smoke-test.sh` (design D13): with no `proton-drive` on `PATH` and no daemon

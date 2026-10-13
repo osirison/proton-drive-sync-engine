@@ -113,11 +113,17 @@ cp "$install_script" "$stage/"
 (cd "$stage" && makepkg --printsrcinfo >.SRCINFO) ||
   die "makepkg --printsrcinfo failed on the generated PKGBUILD (nothing was written to $out)"
 
-# mktemp makes the directory private; the tree is an ordinary one.
-chmod 755 "$stage"
 if [[ -d "$out" ]]; then
-  rmdir "$out"
+  # An existing empty directory (or a link to one, or "."): keep it, with its mode, and move the
+  # staged entries into it, the dot-file .SRCINFO included.
+  shopt -s dotglob
+  mv -- "$stage"/* "$out"/
+  rmdir "$stage"
+else
+  # mktemp makes the directory private; the tree is an ordinary one. -T never moves the staging
+  # directory INTO something that appeared at $out since the check above: it fails instead.
+  chmod 755 "$stage"
+  mv -T -- "$stage" "$out"
 fi
-mv -- "$stage" "$out"
 
 echo "aur.sh: wrote $out ($name $upstream, sha256 $actual)" >&2
