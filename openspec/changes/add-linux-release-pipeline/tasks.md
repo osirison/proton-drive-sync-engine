@@ -86,7 +86,7 @@
 - [x] 2.5 Give the metainfo `<release>` entry the shape `version.sh` writes. Verify:
       `appstreamcli validate --no-net` on the metainfo reports no error (run it in a container if
       the host shell refuses it)
-- [ ] 2.6 Rewrite the CLI text in the three trees (design D15):
+- [x] 2.6 Rewrite the CLI text in the three trees (design D15):
       - the RPM `%description`, the `debian/control` `Description` of the main package, and the
         PKGBUILD `pkgdesc` state that Proton's `proton-drive` CLI must be installed and signed in
         first; the two long descriptions give `https://proton.me/drive/download` and
@@ -108,20 +108,20 @@
 
 ## 3. Package build workflow and the pull-request gate
 
-- [ ] 3.1 Add `workflow_call` to `ci.yml`, leaving its `push`/`pull_request` triggers unchanged.
+- [x] 3.1 Add `workflow_call` to `ci.yml`, leaving its `push`/`pull_request` triggers unchanged.
       Verify: an ordinary pull request still runs `rust`, `frontend` and `fidelity`
-- [ ] 3.2 Create `.github/workflows/packages.yml` with its tarball job (design D5): `git archive`
+- [x] 3.2 Create `.github/workflows/packages.yml` with its tarball job (design D5): `git archive`
       with `--prefix=proton-drive-sync-engine-<upstream>/`, piped through `gzip -n`, uploaded as
       an artifact. Verify in the job: the tarball's file list equals
       `git ls-tree -r --name-only HEAD` under that one prefix
-- [ ] 3.3 Add the RPM job in `fedora:<oldest non-EOL>`:
+- [x] 3.3 Add the RPM job in `fedora:<oldest non-EOL>`:
       - set the tag in one workflow variable;
       - run `dnf builddep` on the spec, then `rpmbuild -ba` from the tarball;
       - rename the outputs to upstream-version names.
 
       Verify: the job emits the source RPM plus the main, `-nautilus` and `-nemo` RPMs, and
       `rpm -qp --requires` on the main RPM lists `curl`, `libsecret` and `hicolor-icon-theme`
-- [ ] 3.4 Add the deb job in `ubuntu:22.04`:
+- [x] 3.4 Add the deb job in `ubuntu:22.04`:
       - install rustup (minimal, `stable`);
       - run `apt-get build-dep` with the profile;
       - run `dpkg-buildpackage -b -us -uc` with the profile, using the tree unpacked from the
@@ -130,10 +130,10 @@
 
       Verify: three `.deb` files are produced, and a one-off run with `libgtk-layer-shell-dev`
       removed fails before compiling, naming it
-- [ ] 3.5 Add the Arch job in `archlinux:base-devel`. It runs `makepkg -s` as an unprivileged user,
+- [x] 3.5 Add the Arch job in `archlinux:base-devel`. It runs `makepkg -s` as an unprivileged user,
       with the tarball beside the PKGBUILD. Verify: one `.pkg.tar.zst` is produced, and
       `namcap` on it reports no error-level finding
-- [ ] 3.6 Write `packaging/arch/aur.sh <stable|beta> <assets-dir>` (design D8) and run it in the Arch
+- [x] 3.6 Write `packaging/arch/aur.sh <stable|beta> <assets-dir>` (design D8) and run it in the Arch
       job for `beta`. Verify:
       - the generated `PKGBUILD` has `pkgname=proton-drive-sync-engine-beta`, `provides` and
         `conflicts`, and the tarball's real SHA-256;
@@ -155,9 +155,17 @@
         and the pull request is mergeable;
       - one touching `packaging/debian/control` runs every build and smoke job, and
         `packages-ok` fails when one of them is made to fail
+
+      Done: the triggers, the `changes` job, the build jobs' gate and `packages-ok` are in
+      `packages.yml`, and `packages-ok` passes on a pull request that builds (PR #473). Left: the
+      smoke jobs in `needs`, the two verifying pull requests above, and branch protection.
 - [ ] 3.9 Fix whatever the first real builds of the deb and Arch trees (never built before) and the
       RPM tree turn up, in the trees themselves. Record each fix in that tree's README's validation
       section. Verify: all build and smoke jobs are green on the pull request
+
+      Done: the Arch tree needed `!lto`, `!debug` and `python` in `depends`, and lost `git` from
+      `makedepends`; the deb and RPM trees built as written. Each is in that tree's README. Left:
+      the smoke jobs green (3.7).
 - [ ] 3.10 After the separate change `add-dependency-check` is merged, add the doctor check to
       `packaging/smoke-test.sh` (design D13): with no `proton-drive` on `PATH` and no daemon
       running, `proton-sync doctor` must name `proton-drive` as missing, print
