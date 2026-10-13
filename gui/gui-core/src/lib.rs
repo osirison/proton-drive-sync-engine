@@ -30,6 +30,7 @@
 pub mod config_io;
 pub mod conflicts;
 pub mod distro;
+pub mod doctor;
 pub mod folder_probe;
 pub mod free_space;
 pub mod gui_prefs;

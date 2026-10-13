@@ -30,6 +30,19 @@ use std::sync::Mutex;
 const KEYRING_SERVICE: &str = "ch.proton.drive/drive-sdk-cli";
 const KEYRING_ACCOUNT: &str = "auth-session";
 
+/// The arguments of `secret-tool` that look the CLI's session entry up. The one spelling of the
+/// coordinates: [`read_keyring_session`] reads the secret with it and the `doctor` sign-in check
+/// asks only whether the entry exists (stdout discarded).
+pub(crate) fn keyring_lookup_args() -> [&'static str; 5] {
+    [
+        "lookup",
+        "service",
+        KEYRING_SERVICE,
+        "account",
+        KEYRING_ACCOUNT,
+    ]
+}
+
 /// The subset of the CLI's session entry that authenticating an events request needs. The
 /// entry also holds key-unlock material (`userKeyPassword`/`cachePassword`); detection is
 /// auth-only, so those are intentionally ignored here.
@@ -85,13 +98,7 @@ impl SessionProvider for CliKeyringSession {
 
 fn read_keyring_session(secret_tool: &Path) -> AppResult<SessionTokens> {
     let output = Command::new(secret_tool)
-        .args([
-            "lookup",
-            "service",
-            KEYRING_SERVICE,
-            "account",
-            KEYRING_ACCOUNT,
-        ])
+        .args(keyring_lookup_args())
         .output()
         .map_err(|error| boxed_error(format!("failed to run secret-tool: {error}")))?;
     if !output.status.success() {
@@ -334,6 +341,20 @@ mod tests {
         let error = parse_session_secret(r#"{"session":{"uid":"u"}}"#)
             .expect_err("missing access token must error");
         assert!(error.to_string().contains("session.accessToken"));
+    }
+
+    #[test]
+    fn the_keyring_lookup_arguments_are_pinned() {
+        assert_eq!(
+            keyring_lookup_args(),
+            [
+                "lookup",
+                "service",
+                "ch.proton.drive/drive-sdk-cli",
+                "account",
+                "auth-session"
+            ]
+        );
     }
 
     #[test]

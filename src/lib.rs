@@ -10,6 +10,7 @@ pub mod ancestor;
 pub mod config;
 pub mod daemon;
 pub mod dirconfig;
+pub mod doctor;
 mod due_queue;
 pub mod events;
 pub mod index;

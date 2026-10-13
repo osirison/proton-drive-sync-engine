@@ -127,6 +127,7 @@ pub fn run() {
             // does not expose. Added by the C-tasks, not by the screens that consume them.
             commands::free_space,
             commands::check_cli,
+            commands::open_help_link,
             commands::skip_rule_usage,
             commands::probe_folder,
             commands::check_proton_folder_listed,

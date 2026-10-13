@@ -19,6 +19,10 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// Poll cadence while `syncnow` waits for the scheduled pass to finish.
 const WAIT_POLL_INTERVAL: Duration = Duration::from_millis(300);
 
+/// Why a `Commands::Doctor` arm in a daemon-request match is unreachable.
+const DOCTOR_DISPATCHED_EARLY: &str =
+    "`doctor` is dispatched at the top of main and never reaches a daemon request";
+
 #[derive(Debug, Parser)]
 #[command(
     name = "proton-sync",
@@ -152,6 +156,15 @@ enum Commands {
         #[arg(long)]
         no_wait: bool,
     },
+    /// Check this machine for what the first sync needs: the `proton-drive` CLI, a stored
+    /// sign-in, the config file and the optional helpers. Does not use the daemon or its socket.
+    /// Exit 0 when ready, 1 when something required is missing, 3 when a required check could
+    /// not be made. Give `--config` before `doctor`.
+    Doctor {
+        /// Check this `proton-drive` instead of the config file's `proton_cli`.
+        #[arg(long)]
+        proton_cli: Option<PathBuf>,
+    },
     /// Refuse a withheld deletion and put the two sides back in step: the surviving copy is sent
     /// back to the side it was deleted from on the next sync, and the item leaves the queue for
     /// good (unlike `deny`, which only revokes an approval and leaves it waiting).
@@ -167,6 +180,11 @@ enum Commands {
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
+    // `doctor` talks to no daemon, so it goes first: before the socket path is resolved (whose
+    // fallback creates a runtime directory) and before any `--pair` branch dials the socket.
+    if let Commands::Doctor { proton_cli } = &cli.command {
+        return run_doctor(&cli, proton_cli.as_deref());
+    }
     // Same precedence and same validation as the daemon (`--socket-path` > config file >
     // XDG default), through the engine's own resolver so the two cannot drift (#63). `main`
     // returns ExitCode, so the error is reported here rather than propagated.
@@ -195,6 +213,42 @@ async fn main() -> ExitCode {
         return code;
     }
     run_for_pair(&cli, &socket_path, &style, cli.pair.as_deref()).await
+}
+
+/// `proton-sync doctor` (design D7, D8): the dependency check of this machine, with no socket.
+/// Exit 0 ready, 1 a required problem, 3 a required check could not be made; 2 is a usage error,
+/// which is clap's own code, so the refusal below uses it too.
+fn run_doctor(cli: &Cli, proton_cli: Option<&Path>) -> ExitCode {
+    use proton_drive_sync_engine::doctor::{
+        self, CliSource, ConfigFile, DaemonLock, Inputs, SystemEnvironment, Verdict,
+    };
+    if cli.socket_path.is_some() || cli.pair.is_some() || cli.all_pairs {
+        eprintln!("doctor checks this machine, not the daemon; it takes no socket or folder pair");
+        return ExitCode::from(2);
+    }
+    let config = match &cli.config {
+        Some(path) => ConfigFile::Named(path.clone()),
+        None => ConfigFile::default_at(proton_drive_sync_engine::paths::default_config_path()),
+    };
+    let mut inputs = Inputs::new(config);
+    inputs.daemon_lock = DaemonLock::user_default();
+    if let Some(path) = proton_cli {
+        inputs.cli = CliSource::Explicit(path.to_owned());
+    }
+    let report = doctor::run(&inputs, &SystemEnvironment);
+    if cli.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).expect("serialize the report")
+        );
+    } else {
+        print!("{}", report.render_human(Style::for_stdout().enabled));
+    }
+    match report.verdict {
+        Verdict::Ok => ExitCode::SUCCESS,
+        Verdict::Failed => ExitCode::FAILURE,
+        Verdict::Unknown => ExitCode::from(3),
+    }
 }
 
 /// Refuses with a non-zero exit when `socket_path` answers a `status` request with neither `pair`
@@ -258,6 +312,7 @@ async fn run_for_pair(
     }
 
     match &cli.command {
+        Commands::Doctor { .. } => unreachable!("{DOCTOR_DISPATCHED_EARLY}"),
         Commands::Status => {
             if cli.json {
                 print_pretty_json(&response);
@@ -473,6 +528,7 @@ async fn run_all_pairs(cli: &Cli, socket_path: &Path, style: &Style) -> ExitCode
 /// the two branches cannot answer differently for the same reply.
 fn reply_exit_code(command: &Commands, response: &ControlResponse) -> ExitCode {
     match command {
+        Commands::Doctor { .. } => unreachable!("{DOCTOR_DISPATCHED_EARLY}"),
         Commands::List { .. } => list_exit_code(response.listing.as_ref()),
         Commands::Plan { .. } => plan_exit_code(response.plan.as_ref()),
         Commands::Apply { .. } => apply_exit_code(response.apply.as_ref()),
@@ -505,6 +561,7 @@ fn print_pair_reply(
 ) {
     let pair = Some(pair_name);
     match command {
+        Commands::Doctor { .. } => unreachable!("{DOCTOR_DISPATCHED_EARLY}"),
         Commands::Status => print_status(response, style, pair),
         Commands::History => print_history(response, style),
         Commands::Activity { .. } => print_activity(response, style),
@@ -538,6 +595,7 @@ fn print_pair_reply(
 /// envelope; every other verb prints the whole `ControlResponse` there too, so this matches that.
 fn json_result_value(command: &Commands, response: &ControlResponse) -> serde_json::Value {
     match command {
+        Commands::Doctor { .. } => unreachable!("{DOCTOR_DISPATCHED_EARLY}"),
         Commands::History => {
             serde_json::to_value(&response.history).expect("serialize pass history")
         }
@@ -570,6 +628,7 @@ fn json_result_value(command: &Commands, response: &ControlResponse) -> serde_js
 /// Maps a subcommand to the control request to send, validating the `approve`/`deny` selector.
 fn build_request(command: &Commands, pair: Option<&str>) -> Result<ControlRequest, String> {
     let (control_command, argument) = match command {
+        Commands::Doctor { .. } => unreachable!("{DOCTOR_DISPATCHED_EARLY}"),
         // `history` reads the pass log, which rides on every status reply — no second verb.
         Commands::Status | Commands::History | Commands::Pending => (ControlCommand::Status, None),
         Commands::Activity { path, .. } => (
@@ -834,7 +893,7 @@ fn print_status(response: &ControlResponse, style: &Style, pair: Option<&str>) {
     if response.auth == AuthState::SignedOut {
         rows.push((
             "sign-in",
-            style.red("Proton refused the session — run `proton-drive login`"),
+            style.red("Proton refused the session — run `proton-drive auth login`"),
         ));
     }
     if let Some(error) = &response.last_error {

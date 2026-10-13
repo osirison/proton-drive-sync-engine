@@ -45,8 +45,9 @@ and an upload knows its total but reports no progress — neither side has both 
 app shows neither rather than drawing a bar that means nothing.
 
 **Sync now** disappears while a pass is running. There is no *Re-authenticate* button: nothing
-in the app can sign you in, so an expired session offers **Try again now** and the sign-in
-stays `proton-drive login` in a terminal.
+in the app can sign you in, so an expired session shows the command `proton-drive auth login`
+to run in a terminal, a **Sign-in help** button that opens Proton's page about the command line
+tool, and **Try again now** for after you have signed in.
 
 ![The main screen with three changes syncing and an attention band below: one row saying one file changed on both sides with a Compare button, another saying two deletions are waiting with a Review button.](../../../assets/screenshots/main-needs-you.png)
 
@@ -318,7 +319,19 @@ upload, remote-only files download, matching files link, differing files are kep
 that **nothing is deleted on the first pass**.
 
 Detours from inside the takeover let you set skip rules or read every action before agreeing.
-If the `proton-drive` binary will not run, a dialog says so rather than the flow guessing why.
+Before the takeover opens, the app runs the same dependency check as `proton-sync doctor`. When
+something it needs is wrong, a dialog lists every result that is not fine, required ones first,
+each with what it found and how to fix it. The title names the first required problem:
+*Proton Drive's command line tool isn't installed* when `proton-drive` is not there,
+*Proton Drive's command line tool doesn't run* when it is found and exits with an error (a
+crashing tool is never called "not installed"), *Sign in to Proton Drive's command line tool* when
+no sign-in is stored, and *Your settings file can't be read*. Each row has a **How to fix** link
+to this site's [troubleshooting page](/reference/troubleshooting/), and the `proton-drive` and
+sign-in rows also link Proton's own pages. **Installation help** opens Proton's download page and
+**Check again** runs the whole check again, so fixing the problem in a terminal lets you carry on
+without restarting the app. Only a missing or failing required check blocks the takeover: one the
+check could not make (the tool needed to look is missing, say) and the recommended ones are
+listed but never lock you out.
 Once the daemon is up, the app hands off out of the takeover on its own — including when the
 first pass *fails*, which releases you onto Home's **Try again now** rather than trapping you.
 

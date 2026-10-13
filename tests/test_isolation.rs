@@ -536,6 +536,86 @@ fn a_bounded_run_applies_the_fake_cli_refusal_before_it_spawns() {
     assert!(message.contains("names no fake CLI"), "{message}");
 }
 
+#[test]
+fn a_doctor_run_without_the_tools_helper_is_refused_before_it_runs() {
+    use std::process::Command;
+    let directory = tempdir().expect("tempdir");
+    // A program that does not exist, named like the control CLI: a refusal that came after the
+    // spawn would be a `doctor` over the developer's own `proton-drive` and keyring.
+    let program = directory.path().join("proton-sync");
+    let refused = |command: &Command| panic_message(|| common::refuse_the_real_cli(command));
+    let message = refused(Command::new(&program).args(["--config", "x.toml", "doctor"]))
+        .expect("doctor without DoctorTools is refused");
+    assert!(message.contains("without common::DoctorTools"), "{message}");
+
+    let tools = common::DoctorTools::in_directory(directory.path());
+    let mut marked = Command::new(&program);
+    marked.arg("doctor");
+    tools.attach(&mut marked);
+    assert!(
+        refused(&marked).is_none(),
+        "the helper's marker lets a doctor run through"
+    );
+    assert!(
+        refused(Command::new(&program).arg("status")).is_none(),
+        "the control CLI's other verbs are not doctor runs"
+    );
+}
+
+#[test]
+fn doctor_tools_leave_no_system_directory_on_the_path_and_answer_as_told() {
+    let directory = tempdir().expect("tempdir");
+    let tools = common::DoctorTools::in_directory(directory.path());
+    tools
+        .proton_drive(common::Stub::exits(0).prints("proton-drive 9.9.9"))
+        .secret_tool(common::Stub::exits(1).complains("no secret service"));
+
+    // The path holds the answering stubs, then the sandbox's refusing ones, and nothing else.
+    let mut command = common::sandboxed("/bin/sh", directory.path());
+    tools.attach(&mut command);
+    command.arg("-c").arg(
+        "printf '%s\\n' \"$PATH\"; command -v systemctl || echo no-systemctl; \
+         proton-drive version; secret-tool lookup 2>&1; echo \"status $?\"",
+    );
+    let output = common::run_bounded(&mut command, common::RUN_BOUND);
+    let seen = String::from_utf8(output.stdout).expect("utf-8");
+    let lines: Vec<&str> = seen.lines().collect();
+    let path = lines[0];
+    assert_eq!(path.split(':').count(), 2, "{path}");
+    assert!(
+        path.starts_with(directory.path().to_str().unwrap()),
+        "{path}"
+    );
+    assert!(path.ends_with("sandbox-bin"), "{path}");
+    assert_eq!(
+        &lines[1..],
+        [
+            "no-systemctl",
+            "proton-drive 9.9.9",
+            "no secret service",
+            "status 1"
+        ],
+        "an unprovided tool is absent; a provided one says what it was told"
+    );
+
+    // The signal and the timeout stubs need no tool from the path: builtins and absolute paths.
+    tools.proton_drive(common::Stub::crashes_with_sigill());
+    let mut crashing = common::sandboxed(tools.proton_drive_path(), directory.path());
+    tools.attach(&mut crashing);
+    let output = common::run_bounded(&mut crashing, common::RUN_BOUND);
+    use std::os::unix::process::ExitStatusExt;
+    assert_eq!(output.status.signal(), Some(4), "SIGILL: {output:?}");
+
+    tools.proton_drive(common::Stub::never_answers());
+    let mut hanging = common::sandboxed(tools.proton_drive_path(), directory.path());
+    tools.attach(&mut hanging);
+    let message = panic_message(|| {
+        common::run_bounded(&mut hanging, Duration::from_millis(1500));
+    })
+    .expect("the hanging stub outlives its bound");
+    assert!(message.contains("was still running after"), "{message}");
+}
+
 /// The rule, enforced. **No test file other than `tests/common/mod.rs` may**:
 ///
 /// * contain the name of one of this crate's binaries as `CARGO_BIN_` + `EXE_…` (what `env!`,

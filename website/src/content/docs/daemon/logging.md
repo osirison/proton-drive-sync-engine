@@ -32,6 +32,28 @@ Under systemd, these logs go to the journal:
 journalctl --user -u proton-syncd.service -f
 ```
 
+## The start-up check
+
+Right after the control socket is up, the daemon checks the two things nothing else would
+report. The check runs once, on its own thread, so the socket, a shutdown and the first sync
+never wait for it.
+
+| Check | When | What it looks at |
+| --- | --- | --- |
+| `proton-drive` | always | The CLI the daemon will use (`proton_cli`, else `proton-drive` on the `PATH` **the daemon runs with**) exists and answers `version`. A systemd user service has a shorter `PATH` than your terminal, so this can fail where `proton-sync doctor` passes. |
+| `curl` | when a folder follows changes (`events_driven`) | `curl` is installed; the change feed needs it. |
+
+A working CLI is one `INFO` line with its version and path. A problem is one `WARN` line with
+three fields: `check` (which check), `fix` (what to do) and `docs` (the section of
+[Troubleshooting](/reference/troubleshooting/#dependency-check) that explains it). Each is
+logged once per start, and **the daemon keeps running** whatever the result; a missing `curl`
+only makes every sync walk the whole folder.
+
+The sign-in and the keyring are not part of this check. The daemon reports them when a sync
+needs them, once per cause, and `proton-sync status` shows the sign-in state. To check
+everything, including those, run `proton-sync doctor` (see the
+[CLI reference](/cli/reference/#checking-this-machine-doctor)).
+
 ## Status and metrics sidecars
 
 Alongside logs, the daemon persists two JSON files next to its SQLite index, for local

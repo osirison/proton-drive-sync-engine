@@ -674,7 +674,7 @@ class Bridge {
           index: `/home/u/${args?.pair}/.sync/sync_index.db`,
         };
       case "check_cli":
-        return { installed: true, distro: null };
+        return { ready: true, report: { checks: [], verdict: "ok" }, distro: null };
       case "scan_conflicts":
         return this.conflicts[args?.pair ?? this.selected] ?? [];
       case "read_conflict_pair": {

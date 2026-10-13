@@ -1,6 +1,7 @@
 use crate::ancestor::{LineSummary, MAX_SUMMARY_BYTES};
 use crate::config::remote_root_comparison_key;
 use crate::dirconfig::{DirectoryConfigResolver, EffectiveSettings};
+use crate::doctor;
 use crate::due_queue::{Cause, DueQueue, Job, JobKind};
 use crate::events::{
     EventSource, EventsClient, RemoteChange, is_transient_fetch_error, transient_fetch_cause,
@@ -82,6 +83,9 @@ const IPC_IO_TIMEOUT: Duration = Duration::from_secs(5);
 /// inside a client's own round-trip budget (`proton-sync`'s is 10s), so a refusal arrives as an
 /// answer rather than as a timeout.
 const BROWSE_GATE_WAIT: Duration = Duration::from_secs(2);
+/// How long shutdown waits for the start-up check's thread once it has been told to stop (its
+/// child is killed within one 50 ms poll; the bound only covers a thread parked on the gate).
+const STARTUP_CHECK_JOIN_BOUND: Duration = Duration::from_secs(2);
 /// How often the daemon polls the volume event stream while event-driven detection is **live** —
 /// `events_driven` on *and* an event source built. Matches the ~30s cadence Proton's own client
 /// uses (ADR 0001). Only the incremental (O(changes)) path runs at this cadence: a pair's cadence
@@ -253,10 +257,11 @@ impl DaemonConfig {
     /// `config::resolve_runtime_configs` hands it a list whose halves agree by construction (it
     /// computes them once); the check is for a set built any other way.
     ///
-    /// Four `KeyScope::Daemon` keys are deliberately **spent** here rather than carried: `proton_cli`,
+    /// Three `KeyScope::Daemon` keys are deliberately **spent** here rather than carried:
     /// `proton_timeout` and `proton_list_attempts` are consumed constructing the one shared client
     /// (`command_policy_from_config`), and `log_filter` by the binary's tracing setup — all three
-    /// times before a daemon exists. Being daemon-wide is precisely *why* they can be spent at
+    /// times before a daemon exists. `proton_cli` is spent there too, but is also kept: the
+    /// start-up check asks the same program the client runs. Being daemon-wide is precisely *why* they can be spent at
     /// construction: there is one client and one filter for the process, so nothing later needs to
     /// ask which pair's they were.
     fn into_parts(self) -> (ProcessConfig, PairConfig) {
@@ -270,7 +275,7 @@ impl DaemonConfig {
             global_lock_path,
             scan_interval,
             full_scan_schedule,
-            proton_cli: _,
+            proton_cli,
             proton_timeout: _,
             proton_list_attempts: _,
             download_batch_size,
@@ -289,6 +294,7 @@ impl DaemonConfig {
             ProcessConfig {
                 socket_path,
                 global_lock_path,
+                proton_cli,
             },
             PairConfig {
                 name,
@@ -323,6 +329,8 @@ impl DaemonConfig {
 struct ProcessConfig {
     socket_path: PathBuf,
     global_lock_path: PathBuf,
+    /// The resolved `proton_cli`, for the start-up check ([`Daemon::start_startup_check`]).
+    proton_cli: PathBuf,
 }
 
 /// The keys that describe **one tree**: what to sync, what to skip, how often, how a pass behaves,
@@ -1450,6 +1458,12 @@ pub struct Daemon<C: ProtonClient = ProtonDriveClient> {
     /// the next idle wait. The IPC `shutdown` verb needs none: its `LoopCommand::Shutdown` already
     /// wakes the loop.
     shutdown_notify: Arc<Notify>,
+    /// What the start-up check looks at the machine through ([`Self::start_startup_check`]). Inert
+    /// by default, so no test can reach a real tool; only [`Daemon::new`] installs the real one.
+    environment: Arc<dyn doctor::Environment + Send + Sync>,
+    /// Whether any pair streams events ([`any_pair_streams`]): the start-up check asks for `curl`
+    /// only then.
+    any_pair_streams: bool,
     /// User-global single-instance lock; released on drop. Held for the daemon's whole lifetime so
     /// no second daemon for this user can start and race the shared `proton-drive` cache (#23).
     _global_lock_guard: LockGuard,
@@ -2857,12 +2871,14 @@ impl Daemon<ProtonDriveClient> {
             first.proton_cli.clone(),
             command_policy_from_config(first),
         );
-        Self::from_pairs_with_opener(
+        let mut daemon = Self::from_pairs_with_opener(
             configs,
             proton,
             build_event_source,
             open_cli_keyring_event_source,
-        )
+        )?;
+        daemon.environment = Arc::new(doctor::SystemEnvironment);
+        Ok(daemon)
     }
 }
 
@@ -3089,6 +3105,8 @@ impl<C: ProtonClient> Daemon<C> {
             session_declined: None,
             cancel_flag: Arc::new(AtomicBool::new(false)),
             shutdown_notify: Arc::new(Notify::new()),
+            environment: Arc::new(doctor::InertEnvironment),
+            any_pair_streams: events_wanted,
             _global_lock_guard: global_lock_guard,
         };
         for (pair, slot) in daemon.pairs.iter().enumerate() {
@@ -3191,6 +3209,7 @@ impl<C: ProtonClient> Daemon<C> {
         let (watch_tx, watch_rx) = mpsc::unbounded_channel();
         let mut watcher = build_watcher(watch_tx)?;
         self.register_root_watches(&mut watcher);
+        let startup_check = self.start_startup_check();
         let mut inputs = LoopInputs {
             loop_rx,
             watch_rx,
@@ -3236,8 +3255,82 @@ impl<C: ProtonClient> Daemon<C> {
 
         ipc_task.abort();
         remove_control_socket(&self.process.socket_path);
+        self.finish_startup_check(startup_check);
         info!("daemon stopped");
         Ok(())
+    }
+
+    /// The start-up check (design D12): `proton-drive` always, `curl` when any pair streams, run
+    /// through the daemon's [`doctor::Environment`] and logged once. It covers only what nothing
+    /// else reports; the degraded-session report and the `auth` state speak for the sign-in and
+    /// the keyring. It never stops the daemon.
+    ///
+    /// On its own thread, not awaited: `version` may take its full 10 s, and nothing about the loop
+    /// depends on the answer, so a shutdown, a control request or the first pass never waits for
+    /// it (the gate may delay the first pass's first child by at most that long). The spawn goes
+    /// through the client's gate and skips the lock probe, because this process holds the lock.
+    /// The cancel flag reaches the run, so a shutdown kills a `version` still running;
+    /// [`Self::finish_startup_check`] then joins the thread, so no child outlives the daemon and
+    /// overlaps the next daemon's first one (#23).
+    fn start_startup_check(&self) -> Option<std::thread::JoinHandle<()>> {
+        if self.environment.is_inert() {
+            return None;
+        }
+        let mut checks = vec![doctor::CheckId::ProtonDrive];
+        if self.any_pair_streams {
+            checks.push(doctor::CheckId::Curl);
+        }
+        let inputs = doctor::Inputs {
+            cli: doctor::CliSource::Explicit(self.process.proton_cli.clone()),
+            config: doctor::ConfigFile::default_at(crate::paths::default_config_path()),
+            checks,
+            daemon_lock: doctor::DaemonLock::Skip,
+            gate: self.proton.cli_gate(),
+            cancel: Some(Arc::clone(&self.cancel_flag)),
+        };
+        let cancelled = Arc::clone(&self.cancel_flag);
+        let environment = Arc::clone(&self.environment);
+        // A new thread has no default subscriber of its own; the caller's goes with it.
+        let dispatch = tracing::Dispatch::default();
+        let spawned = std::thread::Builder::new()
+            .name("startup-check".to_owned())
+            .spawn(move || {
+                let report = doctor::run(&inputs, &*environment);
+                // A check cut short by a shutdown says nothing about the CLI.
+                if !cancelled.load(Ordering::SeqCst) {
+                    tracing::dispatcher::with_default(&dispatch, || log_startup_report(&report));
+                }
+            });
+        match spawned {
+            Ok(handle) => Some(handle),
+            Err(error) => {
+                warn!(%error, "the start-up check could not be started; the daemon keeps running");
+                None
+            }
+        }
+    }
+
+    /// Ends the start-up check at shutdown: raises the cancel flag (the check kills its child
+    /// within one poll) and waits for the thread, but only so long: a thread stuck on the gate
+    /// behind another child is abandoned rather than holding the exit up.
+    fn finish_startup_check(&self, handle: Option<std::thread::JoinHandle<()>>) {
+        let Some(handle) = handle else { return };
+        self.cancel_flag.store(true, Ordering::SeqCst);
+        let give_up = Instant::now() + STARTUP_CHECK_JOIN_BOUND;
+        while !handle.is_finished() && Instant::now() < give_up {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        if handle.is_finished() {
+            let _ = handle.join();
+        } else {
+            warn!("the start-up check did not end within the shutdown bound; leaving it");
+        }
+    }
+
+    /// Installs the environment the start-up check looks through (a fake, in a test).
+    #[cfg(test)]
+    fn set_environment(&mut self, environment: Arc<dyn doctor::Environment + Send + Sync>) {
+        self.environment = environment;
     }
 
     /// Said once at startup, at the process scope, when more than one pair is configured
@@ -4154,7 +4247,7 @@ impl<C: ProtonClient> Daemon<C> {
         // field to `Daemon` should make the compiler ask "does a pass need this?" rather than
         // silently answer no. The `_` bindings are the recorded answers — the socket and the global
         // lock describe the process's own lifetime, the queue and the cadences belong to the loop
-        // that schedules passes rather than to a pass, and the shutdown wake is the loop's too.
+        // that schedules passes rather than to a pass, and the shutdown wake is the loop's too, and the start-up check runs once before any pass.
         let Self {
             pairs,
             proton,
@@ -4170,6 +4263,8 @@ impl<C: ProtonClient> Daemon<C> {
             ipc_io_timeout: _,
             browse_gate_wait: _,
             shutdown_notify: _,
+            environment: _,
+            any_pair_streams: _,
             _global_lock_guard: _,
         } = self;
         let PairSlot::Ready(runtime) = &mut pairs[pair] else {
@@ -6583,8 +6678,10 @@ impl<C: ProtonClient> PairPass<'_, C> {
             format!(
                 "no usable proton-drive CLI session (locked keyring, headless host, or the CLI is \
                  not logged in); the {}s event poll is off, so full-tree snapshots and the session \
-                 retry ride each pair's own scan interval instead",
+                 retry ride each pair's own scan interval instead; help: {}",
                 self.events_poll_interval.as_secs(),
+                crate::doctor::links::docs_url("signed-in")
+                    .expect("the signed-in check has an anchor"),
             ),
         );
     }
@@ -6695,7 +6792,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
             AuthState::SignedOut => note_session_declined(
                 self.session_declined,
                 SessionDeclineCause::SignedOut,
-                AUTH_DECLINE_REASON.to_owned(),
+                AUTH_DECLINE_REASON.clone(),
             ),
             AuthState::SignedIn => {
                 clear_session_decline(self.session_declined, SessionDeclineCause::SignedOut);
@@ -10445,8 +10542,17 @@ fn publish_auth_evidence(shared: &ControlShared, state: AuthState) -> bool {
 }
 
 /// The standing reason reported when the Proton session is the thing that is wrong.
-const AUTH_DECLINE_REASON: &str = "the proton-drive CLI session is signed out or expired; run `proton-drive login` \
-     (the daemon reuses that CLI's session)";
+///
+/// Built once because it carries the docs link, which `doctor::links` owns (a literal here would
+/// be a second spelling of the URL). The URL ends the sentence.
+static AUTH_DECLINE_REASON: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    format!(
+        "the proton-drive CLI session is signed out or expired; run `{}` (the daemon reuses that \
+         CLI's session); help: {}",
+        crate::doctor::links::SIGN_IN_COMMAND,
+        crate::doctor::links::docs_url("signed-in").expect("the signed-in check has an anchor"),
+    )
+});
 
 /// A latched process-wide decline: which cause, and the line it was reported with.
 ///
@@ -11100,6 +11206,33 @@ fn command_policy_from_config(config: &DaemonConfig) -> CommandPolicy {
 /// `x-pm-appversion` sent on events requests. Matches the value the live detection harness uses
 /// (`tests/events_live.rs`); Proton validates it.
 const EVENTS_APP_VERSION: &str = "cli-drive@0.5.0";
+
+/// One line per result of the start-up check: a problem at WARN with what to do and where it is
+/// explained, a working CLI at INFO with its version and path. Nothing is repeated, because the
+/// check runs once.
+fn log_startup_report(report: &doctor::Report) {
+    for check in &report.checks {
+        let name = check.id.as_str();
+        if check.outcome == doctor::Outcome::Ok {
+            if check.id == doctor::CheckId::ProtonDrive {
+                info!(check = name, "{}", check.statement);
+            }
+            continue;
+        }
+        let docs = check
+            .links
+            .iter()
+            .find(|link| link.id == "docs")
+            .map_or("", |link| link.url.as_str());
+        warn!(
+            check = name,
+            fix = check.fix.as_deref().unwrap_or(""),
+            docs,
+            "{}",
+            check.statement
+        );
+    }
+}
 
 /// Whether the process-wide event session is wanted: **any** pair is `events_driven`. The session is
 /// one per process, so one pair opting out must not stop it for the others; this is the one
@@ -12810,7 +12943,7 @@ mod tests {
                 .session_declined
                 .as_ref()
                 .map(|declined| declined.reason.as_str()),
-            Some(AUTH_DECLINE_REASON),
+            Some(AUTH_DECLINE_REASON.as_str()),
             "the sign-out is reported through the session latch, not beside it"
         );
         // The reason is a log line and a status string, so it must read as one sentence. The
@@ -12821,6 +12954,16 @@ mod tests {
         assert!(
             !AUTH_DECLINE_REASON.contains("  ") && !AUTH_DECLINE_REASON.contains('\n'),
             "the reason must render as one line with no whitespace run: {AUTH_DECLINE_REASON:?}"
+        );
+
+        // It names the right sign-in command and ends with the docs link for the `signed-in`
+        // check, taken from `doctor::links` (D12).
+        let docs = crate::doctor::links::docs_url("signed-in").expect("an anchor");
+        assert!(
+            AUTH_DECLINE_REASON.contains("`proton-drive auth login`")
+                && AUTH_DECLINE_REASON.ends_with(&docs),
+            "{:?}",
+            *AUTH_DECLINE_REASON
         );
 
         // Recovery clears it, because it is OUR cause…
@@ -22956,6 +23099,12 @@ mod tests {
                 && reported.contains("scan interval"),
             "the session cause must name itself and the cadence it implies: {reported}"
         );
+        assert!(
+            reported.ends_with(
+                &crate::doctor::links::docs_url("signed-in").expect("the signed-in anchor")
+            ),
+            "the session cause ends with the docs link for the signed-in check: {reported}"
+        );
         assert_eq!(
             daemon.pair().event_scope_declined,
             None,
@@ -26276,6 +26425,8 @@ mod tests {
         upload_blocked: Arc<AtomicBool>,
         cancel: Arc<Mutex<Option<Arc<AtomicBool>>>>,
         sink: Arc<Mutex<Option<Arc<dyn ProgressSink>>>>,
+        /// What `cli_gate` answers: a gate a test can hold to stand in for a running `list` child.
+        gate: Option<Arc<crate::proton::CliGate>>,
     }
 
     impl MultiRootClient {
@@ -26371,6 +26522,10 @@ mod tests {
     }
 
     impl ProtonClient for MultiRootClient {
+        fn cli_gate(&self) -> Option<Arc<crate::proton::CliGate>> {
+            self.gate.clone()
+        }
+
         fn list(&self, remote_root: &Path) -> AppResult<HashMap<PathBuf, RemoteFile>> {
             Ok(self
                 .tree(remote_root)
@@ -28700,6 +28855,463 @@ mod tests {
             .expect("run() returns promptly once shutdown is signalled")
             .expect("join")
             .expect("a clean exit");
+    }
+
+    /// The start-up check's view of the machine: which programs "exist", and every program it was
+    /// asked about or run. `version` can be made to block until the test releases it.
+    #[derive(Default)]
+    struct StartupEnvironment {
+        installed: Vec<&'static str>,
+        asked: Mutex<Vec<String>>,
+        ran: Mutex<Vec<String>>,
+        /// `Some(false)` blocks `run` until the test sets it to `true`.
+        release: Arc<(Mutex<Option<bool>>, std::sync::Condvar)>,
+        entered_run: AtomicBool,
+        /// `run_cancellable` saw its flag raised and ended the blocked `version` early.
+        cancelled: AtomicBool,
+        /// `run` or `run_cancellable` has returned (the check's thread is about to end).
+        finished: AtomicBool,
+    }
+
+    impl StartupEnvironment {
+        fn installed(names: &[&'static str]) -> Arc<Self> {
+            Arc::new(Self {
+                installed: names.to_vec(),
+                ..Self::default()
+            })
+        }
+
+        fn blocking(names: &[&'static str]) -> Arc<Self> {
+            let environment = Self::installed(names);
+            *environment.release.0.lock().expect("lock") = Some(false);
+            environment
+        }
+
+        fn release(&self) {
+            *self.release.0.lock().expect("lock") = Some(true);
+            self.release.1.notify_all();
+        }
+
+        fn asked(&self) -> Vec<String> {
+            self.asked.lock().expect("lock").clone()
+        }
+
+        fn ran(&self) -> Vec<String> {
+            self.ran.lock().expect("lock").clone()
+        }
+    }
+
+    impl doctor::Environment for StartupEnvironment {
+        fn find_program(&self, name: &str) -> Option<PathBuf> {
+            self.asked.lock().expect("lock").push(name.to_owned());
+            self.installed
+                .contains(&name)
+                .then(|| PathBuf::from("/fake/bin").join(name))
+        }
+
+        fn var(&self, name: &str) -> Option<std::ffi::OsString> {
+            self.asked.lock().expect("lock").push(format!("${name}"));
+            None
+        }
+
+        fn read_file(&self, path: &Path) -> std::io::Result<String> {
+            self.asked
+                .lock()
+                .expect("lock")
+                .push(format!("file {}", path.display()));
+            Err(std::io::ErrorKind::NotFound.into())
+        }
+
+        fn probe_lock(&self, path: &Path) -> GlobalLockProbe {
+            self.asked
+                .lock()
+                .expect("lock")
+                .push(format!("lock {}", path.display()));
+            GlobalLockProbe::Free
+        }
+
+        fn run(
+            &self,
+            program: &Path,
+            args: &[&str],
+            limit: Duration,
+            stdout: doctor::Stdout,
+        ) -> doctor::Ran {
+            self.run_cancellable(program, args, limit, stdout, None)
+        }
+
+        fn run_cancellable(
+            &self,
+            program: &Path,
+            args: &[&str],
+            _limit: Duration,
+            _stdout: doctor::Stdout,
+            cancel: Option<&AtomicBool>,
+        ) -> doctor::Ran {
+            self.entered_run.store(true, Ordering::SeqCst);
+            self.ran.lock().expect("lock").push(format!(
+                "{} {}",
+                program.display(),
+                args.join(" ")
+            ));
+            let (state, wake) = &*self.release;
+            let mut state = state.lock().expect("lock");
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while *state == Some(false) {
+                if cancel.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+                    self.cancelled.store(true, Ordering::SeqCst);
+                    self.finished.store(true, Ordering::SeqCst);
+                    return doctor::Ran::Cancelled;
+                }
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    break;
+                }
+                state = wake
+                    .wait_timeout(state, left.min(Duration::from_millis(10)))
+                    .expect("wait")
+                    .0;
+            }
+            self.finished.store(true, Ordering::SeqCst);
+            doctor::Ran::Exited {
+                code: 0,
+                stdout_head: "proton-drive 1.2.3".to_owned(),
+                stderr_head: String::new(),
+            }
+        }
+    }
+
+    /// Runs `daemon` on this thread (so a captured log sees the check's lines), lets `during` act
+    /// while it does, then shuts it down. Returns the log.
+    fn run_daemon_logged<Fut: std::future::Future<Output = ()>>(
+        daemon: Daemon<MultiRootClient>,
+        during: impl FnOnce(PathBuf, Arc<ControlShared>) -> Fut,
+    ) -> String {
+        let socket_path = daemon.process.socket_path.clone();
+        let shared = Arc::clone(&daemon.shared);
+        let cancel = Arc::clone(&daemon.cancel_flag);
+        let notify = Arc::clone(&daemon.shutdown_notify);
+        capture_log("info", || {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .expect("runtime");
+            runtime.block_on(async {
+                let stop = async {
+                    during(socket_path, shared).await;
+                    cancel.store(true, Ordering::SeqCst);
+                    notify.notify_one();
+                };
+                let (result, ()) = tokio::time::timeout(Duration::from_secs(20), async {
+                    tokio::join!(daemon.run(), stop)
+                })
+                .await
+                .expect("the daemon ends once shutdown is signalled");
+                result.expect("a clean exit");
+            });
+        })
+    }
+
+    async fn wait_for(what: &str, ready: impl Fn() -> bool) {
+        for _ in 0..400 {
+            if ready() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("timed out waiting for {what}");
+    }
+
+    fn startup_daemon(
+        directory: &Path,
+        streams: bool,
+        client: MultiRootClient,
+        environment: &Arc<StartupEnvironment>,
+    ) -> Daemon<MultiRootClient> {
+        let mut configs = pair_configs(directory, &["a"]);
+        configs[0].events_driven = streams;
+        let mut daemon = multi_pair_daemon(configs, client, None);
+        daemon.set_environment(Arc::clone(environment) as Arc<_>);
+        daemon
+    }
+
+    #[test]
+    fn a_missing_cli_is_one_warning_and_the_daemon_keeps_answering() {
+        let directory = tempdir().expect("tempdir");
+        let environment = StartupEnvironment::installed(&[]);
+        let daemon = startup_daemon(
+            directory.path(),
+            false,
+            MultiRootClient::default(),
+            &environment,
+        );
+        let probe = Arc::clone(&environment);
+        let log = run_daemon_logged(daemon, |socket_path, shared| async move {
+            wait_for("the check", || {
+                probe.asked().contains(&"proton-drive".into())
+            })
+            .await;
+            // Two further passes, each asked for over the socket: the check is not repeated.
+            for target in [2, 3] {
+                let reply = crate::ipc::send_request(
+                    &socket_path,
+                    ControlRequest::new(ControlCommand::Syncnow),
+                )
+                .await
+                .expect("the socket answers");
+                assert!(!reply.message.is_empty());
+                wait_for("a further pass", || {
+                    shared.pairs[0].reconcile_seq.load(Ordering::SeqCst) >= target
+                })
+                .await;
+            }
+            let reply =
+                crate::ipc::send_request(&socket_path, ControlRequest::new(ControlCommand::Status))
+                    .await
+                    .expect("status still answers");
+            assert_eq!(reply.pair.as_deref(), Some("a"));
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        });
+        let warnings: Vec<&str> = log
+            .lines()
+            .filter(|line| line.contains("WARN") && line.contains("check=\"proton-drive\""))
+            .collect();
+        assert_eq!(warnings.len(), 1, "{log}");
+        assert!(
+            warnings[0].contains("was not found on PATH")
+                && warnings[0].contains("fix=\"Install it from")
+                && warnings[0].contains("docs=\"https://"),
+            "{}",
+            warnings[0]
+        );
+        assert!(environment.ran().is_empty(), "nothing was run: {log}");
+    }
+
+    #[test]
+    fn a_working_cli_is_one_info_line_with_its_version_and_path() {
+        let directory = tempdir().expect("tempdir");
+        let environment = StartupEnvironment::installed(&["proton-drive"]);
+        let daemon = startup_daemon(
+            directory.path(),
+            false,
+            MultiRootClient::default(),
+            &environment,
+        );
+        let probe = Arc::clone(&environment);
+        let log = run_daemon_logged(daemon, |_, _| async move {
+            wait_for("the check", || !probe.ran().is_empty()).await;
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        });
+        let lines: Vec<&str> = log
+            .lines()
+            .filter(|line| line.contains("check=\"proton-drive\""))
+            .collect();
+        assert_eq!(lines.len(), 1, "{log}");
+        assert!(
+            lines[0].contains("INFO")
+                && lines[0].contains("proton-drive 1.2.3 at /fake/bin/proton-drive"),
+            "{}",
+            lines[0]
+        );
+        assert!(!log.contains("WARN"), "{log}");
+    }
+
+    #[test]
+    fn curl_is_checked_only_when_a_pair_streams() {
+        for (streams, curl_checked) in [(false, false), (true, true)] {
+            let directory = tempdir().expect("tempdir");
+            let environment = StartupEnvironment::installed(&["proton-drive", "curl"]);
+            let daemon = startup_daemon(
+                directory.path(),
+                streams,
+                MultiRootClient::default(),
+                &environment,
+            );
+            let probe = Arc::clone(&environment);
+            let log = run_daemon_logged(daemon, |_, _| async move {
+                wait_for("the check", || !probe.ran().is_empty()).await;
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            });
+            let asked = environment.asked();
+            assert_eq!(
+                asked.contains(&"curl".to_owned()),
+                curl_checked,
+                "{asked:?}"
+            );
+            // The two checks the daemon runs and nothing else: not the keyring, the bus, the
+            // service manager, the config file or the lock (this process holds it). `$HOME` is read to
+            // expand a `~` in the CLI path.
+            let extra: Vec<&String> = asked
+                .iter()
+                .filter(|name| !matches!(name.as_str(), "proton-drive" | "curl" | "$HOME"))
+                .collect();
+            assert!(extra.is_empty(), "streams={streams}: {extra:?}");
+            assert_eq!(
+                environment.ran(),
+                vec!["/fake/bin/proton-drive version".to_owned()],
+                "{log}"
+            );
+            // curl is found, never run, and an installed one is no warning.
+            assert!(!log.contains("WARN"), "{log}");
+        }
+    }
+
+    #[test]
+    fn a_streaming_daemon_without_curl_warns_once_for_curl() {
+        let directory = tempdir().expect("tempdir");
+        let environment = StartupEnvironment::installed(&["proton-drive"]);
+        // `curl` is among the programs the fake knows about only when installed: here it is not.
+        let mut configs = pair_configs(directory.path(), &["a"]);
+        configs[0].events_driven = true;
+        let mut daemon = multi_pair_daemon(configs, MultiRootClient::default(), None);
+        daemon.set_environment(Arc::clone(&environment) as Arc<_>);
+        let probe = Arc::clone(&environment);
+        let log = run_daemon_logged(daemon, |_, _| async move {
+            wait_for("the check", || probe.asked().contains(&"curl".into())).await;
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        });
+        let warnings: Vec<&str> = log
+            .lines()
+            .filter(|line| line.contains("WARN") && line.contains("check=\"curl\""))
+            .collect();
+        assert_eq!(warnings.len(), 1, "{log}");
+        assert!(
+            warnings[0].contains("curl is not installed"),
+            "{}",
+            warnings[0]
+        );
+    }
+
+    #[test]
+    fn a_shutdown_during_the_start_up_check_ends_run_promptly() {
+        // `version` can take its full 10 s. The check is on a thread of its own and nothing waits
+        // for it, so a shutdown is not delayed by it.
+        let directory = tempdir().expect("tempdir");
+        let environment = StartupEnvironment::blocking(&["proton-drive"]);
+        let daemon = startup_daemon(
+            directory.path(),
+            false,
+            MultiRootClient::default(),
+            &environment,
+        );
+        let probe = Arc::clone(&environment);
+        let started = Instant::now();
+        let _log = run_daemon_logged(daemon, |_, shared| async move {
+            wait_for("version to be running", || {
+                probe.entered_run.load(Ordering::SeqCst)
+            })
+            .await;
+            // The first pass runs while `version` is still blocked: neither waits for the other.
+            wait_for("the first pass", || {
+                shared.pairs[0].reconcile_seq.load(Ordering::SeqCst) >= 1
+            })
+            .await;
+        });
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "run() ended in {:?} with `version` still blocked",
+            started.elapsed()
+        );
+        assert!(environment.entered_run.load(Ordering::SeqCst));
+        environment.release();
+    }
+
+    #[test]
+    fn a_shutdown_kills_the_start_up_check_and_run_waits_for_it() {
+        // The daemon's global lock is released when `run` returns; a `version` child still alive
+        // then would overlap the next daemon's first one (#23). The cancel flag reaches the run
+        // and `run` joins the thread, so the child is gone by the time it returns.
+        let directory = tempdir().expect("tempdir");
+        let environment = StartupEnvironment::blocking(&["proton-drive"]);
+        let daemon = startup_daemon(
+            directory.path(),
+            false,
+            MultiRootClient::default(),
+            &environment,
+        );
+        let probe = Arc::clone(&environment);
+        let started = Instant::now();
+        let log = run_daemon_logged(daemon, |_, _| async move {
+            wait_for("version to be running", || {
+                probe.entered_run.load(Ordering::SeqCst)
+            })
+            .await;
+        });
+        assert!(
+            environment.cancelled.load(Ordering::SeqCst),
+            "the run never saw the cancel flag"
+        );
+        assert!(
+            environment.finished.load(Ordering::SeqCst),
+            "run() returned with the check still running"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "shutdown waited {:?} for the check",
+            started.elapsed()
+        );
+        // A check cut short says nothing about the CLI, so it logs nothing about it.
+        assert!(!log.contains("check="), "{log}");
+    }
+
+    #[test]
+    fn the_start_up_version_call_waits_for_the_clients_gate() {
+        // A `list` request on the IPC task may be running a child under the client's gate; the
+        // check's own child waits for it.
+        let directory = tempdir().expect("tempdir");
+        let environment = StartupEnvironment::installed(&["proton-drive"]);
+        let gate = Arc::new(crate::proton::CliGate::new());
+        let client = MultiRootClient {
+            gate: Some(Arc::clone(&gate)),
+            ..MultiRootClient::default()
+        };
+        let daemon = startup_daemon(directory.path(), false, client, &environment);
+        let held = gate.enter();
+        let probe = Arc::clone(&environment);
+        let log = run_daemon_logged(daemon, |_, _| async move {
+            wait_for("the program to be found", || {
+                probe.asked().contains(&"proton-drive".into())
+            })
+            .await;
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            assert!(
+                probe.ran().is_empty(),
+                "`version` must not start while the gate is held"
+            );
+            drop(held);
+            wait_for("version after the gate is free", || !probe.ran().is_empty()).await;
+        });
+        assert!(log.contains("proton-drive 1.2.3"), "{log}");
+    }
+
+    #[test]
+    fn a_daemon_built_without_an_environment_runs_no_check_at_all() {
+        let directory = tempdir().expect("tempdir");
+        let config = test_config(directory.path(), &directory.path().join("local"));
+        fs::create_dir_all(&config.local_root).expect("local root");
+        let daemon = Daemon::with_client(config, MultiRootClient::default()).expect("daemon");
+        assert!(daemon.environment.is_inert());
+        let log = run_daemon_logged(daemon, |_, shared| async move {
+            wait_for("the first pass", || {
+                shared.pairs[0].reconcile_seq.load(Ordering::SeqCst) >= 1
+            })
+            .await;
+        });
+        assert!(!log.contains("check="), "{log}");
+    }
+
+    #[test]
+    fn only_the_production_door_installs_the_real_environment() {
+        // `Daemon::new` needs a real client and a real keyring read, neither of which a lib test
+        // may reach; what is checked here is the other half: the test doors are inert.
+        let directory = tempdir().expect("tempdir");
+        let daemon = multi_pair_daemon(
+            pair_configs(directory.path(), &["a"]),
+            MultiRootClient::default(),
+            None,
+        );
+        assert!(daemon.environment.is_inert());
     }
 
     #[tokio::test(flavor = "multi_thread")]

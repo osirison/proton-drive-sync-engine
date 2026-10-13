@@ -8,7 +8,8 @@
 //! what keeps it that way, because a convention that only a review enforces is gone by the next PR.
 //!
 //! **Exactly five lines in the whole crate may reach the environment** (four for the config path,
-//! one for the control socket), listed below by file and text. Anything else — in a test or out of
+//! one for the control socket), listed below by file and text, plus three that name the dependency
+//! check's real environment (see its test). Anything else — in a test or out of
 //! one — fails, so a new call has to be argued for here, in a diff a reviewer reads, rather than
 //! slipping in beside a `#[test]`.
 //!
@@ -43,7 +44,7 @@
 use std::path::{Path, PathBuf};
 
 /// `(file, the line, trimmed)` — the only places allowed to reach the environment.
-const ALLOWED: [(&str, &str); 5] = [
+const ALLOWED: &[(&str, &str)] = &[
     // The one production caller: the process's startup, which has no session to take a path from.
     (
         "lib.rs",
@@ -55,6 +56,16 @@ const ALLOWED: [(&str, &str); 5] = [
     ("config_path.rs", "pub fn gui_config_path() -> PathBuf {"),
     // The production socket default. The test build's twin of this function refuses instead.
     ("config_path.rs", "gui_core::ipc::default_socket_path()"),
+    // The dependency check's real environment (below): defined once, called once.
+    (
+        "doctor.rs",
+        "pub fn system_environment() -> impl Environment {",
+    ),
+    (
+        "doctor.rs",
+        "proton_drive_sync_engine::doctor::SystemEnvironment",
+    ),
+    ("commands.rs", "gui_core::doctor::system_environment()"),
 ];
 
 /// Whether `c` can be part of an identifier.
@@ -213,6 +224,44 @@ fn no_gui_test_resolves_the_real_environment() {
          reason:\n{}",
         violations.join("\n")
     );
+}
+
+/// The dependency check's real environment runs `secret-tool lookup` on the desktop keyring and
+/// `systemctl --user show` on the live session. The engine's own guard (`refuse_real_tool`) covers
+/// the engine crate's tests only, so here the rule is a source scan: the real environment is named in
+/// `gui-core`'s `doctor` module and called from one line of the Tauri command, whose test build
+/// swaps in an inert one. A test that wants the real one has to add its line to ALLOWED.
+#[test]
+fn no_gui_test_can_construct_the_real_check_environment() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let patterns = vec![
+        ["System", "Environment"].concat(),
+        ["system", "_environment"].concat(),
+    ];
+    let mut violations = scan(&[manifest.join("src")], &patterns, true);
+    violations.extend(scan(&[manifest.join("../gui-core/src")], &patterns, false));
+    assert!(
+        violations.is_empty(),
+        "these lines name the check's real environment, which reads the keyring and the session \
+         manager. Pass a fake `Environment` instead:\n{}",
+        violations.join("\n")
+    );
+}
+
+#[test]
+fn the_scan_sees_the_real_check_environment_named_in_a_test() {
+    let patterns = vec![["System", "Environment"].concat()];
+    let dir = tempfile::tempdir().unwrap();
+    for i in 0..11 {
+        std::fs::write(dir.path().join(format!("f{i}.rs")), "fn ok() {}\n").unwrap();
+    }
+    std::fs::write(
+        dir.path().join("bad.rs"),
+        "#[test]\nfn t() {\n    let env = doctor::SystemEnvironment;\n}\n",
+    )
+    .unwrap();
+    let found = scan(&[dir.path().to_owned()], &patterns, false);
+    assert_eq!(found.len(), 1, "{found:?}");
 }
 
 /// The scan must be able to fail: shown against a source that breaks the rule.

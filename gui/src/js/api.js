@@ -184,6 +184,10 @@ export const api = {
   openPaths: (relative, opts) => invoke("open_paths", readArgs({ relative }, opts)),
   openFolder: (relative, opts) => invoke("open_folder", readArgs({ relative }, opts)),
   openRemote: () => invoke("open_remote"),
+  // A help link of the dependency check, by the ids its reply carried (`check`, `link`). The page
+  // never passes a URL: Rust looks the address up in the engine's own table, and refuses an id it
+  // does not have. REJECTS like the other openers.
+  openHelpLink: (check, link) => invoke("open_help_link", { check, link }),
   openSystemLog: () => invoke("open_system_log"),
   // The notification banners (S9). `payload` is `payloadFor(spec)` from `ui/notification.js`, so the
   // sentence a desktop shows and the one `renderBanner` draws come from the same builder.
@@ -196,6 +200,8 @@ export const api = {
   // The Phase-1 capability commands (C2/C4/C5). `path` prices a folder before the config is
   // written; omitted, `free_space` uses the configured local root.
   freeSpace: (path, opts) => invoke("free_space", readArgs({ path: path ?? null }, opts)),
+  // `{ ready, report, distro }`: `ready` is false only when a required check failed (the engine's
+  // `failed` verdict); `report` is `proton-sync doctor --json`'s object.
   checkCli: () => invoke("check_cli"),
   skipRuleUsage: (patterns, include, opts) =>
     invoke("skip_rule_usage", readArgs({ patterns, include: include ?? null }, opts)),
@@ -495,7 +501,7 @@ function mockInvoke(cmd, args) {
       // The silent-precondition-passes case. `null` here would be worse than useless: `check_cli`
       // runs BEFORE onboarding has a config, so S7 calls it on every `9a` frame, and every frame
       // but `9a CLI missing` would hand the screen a null to dereference.
-      return Promise.resolve({ installed: true, distro: null });
+      return Promise.resolve({ ready: true, report: { checks: [], verdict: "ok" }, distro: null });
     case "free_space":
       return Promise.resolve({
         available: 214_000_000_000,
@@ -538,6 +544,7 @@ function mockInvoke(cmd, args) {
     case "open_paths":
     case "open_folder":
     case "open_remote":
+    case "open_help_link":
     case "open_system_log":
       // A browser tab has no `xdg-open` and no journal. Resolving is the honest preview: the click
       // is the thing being looked at, and rejecting would draw a failure nobody chose to see —

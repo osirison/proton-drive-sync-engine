@@ -319,7 +319,7 @@ async function liveTrayHtml({ status, conflicts = [] }, { onePair }) {
         case "read_notify_policy":
           return "never";
         case "check_cli":
-          return { installed: true, distro: null };
+          return { ready: true, report: { checks: [], verdict: "ok" }, distro: null };
         default:
           return null;
       }

@@ -304,3 +304,28 @@
     animation: none;
   }
 }
+
+/* ------------------------------------------------------------------------ the sign-in how-to ---- */
+
+/* Under an `authExpired` hero, in the block a failed pass quotes its error in (`.main-failed`). The
+   sentence and the command are ours; a refused help link is quoted under them like any machine text. */
+.main-signin {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  max-width: 520px;
+  max-height: 100%;
+}
+.main-signin-how {
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-3);
+  text-align: center;
+}
+.main-signin-command {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-2);
+  user-select: all;
+}

@@ -170,6 +170,8 @@ proton-drive filesystem list --json /Drive/RemoteFolder
 If that fails, fix authentication, permissions, or the remote folder name first — the daemon
 can only be as healthy as the CLI it shells. Check the daemon's logs for the structured
 fields (operation, attempt, exit status, stderr, timeout); see [Logging](/daemon/logging/).
+To check the CLI, its sign-in and the other tools the engine needs in one go, run
+`proton-sync doctor` (see [Dependency check](#dependency-check)).
 
 ## After a reboot the daemon fails every sync until I restart it
 
@@ -193,6 +195,8 @@ Fixes:
 - The keyring side self-heals: the daemon re-checks the keyring every pass and resumes
   event-driven detection once it's unlocked — no restart needed. Make sure the keyring is actually
   unlocked at login (auto-login without a password can leave it locked).
+- `proton-sync doctor` reports a missing `proton-drive`, a missing sign-in and a missing
+  `secret-tool` or session bus; see [Dependency check](#dependency-check).
 
 ## Event-driven passes are being skipped
 
@@ -246,3 +250,80 @@ rather than failing. Always confirm the remote root with
 Proton **Docs and Sheets** are reported as `skip_unsupported` and left untouched on both
 sides — the `proton-drive` CLI can't download those native types as files. Likewise,
 **symlinks** under the local root are skipped in both directions. Neither is an error.
+
+## Dependency check
+
+`proton-sync doctor`, the daemon's start-up log and the desktop app's first-run screen all report
+the same checks and link to the matching section below. Find the heading that names your
+problem.
+
+### proton-drive is missing or does not run
+
+The engine runs the Proton Drive CLI (`proton-drive`) for every upload, download and listing. This
+result means the CLI is not found, or it was found and does not work. The two are told apart: a
+CLI that is installed but crashes or exits with an error is "doesn't run", not "missing".
+
+Install or reinstall it from Proton's pages only:
+
+- [Download page](https://proton.me/drive/download)
+- [Direct downloads](https://proton.me/download/drive/cli/index.html)
+- [Support page](https://proton.me/support/drive-cli)
+- [CLI README](https://github.com/ProtonDriveApps/sdk/blob/main/cli/README.md)
+
+Then run `proton-drive auth login` to sign in.
+
+- If it crashes with an illegal instruction, your CPU probably lacks AVX2. Use the
+  `linux/x64-baseline` build.
+- `proton_cli` is either a bare name (searched on `PATH`) or an absolute path. A relative path with
+  a `/` is a problem, because the service resolves it against its own working directory. A
+  directory is not the program: point it at the file.
+- If it is installed but the service cannot find it, set an absolute `proton_cli` in
+  `~/.config/proton-sync/proton-sync.toml`, e.g. `proton_cli = "~/.local/bin/proton-drive"`. See
+  [After a reboot the daemon fails every sync](#after-a-reboot-the-daemon-fails-every-sync-until-i-restart-it).
+
+### No proton-drive sign-in is stored
+
+The CLI's sign-in is kept in the desktop keyring. This result means no entry was found, so no pass
+can work.
+
+Run `proton-drive auth login`, then check again. If your desktop asked you to unlock the keyring
+and you dismissed the prompt, unlock it and check again.
+
+Stores other than the desktop keyring (`PROTON_DRIVE_CREDENTIALS_STORE` set to `pass` or
+`unsafe_file`) cannot be read by this check, so it reports "could not check" instead of a
+problem. Sync can still work with those stores, but it cannot follow Proton's change feed, so it
+walks the whole folder on every pass.
+
+### The config file cannot be read
+
+The daemon will not start with a config it cannot parse. The check reports the parser's own
+sentence: fix the key it names in `~/.config/proton-sync/proton-sync.toml`, or the file you passed
+with `--config`, then check again. A missing default file is fine; it only means nothing has been
+configured yet. With no home directory (neither `XDG_CONFIG_HOME` nor `HOME` set to an absolute
+path) there is no default file to read, so the check reports that it could not be made and
+`proton-drive` is looked up on `PATH`.
+
+### secret-tool is missing
+
+Sync still works, but the daemon cannot read the CLI's session from the keyring, so it cannot
+follow Proton's change feed and walks the whole folder on every pass. Install `secret-tool` (the
+`libsecret-tools` package on Debian and Ubuntu, `libsecret` on Fedora and Arch).
+
+### curl is missing
+
+Sync still works, but the daemon fetches Proton's change feed with `curl`. Without it, it walks
+the whole folder on every pass. Install `curl` with your package manager.
+
+### No session bus
+
+Sync still works, but without a desktop session bus the daemon cannot reach the keyring, so it
+walks the whole folder on every pass. In a terminal over SSH there is often no bus even though the
+service has one; check the service's own log with `journalctl --user -u proton-syncd`. On a
+desktop, make sure you are logged in to a graphical session.
+
+### The proton-syncd service is not installed
+
+The daemon runs without systemd, but the desktop app's Start button needs the `proton-syncd` user
+service. Run `setup.sh`, or copy the shipped unit to `~/.config/systemd/user/` and run
+`systemctl --user daemon-reload`. A masked unit is reported as a problem: unmask it with
+`systemctl --user unmask proton-syncd.service`.

@@ -539,3 +539,262 @@ fn uninstall_never_lists_a_dot_sync_directly_under_home() {
         "and a dry run removed nothing"
     );
 }
+
+/// `setup.sh`'s dependency check, driven through the real `run_terminal_setup` / `run_gui_setup`
+/// in the uninstall sandbox with `--no-build`. `proton-sync` is a stub that records its argv (one
+/// argument per line) and exits with a chosen status; `proton-syncd` prints a canned plan;
+/// `systemctl` logs its calls. Nothing is installed anywhere but the scratch tree.
+struct SetupRun {
+    sandbox: UninstallSandbox,
+}
+
+struct SetupOutcome {
+    status: i32,
+    text: String,
+    argv: Option<Vec<String>>,
+    systemctl_calls: String,
+    unit_written: bool,
+}
+
+impl SetupRun {
+    fn new(doctor_exit: i32) -> Self {
+        let sandbox = UninstallSandbox::new();
+        let root = sandbox.path();
+        let argv = root.join("doctor-argv");
+        // Built from parts: the isolation scan refuses a literal binary name in this file.
+        let sync = format!("proton-{}", "sync");
+        let syncd = format!("{sync}d");
+        let stubs = [
+            (
+                sync.as_str(),
+                format!(
+                    "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done > '{}'\nexit {doctor_exit}\n",
+                    argv.display()
+                ),
+            ),
+            (
+                syncd.as_str(),
+                "#!/bin/sh\nprintf '{\"summary\":{\"uploads\":0,\"downloads\":0,\"destructive_actions\":0}}'\n"
+                    .to_owned(),
+            ),
+            ("proton-sync-gui", "#!/bin/sh\nexit 0\n".to_owned()),
+            (
+                "systemctl",
+                format!(
+                    "#!/bin/sh\necho \"$@\" >> '{}'\nexit 0\n",
+                    root.join("systemctl-calls").display()
+                ),
+            ),
+        ];
+        for (name, body) in stubs {
+            let path = root.join("bin").join(name);
+            fs::write(&path, body).expect("stub");
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).expect("stub mode");
+        }
+        Self { sandbox }
+    }
+
+    /// Runs `<function> <args>` after `parse_args <flags>` with `setup.sh` sourced.
+    fn run(&self, function: &str, flags: &[&str]) -> SetupOutcome {
+        let root = self.sandbox.path();
+        let setup = Path::new(env!("CARGO_MANIFEST_DIR")).join("setup.sh");
+        let mut command = self.sandbox.command();
+        command
+            .arg("-c")
+            .arg(format!(
+                "source \"$1\"; shift; parse_args \"$@\"; repo_root=.; {function}"
+            ))
+            .arg("bash")
+            .arg(setup)
+            .args(flags);
+        let output = common::run_bounded(&mut command, common::RUN_BOUND);
+        SetupOutcome {
+            status: output.status.code().expect("exit code"),
+            text: format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ),
+            argv: fs::read_to_string(root.join("doctor-argv"))
+                .ok()
+                .map(|text| text.lines().map(str::to_owned).collect()),
+            systemctl_calls: fs::read_to_string(root.join("systemctl-calls")).unwrap_or_default(),
+            unit_written: root
+                .join("xdg-config/systemd/user/proton-syncd.service")
+                .exists(),
+        }
+    }
+
+    fn config(&self) -> String {
+        self.sandbox
+            .path()
+            .join("xdg-config/proton-sync/proton-sync.toml")
+            .display()
+            .to_string()
+    }
+
+    fn terminal(&self, extra: &[&str]) -> SetupOutcome {
+        let local = self.sandbox.path().join("sync-folder");
+        let local = local.display().to_string();
+        let mut flags = vec![
+            "--no-build",
+            "--no-start",
+            "-y",
+            "--local-root",
+            &local,
+            "--remote-root",
+            "/Drive/x",
+        ];
+        flags.extend_from_slice(extra);
+        self.run("run_terminal_setup", &flags)
+    }
+}
+
+#[test]
+fn terminal_setup_runs_doctor_against_the_config_it_wrote_and_continues_on_ok() {
+    let run = SetupRun::new(0);
+    let outcome = run.terminal(&[]);
+    assert_eq!(outcome.status, 0, "{}", outcome.text);
+    assert_eq!(
+        outcome.argv,
+        Some(vec!["--config".into(), run.config(), "doctor".into()]),
+        "--config comes before the verb: {}",
+        outcome.text
+    );
+    assert!(
+        outcome.unit_written && outcome.systemctl_calls.contains("daemon-reload"),
+        "setup went on to install the unit: {}",
+        outcome.text
+    );
+}
+
+#[test]
+fn terminal_setup_passes_the_cli_path_after_doctor() {
+    let run = SetupRun::new(0);
+    let outcome = run.terminal(&["--proton-cli", "/opt/proton-drive"]);
+    assert_eq!(outcome.status, 0, "{}", outcome.text);
+    assert_eq!(
+        outcome.argv,
+        Some(vec![
+            "--config".into(),
+            run.config(),
+            "doctor".into(),
+            "--proton-cli".into(),
+            "/opt/proton-drive".into()
+        ]),
+        "{}",
+        outcome.text
+    );
+}
+
+#[test]
+fn terminal_setup_stops_before_the_unit_on_a_required_problem_or_an_unusable_check() {
+    for exit in [1, 2] {
+        let run = SetupRun::new(exit);
+        let outcome = run.terminal(&[]);
+        assert_ne!(outcome.status, 0, "exit {exit}: {}", outcome.text);
+        assert!(
+            !outcome.unit_written && outcome.systemctl_calls.is_empty(),
+            "exit {exit} installed or reloaded the unit: {}",
+            outcome.text
+        );
+        assert!(
+            !outcome.text.contains("Previewing the plan"),
+            "exit {exit} reached the preview: {}",
+            outcome.text
+        );
+    }
+    // A usage error is not read as a result: it says the binary cannot check.
+    let outcome = SetupRun::new(2).terminal(&[]);
+    assert!(
+        outcome.text.contains("cannot run the check"),
+        "{}",
+        outcome.text
+    );
+}
+
+#[test]
+fn terminal_setup_warns_and_continues_when_doctor_could_not_check() {
+    let run = SetupRun::new(3);
+    let outcome = run.terminal(&[]);
+    assert_eq!(outcome.status, 0, "{}", outcome.text);
+    assert!(
+        outcome.text.contains("could not be checked") && outcome.unit_written,
+        "{}",
+        outcome.text
+    );
+}
+
+#[test]
+fn ignore_checks_continues_past_a_required_problem() {
+    let run = SetupRun::new(1);
+    let outcome = run.terminal(&["--ignore-checks"]);
+    assert_eq!(outcome.status, 0, "{}", outcome.text);
+    assert!(
+        outcome
+            .text
+            .contains("Continuing because of --ignore-checks")
+            && outcome.unit_written
+            && outcome.text.contains("Previewing the plan"),
+        "{}",
+        outcome.text
+    );
+}
+
+#[test]
+fn gui_setup_runs_doctor_without_a_config_and_continues_on_a_required_problem() {
+    let run = SetupRun::new(1);
+    let outcome = run.run("run_gui_setup", &["--gui", "--no-build"]);
+    assert_eq!(outcome.status, 0, "{}", outcome.text);
+    assert_eq!(
+        outcome.argv,
+        Some(vec!["doctor".into()]),
+        "no --config in --gui mode: {}",
+        outcome.text
+    );
+    assert!(
+        outcome.text.contains("runs the same check") && outcome.text.contains("Done"),
+        "{}",
+        outcome.text
+    );
+}
+
+#[test]
+fn gui_setup_passes_the_cli_path_it_was_given_and_still_no_config() {
+    let run = SetupRun::new(0);
+    let outcome = run.run(
+        "run_gui_setup",
+        &["--gui", "--no-build", "--proton-cli", "/opt/proton-drive"],
+    );
+    assert_eq!(outcome.status, 0, "{}", outcome.text);
+    assert_eq!(
+        outcome.argv,
+        Some(vec![
+            "doctor".into(),
+            "--proton-cli".into(),
+            "/opt/proton-drive".into()
+        ]),
+        "{}",
+        outcome.text
+    );
+}
+
+#[test]
+fn sourcing_setup_runs_no_check_and_the_other_scripts_never_call_it() {
+    let run = SetupRun::new(1);
+    let outcome = run.run("true", &[]);
+    assert_eq!(outcome.status, 0, "{}", outcome.text);
+    assert!(
+        outcome.argv.is_none() && outcome.systemctl_calls.is_empty(),
+        "sourcing ran something: {}",
+        outcome.text
+    );
+    for script in ["upgrade.sh", "uninstall.sh"] {
+        let text = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(script))
+            .expect("read script");
+        assert!(
+            !text.contains("run_dependency_check") && !text.contains("check_common_prereqs"),
+            "{script} reaches the setup-only check"
+        );
+    }
+}

@@ -6716,3 +6716,48 @@ The adversarial review found nothing that deleted anything or left a folder held
    firm sentence (does not exist, will be created, everything uploaded) would need the service to say "not found" as
    a typed outcome; that is an engine wire change and is not made here.
 
+
+## 113. `9a CLI missing` lists what is wrong instead of drawing a command box (`add-dependency-check`)
+
+The frame draws one cause (the CLI is not installed), one sentence, a copyable `sudo apt install
+proton-drive` box and two buttons. The build now runs the engine's dependency check
+(`proton-sync doctor` runs the same code) and draws its result. This section **reverses two earlier
+decisions** and records what replaces the box.
+
+**§72's "presence, not health" is reversed.** `check_cli` used to answer `installed` and nothing
+else, and §72 / the old `probe_cli` treated a `proton-drive` that exits non-zero as present, so a
+broken install was never sent to an install screen. The check now runs `proton-drive version` and
+judges how it ended: not found is _missing_, found but crashing or exiting non-zero is _failed_. The
+dialog says which. A CLI that is found and does not run is titled _Proton Drive's command line tool
+doesn't run_, never "isn't installed".
+
+**§102's "no URL" is reversed.** §102 had no address it could stand behind. Proton publishes one
+(`https://proton.me/drive/download`) and the engine's `doctor::links` holds it, with the other
+Proton pages and this site's troubleshooting anchors. `Installation help` is drawn and opens it.
+**Links are opened by id.** The page sends `open_help_link { check, link }`; Rust looks the address up
+in the engine's table and refuses an id it does not have, so the webview passes no URL (as with
+`open_remote`). No script under `gui/src/js` holds an address (guard in `onboarding.test.js`).
+
+**What replaces the command box.** A checklist: one row per result that is not ok, required problems
+first, then recommended problems, then results that could not be checked. Each row carries the
+engine's statement and fix unedited, a `How to fix` link, and for the CLI and sign-in rows Proton's
+pages. The title names the first required problem (installed / runs / signed in / settings file).
+`Detected <distro>` stays as its own line. `ready` is false only for a `failed` verdict, so a
+required check that could not be made, and every recommended problem, are listed but never block.
+
+**Departures from the frame**, each a known-deviation row in `known-deviations.mjs`: the box
+(`div/div/div[2]` and its three children) is not drawn, its place taken by the checklist; the text
+column and the body are therefore a different height; the body sentence is the new `cliIntro`, with
+the frame's `Detected Debian` as a separate line; and `Check again` shows `Checking…` while it runs.
+
+**The auth-expired hero** (no frame draws it) gains the sign-in command and a `Sign-in help` button
+beside `Try again now`. The sentence is drawn under the hero, in the block a failed pass quotes its
+error in, not in the sub-line: the hero is a fixed block that centres its contents and a longer
+sub-line would move the mark.
+
+**Counts that moved.** `fidelity:copy` before: 404/404 drawn strings matched (116 templates
+rendered), 108 exempt, 148 templates with 113 covered by 116 `DRAWN` rows and 35 ungatable. After:
+404/404 matched (117 templates rendered), 125 exempt, 148 templates with 114 covered by 117 rows and
+34 ungatable. The new `DRAWN` row is `ONBOARDING.cliDetected`; `cliMissingBody` and its `UNGATED`
+entry are gone; seventeen strings no frame draws joined `NOT_DRAWN`, each with its reason. No
+published screenshot shows `9a` or the auth-expired hero, so none was regenerated.

@@ -534,3 +534,77 @@
   gap: 9px;
   margin-top: 14px;
 }
+
+/* The dependency check's checklist, between the sentence and the buttons. One row per result that is
+   not ok. A long list scrolls inside the dialog rather than growing it past the window. */
+.ob-cli-detected {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-4);
+}
+.ob-cli-list {
+  margin-top: 14px;
+  max-height: 340px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ob-cli-group {
+  margin-top: 4px;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-label);
+}
+.ob-cli-row {
+  padding: 9px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-9);
+}
+.ob-cli-statement {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.ob-cli-fix {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+/* A command or name the engine's sentence quoted in backticks. */
+.ob-cli-code {
+  padding: 0 4px;
+  font-family: var(--font-mono);
+  font-size: 0.95em;
+  color: var(--text-bright);
+  background: var(--panel-alt);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-5);
+  overflow-wrap: anywhere;
+}
+.ob-cli-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.ob-cli-open-error {
+  margin-top: 10px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+
+/* A list taller than its box fades out at the bottom, so a row cut in half reads as "more below" and not as
+   the end of the list. The padding keeps the last row clear of the fade once scrolled all the way down. */
+.ob-cli-list {
+  padding-bottom: 26px;
+  -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 26px), transparent);
+  mask-image: linear-gradient(to bottom, black calc(100% - 26px), transparent);
+}

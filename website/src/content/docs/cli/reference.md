@@ -29,6 +29,7 @@ would resolve against each process's own working directory.
 
 | Command | What it does |
 | --- | --- |
+| `doctor` | Check this machine for what the first sync needs: `proton-drive` runs, a sign-in is stored, the config file reads. Does not use the daemon or its socket (see [below](#checking-this-machine-doctor)). |
 | `status` | Show what the daemon is doing right now (see below). |
 | `history` | Show the recorded sync passes, newest first — duration, kind, outcome. |
 | `activity [<path>]` | Show what has moved recently, or one path's own history. |
@@ -322,7 +323,7 @@ has to guess it from error text:
 
 - `signed-in` — something reached Proton successfully (a sync pass completed, or a `list`
   returned).
-- `signed-out` — a `proton-drive` command was refused for the session. Run `proton-drive
+- `signed-out` — a `proton-drive` command was refused for the session. Run `proton-drive auth
   login`; the daemon reuses that CLI's session and picks the new one up on its next pass.
 - `unknown` — nothing has proved or disproved it yet. A freshly started daemon reports this,
   and so does one whose only failures were of some other kind (a timeout, a missing binary,
@@ -402,9 +403,53 @@ rest, on next start), the control socket is removed, and the process exits. Unde
 with `systemctl --user start proton-syncd`; the unit's `Restart=on-failure` does not respawn
 a clean stop.
 
+## Checking this machine: `doctor`
+
+```bash
+proton-sync [--config <PATH>] [--json] doctor [--proton-cli <PATH>]
+```
+
+`doctor` is the one command that does not talk to the daemon. It never resolves or dials the
+control socket, never creates a runtime directory and never starts `proton-syncd`, so it works
+on a machine where nothing is installed or running yet. It looks at this machine and prints one
+line per check:
+
+| Check | Required | What it looks at |
+| --- | --- | --- |
+| `proton-drive` | yes | The CLI is found and `proton-drive version` runs and exits `0`. A crash, a non-executable file, a directory or a non-zero exit is reported as such, not as missing. A relative `proton_cli` path (one with a `/` that is not absolute) is a problem: the service resolves it against its own working directory, so the answer would depend on where you ran `doctor`. |
+| `signed in` | yes | A `proton-drive` sign-in is stored in the desktop keyring. Only whether it exists is read; the stored session is never printed. |
+| `config` | yes | The config file reads and validates. No file at the default path is fine. With no home directory (no absolute `XDG_CONFIG_HOME` or `HOME`) nothing is read and the check says it could not be made. |
+| `secret-tool`, `curl`, `session bus` | no | The tools and the session bus the daemon uses to follow changes. Without them sync still works but walks the whole folder on every pass. |
+| `service` | no | `proton-syncd.service` is installed for your user. |
+
+Each problem comes with a fix and a link: Proton's page for the CLI where that is the fix, and a
+section of [Troubleshooting](/reference/troubleshooting/) for the rest.
+
+It takes these options:
+
+- `--proton-cli <PATH>` checks that `proton-drive` instead of the config file's `proton_cli`. Give
+  it after `doctor`.
+- `--config <FILE>` reads that config file, and a missing file is a problem. Without it, the
+  default file is read and a missing one is fine. Give it **before** `doctor`, as for every
+  command; `proton-sync doctor --config FILE` is a usage error.
+- `--json` prints the report as JSON.
+
+It refuses `--socket-path`, `--pair` and `--all-pairs`, because it checks this machine and not a
+folder pair: it prints "doctor checks this machine, not the daemon; it takes no socket or folder
+pair" and exits `2`.
+
 ## Exit codes
 
 The CLI exits `0` on a successful round-trip and non-zero on failure — it can't reach the
 daemon, or the pass watched by `syncnow` failed. If it can't connect, confirm the daemon is
 running and that both sides use the same socket path — see
 [Troubleshooting](/reference/troubleshooting/).
+
+`doctor` has its own codes, because it never reaches the daemon:
+
+| Exit | Meaning |
+| --- | --- |
+| `0` | Everything required is in place. Recommended problems are listed but do not change the code. |
+| `1` | A required check found a problem (`missing` or `failed`). |
+| `3` | No required problem, but a required check could not be made (`unknown`): a timeout, or no session bus to ask the keyring through. |
+| `2` | A usage error, as for any command, including the refused flags above. A `proton-sync` too old to have `doctor` also exits `2`. |

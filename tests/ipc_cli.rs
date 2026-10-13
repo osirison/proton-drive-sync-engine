@@ -941,7 +941,7 @@ mod unix_tests {
 
         // The human output names it too, with the action that fixes it.
         let human = run_control_raw(&socket_path, &["status"]);
-        assert!(human.contains("proton-drive login"), "{human}");
+        assert!(human.contains("proton-drive auth login"), "{human}");
 
         // A listing refused for the same reason reports itself as failed, not as empty.
         let (listing, success) = run_control_args_any_exit(&socket_path, &["--json", "list"]);
@@ -959,6 +959,8 @@ mod unix_tests {
             "fake-browsable-proton-drive",
             &format!(
                 r#"#!/bin/sh
+# The daemon's start-up check runs `version`; answered before anything is recorded.
+if [ "$1" = "version" ]; then echo "proton-drive 0.0.0-fake"; exit 0; fi
 if [ "$1" = "filesystem" ] && [ "$2" = "list" ] && [ "$3" = "--json" ]; then
   case "$4" in
     */RemoteFolder/photos)
@@ -1325,6 +1327,8 @@ exit 64
             "fake-multi-root-proton-drive",
             &format!(
                 r#"#!/bin/sh
+# The daemon's start-up check runs `version`; answered before anything is recorded.
+if [ "$1" = "version" ]; then echo "proton-drive 0.0.0-fake"; exit 0; fi
 printf '%s\n' "$*" >> "$0.calls"
 if [ "$1" = "filesystem" ] && [ "$2" = "list" ] && [ "$3" = "--json" ]; then
   case "$4" in
@@ -1488,6 +1492,8 @@ exit 64
             "fake-shared-volume-proton-drive",
             &format!(
                 r#"#!/bin/sh
+# The daemon's start-up check runs `version`; answered before anything is recorded.
+if [ "$1" = "version" ]; then echo "proton-drive 0.0.0-fake"; exit 0; fi
 if [ "$1" = "filesystem" ] && [ "$2" = "list" ] && [ "$3" = "--json" ]; then
   printf '%s\n' "$4" >> "$0.lists"
   case "$4" in
@@ -1956,7 +1962,7 @@ exit 64
         write_script(
             directory,
             "fake-signed-out-proton-drive",
-            "#!/bin/sh\necho 'Error: request failed: 401 Unauthorized' >&2\nexit 1\n",
+            "#!/bin/sh\nif [ \"$1\" = \"version\" ]; then echo proton-drive-fake; exit 0; fi\necho 'Error: request failed: 401 Unauthorized' >&2\nexit 1\n",
         )
     }
 
@@ -2412,6 +2418,8 @@ exit 64
             &path,
             format!(
                 r#"#!/bin/sh
+# The daemon's start-up check runs `version`; answered before anything is recorded.
+if [ "$1" = "version" ]; then echo "proton-drive 0.0.0-fake"; exit 0; fi
 if [ "$1" = "filesystem" ] && [ "$2" = "list" ] && [ "$3" = "--json" ] && [ "$4" = "{remote_root}" ]; then
   printf '{{"entries":[]}}\n'
   exit 0
@@ -2443,6 +2451,8 @@ exit 64
             &path,
             format!(
                 r#"#!/bin/sh
+# The daemon's start-up check runs `version`; answered before anything is recorded.
+if [ "$1" = "version" ]; then echo "proton-drive 0.0.0-fake"; exit 0; fi
 if [ "$1" = "filesystem" ] && [ "$2" = "list" ] && [ "$3" = "--json" ]; then
   if [ -f "$0.gone" ]; then
     printf '{{"entries":[]}}\n'
@@ -2475,6 +2485,8 @@ exit 64
             &path,
             format!(
                 r#"#!/bin/sh
+# The daemon's start-up check runs `version`; answered before anything is recorded.
+if [ "$1" = "version" ]; then echo "proton-drive 0.0.0-fake"; exit 0; fi
 if [ "$1" = "filesystem" ] && [ "$2" = "list" ] && [ "$3" = "--json" ]; then
   printf '{{"entries":[{{"id":"remote-keep","name":"keep.txt","activeRevision":{{"claimedDigests":{{"sha1":"{hello_sha1}"}}}}}}]}}\n'
   exit 0
@@ -2523,6 +2535,8 @@ exit 64
             &path,
             format!(
                 r#"#!/bin/sh
+# The daemon's start-up check runs `version`; answered before anything is recorded.
+if [ "$1" = "version" ]; then echo "proton-drive 0.0.0-fake"; exit 0; fi
 if [ "$1" = "filesystem" ] && [ "$2" = "list" ] && [ "$3" = "--json" ]; then
   printf '{{"entries":[{{"id":"remote-keep","name":"keep.txt","activeRevision":{{"claimedDigests":{{"sha1":"{hello_sha1}"}}}}}}]}}\n'
   exit 0
@@ -2562,6 +2576,8 @@ exit 64
                         &path,
                         format!(
                                 r#"#!/bin/sh
+# The daemon's start-up check runs `version`; answered before anything is recorded.
+if [ "$1" = "version" ]; then echo "proton-drive 0.0.0-fake"; exit 0; fi
 if [ "$1" = "filesystem" ] && [ "$2" = "list" ] && [ "$3" = "--json" ] && [ "$4" = "{remote_root}" ]; then
     printf '{{"entries":[]}}\n'
     exit 0
@@ -2761,6 +2777,8 @@ exit 64
             &path,
             format!(
                 r#"#!/bin/sh
+# The daemon's start-up check runs `version`; answered before anything is recorded.
+if [ "$1" = "version" ]; then echo "proton-drive 0.0.0-fake"; exit 0; fi
 parent=$PPID
 if [ "$1" = "filesystem" ] && [ "$2" = "list" ] && [ "$3" = "--json" ] && [ "$4" = "{remote_root}" ]; then
     printf '{{"entries":[]}}\n'
