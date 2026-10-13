@@ -4372,16 +4372,17 @@ const PINNED_EXPRESSION_LINES: [(&str, usize); 3] = [
 ];
 
 /// What differs between the lines of `text` that hold a `{` and `PINNED_EXPRESSION_LINES`, plus any
-/// line ending in a backslash. Pinning on `{`, not just `${{`, catches a double-quoted scalar that
+/// line holding a backslash. Pinning on `{`, not just `${{`, catches a double-quoted scalar that
 /// YAML joins across a line break (`"…$\` then `{{ x }}"`, or one brace per line), where no single
-/// line holds `${{`. A line ending in a backslash is the join itself.
+/// line holds `${{`. A backslash anywhere is refused: it is that join, and also the escapes
+/// (`\x24\x7b\x7b`, `$…`) that YAML decodes into `${{` with no literal brace in the file.
 fn expression_pin_problems(text: &str) -> Vec<String> {
     let mut problems = Vec::new();
     let mut seen: Vec<(String, usize)> = Vec::new();
     for (at, line) in text.lines().enumerate() {
         let trimmed = line.trim();
-        if trimmed.ends_with('\\') {
-            problems.push(format!("line {} ends in a backslash: {trimmed}", at + 1));
+        if trimmed.contains('\\') {
+            problems.push(format!("line {} holds a backslash: {trimmed}", at + 1));
         }
         if !line.contains('{') {
             continue;
@@ -4512,6 +4513,14 @@ fn the_pinned_expression_lines_are_pinned_exactly() {
         (
             "one brace per line",
             format!("{real}run: \"gate.sh $\\\n  {{\\\n  {{ github.ref_name }}}}\"\n"),
+        ),
+        (
+            "\\u escapes",
+            format!("{real}run: \"gate.sh \\u0024\\u007b\\u007b github.ref_name }}}}\"\n"),
+        ),
+        (
+            "\\x escapes",
+            format!("{real}run: \"gate.sh \\x24\\x7b\\x7b github.ref_name }}}}\"\n"),
         ),
         ("a flow mapping", format!("{real}- {{ name: x }}\n")),
     ];
