@@ -62,7 +62,7 @@ syncing. You need a **Rust toolchain** (edition 2024 / Rust ≥ 1.85) and an **a
 `proton-drive` CLI** on your `PATH` first — the engine drives it for every remote operation:
 
 ```bash
-proton-drive filesystem list --json /Drive/RemoteFolder   # confirm the CLI works & is logged in
+proton-drive version   # confirm the CLI is installed and runs
 git clone https://github.com/osirison/proton-drive-sync-engine.git
 cd proton-drive-sync-engine
 ```
@@ -77,6 +77,14 @@ This builds and installs `proton-syncd` + `proton-sync`, writes
 `~/.config/proton-sync/proton-sync.toml`, installs a **systemd user service** that runs
 `proton-syncd --config <that file>`, previews a dry-run (showing the `destructive_actions`
 count as a safety check), and — once you confirm — enables and starts the service.
+
+Before it installs the service, `setup.sh` runs `proton-sync doctor`, which checks that the
+`proton-drive` CLI runs and is signed in, and that the config can be read. It stops on a missing
+required dependency (`--ignore-checks` continues anyway). Run it yourself at any time:
+
+```bash
+proton-sync doctor
+```
 
 **Desktop — pick the folders in a wizard, no terminal after launch:**
 
@@ -145,10 +153,10 @@ Prefer to run each step yourself, or skip systemd and just run the daemon in the
 unit's `ExecStart`, previews a dry-run as a safety gate, and — with `--gui` — hands folder
 selection to the desktop onboarding wizard):
 
-**1. Confirm the `proton-drive` CLI works** — the daemon fails the same way if it doesn't:
+**1. Confirm the `proton-drive` CLI runs** — the daemon fails the same way if it doesn't:
 
 ```bash
-proton-drive filesystem list --json /Drive/RemoteFolder
+proton-drive version
 ```
 
 **2. Build and install the binaries** to `$CARGO_HOME/bin` (defaults to `~/.cargo/bin`):
@@ -158,6 +166,13 @@ cargo install --path .            # installs proton-syncd + proton-sync
 ```
 
 (Or `cargo build --release --bins` and add `target/release` to your `PATH` for a throwaway run.)
+
+Then check the dependencies (the CLI, its sign-in, the config); it names anything missing and
+how to fix it:
+
+```bash
+proton-sync doctor
+```
 
 **3. Preview the plan** — this touches nothing; it prints exactly what would happen. Replace
 the paths with yours; the local folder must exist first (`mkdir -p ~/ProtonDrive`), the remote

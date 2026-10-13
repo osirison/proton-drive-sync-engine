@@ -61,6 +61,8 @@ Terminal quick setup options:
                          (default: $XDG_CONFIG_HOME/proton-sync/proton-sync.toml).
   --proton-cli PATH      Path to the proton-drive CLI if it is not on PATH.
   --force-config         Overwrite an existing config file (default: keep it).
+  --ignore-checks        Continue when the dependency check (`proton-sync doctor`) reports a missing
+                         required dependency, or cannot run. The report is still shown.
   --no-start             Install everything and preview a dry-run, but do not enable/start the
                          service (leaves it ready for `systemctl --user enable --now proton-syncd`).
   -y, --yes              Non-interactive: don't prompt; assume yes at the start confirmation.
@@ -105,6 +107,7 @@ parse_args() {
   assume_yes=false
   no_build=false
   install_deps=false
+  ignore_checks=false
 
   while (($# > 0)); do
     case "$1" in
@@ -118,6 +121,7 @@ parse_args() {
       -y|--yes) assume_yes=true ;;
       --no-build) no_build=true ;;
       --install-deps) install_deps=true ;;
+      --ignore-checks) ignore_checks=true ;;
       -h|--help) usage; exit 0 ;;
       *) err "unknown option: $1 (try --help)" ;;
     esac
@@ -206,13 +210,6 @@ check_common_prereqs() {
   require_command install
   if [[ "${no_build}" != "true" ]]; then
     require_command cargo "install the Rust toolchain (https://rustup.rs), edition 2024 / Rust >= 1.85"
-  fi
-
-  local cli="${proton_cli:-proton-drive}"
-  if ! command -v "${cli}" >/dev/null 2>&1 && [[ ! -x "${cli}" ]]; then
-    warn "the '${cli}' CLI was not found on PATH. Install and log in to it first \
-(the daemon shells it for every remote operation). Continuing — later steps will fail clearly if it \
-is missing."
   fi
 }
 
@@ -312,6 +309,53 @@ resolve_daemon_bin() {
 
 resolve_gui_bin() {
   resolve_installed_bin proton-sync-gui
+}
+
+# ---- dependency check -------------------------------------------------------------------------
+
+# Run the `proton-sync doctor` this script just installed; the checks live in the binary, not here.
+# MODE is "terminal" (against the config just written; stops on a required problem) or "gui" (the
+# default config path, which the wizard writes later; reports only, because the app runs the same
+# check and shows the fixes). `--config` goes before the verb: it is not a global flag. Exit codes:
+# 0 ok, 1 a required problem, 3 could not check; anything else (2 = an older proton-sync without
+# `doctor`, clap's usage error) is not a result.
+run_dependency_check() {
+  local mode="$1" bin status=0
+  bin="$(resolve_installed_bin proton-sync)"
+  local args=()
+  if [[ "${mode}" == "terminal" ]]; then
+    args+=(--config "${config_path}")
+  fi
+  args+=(doctor)
+  if [[ "${mode}" == "terminal" && -n "${proton_cli}" ]]; then
+    args+=(--proton-cli "${proton_cli}")
+  fi
+
+  step "Checking dependencies (proton-sync doctor)"
+  "${bin}" "${args[@]}" || status=$?
+
+  case "${status}" in
+    0) ;;
+    3) warn "some dependencies could not be checked (see above). Continuing." ;;
+    1)
+      if [[ "${mode}" == "gui" ]]; then
+        note "The desktop app runs the same check on first run and shows how to fix each problem. Continuing."
+      elif [[ "${ignore_checks}" == "true" ]]; then
+        warn "a required dependency is missing (see above). Continuing because of --ignore-checks."
+      else
+        err "a required dependency is missing (see above). Fix it and re-run ./setup.sh, or pass --ignore-checks to continue anyway."
+      fi
+      ;;
+    *)
+      if [[ "${mode}" == "gui" ]]; then
+        note "This proton-sync cannot run the check (exit ${status}); the desktop app runs it on first run. Continuing."
+      elif [[ "${ignore_checks}" == "true" ]]; then
+        warn "this proton-sync cannot run the check (exit ${status}). Continuing because of --ignore-checks."
+      else
+        err "this proton-sync cannot run the check (exit ${status}); it may predate 'doctor'. Re-run without --no-build, or pass --ignore-checks."
+      fi
+      ;;
+  esac
 }
 
 # ---- config generation (terminal path only) ---------------------------------------------------
@@ -615,6 +659,7 @@ run_terminal_setup() {
   daemon_bin="$(resolve_daemon_bin)"
 
   write_config "${config_path}"
+  run_dependency_check terminal
   install_unit "${daemon_bin}" "${config_path}"
   preview_and_start "${daemon_bin}" "${config_path}"
 
@@ -633,6 +678,7 @@ run_gui_setup() {
   config_path="$(default_config_path)"
 
   install_engine_binaries
+  run_dependency_check gui
   install_gui_binary
   # Resolve each binary independently (they can land in different dirs under --no-build); the GUI's
   # shell-outs need proton-syncd's dir on PATH, and the launcher's exec target is the GUI's own path.

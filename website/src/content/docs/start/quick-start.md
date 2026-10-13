@@ -8,6 +8,10 @@ sidebar:
 This walkthrough takes you from nothing to a running two-way sync, safely. It assumes
 you've [installed](/start/installation/) the binaries and that `proton-drive` is logged in.
 
+Run `proton-sync doctor` first. It checks that the `proton-drive` CLI runs and is signed in, and
+that your config can be read, and it says how to fix anything that is not. It does not need a
+running daemon.
+
 :::caution[Use a disposable folder first]
 Sync is bidirectional and deletions propagate. For your first run, use a throwaway local
 folder and a throwaway remote folder you don't mind losing. Read

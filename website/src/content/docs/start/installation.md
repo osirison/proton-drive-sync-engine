@@ -24,10 +24,10 @@ The engine relies on Proton's own `proton-drive` CLI: every remote **file** oper
 (list, upload, download, delete) shells out to it, and change detection reads Proton's
 volume-event stream directly over HTTPS, authenticated by **reusing that tool's keyring
 session**. **Install and authenticate it first**, following its own documentation, then
-confirm it works:
+confirm it runs:
 
 ```bash
-proton-drive filesystem list --json /Drive/RemoteFolder
+proton-drive version
 ```
 
 If that command fails, the daemon will fail the same way. If `proton-drive` is not on
@@ -39,6 +39,10 @@ package dependency. Install it separately and keep it logged in — it is, for n
 owner of your Proton session. If the CLI's session expires, the daemon falls back to
 snapshot scans until the CLI refreshes.
 :::
+
+Once the engine is installed, run `proton-sync doctor`. It checks the CLI, its sign-in and your
+config, and for anything missing it says how to fix it. See
+[Dependency check](/reference/troubleshooting/#dependency-check) for each problem it reports.
 
 ## Build from source
 
@@ -55,6 +59,13 @@ them into your Cargo bin directory:
 
 ```bash
 cargo install --path .
+```
+
+Then run `proton-sync doctor` to check that the `proton-drive` CLI runs, is signed in, and that
+your config can be read:
+
+```bash
+proton-sync doctor
 ```
 
 ### Build the desktop app

@@ -284,14 +284,14 @@
 
 ## 8. setup.sh
 
-- [ ] 8.1 Add `run_dependency_check MODE` (D11). Call it:
+- [x] 8.1 Add `run_dependency_check MODE` (D11). Call it:
       - from `run_terminal_setup`, after `write_config` and before `install_unit`;
       - from `run_gui_setup`, after `install_engine_binaries`.
 
       Add `--ignore-checks` to `parse_args` and `usage`. Delete the `proton-drive` warning from
       `check_common_prereqs`. Touch nothing that `upgrade.sh` or `uninstall.sh` call. Verify via
       8.2, and `bash -n setup.sh`
-- [ ] 8.2 Extend `tests/scripts.rs`. Source `setup.sh` in the existing scratch sandbox, with a
+- [x] 8.2 Extend `tests/scripts.rs`. Source `setup.sh` in the existing scratch sandbox, with a
       stub `proton-sync` that records its argv and exits 0, 1, 2 or 3, and a `systemctl` stub
       that logs its calls, and assert:
       - the recorded argv is `--config <file> doctor` in terminal mode (plus `--proton-cli P`
@@ -304,7 +304,7 @@
       - sourcing `setup.sh` from `upgrade.sh`'s path still runs nothing.
 
       Verify: `cargo test --test scripts`
-- [ ] 8.3 Docs, saying to run `proton-sync doctor` after installing:
+- [x] 8.3 Docs, saying to run `proton-sync doctor` after installing:
       - `README.md` (Quick setup and Manual setup);
       - `website/src/content/docs/start/installation.md` (one line after the prerequisite
         section, and in "Build from source");
@@ -317,16 +317,16 @@
 
 ## 9. Integration checks
 
-- [ ] 9.1 Run the full gates: `cargo fmt --all -- --check`,
+- [x] 9.1 Run the full gates: `cargo fmt --all -- --check`,
       `cargo clippy --workspace --all-targets --all-features -- -D warnings`,
       `cargo test --workspace --all-targets --all-features`, `(cd gui && npm ci && npm run check)`,
       `(cd gui && npm run fidelity)` and `(cd website && npm ci && npm run build)`. Verify: all
       green, with the output in the PR
-- [ ] 9.2 In the built site, confirm the ids:
+- [x] 9.2 In the built site, confirm the ids:
       `grep -o 'id="[^"]*"' website/dist/reference/troubleshooting/index.html` contains every
       anchor in `doctor::links` (D9's one-time check). Verify: the list in the PR matches
       design D9's table
-- [ ] 9.3 Run the sibling's smoke expectation by hand in a throwaway `fedora:latest` container
+- [x] 9.3 Run the sibling's smoke expectation by hand in a throwaway `fedora:latest` container
       with the built `proton-sync` bind-mounted, and no `proton-drive`, config, bus or daemon.
       `proton-sync doctor` must:
       - name `proton-drive`;
