@@ -1,5 +1,6 @@
 //! The dependency check behind `proton-sync doctor`, the daemon's start-up log, `setup.sh` and the
-//! desktop app's first-run screen (`openspec/changes/add-dependency-check`).
+//! desktop app's first-run screen (`openspec/specs/dependency-check`; the design is in
+//! `openspec/changes/archive/2026-10-13-add-dependency-check`).
 //!
 //! One definition of each check, run against an injected [`Environment`]: every outside fact (the
 //! `PATH`, the environment, a file, the daemon's lock, a child process) comes through it, so every
