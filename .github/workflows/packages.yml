@@ -30,25 +30,35 @@ concurrency:
   group: packages-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+env:
+  # The Fedora release the RPM is built in: the OLDEST one that is not end of life, so the asset
+  # is built against the oldest glibc and library set it has to install on. Read from
+  # https://endoflife.date/api/fedora.json on 2026-10-13: 43 (end of life 2026-12-09) and 44
+  # (2027-06-02) are supported. Change it here, and only here, when the oldest one reaches end of
+  # life. `container.image` cannot read `env`, so the `changes` job publishes it as an output.
+  FEDORA_OLDEST: "43"
+
 jobs:
-  # Decides whether a pull request needs the package builds. The paths are the ones in the
-  # linux-packages spec ("Packaging changes are built before they merge"): everything a package is
-  # made of or built with. Not a third-party action: the list of changed files comes from the
-  # pull-request API, which is the diff against the merge base that GitHub shows.
+  # Decides whether a pull request needs the package builds, and publishes FEDORA_OLDEST for the
+  # `container:` line below. The paths are the ones in the linux-packages spec ("Packaging changes
+  # are built before they merge"): everything a package is made of or built with.
+  #
+  # The changed files come from the checkout (the pull request's merge commit against its first
+  # parent, the base branch tip), not from the pull-request API: the API needs the
+  # `pull-requests: read` permission, and a workflow called from another workflow can only lower
+  # the token permissions its caller grants, so a caller with `contents: read` would fail at start.
   changes:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
     outputs:
       build: ${{ steps.filter.outputs.build }}
+      fedora: ${{ env.FEDORA_OLDEST }}
     steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
       - id: filter
         env:
-          GH_TOKEN: ${{ github.token }}
           EVENT: ${{ github.event_name }}
-          REPO: ${{ github.repository }}
-          PULL_REQUEST: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
           if [[ "$EVENT" != pull_request ]]; then
@@ -56,9 +66,8 @@ jobs:
             echo "build=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # A renamed file counts under both names.
-          files="$(gh api --paginate "repos/$REPO/pulls/$PULL_REQUEST/files" \
-            --jq '.[] | .filename, (.previous_filename // empty)')"
+          # No rename detection, so a renamed file counts under both its old and new name.
+          files="$(git diff --no-renames --name-only HEAD^1 HEAD)"
           filter='^packaging/|^Cargo\.lock$|(^|/)Cargo\.toml$|^gui/src-tauri/tauri\.conf\.json$|^\.github/workflows/packages\.yml$'
           matched="$(grep -E "$filter" <<<"$files" || true)"
           if [[ -n "$matched" ]]; then
@@ -116,20 +125,13 @@ jobs:
           path: out/proton-drive-sync-engine-*.tar.gz
           if-no-files-found: error
 
-  # RPM (design D1/D7): `rpmbuild -ba` of the spec out of the tarball, in the OLDEST Fedora release
-  # that is not end of life, so the asset is built against the oldest glibc and library set it has
-  # to install on. The Fedora release is the one `matrix.fedora` value: `container.image` cannot
-  # read `env`, so a matrix of one is how a single value reaches it. Read from
-  # https://endoflife.date/api/fedora.json on 2026-10-13: 43 (end of life 2026-12-09) and 44
-  # (2027-06-02) are supported. Move it up when the oldest one reaches end of life.
+  # RPM (design D1/D7): `rpmbuild -ba` of the spec out of the tarball, in the oldest Fedora release
+  # that is not end of life (FEDORA_OLDEST, above).
   rpm:
-    needs: tarball
+    needs: [changes, tarball]
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-    strategy:
-      matrix:
-        fedora: ["43"]
-    container: fedora:${{ matrix.fedora }}
+    timeout-minutes: 90
+    container: fedora:${{ needs.changes.outputs.fedora }}
     env:
       UPSTREAM: ${{ needs.tarball.outputs.upstream }}
     steps:
@@ -185,7 +187,7 @@ jobs:
   deb:
     needs: tarball
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     container: ubuntu:22.04
     env:
       UPSTREAM: ${{ needs.tarball.outputs.upstream }}
@@ -248,7 +250,7 @@ jobs:
   arch:
     needs: tarball
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     container: archlinux:base-devel
     env:
       UPSTREAM: ${{ needs.tarball.outputs.upstream }}
