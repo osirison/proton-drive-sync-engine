@@ -10,12 +10,13 @@ name: Publish
 #               gate        the tag is checked out and passes release.yml's gate
 #               credentials the four secrets are written to files (the only step that reads them)
 #               preflight   every credential is tried and every failure listed, before any channel
-#               apt         (not built yet: the next change adds it here)
+#               apt         apt-publish.sh (rebuilds the whole apt tree from the published releases)
 #               AUR         aur-publish.sh
 #               COPR        copr.sh, which submits and then waits for the builds
 #               final       fails the job, naming each step that did not succeed
-#   verify    (not built yet: the next change adds one job per channel here, outside the
-#             environment, with no secrets)
+#   verify-*  one job per channel (COPR per Fedora release, the AUR, apt per distribution), after
+#             `publish`, outside the environment, with no secrets; each installs the new version
+#             from the live channel in a clean container (verify-channel.sh)
 #
 # All logic is in packaging/release/*.sh, which tests/scripts.rs runs with stubs. This file only
 # calls them. No `run:` holds an expression: the tag, the dry-run flag and the secrets reach the
@@ -33,9 +34,11 @@ name: Publish
 #
 # STABLE NAMES. After the gate step, every step runs the scripts of the TAG, with the `env:` of THIS
 # file. So the env names the scripts read (TAG, DRY_RUN, COPR_CONFIG, AUR_SSH_KEY, APT_SIGNING_KEY,
-# APT_DEPLOY_KEY, COPR_TOKEN_EXPIRES, COPR_OWNER, AUR_GIT_NAME, AUR_GIT_EMAIL, GH_TOKEN) must stay
+# APT_DEPLOY_KEY, COPR_TOKEN_EXPIRES, COPR_OWNER, AUR_GIT_NAME, AUR_GIT_EMAIL, APT_GIT_NAME,
+# APT_GIT_EMAIL, APT_WITHDRAWN, VERIFY_EXPECT_VERIFIER, GH_TOKEN) must stay
 # as they are, or change only together with a re-tag: a rename breaks publishing of older tags
-# (closed: the scripts stop on a missing value). Likewise a tag cut before these scripts existed
+# (closed: the scripts stop on a missing value). The verification jobs run the tag's scripts the
+# same way, so a tag from before verify-channel.sh existed cannot be verified here either. Likewise a tag cut before these scripts existed
 # cannot be published here, and a fix to a script does not reach an existing tag without re-tagging.
 #
 # NEVER PUBLISH A RELEASE FROM A WORKFLOW. A release published with GITHUB_TOKEN fires no other
@@ -84,6 +87,9 @@ env:
   COPR_OWNER: osirison
   AUR_GIT_NAME: proton-drive-sync-engine release
   AUR_GIT_EMAIL: noreply@github.com
+  # The identity of the single commit pushed to the apt repository's gh-pages.
+  APT_GIT_NAME: proton-drive-sync-engine release
+  APT_GIT_EMAIL: noreply@github.com
 
 jobs:
   publish:
@@ -124,6 +130,12 @@ jobs:
           "$RUNNER_TEMP/copr-venv/bin/pip" install --quiet --require-hashes --no-deps -r packaging/release/copr-cli-requirements.txt
           echo "$RUNNER_TEMP/copr-venv/bin" >> "$GITHUB_PATH"
 
+      # apt-ftparchive (apt-utils) builds the apt tree; gpg, gpgv, git, jq and gh are on the runner.
+      - name: Install apt-utils
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends apt-utils
+
       # The secrets are read here and in no other step, and written to files in a directory only
       # this user can enter; the cleanup step at the end removes it.
       - name: Write the credentials
@@ -140,11 +152,18 @@ jobs:
           COPR_TOKEN_EXPIRES: ${{ vars.COPR_TOKEN_EXPIRES }}
         run: packaging/release/preflight.sh
 
-      # --- PR 4b plugs the apt step in HERE (task 6.3), with this same `if:` and `id: apt`, and
-      # --- adds `apt` to the list the final step is given. ------------------------------------
-
       # A channel step runs even if the one before it failed, but only after a good preflight and
       # not after a cancel. Each records its own result for the final step.
+      #
+      # APT_WITHDRAWN (the repository variable of that name; optional) lists release tags to leave
+      # out of the apt repository, which is how a version is withdrawn from it (docs/releasing.md).
+      - name: apt
+        id: apt
+        if: "!cancelled() && steps.preflight.outcome == 'success'"
+        env:
+          APT_WITHDRAWN: ${{ vars.APT_WITHDRAWN }}
+        run: packaging/release/apt-publish.sh "$PUBLISH_TAG"
+
       - name: AUR
         id: aur
         if: "!cancelled() && steps.preflight.outcome == 'success'"
@@ -159,11 +178,106 @@ jobs:
       # itself failed: there is nothing to add to its message.
       - name: Check every step succeeded
         if: "always() && steps.route.outcome == 'success'"
-        run: packaging/release/aggregate.sh preflight aur copr
+        run: packaging/release/aggregate.sh preflight apt aur copr
 
       - name: Remove the credentials
         if: always()
         run: packaging/release/credentials.sh remove
 
-  # --- PR 4b adds the verification jobs HERE (task 6.6): `needs: publish`, no `environment`, no
-  # --- secrets, one per channel. -------------------------------------------------------------
+  # --- The verification jobs (task 6.6, design D12) -------------------------------------------------
+  # One per channel, after `publish`, OUTSIDE the environment and with no secret: they read only public
+  # endpoints (COPR, the AUR, the apt site, the release's tarball). Each repeats the publish job's
+  # first steps on its own runner, so that it too runs the TAG's scripts: route.sh (the channels the
+  # release is routed to; a pre-release checks beta only), then tag-checkout.sh (the tag's commit and
+  # its gate). Then verify-channel.sh runs the channel's check in a clean container of the
+  # distribution being checked, with the checkout mounted read-only.
+  #
+  # Choices, recorded in design D12: `needs: publish` means a failed publish step skips every
+  # verification (the run is already red and names the channel; re-run it with workflow_dispatch). A
+  # dry run skips them too (it publishes nothing, so there is nothing to find). The Fedora list is a
+  # third copy after FEDORA_OLDEST and smoke-rpm's matrix in packages.yml; a test holds the lists equal.
+
+  verify-copr:
+    needs: publish
+    if: "!inputs.dry_run"
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        fedora: ["43", "44"]
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Choose the channels
+        env:
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: packaging/release/route.sh "$TAG"
+      - name: Check out the tag and run its gate
+        run: packaging/release/tag-checkout.sh "$PUBLISH_TAG"
+      - name: Install from COPR
+        env:
+          IMAGE: fedora:${{ matrix.fedora }}
+        run: packaging/release/verify-channel.sh copr "$IMAGE"
+
+  verify-aur:
+    needs: publish
+    if: "!inputs.dry_run"
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Choose the channels
+        env:
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: packaging/release/route.sh "$TAG"
+      - name: Check out the tag and run its gate
+        run: packaging/release/tag-checkout.sh "$PUBLISH_TAG"
+      - name: Build the AUR package
+        run: packaging/release/verify-channel.sh aur archlinux:base-devel
+
+  # The three apt releases of the design (D10): the oldest, a recent one and the newest. `verifier`
+  # is the signature checker apt has in that image, found on 2026-10-13 and asserted on every run:
+  # Ubuntu 22.04 (apt 2.4) and 26.04 (apt 3.2) use gpgv, Debian 13 (apt 3.0) uses sqv.
+  verify-apt:
+    needs: publish
+    if: "!inputs.dry_run"
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: ubuntu:22.04
+            verifier: gpgv
+          - image: debian:13
+            verifier: sqv
+          - image: ubuntu:26.04
+            verifier: gpgv
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Choose the channels
+        env:
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: packaging/release/route.sh "$TAG"
+      - name: Check out the tag and run its gate
+        run: packaging/release/tag-checkout.sh "$PUBLISH_TAG"
+      - name: Install from the apt repository
+        env:
+          IMAGE: ${{ matrix.image }}
+          VERIFY_EXPECT_VERIFIER: ${{ matrix.verifier }}
+        run: packaging/release/verify-channel.sh apt "$IMAGE"

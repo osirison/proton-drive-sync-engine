@@ -5,6 +5,7 @@
 #   packaging/version.sh set <upstream>   write every version site
 #   packaging/version.sh tag-version <tag>   the upstream version a release tag names, or an error
 #   packaging/version.sh is-prerelease <v>   prints true or false
+#   packaging/version.sh sort-key <v>        a key that sorts (LC_ALL=C) in version order
 #   packaging/version.sh current             the version the root Cargo.toml states
 #
 # The upstream version is X.Y.Z for a final release or X.Y.Z-P.N for a pre-release, where P is
@@ -58,6 +59,7 @@ usage: packaging/version.sh check
        packaging/version.sh spell <rpm|deb|arch> <upstream version>
        packaging/version.sh tag-version <tag>
        packaging/version.sh is-prerelease <upstream version>
+       packaging/version.sh sort-key <upstream version>
        packaging/version.sh current
 
 The upstream version is X.Y.Z or X.Y.Z-(alpha|beta|rc).N, for example 0.1.0 or 0.1.0-beta.1.
@@ -615,6 +617,33 @@ cmd_is_prerelease() {
   if [[ "$1" == *-* ]]; then echo true; else echo false; fi
 }
 
+# A key that sorts, as plain text under LC_ALL=C, in the order the package managers rank the
+# versions: major, minor, patch as numbers, then alpha < beta < rc < the final release of the same
+# X.Y.Z, then the pre-release number as a number (beta.9 < beta.10). It is the order dpkg gives the
+# deb spellings (0.1.0~beta.9-1 < 0.1.0~beta.10-1 < 0.1.0~rc.1-1 < 0.1.0-1); a test holds the two
+# together. The apt step uses it to pick the newest releases by VERSION and never by date.
+cmd_sort_key() {
+  [[ $# -eq 1 ]] || { usage; exit 2; }
+  valid_shape "$1" || die "'$1' is not an upstream version (X.Y.Z or X.Y.Z-(alpha|beta|rc).N)"
+  local core="${1%%-*}" rank=3 number=0 major minor patch pre
+  IFS=. read -r major minor patch <<<"$core"
+  local part
+  for part in "$major" "$minor" "$patch"; do
+    ((${#part} <= 9)) || die "'$1': a number with more than 9 digits is not supported"
+  done
+  if [[ "$1" == *-* ]]; then
+    pre="${1#*-}"
+    number="${pre#*.}"
+    ((${#number} <= 9)) || die "'$1': a number with more than 9 digits is not supported"
+    case "${pre%%.*}" in
+      alpha) rank=0 ;;
+      beta) rank=1 ;;
+      rc) rank=2 ;;
+    esac
+  fi
+  printf '%09d.%09d.%09d.%d.%09d\n' "$((10#$major))" "$((10#$minor))" "$((10#$patch))" "$rank" "$((10#$number))"
+}
+
 # The version the root Cargo.toml states, which every other site is held to.
 cmd_current() {
   [[ $# -eq 0 ]] || { usage; exit 2; }
@@ -632,6 +661,10 @@ case "${1:-}" in
   is-prerelease)
     shift
     cmd_is_prerelease "$@"
+    ;;
+  sort-key)
+    shift
+    cmd_sort_key "$@"
     ;;
   current)
     shift
