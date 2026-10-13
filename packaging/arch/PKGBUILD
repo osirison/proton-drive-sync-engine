@@ -55,6 +55,10 @@ depends=(
   'curl'
   'libayatana-appindicator'
   'hicolor-icon-theme'
+  # The Nautilus and Nemo extensions are Python scripts (`import sqlite3`), so namcap reports
+  # the package as missing `python`. It is a real dependency of the files this package installs,
+  # even though the extensions only load once the optdepends below are present.
+  'python'
 )
 makedepends=(
   'cargo'
@@ -64,12 +68,21 @@ makedepends=(
   'gtk-layer-shell'
   'glib2'
   'pkgconf'
-  'git'
 )
 optdepends=(
   'nautilus-python: sync-status emblems in GNOME Files (Nautilus)'
   'nemo-python: sync-status emblems in Cinnamon Nemo'
 )
+# makepkg.conf turns on LTO, which adds -flto to the C flags. The bundled SQLite that
+# libsqlite3-sys compiles is then built as GCC LTO objects, and rustc's linker (ld.lld since Rust
+# 1.90) cannot read those: the link of proton-syncd fails with `undefined symbol: sqlite3_*`.
+# Turning LTO off for this package is the fix Arch's Rust packaging guidelines give for C code
+# built under cargo.
+#
+# `!debug` keeps makepkg from splitting out a -debug package: [profile.release] has no debug
+# info, so that package would hold only symlinks to nothing (namcap reports them as errors), and
+# the build must produce exactly one package.
+options=('!lto' '!debug')
 install="${_pkgbase}.install"
 # The release tarball, made by `git archive` with one top-level directory named
 # ${_pkgbase}-${_upstream_ver}. It is saved under that name so makepkg finds the copy a build

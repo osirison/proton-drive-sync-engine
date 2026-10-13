@@ -1,0 +1,375 @@
+name: Packages
+
+# Builds the source tarball and the three Linux packages (RPM, deb, Arch), each from that tarball
+# and inside its own distribution's container (openspec change add-linux-release-pipeline, design
+# D1/D2/D5). Three triggers, one set of jobs:
+#
+#   pull_request   builds only when the change touches what a package is made of (the `changes`
+#                  job below); otherwise every build job is skipped and `packages-ok` still passes.
+#   schedule       weekly, always builds: catches a distribution update that breaks a build
+#                  between releases. Scheduled runs use the default branch.
+#   workflow_call  the tag workflow calls this file, so a release runs the same jobs as a pull
+#                  request. It always builds.
+#
+# `packages-ok` is the one job meant to be a required check. A required check that is skipped
+# never reports, and a matrix job skipped by `if:` reports under its unexpanded name, so the
+# individual jobs cannot be required; the aggregator reports on every run.
+on:
+  pull_request:
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_call:
+
+permissions:
+  contents: read
+
+# A new push to a pull request replaces the run for the old one. Every other run gets its own group:
+# a scheduled run is never cancelled, and a run called from another workflow must not share a group
+# with its caller (a group named after `github.workflow` would be the caller's own and cancel it).
+concurrency:
+  group: packages-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Decides whether a pull request needs the package builds. The paths are the ones in the
+  # linux-packages spec ("Packaging changes are built before they merge"): everything a package is
+  # made of or built with. Not a third-party action: the list of changed files comes from the
+  # pull-request API, which is the diff against the merge base that GitHub shows.
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      build: ${{ steps.filter.outputs.build }}
+    steps:
+      - id: filter
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          PULL_REQUEST: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT" != pull_request ]]; then
+            echo "$EVENT builds every package."
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # A renamed file counts under both names.
+          files="$(gh api --paginate "repos/$REPO/pulls/$PULL_REQUEST/files" \
+            --jq '.[] | .filename, (.previous_filename // empty)')"
+          filter='^packaging/|^Cargo\.lock$|(^|/)Cargo\.toml$|^gui/src-tauri/tauri\.conf\.json$|^\.github/workflows/packages\.yml$'
+          matched="$(grep -E "$filter" <<<"$files" || true)"
+          if [[ -n "$matched" ]]; then
+            echo "Package builds are needed, because the pull request changes:"
+            echo "$matched"
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No package input changed: the builds are skipped."
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # The one source tarball (design D5): the tracked files of the commit under one top-level
+  # directory, gzip without a name or timestamp, so the same commit gives the same bytes.
+  tarball:
+    needs: changes
+    if: needs.changes.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      upstream: ${{ steps.version.outputs.upstream }}
+    steps:
+      - uses: actions/checkout@v7
+      # The upstream version is the root Cargo.toml's; `packaging/version.sh check` (CI's `rust`
+      # job) holds every other site to it.
+      - id: version
+        run: |
+          set -euo pipefail
+          upstream="$(awk -F'"' '/^version = /{print $2; exit}' Cargo.toml)"
+          [[ -n "$upstream" ]] || { echo "no version in Cargo.toml" >&2; exit 1; }
+          echo "upstream=$upstream" >> "$GITHUB_OUTPUT"
+      - name: Make the tarball
+        env:
+          UPSTREAM: ${{ steps.version.outputs.upstream }}
+        run: |
+          set -euo pipefail
+          mkdir out
+          git archive --format=tar --prefix="proton-drive-sync-engine-${UPSTREAM}/" HEAD \
+            | gzip -n > "out/proton-drive-sync-engine-${UPSTREAM}.tar.gz"
+          ls -l out
+      # One top-level directory, and exactly the tracked files of the commit under it.
+      - name: Check the file list
+        env:
+          UPSTREAM: ${{ steps.version.outputs.upstream }}
+        run: |
+          set -euo pipefail
+          prefix="proton-drive-sync-engine-${UPSTREAM}/"
+          tar -tzf "out/proton-drive-sync-engine-${UPSTREAM}.tar.gz" | grep -v '/$' | sort > in-tarball.txt
+          git -c core.quotepath=off ls-tree -r --name-only HEAD | sed "s|^|${prefix}|" | sort > in-commit.txt
+          diff -u in-commit.txt in-tarball.txt
+          tops="$(tar -tzf "out/proton-drive-sync-engine-${UPSTREAM}.tar.gz" | cut -d/ -f1 | sort -u)"
+          [[ "$tops" == "${prefix%/}" ]] || { echo "top-level entries: $tops" >&2; exit 1; }
+          echo "$(wc -l < in-commit.txt) files, one top-level directory."
+      - uses: actions/upload-artifact@v7
+        with:
+          name: source-tarball
+          path: out/proton-drive-sync-engine-*.tar.gz
+          if-no-files-found: error
+
+  # RPM (design D1/D7): `rpmbuild -ba` of the spec out of the tarball, in the OLDEST Fedora release
+  # that is not end of life, so the asset is built against the oldest glibc and library set it has
+  # to install on. The Fedora release is the one `matrix.fedora` value: `container.image` cannot
+  # read `env`, so a matrix of one is how a single value reaches it. Read from
+  # https://endoflife.date/api/fedora.json on 2026-10-13: 43 (end of life 2026-12-09) and 44
+  # (2027-06-02) are supported. Move it up when the oldest one reaches end of life.
+  rpm:
+    needs: tarball
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      matrix:
+        fedora: ["43"]
+    container: fedora:${{ matrix.fedora }}
+    env:
+      UPSTREAM: ${{ needs.tarball.outputs.upstream }}
+    steps:
+      - name: Install the build tools
+        run: dnf -y install rpm-build 'dnf-command(builddep)'
+      - uses: actions/download-artifact@v8
+        with:
+          name: source-tarball
+          path: art
+      - name: Build
+        run: |
+          set -euo pipefail
+          top="$RUNNER_TEMP/rpm"
+          mkdir -p "$top/sources" "$top/rpmbuild" "$top/tree"
+          tar -xzf "art/proton-drive-sync-engine-${UPSTREAM}.tar.gz" -C "$top/tree"
+          tree="$top/tree/proton-drive-sync-engine-${UPSTREAM}"
+          spec="$tree/packaging/rpm/proton-drive-sync-engine.spec"
+          dnf -y builddep "$spec"
+          # Source0 is the release asset's URL; rpmbuild finds the tarball by its name here.
+          cp "art/proton-drive-sync-engine-${UPSTREAM}.tar.gz" "$tree/packaging/rpm/proton-syncd.service" "$top/sources/"
+          (cd "$tree" && rpmbuild -ba "$spec" --define "_topdir $top/rpmbuild" --define "_sourcedir $top/sources")
+          mkdir -p out
+          cp "$top"/rpmbuild/RPMS/*/*.rpm "$top"/rpmbuild/SRPMS/*.rpm out/
+          # Release assets are named by the upstream version, with no "~".
+          "$tree/packaging/name-assets.sh" "$UPSTREAM" out/*.rpm
+          ls -l out
+      - name: Check the packages
+        run: |
+          set -euo pipefail
+          cd out
+          [[ "$(ls -1 | wc -l)" == 4 ]] || { echo "expected the source RPM and three RPMs" >&2; ls; exit 1; }
+          main="$(ls proton-drive-sync-engine-[0-9]*.x86_64.rpm)"
+          ls proton-drive-sync-engine-[0-9]*.src.rpm proton-drive-sync-engine-nautilus-*.noarch.rpm proton-drive-sync-engine-nemo-*.noarch.rpm
+          requires="$(rpm -qp --requires "$main")"
+          for dependency in curl libsecret hicolor-icon-theme; do
+            grep -qx "$dependency" <<<"$requires" || { echo "$main does not require $dependency" >&2; exit 1; }
+          done
+          # The prerequisite text (the CLI is Proton's own download and is not a dependency).
+          info="$(rpm -qip "$main")"
+          grep -q 'https://proton.me/drive/download' <<<"$info"
+          grep -q 'proton-drive auth login' <<<"$info"
+          if grep -q '^proton-drive' <<<"$requires"; then echo "the CLI must not be a dependency" >&2; exit 1; fi
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rpm-packages
+          path: out/*.rpm
+          if-no-files-found: error
+
+  # Deb (design D1/D6): built once on Ubuntu 22.04, which has the oldest glibc of the supported
+  # Debian and Ubuntu releases. Its packaged rust is older than the 1.90 the locked crates need, so
+  # the toolchain comes from rustup, and the build profile drops only the two Rust entries from the
+  # Build-Depends check; every other entry is still checked.
+  deb:
+    needs: tarball
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    container: ubuntu:22.04
+    env:
+      UPSTREAM: ${{ needs.tarball.outputs.upstream }}
+      DEBIAN_FRONTEND: noninteractive
+      PROFILE: pkg.proton-drive-sync-engine.rustup
+    steps:
+      - name: Install the build tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential ca-certificates curl dpkg-dev
+      - uses: actions/download-artifact@v8
+        with:
+          name: source-tarball
+          path: art
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Build
+        run: |
+          set -euo pipefail
+          rustc --version
+          top="$RUNNER_TEMP/deb"
+          mkdir -p "$top"
+          tar -xzf "art/proton-drive-sync-engine-${UPSTREAM}.tar.gz" -C "$top"
+          cd "$top/proton-drive-sync-engine-${UPSTREAM}"
+          # dpkg-buildpackage reads ./debian; the tree keeps it under packaging/.
+          ln -s packaging/debian debian
+          apt-get build-dep -y -o "APT::Build-Profiles=$PROFILE" ./
+          dpkg-buildpackage -b -us -uc --build-profiles="$PROFILE"
+          cd ..
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          cp ./*.deb "$GITHUB_WORKSPACE/out/"
+          # Release assets are named by the upstream version, with no "~".
+          "proton-drive-sync-engine-${UPSTREAM}/packaging/name-assets.sh" "$UPSTREAM" "$GITHUB_WORKSPACE"/out/*.deb
+          ls -l "$GITHUB_WORKSPACE/out"
+      - name: Check the packages
+        run: |
+          set -euo pipefail
+          cd out
+          [[ "$(ls -1 | wc -l)" == 3 ]] || { echo "expected three .deb files" >&2; ls; exit 1; }
+          ls proton-drive-sync-engine_*_amd64.deb proton-sync-nautilus_*_all.deb proton-sync-nemo_*_all.deb
+          info="$(dpkg-deb -I proton-drive-sync-engine_*_amd64.deb)"
+          grep -q 'https://proton.me/drive/download' <<<"$info"
+          grep -q 'proton-drive auth login' <<<"$info"
+          if grep -E '^ *(Depends|Pre-Depends|Recommends|Suggests):.*proton-drive([^-]|$)' <<<"$info"; then
+            echo "the CLI must not be a package relation" >&2
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v7
+        with:
+          name: deb-packages
+          path: out/*.deb
+          if-no-files-found: error
+
+  # Arch (design D1/D8): `makepkg -s` as an unprivileged user (makepkg refuses root), with the
+  # tarball beside the PKGBUILD so it is not downloaded. Then the AUR path is run on the same
+  # tarball for the beta channel, so the publish step is exercised before any release.
+  arch:
+    needs: tarball
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    container: archlinux:base-devel
+    env:
+      UPSTREAM: ${{ needs.tarball.outputs.upstream }}
+    steps:
+      - name: Install the build tools
+        run: |
+          pacman -Syu --noconfirm --needed sudo namcap
+          useradd -m builder
+          echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
+      - uses: actions/download-artifact@v8
+        with:
+          name: source-tarball
+          path: art
+      - name: Build
+        run: |
+          set -euo pipefail
+          home=/home/builder
+          install -d -o builder -g builder "$home/pkg" "$home/tree"
+          cp "art/proton-drive-sync-engine-${UPSTREAM}.tar.gz" "$home/pkg/"
+          # The PKGBUILD and its install script come out of the tarball too.
+          tar -xzf "art/proton-drive-sync-engine-${UPSTREAM}.tar.gz" -C "$home/tree"
+          tree="$home/tree/proton-drive-sync-engine-${UPSTREAM}"
+          cp "$tree/packaging/arch/PKGBUILD" "$tree/packaging/arch/proton-drive-sync-engine.install" "$home/pkg/"
+          chown -R builder:builder "$home"
+          cd "$home/pkg"
+          sudo -u builder makepkg -s --noconfirm
+          ls -l ./*.pkg.tar.zst
+      - name: namcap
+        run: |
+          set -euo pipefail
+          cd /home/builder/pkg
+          [[ "$(ls -1 ./*.pkg.tar.zst | wc -l)" == 1 ]] || { echo "expected one package" >&2; exit 1; }
+          namcap PKGBUILD | tee namcap-pkgbuild.txt
+          namcap ./*.pkg.tar.zst | tee namcap-package.txt
+          # Warnings are reported above and do not fail the job; an error does.
+          if grep -E ' E: ' namcap-pkgbuild.txt namcap-package.txt; then
+            echo "namcap reports an error" >&2
+            exit 1
+          fi
+      - name: Check the package and name it
+        run: |
+          set -euo pipefail
+          home=/home/builder
+          mkdir -p out
+          cp "$home"/pkg/*.pkg.tar.zst out/
+          # Release assets are named by the upstream version.
+          "$home/tree/proton-drive-sync-engine-${UPSTREAM}/packaging/name-assets.sh" "$UPSTREAM" out/*.pkg.tar.zst
+          ls -l out
+          info="$(pacman -Qip out/*.pkg.tar.zst)"
+          # The prerequisite is in the description (pkgdesc); the install note has the URL.
+          description="$(sed -n 's/^Description *: //p' <<<"$info")"
+          grep -q "proton-drive" <<<"$description"
+          grep -q "signed in" <<<"$description"
+          depends="$(sed -n 's/^Depends On *: //p' <<<"$info")"
+          if grep -qE '(^| )proton-drive(-[a-z]+)*( |$)' <<<"$depends"; then
+            echo "the CLI must not be a dependency" >&2
+            exit 1
+          fi
+          for dependency in curl libsecret hicolor-icon-theme; do
+            grep -qw "$dependency" <<<"$depends" || { echo "package does not depend on $dependency" >&2; exit 1; }
+          done
+      # The AUR beta tree from the same tarball, with its three checks (tasks 3.6).
+      - name: AUR beta tree
+        run: |
+          set -euo pipefail
+          home=/home/builder
+          tree="$home/tree/proton-drive-sync-engine-${UPSTREAM}"
+          mkdir -p "$home/assets"
+          cp "art/proton-drive-sync-engine-${UPSTREAM}.tar.gz" "$home/assets/"
+          chown -R builder:builder "$home/assets"
+          sudo -u builder bash -c "cd '$home' && '$tree/packaging/arch/aur.sh' beta '$home/assets' '$home/aur-beta'"
+          cd "$home/aur-beta"
+          # 1. The package name, provides, conflicts and the tarball's real checksum.
+          real="$(sha256sum "$home/assets/proton-drive-sync-engine-${UPSTREAM}.tar.gz" | awk '{print $1}')"
+          grep -Fx 'pkgname=proton-drive-sync-engine-beta' PKGBUILD
+          grep -Fx 'provides=(proton-drive-sync-engine)' PKGBUILD
+          grep -Fx 'conflicts=(proton-drive-sync-engine)' PKGBUILD
+          grep -Fx "sha256sums=('$real')" PKGBUILD
+          # 2. .SRCINFO is what makepkg prints for this PKGBUILD.
+          sudo -u builder bash -c 'makepkg --printsrcinfo' | diff -u .SRCINFO -
+          # 3. makepkg accepts the checksum against the local tarball (it stops after checking).
+          cp "$home/assets/proton-drive-sync-engine-${UPSTREAM}.tar.gz" .
+          chown -R builder:builder .
+          sudo -u builder makepkg --verifysource
+      - uses: actions/upload-artifact@v7
+        with:
+          name: arch-package
+          path: out/*.pkg.tar.zst
+          if-no-files-found: error
+
+  # The one required check. It runs on every run (`always()`) and reads what the others did:
+  # a skipped build job is fine when `changes` said no build was needed, and nothing else is.
+  # A failed or cancelled job fails it. New jobs that gate a merge (the install tests) go into
+  # `needs`; nothing else here changes.
+  packages-ok:
+    if: always()
+    needs: [changes, tarball, rpm, deb, arch]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the results
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
+          build="$(jq -r '.changes.outputs.build // ""' <<<"$NEEDS")"
+          case "$build" in
+            true | false) ;;
+            *) echo "the change check gave no answer ('$build')" >&2; exit 1 ;;
+          esac
+          bad="$(jq -r --arg build "$build" '
+            to_entries[]
+            | select(
+                .value.result == "failure" or .value.result == "cancelled"
+                or (.key == "changes" and .value.result != "success")
+                or ($build == "true" and .value.result != "success")
+              )
+            | "\(.key): \(.value.result)"' <<<"$NEEDS")"
+          if [[ -n "$bad" ]]; then
+            echo "These jobs did not pass:" >&2
+            echo "$bad" >&2
+            exit 1
+          fi
+          echo "Package builds: ok (builds needed: $build)."

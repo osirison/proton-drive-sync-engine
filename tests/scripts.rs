@@ -1416,3 +1416,231 @@ fn two_release_tags_on_one_metainfo_line_are_refused_and_nothing_changes() {
     );
     assert_eq!(before, contents(&tree));
 }
+
+// --- packaging/arch/aur.sh ---------------------------------------------------------------------
+//
+// The script writes the AUR tree from the repository's PKGBUILD. `makepkg` exists only on Arch, so
+// a stub that answers `--printsrcinfo` stands in; what these cases pin is the PKGBUILD the script
+// writes and what it refuses, not makepkg (the Arch job in `packages.yml` runs the real one).
+
+struct AurTree {
+    directory: tempfile::TempDir,
+    stubs: std::path::PathBuf,
+    assets: std::path::PathBuf,
+    upstream: String,
+}
+
+fn aur_tree() -> AurTree {
+    let directory = tempdir().expect("tempdir");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let arch = directory.path().join("tree/packaging/arch");
+    fs::create_dir_all(&arch).expect("tree");
+    for file in ["aur.sh", "PKGBUILD", "proton-drive-sync-engine.install"] {
+        fs::copy(root.join("packaging/arch").join(file), arch.join(file)).expect(file);
+    }
+    let pkgbuild = fs::read_to_string(arch.join("PKGBUILD")).expect("PKGBUILD");
+    let upstream = pkgbuild
+        .lines()
+        .find_map(|line| line.strip_prefix("_upstream_ver="))
+        .expect("_upstream_ver")
+        .to_owned();
+    let stubs = directory.path().join("tool-stubs");
+    fs::create_dir(&stubs).expect("stub directory");
+    let makepkg = stubs.join("makepkg");
+    fs::write(
+        &makepkg,
+        "#!/bin/sh\n[ \"$1\" = --printsrcinfo ] && { echo 'pkgbase = stub'; exit 0; }\nexit 1\n",
+    )
+    .expect("stub");
+    fs::set_permissions(&makepkg, fs::Permissions::from_mode(0o700)).expect("stub mode");
+    let assets = directory.path().join("assets");
+    fs::create_dir(&assets).expect("assets");
+    fs::write(
+        assets.join(format!("proton-drive-sync-engine-{upstream}.tar.gz")),
+        b"not really a tarball\n",
+    )
+    .expect("tarball");
+    AurTree {
+        directory,
+        stubs,
+        assets,
+        upstream,
+    }
+}
+
+fn aur_script(tree: &AurTree, args: &[&str]) -> std::process::Output {
+    let mut command = common::sandboxed("bash", tree.directory.path());
+    command
+        .arg(tree.directory.path().join("tree/packaging/arch/aur.sh"))
+        .args(args);
+    let path = std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".to_owned());
+    command.env(
+        "PATH",
+        common::path_with_stubs(&format!("{}:{path}", tree.stubs.display())),
+    );
+    common::run_other_tool(&mut command)
+}
+
+fn sha256_of(path: &Path) -> String {
+    let mut command = std::process::Command::new("sha256sum");
+    command.arg(path);
+    let output = common::run_other_tool(&mut command);
+    String::from_utf8(output.stdout)
+        .expect("utf-8")
+        .split_whitespace()
+        .next()
+        .expect("a sum")
+        .to_owned()
+}
+
+#[test]
+fn the_beta_tree_renames_the_package_and_carries_the_real_checksum() {
+    let tree = aur_tree();
+    let out = tree.directory.path().join("out");
+    let output = aur_script(
+        &tree,
+        &[
+            "beta",
+            tree.assets.to_str().expect("utf-8"),
+            out.to_str().expect("utf-8"),
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let generated = fs::read_to_string(out.join("PKGBUILD")).expect("PKGBUILD");
+    assert!(
+        generated.contains(
+            "\npkgname=proton-drive-sync-engine-beta\nprovides=(proton-drive-sync-engine)\nconflicts=(proton-drive-sync-engine)\n"
+        ),
+        "{generated}"
+    );
+    let sum = sha256_of(
+        &tree
+            .assets
+            .join(format!("proton-drive-sync-engine-{}.tar.gz", tree.upstream)),
+    );
+    assert!(
+        generated.contains(&format!("\nsha256sums=('{sum}')\n")),
+        "{generated}"
+    );
+    assert!(!generated.contains("sha256sums=('SKIP')"), "{generated}");
+    assert!(out.join("proton-drive-sync-engine.install").is_file());
+    assert_eq!(
+        fs::read_to_string(out.join(".SRCINFO")).expect(".SRCINFO"),
+        "pkgbase = stub\n"
+    );
+
+    // Nothing else differs: every other line of the repository PKGBUILD is still there, in order.
+    let original = fs::read_to_string(tree.directory.path().join("tree/packaging/arch/PKGBUILD"))
+        .expect("original");
+    let changed = |line: &&str| {
+        line.starts_with("pkgname=")
+            || line.starts_with("sha256sums=")
+            || line.starts_with("provides=")
+            || line.starts_with("conflicts=")
+    };
+    let kept = |text: &str| {
+        text.lines()
+            .filter(|line| !changed(line))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert_eq!(kept(&original), kept(&generated));
+}
+
+#[test]
+fn the_stable_tree_keeps_the_name_and_adds_no_provides() {
+    let tree = aur_tree();
+    let out = tree.directory.path().join("out");
+    let output = aur_script(
+        &tree,
+        &[
+            "stable",
+            tree.assets.to_str().expect("utf-8"),
+            out.to_str().expect("utf-8"),
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let generated = fs::read_to_string(out.join("PKGBUILD")).expect("PKGBUILD");
+    assert!(
+        generated.contains("\npkgname=proton-drive-sync-engine\n"),
+        "{generated}"
+    );
+    assert!(!generated.contains("\nprovides=") && !generated.contains("\nconflicts="));
+}
+
+#[test]
+fn the_aur_script_refuses_what_it_cannot_make_a_correct_tree_from() {
+    let tree = aur_tree();
+    let assets = tree.assets.to_str().expect("utf-8").to_owned();
+    let out = tree.directory.path().join("out");
+    let out = out.to_str().expect("utf-8").to_owned();
+    let refused = |args: &[&str], needle: &str| {
+        let output = aur_script(&tree, args);
+        assert!(!output.status.success(), "{args:?} was accepted");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(needle), "{args:?}: {stderr}");
+    };
+    refused(&["nightly", &assets, &out], "not stable or beta");
+    refused(&["beta", "/no/such/directory", &out], "does not exist");
+
+    // A SHA256SUMS that disagrees with the tarball it lists.
+    let tarball = format!("proton-drive-sync-engine-{}.tar.gz", tree.upstream);
+    fs::write(
+        tree.assets.join("SHA256SUMS"),
+        format!("{}  {tarball}\n", "0".repeat(64)),
+    )
+    .expect("SHA256SUMS");
+    refused(&["beta", &assets, &out], "SHA-256 is");
+    // A SHA256SUMS that does not list it at all.
+    fs::write(
+        tree.assets.join("SHA256SUMS"),
+        format!("{}  other.rpm\n", "0".repeat(64)),
+    )
+    .expect("SHA256SUMS");
+    refused(&["beta", &assets, &out], "does not list");
+    fs::remove_file(tree.assets.join("SHA256SUMS")).expect("remove");
+
+    // No tarball.
+    fs::remove_file(tree.assets.join(&tarball)).expect("remove");
+    refused(&["beta", &assets, &out], "is missing");
+
+    // An output directory that already holds something.
+    fs::write(tree.assets.join(&tarball), b"x").expect("tarball");
+    fs::create_dir(&out).expect("out");
+    fs::write(Path::new(&out).join("leftover"), b"x").expect("leftover");
+    refused(&["beta", &assets, &out], "not an empty directory");
+}
+
+#[test]
+fn a_sha256sums_that_agrees_with_the_tarball_is_accepted() {
+    let tree = aur_tree();
+    let tarball = format!("proton-drive-sync-engine-{}.tar.gz", tree.upstream);
+    let sum = sha256_of(&tree.assets.join(&tarball));
+    fs::write(
+        tree.assets.join("SHA256SUMS"),
+        format!("{sum}  {tarball}\n"),
+    )
+    .expect("SHA256SUMS");
+    let out = tree.directory.path().join("out");
+    let output = aur_script(
+        &tree,
+        &[
+            "beta",
+            tree.assets.to_str().expect("utf-8"),
+            out.to_str().expect("utf-8"),
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
