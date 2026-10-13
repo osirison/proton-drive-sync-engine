@@ -37,6 +37,8 @@ cargo test reconstruct::tests   # base ⊕ delta remote-map reconstruction (even
 cargo test reconstruct::model_tests   # the same against a model of the volume (seeded; a few seconds)
 RECONSTRUCT_FUZZ_SCENARIOS=300000 cargo test --lib reconstruct::model_tests -- --nocapture   # the large run: scenarios per test
 cargo test daemon::tests        # reconciliation with injected fake ProtonClient + fake EventSource
+packaging/version.sh check      # every file that states the version agrees with the root Cargo.toml (also in CI's `rust` job and tests/scripts.rs)
+packaging/version.sh set 0.1.0-beta.1   # the ONLY way to change the version: writes all of them, the packaging changelogs and both lockfiles (needs cargo and npm)
 cargo test --test dry_run_cli   # integration test in tests/
 cargo test --test ipc_cli
 cargo test --test example_assets
@@ -48,6 +50,13 @@ cargo test computes_empty_file_sha1   # single test by name substring
 `--workspace` matters: this workspace's root is itself a package, so Cargo's default member
 selection is *just* the root crate. Without the flag, `gui/gui-core` and `gui/src-tauri` are
 neither linted nor tested. (`cargo fmt --all` already spans every member.)
+
+The product version is stated in many files (three manifests, three `Cargo.lock` entries, the Tauri
+and npm files, and the RPM, Arch, Debian and AppStream packaging, each in its own spelling);
+`check` compares 19 values.
+`packaging/version.sh` holds the one mapping between them: `set <X.Y.Z or X.Y.Z-(alpha|beta|rc).N>`
+is the only way to change a version, and `check` (CI's `rust` job and `tests/scripts.rs` run it) fails
+naming the file, the expected value and the value found. `website/package.json` is not a version site.
 
 The webview frontend in `gui/src/js` is gated separately by `gui/package.json` (eslint + prettier,
 both dev-only — nothing there ships). There is **no bundler**: Tauri serves `gui/src` raw

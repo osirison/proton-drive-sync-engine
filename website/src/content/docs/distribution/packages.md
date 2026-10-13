@@ -32,7 +32,7 @@ you install and log into separately, and it must be on `PATH`.
 
 All three build the Rust workspace directly against crates.io (the Tauri/webkit stack isn't
 individually packaged in distro crate ecosystems) and need a Rust **edition-2024** toolchain
-(Rust ≥ 1.85). On **RPM and deb** the `cargo build` step itself fetches from the network, so
+(Rust ≥ 1.90). On **RPM and deb** the `cargo build` step itself fetches from the network, so
 the build chroot needs network access. On **Arch**, `prepare()` runs `cargo fetch` and
 `build()` is fully offline (`--frozen`), so only the source clone / fetch step touches the
 network — as designed for makepkg's restricted chroot.
@@ -68,7 +68,7 @@ dpkg-buildpackage -us -uc -b
 rm debian   # remove the symlink afterward; don't commit it
 ```
 
-Build-deps include `debhelper-compat (= 13)`, a Rust ≥ 1.85 toolchain, `pkg-config`, and the
+Build-deps include `debhelper-compat (= 13)`, a Rust ≥ 1.90 toolchain, `pkg-config`, and the
 Tauri dev libraries (`libwebkit2gtk-4.1-dev`, `libsoup-3.0-dev`, `libgtk-3-dev`,
 `libglib2.0-dev`, `libgtk-layer-shell-dev`). The emblem extensions are split into their
 own `proton-sync-nautilus` / `proton-sync-nemo` packages and wired as

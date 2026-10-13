@@ -798,3 +798,621 @@ fn sourcing_setup_runs_no_check_and_the_other_scripts_never_call_it() {
         );
     }
 }
+
+// --- packaging/version.sh ---------------------------------------------------------------------
+//
+// `check` only reads files. `set` writes them, so it runs on a temporary copy of the files it
+// touches, with `cargo` and `npm` shadowed by stubs: the real ones would regenerate the lockfiles
+// (offline, but they are the tools' business and not this script's mapping). The expected strings
+// below are literal examples of the mapping, not a second copy of it.
+
+/// Every file `packaging/version.sh` reads or writes, relative to the repository root.
+const VERSION_SITES: [&str; 13] = [
+    "packaging/version.sh",
+    "Cargo.toml",
+    "gui/gui-core/Cargo.toml",
+    "gui/src-tauri/Cargo.toml",
+    "Cargo.lock",
+    "gui/src-tauri/tauri.conf.json",
+    "gui/package.json",
+    "gui/package-lock.json",
+    "packaging/rpm/proton-drive-sync-engine.spec",
+    "packaging/arch/PKGBUILD",
+    "packaging/debian/changelog",
+    "packaging/freedesktop/app.protondrivesync.engine.metainfo.xml",
+    "examples/packaging/release-assets.toml",
+];
+
+/// `bash <root>/packaging/version.sh <args>` in the test's sandbox; `stubs` is a directory placed
+/// ahead of the rest of `PATH`.
+fn version_script(
+    root: &Path,
+    directory: &Path,
+    stubs: Option<&Path>,
+    args: &[&str],
+) -> std::process::Output {
+    // The entry date is today's unless SOURCE_DATE_EPOCH is set; a fixed one keeps two runs
+    // byte-identical even across midnight. 1700000000 is Tue, 14 Nov 2023 22:13:20 UTC.
+    version_script_with_epoch(root, directory, stubs, args, "1700000000")
+}
+
+fn version_script_with_epoch(
+    root: &Path,
+    directory: &Path,
+    stubs: Option<&Path>,
+    args: &[&str],
+    epoch: &str,
+) -> std::process::Output {
+    let mut command = common::sandboxed("bash", directory);
+    command.arg(root.join("packaging/version.sh")).args(args);
+    command.env("SOURCE_DATE_EPOCH", epoch);
+    if let Some(stubs) = stubs {
+        let path = std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".to_owned());
+        command.env(
+            "PATH",
+            common::path_with_stubs(&format!("{}:{path}", stubs.display())),
+        );
+    }
+    common::run_other_tool(&mut command)
+}
+
+/// A copy of the version sites in `directory/tree`, and a directory of `cargo` and `npm` stubs.
+fn copy_of_the_version_sites(directory: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    let tree = directory.join("tree");
+    for site in VERSION_SITES {
+        let from = Path::new(env!("CARGO_MANIFEST_DIR")).join(site);
+        let to = tree.join(site);
+        fs::create_dir_all(to.parent().expect("parent")).expect("directory");
+        fs::copy(&from, &to).unwrap_or_else(|error| panic!("copy {site}: {error}"));
+    }
+    let stubs = directory.join("tool-stubs");
+    fs::create_dir(&stubs).expect("stub directory");
+    for name in ["cargo", "npm"] {
+        let path = stubs.join(name);
+        fs::write(&path, "#!/bin/sh\nexit 0\n").expect("stub");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).expect("stub mode");
+    }
+    (tree, stubs)
+}
+
+#[test]
+fn version_check_passes_on_the_repository() {
+    let directory = tempdir().expect("tempdir");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let output = version_script(root, directory.path(), None, &["check"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn version_check_names_the_file_the_expected_value_and_the_value_found() {
+    let directory = tempdir().expect("tempdir");
+    let (tree, _) = copy_of_the_version_sites(directory.path());
+    let pkgbuild = tree.join("packaging/arch/PKGBUILD");
+    let text = fs::read_to_string(&pkgbuild).expect("read PKGBUILD");
+    let poisoned = text
+        .lines()
+        .map(|line| {
+            if line.starts_with("pkgver=") {
+                "pkgver=9.9.9beta9"
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(&pkgbuild, poisoned + "\n").expect("poison");
+    let output = version_script(&tree, directory.path(), None, &["check"]);
+    assert!(!output.status.success(), "a stale pkgver passed the check");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("packaging/arch/PKGBUILD: pkgver: expected ")
+            && stderr.contains(", found 9.9.9beta9"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn version_set_writes_the_mapped_forms_on_a_copy() {
+    let directory = tempdir().expect("tempdir");
+    let (tree, stubs) = copy_of_the_version_sites(directory.path());
+    let output = version_script(
+        &tree,
+        directory.path(),
+        Some(&stubs),
+        &["set", "0.1.0-beta.1"],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let read = |site: &str| fs::read_to_string(tree.join(site)).expect(site);
+
+    assert!(read("Cargo.toml").contains("\nversion = \"0.1.0-beta.1\"\n"));
+    assert!(read("gui/src-tauri/tauri.conf.json").contains("\"version\": \"0.1.0-beta.1\""));
+    let spec = read("packaging/rpm/proton-drive-sync-engine.spec");
+    assert!(spec.contains("\n%global upstream_version 0.1.0-beta.1\n"));
+    assert!(spec.contains("\nVersion:        0.1.0~beta.1\n"));
+    assert!(spec.contains(" - 0.1.0~beta.1-1\n"), "{spec}");
+    let pkgbuild = read("packaging/arch/PKGBUILD");
+    assert!(pkgbuild.contains("\npkgver=0.1.0beta1\n"));
+    assert!(pkgbuild.contains("\n_upstream_ver=0.1.0-beta.1\n"));
+    assert!(
+        read("packaging/debian/changelog")
+            .starts_with("proton-drive-sync-engine (0.1.0~beta.1-1) ")
+    );
+    let metainfo = read("packaging/freedesktop/app.protondrivesync.engine.metainfo.xml");
+    assert!(
+        metainfo.contains("<release version=\"0.1.0~beta.1\"")
+            && metainfo.contains("type=\"development\">"),
+        "{metainfo}"
+    );
+    assert!(
+        read("examples/packaging/release-assets.toml")
+            .contains("proton-drive-sync-engine-0.1.0-beta.1.tar.gz")
+    );
+
+    // The stubs did not regenerate the lockfiles, so the check names exactly those and nothing
+    // else: every site `set` writes itself agrees.
+    let output = version_script(&tree, directory.path(), None, &["check"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let named: Vec<&str> = stderr
+        .lines()
+        .filter_map(|line| line.split(": ").next())
+        .filter(|file| file.contains('/') || file.contains('.'))
+        .filter(|file| !file.starts_with("version.sh"))
+        .collect();
+    assert!(
+        named
+            .iter()
+            .all(|file| *file == "Cargo.lock" || *file == "gui/package-lock.json"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn version_set_refuses_a_version_outside_the_accepted_shapes_and_changes_nothing() {
+    let directory = tempdir().expect("tempdir");
+    let (tree, stubs) = copy_of_the_version_sites(directory.path());
+    let before: Vec<String> = VERSION_SITES
+        .iter()
+        .map(|site| fs::read_to_string(tree.join(site)).expect(site))
+        .collect();
+    for bad in ["0.1.0-beta", "0.1.0+b.1", "0.1.0-preview.1"] {
+        let output = version_script(&tree, directory.path(), Some(&stubs), &["set", bad]);
+        assert!(!output.status.success(), "set {bad} was accepted");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("X.Y.Z"),
+            "{bad}: the refusal does not name the accepted shapes"
+        );
+    }
+    let after: Vec<String> = VERSION_SITES
+        .iter()
+        .map(|site| fs::read_to_string(tree.join(site)).expect(site))
+        .collect();
+    assert_eq!(before, after);
+}
+
+// --- packaging/version.sh: superseded entries, all-or-nothing, revisions ----------------------
+
+fn contents(tree: &Path) -> Vec<String> {
+    VERSION_SITES
+        .iter()
+        .map(|site| fs::read_to_string(tree.join(site)).expect(site))
+        .collect()
+}
+
+/// `set <version>` with the stub `cargo` and `npm`, which must succeed. Returns what it printed.
+fn set_ok(tree: &Path, directory: &Path, stubs: &Path, version: &str) -> String {
+    let output = version_script(tree, directory, Some(stubs), &["set", version]);
+    assert!(
+        output.status.success(),
+        "set {version}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).into_owned() + &String::from_utf8_lossy(&output.stderr)
+}
+
+const SPEC_FILE: &str = "packaging/rpm/proton-drive-sync-engine.spec";
+const DEB_FILE: &str = "packaging/debian/changelog";
+const META_FILE: &str = "packaging/freedesktop/app.protondrivesync.engine.metainfo.xml";
+
+#[test]
+fn set_drops_the_entries_a_lower_version_supersedes() {
+    let directory = tempdir().expect("tempdir");
+    let (tree, stubs) = copy_of_the_version_sites(directory.path());
+    let said = set_ok(&tree, directory.path(), &stubs, "0.1.0-beta.1");
+    let read = |site: &str| fs::read_to_string(tree.join(site)).expect(site);
+    let spec = read(SPEC_FILE);
+    assert!(!spec.contains(" - 0.1.0-1\n"), "{spec}");
+    assert!(spec.contains(" - 0.1.0~beta.1-1\n"));
+    let deb = read(DEB_FILE);
+    assert!(!deb.contains("(0.1.0-1)"), "{deb}");
+    assert!(deb.starts_with("proton-drive-sync-engine (0.1.0~beta.1-1) "));
+    let meta = read(META_FILE);
+    assert!(!meta.contains("<release version=\"0.1.0\" "), "{meta}");
+    assert_eq!(meta.matches("<release ").count(), 1);
+    assert!(
+        said.contains("dropping"),
+        "each dropped entry is printed: {said}"
+    );
+}
+
+#[test]
+fn set_twice_for_one_version_gives_the_same_bytes() {
+    let directory = tempdir().expect("tempdir");
+    let (tree, stubs) = copy_of_the_version_sites(directory.path());
+    set_ok(&tree, directory.path(), &stubs, "0.1.0-beta.1");
+    let once = contents(&tree);
+    set_ok(&tree, directory.path(), &stubs, "0.1.0-beta.1");
+    assert_eq!(once, contents(&tree));
+}
+
+#[test]
+fn the_final_release_goes_above_its_beta_with_one_entry_of_each() {
+    let directory = tempdir().expect("tempdir");
+    let (tree, stubs) = copy_of_the_version_sites(directory.path());
+    set_ok(&tree, directory.path(), &stubs, "0.1.0-beta.1");
+    set_ok(&tree, directory.path(), &stubs, "0.1.0");
+    let read = |site: &str| fs::read_to_string(tree.join(site)).expect(site);
+    let spec = read(SPEC_FILE);
+    assert_eq!(spec.matches(" - 0.1.0-1\n").count(), 1, "{spec}");
+    assert_eq!(spec.matches(" - 0.1.0~beta.1-1\n").count(), 1);
+    assert!(spec.find(" - 0.1.0-1\n") < spec.find(" - 0.1.0~beta.1-1\n"));
+    let deb = read(DEB_FILE);
+    assert!(
+        deb.starts_with("proton-drive-sync-engine (0.1.0-1) "),
+        "{deb}"
+    );
+    assert_eq!(deb.matches("(0.1.0-1)").count(), 1);
+    assert_eq!(deb.matches("(0.1.0~beta.1-1)").count(), 1);
+    let meta = read(META_FILE);
+    let stable = meta.find("<release version=\"0.1.0\" ");
+    let beta = meta.find("<release version=\"0.1.0~beta.1\" ");
+    assert_eq!(meta.matches("<release version=\"0.1.0\" ").count(), 1);
+    assert!(
+        stable.is_some() && beta.is_some() && stable < beta,
+        "{meta}"
+    );
+    assert!(meta.contains("type=\"stable\""));
+}
+
+#[test]
+fn a_pre_release_orders_below_the_final_and_by_number_not_text() {
+    let directory = tempdir().expect("tempdir");
+    let (tree, stubs) = copy_of_the_version_sites(directory.path());
+    // beta.9 < beta.10 < rc.1 < final: setting a lower one drops every higher one.
+    set_ok(&tree, directory.path(), &stubs, "0.1.0-rc.1");
+    set_ok(&tree, directory.path(), &stubs, "0.1.0-beta.10");
+    let deb = fs::read_to_string(tree.join(DEB_FILE)).expect("deb");
+    assert!(!deb.contains("rc.1"), "{deb}");
+    set_ok(&tree, directory.path(), &stubs, "0.1.0-beta.9");
+    let deb = fs::read_to_string(tree.join(DEB_FILE)).expect("deb");
+    assert!(
+        !deb.contains("beta.10"),
+        "beta.10 sorts above beta.9: {deb}"
+    );
+    assert!(deb.starts_with("proton-drive-sync-engine (0.1.0~beta.9-1) "));
+}
+
+#[test]
+fn set_refuses_to_drop_an_entry_whose_tag_exists_and_changes_nothing() {
+    let directory = tempdir().expect("tempdir");
+    let (tree, stubs) = copy_of_the_version_sites(directory.path());
+    let vcs = |args: &[&str]| {
+        let mut command = common::sandboxed("git", directory.path());
+        command
+            .arg("-C")
+            .arg(&tree)
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+            .args(args);
+        let output = common::run_other_tool(&mut command);
+        assert!(output.status.success(), "{args:?}: {output:?}");
+    };
+    vcs(&["init", "-q"]);
+    vcs(&["commit", "-q", "--allow-empty", "-m", "x"]);
+    vcs(&["tag", "v0.1.0"]);
+    let before = contents(&tree);
+    let output = version_script(
+        &tree,
+        directory.path(),
+        Some(&stubs),
+        &["set", "0.1.0-beta.1"],
+    );
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("v0.1.0"));
+    assert_eq!(before, contents(&tree));
+}
+
+#[test]
+fn a_failing_cargo_leaves_every_file_as_it_was() {
+    let directory = tempdir().expect("tempdir");
+    let (tree, stubs) = copy_of_the_version_sites(directory.path());
+    fs::write(
+        stubs.join("cargo"),
+        "#!/bin/sh\necho 'no cached crates' >&2\nexit 101\n",
+    )
+    .expect("stub");
+    let before = contents(&tree);
+    let output = version_script(
+        &tree,
+        directory.path(),
+        Some(&stubs),
+        &["set", "0.1.0-beta.1"],
+    );
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("cargo fetch"), "{stderr}");
+    assert_eq!(before, contents(&tree));
+}
+
+#[test]
+fn rerunning_for_the_same_version_keeps_a_deliberate_revision() {
+    let directory = tempdir().expect("tempdir");
+    let (tree, stubs) = copy_of_the_version_sites(directory.path());
+    set_ok(&tree, directory.path(), &stubs, "0.1.0-beta.1");
+    let pkgbuild = tree.join("packaging/arch/PKGBUILD");
+    let text = fs::read_to_string(&pkgbuild).expect("PKGBUILD");
+    fs::write(&pkgbuild, text.replace("\npkgrel=1\n", "\npkgrel=3\n")).expect("write");
+    let deb = tree.join(DEB_FILE);
+    let text = fs::read_to_string(&deb).expect("deb");
+    fs::write(&deb, text.replace("(0.1.0~beta.1-1)", "(0.1.0~beta.1-2)")).expect("write");
+    set_ok(&tree, directory.path(), &stubs, "0.1.0-beta.1");
+    assert!(
+        fs::read_to_string(&pkgbuild)
+            .expect("PKGBUILD")
+            .contains("\npkgrel=3\n")
+    );
+    assert!(
+        fs::read_to_string(&deb)
+            .expect("deb")
+            .starts_with("proton-drive-sync-engine (0.1.0~beta.1-2) ")
+    );
+    // a different version starts again at 1
+    set_ok(&tree, directory.path(), &stubs, "0.1.0-beta.2");
+    assert!(
+        fs::read_to_string(&pkgbuild)
+            .expect("PKGBUILD")
+            .contains("\npkgrel=1\n")
+    );
+}
+
+// --- packaging/version.sh: self-closing entries, a failed snapshot, tag-check notes, dates ------
+
+#[test]
+fn a_self_closing_last_release_is_dropped_and_the_closing_tags_survive() {
+    let directory = tempdir().expect("tempdir");
+    let (tree, stubs) = copy_of_the_version_sites(directory.path());
+    let metainfo = tree.join(META_FILE);
+    let text = fs::read_to_string(&metainfo).expect("metainfo");
+    fs::write(
+        &metainfo,
+        text.replace(
+            "  </releases>",
+            "    <release version=\"9.0.0\" date=\"2026-01-01\"/>\n  </releases>",
+        ),
+    )
+    .expect("write");
+    set_ok(&tree, directory.path(), &stubs, "0.1.0-beta.1");
+    let meta = fs::read_to_string(&metainfo).expect("metainfo");
+    assert!(!meta.contains("9.0.0"), "{meta}");
+    assert!(
+        meta.contains("</releases>") && meta.contains("</component>"),
+        "{meta}"
+    );
+    assert_eq!(meta.matches("<release ").count(), 1);
+}
+
+#[test]
+fn a_metainfo_that_lost_its_closing_tags_rolls_the_whole_set_back() {
+    let directory = tempdir().expect("tempdir");
+    let (tree, stubs) = copy_of_the_version_sites(directory.path());
+    // An entry the script cannot see the end of: no </release> and no self-closing slash.
+    let metainfo = tree.join(META_FILE);
+    let text = fs::read_to_string(&metainfo).expect("metainfo");
+    fs::write(
+        &metainfo,
+        text.replace(
+            "  </releases>",
+            "    <release version=\"9.0.0\" date=\"2026-01-01\">\n  </releases>",
+        ),
+    )
+    .expect("write");
+    let before = contents(&tree);
+    let output = version_script(
+        &tree,
+        directory.path(),
+        Some(&stubs),
+        &["set", "0.1.0-beta.1"],
+    );
+    assert!(!output.status.success(), "{output:?}");
+    assert_eq!(before, contents(&tree));
+}
+
+#[test]
+fn a_failed_snapshot_restores_nothing_it_did_not_copy_and_leaks_no_directory() {
+    use std::os::unix::fs::MetadataExt;
+    if fs::metadata(env!("CARGO_MANIFEST_DIR"))
+        .expect("metadata")
+        .uid()
+        == 0
+        || fs::metadata("/proc/self").expect("metadata").uid() == 0
+    {
+        return; // a root process reads a mode-000 file; this case cannot be driven
+    }
+    let directory = tempdir().expect("tempdir");
+    let (tree, stubs) = copy_of_the_version_sites(directory.path());
+    let scratch = directory.path().join("tmp");
+    fs::create_dir(&scratch).expect("tmp");
+    let before = contents(&tree);
+    let locked = tree.join("examples/packaging/release-assets.toml");
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).expect("chmod");
+    let mut command = common::sandboxed("bash", directory.path());
+    command
+        .arg(tree.join("packaging/version.sh"))
+        .args(["set", "0.1.0-beta.1"])
+        .env("TMPDIR", &scratch);
+    let path = std::env::var("PATH").unwrap_or_default();
+    command.env(
+        "PATH",
+        common::path_with_stubs(&format!("{}:{path}", stubs.display())),
+    );
+    let output = common::run_other_tool(&mut command);
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o644)).expect("chmod back");
+    assert!(!output.status.success(), "{output:?}");
+    let leaked: Vec<_> = fs::read_dir(&scratch).expect("read").collect();
+    assert!(
+        leaked.is_empty(),
+        "the snapshot directory leaked: {leaked:?}"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("cp: cannot stat"),
+        "the rollback copied a file that was never snapshotted: {stderr}"
+    );
+    assert_eq!(before, contents(&tree));
+}
+
+#[test]
+fn an_alpha_sorts_below_every_beta_and_the_final() {
+    let directory = tempdir().expect("tempdir");
+    let (tree, stubs) = copy_of_the_version_sites(directory.path());
+    set_ok(&tree, directory.path(), &stubs, "0.1.0-beta.1");
+    set_ok(&tree, directory.path(), &stubs, "0.1.0-alpha.1");
+    let deb = fs::read_to_string(tree.join(DEB_FILE)).expect("deb");
+    assert!(!deb.contains("beta.1"), "beta.1 sorts above alpha.1: {deb}");
+    // and the final release is dropped by an alpha too
+    let directory = tempdir().expect("tempdir");
+    let (tree, stubs) = copy_of_the_version_sites(directory.path());
+    set_ok(&tree, directory.path(), &stubs, "0.1.0-alpha.1");
+    let deb = fs::read_to_string(tree.join(DEB_FILE)).expect("deb");
+    assert!(
+        !deb.contains("(0.1.0-1)"),
+        "0.1.0 sorts above alpha.1: {deb}"
+    );
+}
+
+#[test]
+fn the_entry_date_honours_source_date_epoch() {
+    let directory = tempdir().expect("tempdir");
+    let (tree, stubs) = copy_of_the_version_sites(directory.path());
+    set_ok(&tree, directory.path(), &stubs, "0.1.0-beta.1");
+    // 1700000000 is Tue, 14 Nov 2023 22:13:20 UTC (version_script sets it).
+    assert!(
+        fs::read_to_string(tree.join(DEB_FILE))
+            .expect("deb")
+            .contains("Tue, 14 Nov 2023 22:13:20 +0000")
+    );
+    assert!(
+        fs::read_to_string(tree.join(SPEC_FILE))
+            .expect("spec")
+            .contains("* Tue Nov 14 2023 ")
+    );
+    assert!(
+        fs::read_to_string(tree.join(META_FILE))
+            .expect("metainfo")
+            .contains("date=\"2023-11-14\"")
+    );
+}
+
+#[test]
+fn the_tag_check_says_when_it_cannot_run_and_that_it_reads_local_tags_only() {
+    let directory = tempdir().expect("tempdir");
+    let (tree, stubs) = copy_of_the_version_sites(directory.path());
+    // The copy is not the top level of a repository.
+    let output = version_script(
+        &tree,
+        directory.path(),
+        Some(&stubs),
+        &["set", "0.1.0-beta.1"],
+    );
+    assert!(output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("tag check skipped") && stderr.contains("is not in a git repository"),
+        "{stderr}"
+    );
+}
+
+// --- packaging/version.sh: a bad SOURCE_DATE_EPOCH, two releases on one line -------------------
+
+#[test]
+fn a_source_date_epoch_that_is_not_a_number_of_seconds_is_refused_and_nothing_changes() {
+    for bad in [
+        "garbage",
+        "-5",
+        " 5",
+        "1e3",
+        "0x10",
+        "@5",
+        "99999999999999999999",
+    ] {
+        let directory = tempdir().expect("tempdir");
+        let (tree, stubs) = copy_of_the_version_sites(directory.path());
+        let before = contents(&tree);
+        let output = version_script_with_epoch(
+            &tree,
+            directory.path(),
+            Some(&stubs),
+            &["set", "0.1.0-beta.1"],
+            bad,
+        );
+        assert_eq!(output.status.code(), Some(2), "{bad:?}: {output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("SOURCE_DATE_EPOCH") && stderr.contains(bad),
+            "{bad:?}: {stderr}"
+        );
+        assert_eq!(before, contents(&tree), "{bad:?} changed a file");
+    }
+}
+
+#[test]
+fn an_empty_source_date_epoch_falls_back_to_today() {
+    let directory = tempdir().expect("tempdir");
+    let (tree, stubs) = copy_of_the_version_sites(directory.path());
+    let output = version_script_with_epoch(
+        &tree,
+        directory.path(),
+        Some(&stubs),
+        &["set", "0.1.0-beta.1"],
+        "",
+    );
+    assert!(output.status.success(), "{output:?}");
+    let meta = fs::read_to_string(tree.join(META_FILE)).expect("metainfo");
+    assert!(!meta.contains("date=\"\""), "{meta}");
+}
+
+#[test]
+fn two_release_tags_on_one_metainfo_line_are_refused_and_nothing_changes() {
+    let directory = tempdir().expect("tempdir");
+    let (tree, stubs) = copy_of_the_version_sites(directory.path());
+    let metainfo = tree.join(META_FILE);
+    let text = fs::read_to_string(&metainfo).expect("metainfo");
+    fs::write(
+        &metainfo,
+        text.replace(
+            "  </releases>",
+            "    <release version=\"9.0.0\" date=\"2026-01-01\"/> <release version=\"0.0.5\" date=\"2026-01-01\"/>\n  </releases>",
+        ),
+    )
+    .expect("write");
+    let before = contents(&tree);
+    let output = version_script(
+        &tree,
+        directory.path(),
+        Some(&stubs),
+        &["set", "0.1.0-beta.1"],
+    );
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("more than one <release"),
+        "{output:?}"
+    );
+    assert_eq!(before, contents(&tree));
+}

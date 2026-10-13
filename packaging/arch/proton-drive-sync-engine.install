@@ -1,4 +1,9 @@
 post_install() {
+  # Said once, at install: an upgrade means the CLI is already set up, and pacman would repeat
+  # this note on every upgrade.
+  echo "==> Proton's proton-drive command-line client must be installed and signed in before"
+  echo "    you use Proton Drive Sync. Download it from https://proton.me/drive/download,"
+  echo "    then run: proton-drive auth login"
   post_upgrade
 }
 

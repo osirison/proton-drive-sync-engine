@@ -26,6 +26,7 @@ const DOCTOR_DISPATCHED_EARLY: &str =
 #[derive(Debug, Parser)]
 #[command(
     name = "proton-sync",
+    version,
     about = "Frontend controller for the Proton Drive sync daemon"
 )]
 struct Cli {
