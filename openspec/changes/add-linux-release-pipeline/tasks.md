@@ -99,7 +99,7 @@
       Verify: `git grep -nE -e 'proton-drive-cli(-git|-bin)?([^/]|$)' -e 'proton-drive login'
       -- packaging/` prints nothing, and on the built packages `rpm -qip`, `dpkg-deb -I` and `pacman -Qip` show the
       prerequisite
-- [ ] 2.7 In `packaging/arch/proton-drive-sync-engine.install`, make `post_install` print a short
+- [x] 2.7 In `packaging/arch/proton-drive-sync-engine.install`, make `post_install` print a short
       note naming `https://proton.me/drive/download` and `proton-drive auth login`, then call
       `post_upgrade` as today. `post_upgrade` prints nothing new. The RPM scriptlets and the deb
       `postinst` stay silent (design D15). Verify: `bash -n` passes on the script; in an Arch
@@ -139,7 +139,7 @@
         `conflicts`, and the tarball's real SHA-256;
       - `makepkg --printsrcinfo` output equals the generated `.SRCINFO`;
       - `makepkg` of the generated tree verifies the checksum against the local tarball
-- [ ] 3.7 Write `packaging/smoke-test.sh` (design D13). Add the install matrix:
+- [x] 3.7 Write `packaging/smoke-test.sh` (design D13). Add the install matrix:
       - every non-EOL Fedora, using the RPM;
       - Ubuntu 22.04, 24.04 and 26.04, and Debian 12 and 13, using `apt-get install ./…deb`;
       - `archlinux:latest`, using `pacman -U`.
@@ -163,14 +163,16 @@
       smoke job skipped while builds were needed, no answer from `changes`). Left: the two
       verifying pull requests above (the website-only one and the one that makes a job fail), and
       branch protection.
-- [ ] 3.9 Fix whatever the first real builds of the deb and Arch trees (never built before) and the
+- [x] 3.9 Fix whatever the first real builds of the deb and Arch trees (never built before) and the
       RPM tree turn up, in the trees themselves. Record each fix in that tree's README's validation
       section. Verify: all build and smoke jobs are green on the pull request
 
       Done: the Arch tree needed `!lto` and `!debug`, `dbus` in `depends` with `python` as an
-      `optdepends` (namcap), and lost `git` from `makedepends`; the deb and RPM trees built as written. Each is in that tree's README. Left:
-      the smoke jobs green (3.7).
-- [ ] 3.10 After the separate change `add-dependency-check` is merged, add the doctor check to
+      `optdepends` (namcap), and lost `git` from `makedepends`; the deb and RPM trees built as written. Each is in that tree's README. The first
+      smoke runs found no defect in the trees (the only failures were the validators on Ubuntu 22.04
+      and Debian 12, which are old tools, not package defects: see the deb README). All build and
+      smoke jobs are green on PR #474.
+- [x] 3.10 After the separate change `add-dependency-check` is merged, add the doctor check to
       `packaging/smoke-test.sh` (design D13): with no `proton-drive` on `PATH` and no daemon
       running, `proton-sync doctor` must name `proton-drive` as missing, print
       `https://proton.me/drive/download` and exit non-zero, and no `proton-syncd` process or
