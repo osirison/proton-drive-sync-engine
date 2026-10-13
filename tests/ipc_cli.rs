@@ -1769,14 +1769,22 @@ exit 64
         );
 
         // The way out: start `a` over against the new folder.
+        let seq_before_reset = pair_seq(&socket_path, "a");
         run_control_args(
             &socket_path,
             &["--pair", "a", "--json", "reset-index", "--yes"],
         );
+        // Wait for the pass itself, not for the hold to clear: releasing the hold publishes
+        // `last_error: null` with `syncing: false` before the pass starts, so that pair of values
+        // is true for a moment before the reset's pass has run. The pass bumps `reconcile_seq`
+        // when it ends; the hold's own skipped passes bumped it before `seq_before_reset`.
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             let status = run_control_pair(&socket_path, Some("a"), "status");
-            if status["last_error"].is_null() && status["syncing"] == false {
+            if status["reconcile_seq"].as_u64().unwrap_or(0) > seq_before_reset
+                && status["last_error"].is_null()
+                && status["syncing"] == false
+            {
                 break;
             }
             assert!(
