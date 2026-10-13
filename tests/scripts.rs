@@ -4318,9 +4318,10 @@ fn run_blocks_reads_every_form_of_a_run_value() {
 /// * its key is `group` directly under `concurrency:` (the only expression-bearing key of
 ///   `release.yml` outside `env:`; a run's group name is not executed), or `if` (evaluated by the
 ///   runner, never by a shell); or
-/// * it is a direct child of an `env:` or `with:` mapping, judged by indentation against the
-///   nearest less-indented line. `env:` values reach a script as environment variables, `with:`
-///   values as action inputs; neither is pasted into a shell.
+/// * it is a direct child of an `env:` mapping, judged by indentation against the nearest
+///   less-indented line. `env:` values reach a script as environment variables; they are not
+///   pasted into a shell. (`with:` is not allowed: an input such as `script:` of
+///   `actions/github-script` is run.)
 ///
 /// A continuation line, a flow-style step, a quoted key, a list item, a comment and a `run:` line
 /// all fail, whatever YAML form they take.
@@ -4352,7 +4353,7 @@ fn unsafe_expression_lines(text: &str) -> Vec<(usize, String)> {
         let safe = match key {
             Some("if") => true,
             Some("group") => parent == Some("concurrency:"),
-            Some(_) => matches!(parent, Some("env:" | "with:")),
+            Some(_) => parent == Some("env:"),
             None => false,
         };
         if !safe {
@@ -4360,6 +4361,57 @@ fn unsafe_expression_lines(text: &str) -> Vec<(usize, String)> {
         }
     }
     found
+}
+
+/// The expression lines `release.yml` holds, trimmed, and how many times each. A new expression
+/// needs an edit here AND a pass of `unsafe_expression_lines`.
+const PINNED_EXPRESSION_LINES: [(&str, usize); 3] = [
+    ("group: release-${{ github.ref }}", 1),
+    ("TAG: ${{ github.ref_name }}", 2),
+    ("GH_TOKEN: ${{ github.token }}", 1),
+];
+
+/// What differs between the lines of `text` that hold a `{` and `PINNED_EXPRESSION_LINES`, plus any
+/// line ending in a backslash. Pinning on `{`, not just `${{`, catches a double-quoted scalar that
+/// YAML joins across a line break (`"…$\` then `{{ x }}"`, or one brace per line), where no single
+/// line holds `${{`. A line ending in a backslash is the join itself.
+fn expression_pin_problems(text: &str) -> Vec<String> {
+    let mut problems = Vec::new();
+    let mut seen: Vec<(String, usize)> = Vec::new();
+    for (at, line) in text.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.ends_with('\\') {
+            problems.push(format!("line {} ends in a backslash: {trimmed}", at + 1));
+        }
+        if !line.contains('{') {
+            continue;
+        }
+        match seen.iter_mut().find(|(known, _)| known == trimmed) {
+            Some((_, count)) => *count += 1,
+            None => seen.push((trimmed.to_owned(), 1)),
+        }
+        let allowed = PINNED_EXPRESSION_LINES
+            .iter()
+            .any(|(pinned, _)| *pinned == trimmed);
+        if !allowed {
+            problems.push(format!(
+                "line {} is not a pinned expression line: {trimmed}",
+                at + 1
+            ));
+        }
+    }
+    for (pinned, count) in PINNED_EXPRESSION_LINES {
+        let found = seen
+            .iter()
+            .find(|(known, _)| known == pinned)
+            .map_or(0, |(_, found)| *found);
+        if found != count {
+            problems.push(format!(
+                "`{pinned}` appears {found} times, expected {count}"
+            ));
+        }
+    }
+    problems
 }
 
 #[test]
@@ -4396,6 +4448,10 @@ fn an_expression_is_safe_only_in_the_places_the_release_workflow_uses_them() {
             "group outside concurrency",
             "jobs:\n  group: ${{ github.ref }}\n",
         ),
+        (
+            "with input (github-script runs `script`)",
+            "        with:\n          script: ${{ github.ref_name }}\n",
+        ),
     ];
     for (what, text) in cases {
         assert!(
@@ -4407,10 +4463,6 @@ fn an_expression_is_safe_only_in_the_places_the_release_workflow_uses_them() {
         (
             "env",
             "        env:\n          TAG: ${{ github.ref_name }}\n",
-        ),
-        (
-            "with",
-            "        with:\n          name: ${{ github.ref_name }}\n",
         ),
         ("if", "    if: ${{ github.ref_name == 'x' }}\n"),
         (
@@ -4430,6 +4482,48 @@ fn an_expression_is_safe_only_in_the_places_the_release_workflow_uses_them() {
 }
 
 #[test]
+fn the_pinned_expression_lines_are_pinned_exactly() {
+    let real = "concurrency:\n  group: release-${{ github.ref }}\nenv:\n  TAG: ${{ github.ref_name }}\n  GH_TOKEN: ${{ github.token }}\nenv:\n  TAG: ${{ github.ref_name }}\n";
+    assert!(expression_pin_problems(real).is_empty());
+    let cases = [
+        // One safe line swapped for another expression, keeping the count at four.
+        (
+            "swapped for a with input",
+            real.replacen(
+                "  GH_TOKEN: ${{ github.token }}",
+                "  script: ${{ github.ref_name }}",
+                1,
+            ),
+        ),
+        // A pinned line more often than the file has it, and less often.
+        (
+            "one more",
+            format!("{real}env:\n  TAG: ${{{{ github.ref_name }}}}\n"),
+        ),
+        (
+            "one fewer",
+            real.replacen("env:\n  TAG: ${{ github.ref_name }}\n", "", 1),
+        ),
+        // A double-quoted scalar YAML joins across a line break: no line holds `${{`.
+        (
+            "split $ and {{",
+            format!("{real}run: \"gate.sh $\\\n  {{{{ github.ref_name }}}}\"\n"),
+        ),
+        (
+            "one brace per line",
+            format!("{real}run: \"gate.sh $\\\n  {{\\\n  {{ github.ref_name }}}}\"\n"),
+        ),
+        ("a flow mapping", format!("{real}- {{ name: x }}\n")),
+    ];
+    for (what, text) in cases {
+        assert!(
+            !expression_pin_problems(&text).is_empty(),
+            "{what} was accepted"
+        );
+    }
+}
+
+#[test]
 fn no_run_step_of_the_release_workflow_holds_an_expression() {
     // `${{ }}` in a `run:` is pasted into the shell before it runs, so an event field there is a
     // script injection. The rule is inverted so it fails closed: every line of the file that holds
@@ -4441,11 +4535,11 @@ fn no_run_step_of_the_release_workflow_holds_an_expression() {
         unsafe_lines.is_empty(),
         "an expression outside env:, with:, if: and concurrency.group: {unsafe_lines:?}"
     );
-    // The lines the real file holds: the concurrency group and three `env:` values.
-    let holding = release.lines().filter(|line| line.contains("${{")).count();
-    assert_eq!(
-        holding, 4,
-        "the file's expression lines changed: review each one"
+    // The lines the real file holds, exactly: the concurrency group and three `env:` values.
+    let problems = expression_pin_problems(&release);
+    assert!(
+        problems.is_empty(),
+        "the file's expression lines changed: review each one: {problems:?}"
     );
     // The run-step reader finds the steps (it is also what the test above is cross-checked with).
     let blocks = run_blocks(&release);
