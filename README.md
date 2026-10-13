@@ -58,7 +58,7 @@ leaves half-recorded state. → [How sync works](https://osirison.github.io/prot
 ## Quick setup
 
 One command installs the engine, writes the config a background service reads, and starts
-syncing. You need a **Rust toolchain** (edition 2024 / Rust ≥ 1.85) and an **authenticated
+syncing. You need a **Rust toolchain** (edition 2024 / Rust ≥ 1.90) and an **authenticated
 `proton-drive` CLI** on your `PATH` first — the engine drives it for every remote operation:
 
 ```bash

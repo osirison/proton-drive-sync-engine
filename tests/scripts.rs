@@ -798,3 +798,189 @@ fn sourcing_setup_runs_no_check_and_the_other_scripts_never_call_it() {
         );
     }
 }
+
+// --- packaging/version.sh ---------------------------------------------------------------------
+//
+// `check` only reads files. `set` writes them, so it runs on a temporary copy of the files it
+// touches, with `cargo` and `npm` shadowed by stubs: the real ones would regenerate the lockfiles
+// (offline, but they are the tools' business and not this script's mapping). The expected strings
+// below are literal examples of the mapping, not a second copy of it.
+
+/// Every file `packaging/version.sh` reads or writes, relative to the repository root.
+const VERSION_SITES: [&str; 13] = [
+    "packaging/version.sh",
+    "Cargo.toml",
+    "gui/gui-core/Cargo.toml",
+    "gui/src-tauri/Cargo.toml",
+    "Cargo.lock",
+    "gui/src-tauri/tauri.conf.json",
+    "gui/package.json",
+    "gui/package-lock.json",
+    "packaging/rpm/proton-drive-sync-engine.spec",
+    "packaging/arch/PKGBUILD",
+    "packaging/debian/changelog",
+    "packaging/freedesktop/app.protondrivesync.engine.metainfo.xml",
+    "examples/packaging/release-assets.toml",
+];
+
+/// `bash <root>/packaging/version.sh <args>` in the test's sandbox; `stubs` is a directory placed
+/// ahead of the rest of `PATH`.
+fn version_script(
+    root: &Path,
+    directory: &Path,
+    stubs: Option<&Path>,
+    args: &[&str],
+) -> std::process::Output {
+    let mut command = common::sandboxed("bash", directory);
+    command.arg(root.join("packaging/version.sh")).args(args);
+    if let Some(stubs) = stubs {
+        let path = std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".to_owned());
+        command.env(
+            "PATH",
+            common::path_with_stubs(&format!("{}:{path}", stubs.display())),
+        );
+    }
+    common::run_other_tool(&mut command)
+}
+
+/// A copy of the version sites in `directory/tree`, and a directory of `cargo` and `npm` stubs.
+fn copy_of_the_version_sites(directory: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    let tree = directory.join("tree");
+    for site in VERSION_SITES {
+        let from = Path::new(env!("CARGO_MANIFEST_DIR")).join(site);
+        let to = tree.join(site);
+        fs::create_dir_all(to.parent().expect("parent")).expect("directory");
+        fs::copy(&from, &to).unwrap_or_else(|error| panic!("copy {site}: {error}"));
+    }
+    let stubs = directory.join("tool-stubs");
+    fs::create_dir(&stubs).expect("stub directory");
+    for name in ["cargo", "npm"] {
+        let path = stubs.join(name);
+        fs::write(&path, "#!/bin/sh\nexit 0\n").expect("stub");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).expect("stub mode");
+    }
+    (tree, stubs)
+}
+
+#[test]
+fn version_check_passes_on_the_repository() {
+    let directory = tempdir().expect("tempdir");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let output = version_script(root, directory.path(), None, &["check"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn version_check_names_the_file_the_expected_value_and_the_value_found() {
+    let directory = tempdir().expect("tempdir");
+    let (tree, _) = copy_of_the_version_sites(directory.path());
+    let pkgbuild = tree.join("packaging/arch/PKGBUILD");
+    let text = fs::read_to_string(&pkgbuild).expect("read PKGBUILD");
+    let poisoned = text
+        .lines()
+        .map(|line| {
+            if line.starts_with("pkgver=") {
+                "pkgver=9.9.9beta9"
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(&pkgbuild, poisoned + "\n").expect("poison");
+    let output = version_script(&tree, directory.path(), None, &["check"]);
+    assert!(!output.status.success(), "a stale pkgver passed the check");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("packaging/arch/PKGBUILD: pkgver: expected ")
+            && stderr.contains(", found 9.9.9beta9"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn version_set_writes_the_mapped_forms_on_a_copy() {
+    let directory = tempdir().expect("tempdir");
+    let (tree, stubs) = copy_of_the_version_sites(directory.path());
+    let output = version_script(
+        &tree,
+        directory.path(),
+        Some(&stubs),
+        &["set", "0.1.0-beta.1"],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let read = |site: &str| fs::read_to_string(tree.join(site)).expect(site);
+
+    assert!(read("Cargo.toml").contains("\nversion = \"0.1.0-beta.1\"\n"));
+    assert!(read("gui/src-tauri/tauri.conf.json").contains("\"version\": \"0.1.0-beta.1\""));
+    let spec = read("packaging/rpm/proton-drive-sync-engine.spec");
+    assert!(spec.contains("\n%global upstream_version 0.1.0-beta.1\n"));
+    assert!(spec.contains("\nVersion:        0.1.0~beta.1\n"));
+    assert!(spec.contains(" - 0.1.0~beta.1-1\n"), "{spec}");
+    let pkgbuild = read("packaging/arch/PKGBUILD");
+    assert!(pkgbuild.contains("\npkgver=0.1.0beta1\n"));
+    assert!(pkgbuild.contains("\n_upstream_ver=0.1.0-beta.1\n"));
+    assert!(
+        read("packaging/debian/changelog")
+            .starts_with("proton-drive-sync-engine (0.1.0~beta.1-1) ")
+    );
+    let metainfo = read("packaging/freedesktop/app.protondrivesync.engine.metainfo.xml");
+    assert!(
+        metainfo.contains("<release version=\"0.1.0~beta.1\"")
+            && metainfo.contains("type=\"development\">"),
+        "{metainfo}"
+    );
+    assert!(
+        read("examples/packaging/release-assets.toml")
+            .contains("proton-drive-sync-engine-0.1.0-beta.1.tar.gz")
+    );
+
+    // The stubs did not regenerate the lockfiles, so the check names exactly those and nothing
+    // else: every site `set` writes itself agrees.
+    let output = version_script(&tree, directory.path(), None, &["check"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let named: Vec<&str> = stderr
+        .lines()
+        .filter_map(|line| line.split(": ").next())
+        .filter(|file| file.contains('/') || file.contains('.'))
+        .filter(|file| !file.starts_with("version.sh"))
+        .collect();
+    assert!(
+        named
+            .iter()
+            .all(|file| *file == "Cargo.lock" || *file == "gui/package-lock.json"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn version_set_refuses_a_version_outside_the_accepted_shapes_and_changes_nothing() {
+    let directory = tempdir().expect("tempdir");
+    let (tree, stubs) = copy_of_the_version_sites(directory.path());
+    let before: Vec<String> = VERSION_SITES
+        .iter()
+        .map(|site| fs::read_to_string(tree.join(site)).expect(site))
+        .collect();
+    for bad in ["0.1.0-beta", "0.1.0+b.1", "0.1.0-preview.1"] {
+        let output = version_script(&tree, directory.path(), Some(&stubs), &["set", bad]);
+        assert!(!output.status.success(), "set {bad} was accepted");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("X.Y.Z"),
+            "{bad}: the refusal does not name the accepted shapes"
+        );
+    }
+    let after: Vec<String> = VERSION_SITES
+        .iter()
+        .map(|site| fs::read_to_string(tree.join(site)).expect(site))
+        .collect();
+    assert_eq!(before, after);
+}

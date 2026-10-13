@@ -41,21 +41,33 @@ install of the daemon doesn't pull in the GObject/Python stack.
 ## The `proton-drive` external dependency
 
 `proton-syncd` shells out to the official `proton-drive` CLI and reads its keyring session via
-`secret-tool`. `proton-drive` is not in Fedora/COPR repos and **cannot** be an RPM `Requires` — it
-is documented in `%description` as a binary the user must install separately and have on `$PATH`.
+`secret-tool`. `proton-drive` is published by Proton only as a download from proton.me and is in no
+distribution's official repositories, so it **cannot** be an RPM `Requires` — it is documented in
+`%description` as a binary the user must install and sign in to before using this package.
 `libsecret` (provides `secret-tool`) **is** a real `Requires`.
 
 ## Source0 / release tag
 
-`Source0` is a GitHub tag archive:
+`Source0` is the source tarball attached to the GitHub release:
 ```
-https://github.com/osirison/proton-drive-sync-engine/archive/refs/tags/v%{version}/proton-drive-sync-engine-%{version}.tar.gz
+https://github.com/osirison/proton-drive-sync-engine/releases/download/v%{upstream_version}/proton-drive-sync-engine-%{upstream_version}.tar.gz
 ```
-GitHub's source archives keep the *tag* (not the requested filename) as the top-level directory
-name, so `%prep` unpacks `%{name}-v%{version}`. **No `v0.1.0` tag exists yet** in this repo — push
-one at release time, or for COPR, use the "Build from SCM" method (rpkg/Git webhook) instead of a
-tagged tarball while the project is pre-tag; that snapshots the working tree directly and doesn't
-need `Source0` to resolve.
+`upstream_version` is the version as the tag and the asset name write it (`0.1.0-beta.1`), while
+`Version` is the RPM form (`0.1.0~beta.1`, which sorts below `0.1.0`). For a final release the two
+are equal. Both are written by `packaging/version.sh`, which is the only way to change them (see
+"Version" below).
+
+The tarball is made with `git archive --prefix=proton-drive-sync-engine-<upstream_version>/`, so its
+one top-level directory is `%{name}-%{upstream_version}`, and `%prep` unpacks that name. It is not
+GitHub's own tag archive: that one names its top-level directory after the tag (`…-v0.1.0`) and
+changes with GitHub's archive code, while the release asset is made once and fixed.
+
+## Version
+
+`Version`, `%global upstream_version` and the newest `%changelog` entry are set together by
+`packaging/version.sh set <upstream>` and compared by `packaging/version.sh check`. Do not edit them
+by hand; the script is the only place the mapping from the upstream version to the RPM version is
+written.
 
 ## Build strategy: plain `cargo build`, not cargo2rpm
 
@@ -79,10 +91,10 @@ build step (as opposed to the dependency-resolution step, which always has netwo
       --sources packaging/rpm/ \
       --resultdir /tmp/mock-result
   ```
-  (`Source0` still needs to actually resolve — either push the release tag first, or generate a
+  (`Source0` still needs to actually resolve — either publish the release first, or generate a
   local source tarball named `proton-drive-sync-engine-0.1.0.tar.gz` whose top-level directory is
-  `proton-drive-sync-engine-v0.1.0` and drop it in the sources dir mock is pointed at, e.g. via
-  `git archive --format=tar --prefix=proton-drive-sync-engine-v0.1.0/ HEAD | gzip > packaging/rpm/proton-drive-sync-engine-0.1.0.tar.gz`.)
+  `proton-drive-sync-engine-0.1.0` and drop it in the sources dir mock is pointed at, e.g. via
+  `git archive --format=tar --prefix=proton-drive-sync-engine-0.1.0/ HEAD | gzip -n > packaging/rpm/proton-drive-sync-engine-0.1.0.tar.gz`.)
 
 ## No debuginfo subpackage
 
@@ -123,5 +135,5 @@ rpmbuild -bb --define "_topdir /tmp/rpmbuild" \
 ```
 
 What a **real** COPR/mock build additionally needs that a from-scratch sandbox typically won't
-have: the `v0.1.0` git tag pushed (or SCM-webhook build), and network enabled for the build chroot
+have: the release tarball published (or a local copy in the sources directory), and network enabled for the build chroot
 as described above.

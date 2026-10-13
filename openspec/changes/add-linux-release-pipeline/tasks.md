@@ -1,13 +1,13 @@
 ## 1. Version reporting and the version script
 
-- [ ] 1.1 Add clap `version` to the `#[command(...)]` of `src/bin/proton-syncd.rs` and
+- [x] 1.1 Add clap `version` to the `#[command(...)]` of `src/bin/proton-syncd.rs` and
       `src/bin/proton-sync.rs`. Add a test in `tests/` that starts both binaries through the
       `tests/common` helpers (`syncd`/`sync_cli`, `run_bounded`). `refuse_the_real_cli` refuses a
       `proton-syncd` that names no fake CLI, so either pass the sandbox's fake CLI or add a
       `--version`-only exemption pinned by its own case in `tests/test_isolation.rs`. Verify: the
       test asserts `proton-syncd <CARGO_PKG_VERSION>` and `proton-sync <CARGO_PKG_VERSION>` with
       exit 0, and that no socket, lockfile or state directory appears in the sandbox
-- [ ] 1.2 Write `packaging/version.sh check`. It reads the root `Cargo.toml` version, applies the
+- [x] 1.2 Write `packaging/version.sh check`. It reads the root `Cargo.toml` version, applies the
       design D3 mapping, and compares all 18 values. That is the 16 places `0.1.0` is written
       today plus the two upstream-version variables added in 2.1 and 2.2:
       - 3 manifests;
@@ -23,7 +23,7 @@
 
       It skips `website/package.json`. Verify: it passes on the tree as it is, and on a copy with
       `pkgver` edited it fails naming the file, the expected value and the value found
-- [ ] 1.3 Add `packaging/version.sh set <upstream>`:
+- [x] 1.3 Add `packaging/version.sh set <upstream>`:
       - it refuses any shape outside `X.Y.Z` / `X.Y.Z-(alpha|beta|rc).N`;
       - it writes every site;
       - it regenerates `Cargo.lock` with cargo and `gui/package-lock.json` with
@@ -34,7 +34,7 @@
       Verify on a scratch copy: `set 0.1.0-beta.1` then `check` passes, and
       `cargo metadata --locked --offline` succeeds; `set 0.1.0-beta` and `set 0.1.0+b.1` exit
       non-zero and change no file
-- [ ] 1.4 Add two `tests/scripts.rs` cases, both run through `common::run_other_tool`:
+- [x] 1.4 Add two `tests/scripts.rs` cases, both run through `common::run_other_tool`:
       - `version.sh check` runs on the repository;
       - `version.sh set 0.1.0-beta.1` runs on a temporary copy, and the case asserts the literal
         results `0.1.0~beta.1`, `0.1.0~beta.1-1` and `0.1.0beta1`.
@@ -42,13 +42,13 @@
       Add `packaging/version.sh check` as a step in `ci.yml`'s `rust` job. Verify:
       `cargo test --test scripts` and `cargo test --test test_isolation` pass, and poisoning one
       site makes both the test and the CI step fail
-- [ ] 1.5 Document the script in `CLAUDE.md`'s command list and in each packaging README's version
+- [x] 1.5 Document the script in `CLAUDE.md`'s command list and in each packaging README's version
       section, stating that versions are set only through it. Verify: the documented commands run
       as written
 
 ## 2. Packaging tree fixes
 
-- [ ] 2.1 RPM spec changes (design D4):
+- [x] 2.1 RPM spec changes (design D4):
       - add `%global upstream_version`;
       - point `Source0` at the release asset URL;
       - change `%autosetup -n %{name}-%{upstream_version}`;
@@ -58,7 +58,7 @@
       `rpmspec -P` expands `Source0` to
       `…/releases/download/v0.1.0/proton-drive-sync-engine-0.1.0.tar.gz` while the version is
       still `0.1.0`
-- [ ] 2.2 PKGBUILD changes (design D4):
+- [x] 2.2 PKGBUILD changes (design D4):
       - add `_pkgbase` and `_upstream_ver`;
       - make the tarball `source=` with `sha256sums=('SKIP')` and a comment saying why;
       - make every `cd` use `${_pkgbase}-${_upstream_ver}`;
@@ -68,7 +68,7 @@
       Update `packaging/arch/README.md` (source, checksums, the AUR variant). Verify:
       `bash -n PKGBUILD` passes, and `makepkg --printsrcinfo` in an Arch container prints the new
       source
-- [ ] 2.3 Deb changes:
+- [x] 2.3 Deb changes:
       - in `debian/control`, give `cargo` and `rustc` the floor `(>= 1.90~)` and the profile
         `<!pkg.proton-drive-sync-engine.rustup>`, and add `curl` to `Recommends`;
       - in `debian/rules`, run `dh_installsystemduser --name=proton-syncd --no-enable`;
@@ -76,14 +76,14 @@
         `--build-profiles=`, and replace the "accepted lintian note" with the verified
         `dpkg-source` refusal and why no source package is built.
 
-      Verify: `dpkg-checkbuilddeps --build-profiles=pkg.proton-drive-sync-engine.rustup` in an
+      Verify: `dpkg-checkbuilddeps -P pkg.proton-drive-sync-engine.rustup` (it has no long option) in an
       Ubuntu 22.04 container lists no Rust entry
-- [ ] 2.4 Change the Rust floor from 1.85 to 1.90 in five files: `README.md`, `setup.sh`'s
+- [x] 2.4 Change the Rust floor from 1.85 to 1.90 in five files: `README.md`, `setup.sh`'s
       `require_command` message, `packaging/debian/README.md`,
       `website/src/content/docs/start/installation.md` and
       `website/src/content/docs/distribution/packages.md`. Verify: `git grep -n '1\.85'` shows only
       dated history notes, and `(cd website && npm ci && npm run build)` succeeds
-- [ ] 2.5 Give the metainfo `<release>` entry the shape `version.sh` writes. Verify:
+- [x] 2.5 Give the metainfo `<release>` entry the shape `version.sh` writes. Verify:
       `appstreamcli validate --no-net` on the metainfo reports no error (run it in a container if
       the host shell refuses it)
 - [ ] 2.6 Rewrite the CLI text in the three trees (design D15):

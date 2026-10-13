@@ -11,7 +11,7 @@ sidebar:
   uses Unix domain sockets — but Linux is the only supported and tested platform: keyring
   session reuse (`secret-tool`/libsecret), the desktop app, and the native packaging are all
   Linux-specific.
-- A **Rust toolchain with edition 2024 support** (Rust 1.85 or newer) to build from source.
+- A **Rust toolchain with edition 2024 support** (Rust 1.90 or newer) to build from source.
 - The **`proton-drive` CLI**, installed, authenticated, and on your `PATH` (see below).
 - For the desktop app: the usual **Tauri Linux build deps** — `webkit2gtk-4.1`,
   `libsoup-3.0`, `gtk3`, and `glib2` development packages, plus `gtk-layer-shell`

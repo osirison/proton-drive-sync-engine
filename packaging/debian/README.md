@@ -27,10 +27,12 @@ installed/removed independently.
 
 `proton-syncd` shells out to Proton's own `proton-drive` CLI for every remote operation
 and reads its cached login session from the desktop keyring via `secret-tool`.
-`proton-drive` is **not** in Debian/Ubuntu repositories and is not (and cannot be) a
-package `Depends:` — it's called out in the `proton-drive-sync-engine` package
-`Description` as a user-provided binary that must be on `PATH`. `libsecret-tools`
-(provides `secret-tool`) is listed as a `Recommends:`, since it *is* packaged and real.
+Proton publishes `proton-drive` only as a download from `https://proton.me/drive/download`,
+and it is in no distribution's official repositories, so it is not (and cannot be) a package
+`Depends:` — the `proton-drive-sync-engine` package `Description` says it must be installed,
+on `PATH` and signed in (`proton-drive auth login`) before the package is used. `libsecret-tools`
+(provides `secret-tool`) and `curl` (the daemon runs it for the events API) are listed as
+`Recommends:`, since both are packaged and real. The package prints nothing at install.
 
 ## systemd user unit
 
@@ -44,13 +46,23 @@ It's installed via `dh_installsystemduser` (debhelper >= 12, included by default
 `dh` sequence at `debhelper-compat (= 13)` — no extra `--with` needed). Because the
 packaged unit is named `proton-syncd.service` rather than the package-name default
 (`proton-drive-sync-engine.service`), `debian/rules` overrides the step with
-`dh_installsystemduser --name=proton-syncd`, which looks for the source file named
+`dh_installsystemduser --name=proton-syncd --no-enable`, which looks for the source file named
 `debian/<package>.<name>.user.service` and installs it as
-`/usr/lib/systemd/user/proton-syncd.service`. Users enable it per-session with:
+`/usr/lib/systemd/user/proton-syncd.service`. `--no-enable` is there because without it the
+generated `postinst` enables the unit for every user at install, and every user's next login then
+starts the daemon against a config that may not exist, which systemd restarts every 10 s. Each user
+enables it after writing a config:
 
 ```sh
 systemctl --user enable --now proton-syncd
 ```
+
+## Version
+
+The version lives only in `debian/changelog`. `packaging/version.sh set <upstream version>` adds
+the dated entry (`0.1.0~beta.1-1` for `0.1.0-beta.1`) and `packaging/version.sh check` compares the
+newest entry against the root `Cargo.toml`. Versions are set only through that script; do not add
+the entry by hand.
 
 ## Building a real `.deb`
 
@@ -67,13 +79,30 @@ dpkg-buildpackage -us -uc -b
 rm debian   # remove the symlink again afterward; do not commit it
 ```
 
+With a Rust toolchain installed by `rustup` instead of the distribution's `cargo` and `rustc`
+packages (the release build on Ubuntu 22.04, which packages an older Rust), name the build profile
+that drops those two entries from the build-dependency check. Every other entry is still checked:
+
+```sh
+dpkg-buildpackage -us -uc -b --build-profiles=pkg.proton-drive-sync-engine.rustup
+```
+
+The same profile is `-P pkg.proton-drive-sync-engine.rustup` to `dpkg-checkbuilddeps` (it has no
+long form) and `apt-get build-dep` reads it from `DEB_BUILD_PROFILES`.
+
+Only binary packages are built (`-b`). No source package is built or published: the source format
+is `3.0 (native)` with the revision `-1` in the version, and `dpkg-source -b` from dpkg 1.22
+(Debian 13) refuses that pair (`native package version may not have a revision`). dpkg 1.21 (Ubuntu
+22.04) only warns. A binary-only build does not run `dpkg-source`, so the pair is accepted there on
+every release, and the `-1` is kept so that a packaging-only rebuild can be `-2`.
+
 ### Build-Depends (must be installed first)
 
 - `debhelper-compat (= 13)` (pulls in a suitable `debhelper`)
-- `cargo (>= 1.85~)`, `rustc (>= 1.85~)` — the root crate is `edition = "2024"`, which
-  needs a fairly recent toolchain (edition 2024 stabilized in Rust 1.85). Older
-  Debian/Ubuntu-packaged `rustc` (e.g. Debian 12 bookworm's) is too old; use
-  `rustup`/backports/a recent Ubuntu release if the archive `rustc` doesn't qualify.
+- `cargo (>= 1.90~)`, `rustc (>= 1.90~)` — the root crate is `edition = "2024"`, and the locked
+  `tauri-runtime`, `tauri-utils`, `tauri-runtime-wry`, `tauri-plugin-fs` and `tray-icon` crates
+  declare `rust-version = 1.90`, which is the real floor. Debian 12's `rustc` is too old; use
+  `rustup` with the profile above, or a distribution release that packages 1.90 or newer.
 - `pkg-config`
 - `libwebkit2gtk-4.1-dev`, `libsoup-3.0-dev`, `libgtk-3-dev`, `libglib2.0-dev`,
   `libgtk-layer-shell-dev` (Tauri GUI; the last one is #351/#370's tray panel, promoted to a
@@ -94,7 +123,7 @@ locally-installable `.deb`.
 ## Validation actually run in this sandbox
 
 This is a Fedora sandbox with no `apt`/root, so none of the build-deps above (webkit2gtk
-dev headers, a Rust >= 1.85 toolchain confirmed to build edition 2024, `lintian`) could
+dev headers, a Rust >= 1.90 toolchain, `lintian`) could
 be installed. What *was* run, from the repo root:
 
 - `dpkg-parsechangelog -l packaging/debian/changelog` — **parses cleanly**, no errors or
@@ -114,7 +143,7 @@ Not run / not available, and why:
   it. Not run.
 - **Full `dpkg-buildpackage -us -uc -b`** — would need `libwebkit2gtk-4.1-dev` +
   `libsoup-3.0-dev` + `libgtk-3-dev` + `libglib2.0-dev` + a Rust toolchain confirmed
-  `>= 1.85` (this sandbox's `rustc`/`cargo` happen to be new enough at the time of
+  `>= 1.90` (this sandbox's `rustc`/`cargo` happen to be new enough at the time of
   writing, but the *system* packages this depends on for the GUI are not installed) and
   network egress to crates.io. Not attempted; see the exact command above.
 
@@ -123,15 +152,19 @@ Not run / not available, and why:
   becomes a layer surface where the compositor supports one). The Build-Depends bullet
   above carries the current list.
 
-### A known, accepted lintian note
+### Why no source package is built
 
-`packaging/debian/source/format` is `3.0 (native)` but the changelog version is
-`0.1.0-1` (a dashed Debian revision). Native-format packages conventionally use an
-undashed version (`0.1.0`); pairing native format with a dashed version is expected to
-surface lintian's `native-package-with-dash-version` (informational) tag. This is
-intentional: keeping the `-1` revision leaves room for packaging-only bumps
-(`0.1.0-2`, ...) without touching the upstream version, and native format avoids
-standing up separate `orig.tar` tooling for a monorepo where this packaging tree and
-the application source live together. No `lintian-overrides` file is included for this
-— `lintian` wasn't available here to confirm the exact tag name/output, and an
-unverified override is worse than an honestly documented, informational note.
+`packaging/debian/source/format` is `3.0 (native)` but the changelog version has a dashed Debian
+revision (`0.1.0-1`, or `0.1.0~beta.1-1` for a pre-release). Native format conventionally has no
+revision. Run on this tree, with `packaging/debian` linked as `./debian`:
+
+| `dpkg-source -b` from | Result |
+| --- | --- |
+| dpkg 1.22.22 (Debian 13) | error: `can't build with source format '3.0 (native)': native package version may not have a revision` |
+| dpkg 1.21.1 (Ubuntu 22.04) | warning `native package version may not have a revision`, and the source package is built |
+
+So a source package cannot be built on current dpkg, and none is published. A binary-only
+`dpkg-buildpackage -b` does not run `dpkg-source` and accepts the version on both. The `-1` is
+kept on purpose: it is what allows a packaging-only rebuild (`-2`) without touching the upstream
+version. Switching to `3.0 (quilt)` with an `.orig.tar.gz` named after the Debian version would
+allow source packages, and is only worth doing if a PPA is ever added.

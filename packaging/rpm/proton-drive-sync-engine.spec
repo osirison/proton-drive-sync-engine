@@ -32,10 +32,12 @@
 # -Cdebuginfo=2 + a working debugsource layout) is a reasonable follow-up, not done in this pass.
 %global debug_package %{nil}
 
-# The git tag this Source0 expects to exist at release time. GitHub's source archives keep the
-# *tag* as the top-level directory name (repo-name + tag, verbatim) regardless of the filename
-# requested in the URL, so the prep stage unpacks from name-rpm_tag, not name-version.
-%global rpm_tag v%{version}
+# The upstream version: the part of the release tag after `v`, and the name of the release
+# tarball. It differs from `Version` for a pre-release, because RPM writes `0.1.0~beta.1` (the
+# tilde sorts it below `0.1.0`) while the tag and the asset name use `0.1.0-beta.1`.
+# `packaging/version.sh` writes both and `packaging/version.sh check` compares them; do not edit
+# either by hand.
+%global upstream_version 0.1.0
 
 # Off by default: the workspace's unit/integration test suite needs network (crates.io was
 # already fetched during the build stage) and several minutes, which isn't appropriate for
@@ -53,9 +55,10 @@ Summary:        Two-way file sync for Proton Drive
 # licences ship with the package and are installed alongside LICENSE below.
 License:        Apache-2.0 AND OFL-1.1
 URL:            https://github.com/osirison/proton-drive-sync-engine
-# No v0.1.0 tag exists yet at the time this spec was written (see packaging/rpm/README.md for how
-# to build from the working tree / a Copr SCM webhook in the meantime).
-Source0:        %{url}/archive/refs/tags/%{rpm_tag}/%{name}-%{version}.tar.gz
+# The release tarball attached to the GitHub release. It is made by `git archive` with one
+# top-level directory named like the tarball without its extension, so the prep stage unpacks
+# from that name (see packaging/rpm/README.md).
+Source0:        %{url}/releases/download/v%{upstream_version}/%{name}-%{upstream_version}.tar.gz
 # Packaged copy of examples/systemd/proton-syncd.service with ExecStart repointed at
 # /usr/bin/proton-syncd for a distro install (see comment in the file itself).
 Source1:        proton-syncd.service
@@ -101,13 +104,14 @@ folder and Proton Drive. This package provides the long-running sync daemon
 (proton-sync-gui), together with a systemd user unit and Linux desktop
 integration (application launcher, hicolor icons, AppStream metadata).
 
-IMPORTANT — external dependency: proton-syncd shells out to the official
-`proton-drive` CLI to perform Proton Drive API operations, and reads that
-CLI's logged-in session from the desktop keyring via `secret-tool`. The
-`proton-drive` CLI is a separate, user-provided binary that is NOT packaged
-here (it is not available in Fedora/COPR repositories); install it yourself
-and make sure it is on $PATH before starting proton-syncd. `secret-tool`
-(from libsecret) IS pulled in as a package dependency.
+IMPORTANT: Proton's `proton-drive` command-line client must be installed and
+signed in before you use this package. proton-syncd runs it for every Proton
+Drive operation and reads its logged-in session from the desktop keyring via
+`secret-tool`. Proton publishes the client only as a download from
+https://proton.me/drive/download, and it is in no distribution's official
+repositories, so this package does not depend on it. Install it, make sure it
+is on $PATH, then sign in with `proton-drive auth login`. `secret-tool` (from
+libsecret) IS pulled in as a package dependency.
 
 After installing, enable the daemon per-user with:
     systemctl --user enable --now proton-syncd
@@ -139,7 +143,7 @@ pull in nemo-python/GObject introspection. Restart Nemo after installing
 (`nemo -q`) to load the extension.
 
 %prep
-%autosetup -n %{name}-%{rpm_tag}
+%autosetup -n %{name}-%{upstream_version}
 
 %build
 # Root crate: the daemon + control CLI.

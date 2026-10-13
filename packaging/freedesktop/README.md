@@ -29,4 +29,9 @@ appstreamcli validate app.protondrivesync.engine.metainfo.xml
 
 Both pass here. Icons are rendered from the repo's `assets/icon.svg` (ImageMagick).
 
-> Note: the AppStream `<release>` date and `0.1.0` version should be bumped at release time.
+## Version
+
+The newest `<release>` of the metainfo carries the version (`0.1.0~beta.1` for `0.1.0-beta.1`, with
+`type="development"`; a final release has `type="stable"`) and the date. They are written by
+`packaging/version.sh set <upstream version>` and compared by `packaging/version.sh check`.
+Versions are set only through that script; do not add a `<release>` by hand.

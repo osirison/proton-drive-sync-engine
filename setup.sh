@@ -209,7 +209,7 @@ check_common_prereqs() {
   require_command systemctl "this installs a systemd *user* service; systemd is required"
   require_command install
   if [[ "${no_build}" != "true" ]]; then
-    require_command cargo "install the Rust toolchain (https://rustup.rs), edition 2024 / Rust >= 1.85"
+    require_command cargo "install the Rust toolchain (https://rustup.rs), edition 2024 / Rust >= 1.90"
   fi
 }
 

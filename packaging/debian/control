@@ -7,10 +7,17 @@ Maintainer: osirison <mina.swe@gmail.com>
 # elsewhere (X11, GNOME), because skip_taskbar and set_position are X11 hints a Wayland
 # compositor discards. Build-time only - the runtime library lands in ${shlibs:Depends}
 # via dh_shlibdeps, like the rest.
+#
+# cargo and rustc need 1.90: the locked tauri-runtime, tauri-utils, tauri-runtime-wry,
+# tauri-plugin-fs and tray-icon crates declare rust-version 1.90. The release build installs Rust
+# with rustup, because the oldest release it is built on (Ubuntu 22.04) packages an older one, and
+# builds with --build-profiles=pkg.proton-drive-sync-engine.rustup, which drops the two entries
+# marked <!pkg.proton-drive-sync-engine.rustup> from the check and keeps every other entry. A build
+# without that profile still needs the distribution's own cargo and rustc at 1.90 or newer.
 Build-Depends: debhelper-compat (= 13),
                dh-sequence-python3,
-               cargo (>= 1.85~),
-               rustc (>= 1.85~),
+               cargo (>= 1.90~) <!pkg.proton-drive-sync-engine.rustup>,
+               rustc (>= 1.90~) <!pkg.proton-drive-sync-engine.rustup>,
                pkg-config,
                libwebkit2gtk-4.1-dev,
                libsoup-3.0-dev,
@@ -30,7 +37,8 @@ Architecture: any
 # drift across Debian/Ubuntu releases.
 Depends: ${shlibs:Depends},
          ${misc:Depends}
-Recommends: libsecret-tools
+Recommends: libsecret-tools,
+            curl
 Suggests: proton-sync-nautilus, proton-sync-nemo
 Description: two-way file sync engine and desktop GUI for Proton Drive
  Bidirectionally synchronizes a local folder with Proton Drive. Ships:
@@ -41,11 +49,13 @@ Description: two-way file sync engine and desktop GUI for Proton Drive
   * proton-sync-gui — a Tauri desktop GUI for status, activity,
                      conflict resolution, dry-run review, and settings
  .
- This package does NOT bundle the proprietary `proton-drive` command-line
- client published by Proton. You must install it yourself and make sure
- it is on PATH: proton-syncd shells out to it for every remote Proton
- Drive operation and reads its cached session from the desktop keyring
+ Proton's `proton-drive` command-line client must be installed and signed
+ in before you use this package. proton-syncd runs it for every Proton
+ Drive operation and reads its logged-in session from the desktop keyring
  (see the libsecret-tools recommendation, which provides secret-tool).
+ This package does not depend on it or bundle it: download it from
+ https://proton.me/drive/download, make sure it is on PATH, then sign in
+ with `proton-drive auth login`.
  .
  Optional per-file sync-status emblems for the Nautilus and Nemo file
  managers are packaged separately as proton-sync-nautilus and

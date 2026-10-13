@@ -47,5 +47,10 @@ override_dh_python3:
 # --name explicitly. Source file:
 #   debian/proton-drive-sync-engine.proton-syncd.user.service
 # installs to /usr/lib/systemd/user/proton-syncd.service.
+#
+# --no-enable: without it the generated postinst enables the unit for every user, so every user's
+# next login starts the daemon against a config that may not exist yet, and systemd restarts it
+# every 10 s. Each user enables it after writing a config:
+#   systemctl --user enable --now proton-syncd
 override_dh_installsystemduser:
-	dh_installsystemduser --name=proton-syncd
+	dh_installsystemduser --name=proton-syncd --no-enable

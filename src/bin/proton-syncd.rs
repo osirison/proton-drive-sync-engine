@@ -12,6 +12,7 @@ use tracing_subscriber::EnvFilter;
 #[derive(Debug, Parser)]
 #[command(
     name = "proton-syncd",
+    version,
     about = "Bidirectional Proton Drive background sync daemon"
 )]
 struct Cli {
