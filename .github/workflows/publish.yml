@@ -31,6 +31,13 @@ name: Publish
 # secrets is the reviewer's click. That click is an approval, not a code review, and for a solo
 # maintainer it is a click on one's own run.
 #
+# STABLE NAMES. After the gate step, every step runs the scripts of the TAG, with the `env:` of THIS
+# file. So the env names the scripts read (TAG, DRY_RUN, COPR_CONFIG, AUR_SSH_KEY, APT_SIGNING_KEY,
+# APT_DEPLOY_KEY, COPR_TOKEN_EXPIRES, COPR_OWNER, AUR_GIT_NAME, AUR_GIT_EMAIL, GH_TOKEN) must stay
+# as they are, or change only together with a re-tag: a rename breaks publishing of older tags
+# (closed: the scripts stop on a missing value). Likewise a tag cut before these scripts existed
+# cannot be published here, and a fix to a script does not reach an existing tag without re-tagging.
+#
 # NEVER PUBLISH A RELEASE FROM A WORKFLOW. A release published with GITHUB_TOKEN fires no other
 # workflow, so this one would never run.
 #

@@ -377,6 +377,12 @@
       environment (5.5) and a published release.
       GitHub creates an environment with no protection the first time a workflow names it. The
       maintainer must create `release` with its reviewer (5.5) BEFORE any release is published.
+      Known consequence of checking out the tag (`tag-checkout.sh`): every step after the gate runs
+      the TAG's own scripts. So a tag cut before this change merges cannot be published by this
+      workflow; a later fix to a publish script does not reach an existing tag without re-tagging;
+      and a later change that renames an `env:` name the scripts read (the step-level names in
+      `publish.yml`) breaks publishing of older tags. All of these fail closed. Rule: keep those
+      names stable, or change them only together with a re-tag. The runbook (6.7) repeats this.
 - [ ] 6.2 Add the preflight steps at the top of the `publish` job:
       - `copr-cli whoami`, and fail when `COPR_TOKEN_EXPIRES` has passed;
       - `ssh -T` to the AUR;

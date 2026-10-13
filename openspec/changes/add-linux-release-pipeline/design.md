@@ -657,7 +657,11 @@ stubs like `draft.sh`; the workflow only calls them):
   version, commit on `main`, `version.sh check`). It is a `run:` step with the tag taken from
   `PUBLISH_TAG` (validated by `route.sh`), so no `with:` expression is needed and the pinned
   expression rule is unchanged. Every later step then runs the tag's scripts, whichever ref the run
-  was dispatched from. A tag from before these scripts cannot be published by this workflow.
+  was dispatched from. Known consequences, all failing closed: a tag from before these scripts
+  cannot be published by this workflow; a later fix to a publish script does not reach an existing
+  tag without re-tagging; a later change that renames an `env:` name the scripts read breaks
+  publishing of older tags. Rule: keep those names stable, or change them only together with a
+  re-tag (the runbook, 6.7, says so too).
 - **The tree from the container is untrusted.** The AUR step refuses a tree or an entry that is not a
   plain file or directory, and any name but the three expected, then copies without following links.
 - **Pinned host keys.** `packaging/release/known_hosts` holds the Ed25519 keys of

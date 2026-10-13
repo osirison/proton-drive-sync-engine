@@ -7290,3 +7290,153 @@ fn a_failing_git_status_fails_the_aur_channel_instead_of_reading_as_no_change() 
     );
     assert_eq!(tree.commits("proton-drive-sync-engine-beta"), 0);
 }
+
+// --- fix round 2 ---------------------------------------------------------------------------------
+
+/// A git that logs its argv and the environment it was given, and answers the three calls
+/// tag-checkout.sh makes (fetch, rev-parse, checkout) without a repository.
+const GIT_LOGGING_STUB: &str = r#"#!/bin/sh
+printf '%s\n' "$*" >> "$STUB_GIT_ARGV"
+{
+  echo "call: $*"
+  echo "GIT_CONFIG_COUNT=${GIT_CONFIG_COUNT-unset}"
+  echo "GIT_CONFIG_KEY_0=${GIT_CONFIG_KEY_0-unset}"
+  echo "GIT_CONFIG_VALUE_0=${GIT_CONFIG_VALUE_0-unset}"
+  echo "GIT_TERMINAL_PROMPT=${GIT_TERMINAL_PROMPT-unset}"
+} >> "$STUB_GIT_ENV"
+case " $* " in
+  *" rev-parse "*) echo 0123456789abcdef0123456789abcdef01234567 ;;
+esac
+"#;
+
+#[test]
+fn the_token_reaches_git_only_through_its_environment_and_is_never_printed() {
+    let tree = PublishTree::new();
+    write_executable(&tree.stubs.join("git"), GIT_LOGGING_STUB);
+    // The gate that tag-checkout.sh runs last; this test is about the fetches.
+    write_executable(&tree.script("gate.sh"), "#!/bin/sh\nexit 0\n");
+    let token = "s3cr3t-token";
+    let mut encode = common::sandboxed("bash", tree.directory.path());
+    encode
+        .arg("-c")
+        .arg(format!("printf 'x-access-token:%s' {token} | base64 -w0"));
+    let encoded = stdout_of(&common::run_other_tool(&mut encode));
+    assert!(!encoded.is_empty());
+    let header = format!("AUTHORIZATION: basic {encoded}");
+
+    let output = tree.run(
+        "tag-checkout.sh",
+        &["v0.1.0"],
+        &[
+            ("GH_TOKEN", token),
+            (
+                "STUB_GIT_ARGV",
+                &tree.path("git.argv").display().to_string(),
+            ),
+            ("STUB_GIT_ENV", &tree.path("git.env").display().to_string()),
+        ],
+    );
+    assert!(output.status.success(), "{}", stderr_of(&output));
+
+    // Every git call got the header through GIT_CONFIG_*, and a prompt-less terminal.
+    let env = fs::read_to_string(tree.path("git.env")).expect("git env log");
+    let calls = env.matches("call: ").count();
+    assert!(calls >= 4, "{env}");
+    assert_eq!(env.matches("GIT_CONFIG_COUNT=1\n").count(), calls, "{env}");
+    assert_eq!(
+        env.matches("GIT_CONFIG_KEY_0=http.extraheader\n").count(),
+        calls,
+        "{env}"
+    );
+    assert_eq!(
+        env.matches(&format!("GIT_CONFIG_VALUE_0={header}\n"))
+            .count(),
+        calls,
+        "{env}"
+    );
+    assert_eq!(
+        env.matches("GIT_TERMINAL_PROMPT=0\n").count(),
+        calls,
+        "{env}"
+    );
+
+    // Neither the token, its base64 form nor the whole header is in git's argv, stdout or stderr.
+    let argv = fs::read_to_string(tree.path("git.argv")).expect("git argv log");
+    for (where_, text) in [
+        ("git's argv", argv.as_str()),
+        ("stdout", &stdout_of(&output)),
+        ("stderr", &stderr_of(&output)),
+    ] {
+        for needle in [token, encoded.as_str(), header.as_str(), "AUTHORIZATION"] {
+            assert!(!text.contains(needle), "{where_} holds the token material");
+        }
+    }
+
+    // Without a token nothing is passed at all.
+    let _ = fs::remove_file(tree.path("git.env"));
+    let output = tree.run(
+        "tag-checkout.sh",
+        &["v0.1.0"],
+        &[
+            (
+                "STUB_GIT_ARGV",
+                &tree.path("git.argv").display().to_string(),
+            ),
+            ("STUB_GIT_ENV", &tree.path("git.env").display().to_string()),
+        ],
+    );
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    let env = fs::read_to_string(tree.path("git.env")).expect("git env log");
+    assert_eq!(
+        env.matches("GIT_CONFIG_COUNT=unset\n").count(),
+        env.matches("call: ").count()
+    );
+}
+
+#[test]
+fn copr_cli_is_installed_from_the_hash_locked_file_with_hashes_required_and_no_dependency_lookup() {
+    let publish = workflow("publish.yml");
+    let installs: Vec<&str> = publish
+        .lines()
+        .filter(|line| line.contains(" install "))
+        .collect();
+    assert_eq!(
+        installs,
+        [
+            "          \"$RUNNER_TEMP/copr-venv/bin/pip\" install --quiet --require-hashes --no-deps -r packaging/release/copr-cli-requirements.txt"
+        ]
+    );
+    let requirements = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("packaging/release/copr-cli-requirements.txt"),
+    )
+    .expect("requirements");
+    // Each requirement starts at a `name==version` line and runs to the next; each has a SHA-256.
+    let mut entries: Vec<String> = Vec::new();
+    for line in requirements.lines() {
+        let starts_entry = line
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphanumeric())
+            && line.contains("==");
+        if starts_entry {
+            entries.push(line.to_owned());
+        } else if let Some(last) = entries.last_mut() {
+            last.push('\n');
+            last.push_str(line);
+        }
+    }
+    assert!(entries.len() >= 5, "{} requirements", entries.len());
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry.starts_with("copr-cli==2.6 ")),
+        "copr-cli==2.6 is not pinned"
+    );
+    for entry in &entries {
+        assert!(
+            entry.contains("--hash=sha256:"),
+            "no hash for: {}",
+            entry.lines().next().unwrap_or("")
+        );
+    }
+}
