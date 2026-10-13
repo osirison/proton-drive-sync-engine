@@ -6338,16 +6338,16 @@ fn only_the_publish_job_reads_secrets_and_it_runs_in_the_release_environment() {
         4,
         "a secret outside the publish job"
     );
-    for secret in [
+    for name in [
         "COPR_CONFIG",
         "AUR_SSH_KEY",
         "APT_SIGNING_KEY",
         "APT_DEPLOY_KEY",
     ] {
         assert_eq!(
-            publish.matches(&format!("secrets.{secret} ")).count(),
+            publish.matches(&format!("secrets.{name} ")).count(),
             1,
-            "{secret}"
+            "{name} is read once"
         );
     }
     // The secrets are read in ONE step, the one that writes them to files.
