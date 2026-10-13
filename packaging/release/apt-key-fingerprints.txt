@@ -1,0 +1,14 @@
+# The fingerprints of the apt repository's signing keys (openspec change add-linux-release-pipeline,
+# design D10/D11). One per line: 40 upper-case hex digits, no spaces. Lines starting with # are notes.
+#
+# NOT RECORDED YET. The signing key does not exist until task 5.3 creates it. Then, before the first
+# tag, put its fingerprint here in a pull request (docs/releasing.md says how to read it). Nothing
+# is invented here:
+#
+#   * apt-publish.sh refuses to sign with a key whose fingerprint is not listed in this file, so a
+#     wrong key can never publish;
+#   * verify-apt.sh compares the key the live repository serves with this file, so a key swapped on
+#     the site fails the verification job;
+#   * the user docs (task 8) print the same line, taken from `apt-client.sh fingerprints`.
+#
+# While a key rotation is under way (docs/releasing.md), list both keys.
