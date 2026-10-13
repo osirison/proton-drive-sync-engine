@@ -4311,11 +4311,143 @@ fn run_blocks_reads_every_form_of_a_run_value() {
     assert!(!blocks.iter().any(|block| block.contains("commented")));
 }
 
+/// Every line of `text` that holds `${{` and is not in a place where an expression is safe, as
+/// (line number, line). Fails closed: it does not parse YAML, it asks of each such line whether it
+/// is a plain `key: value` line and either
+///
+/// * its key is `group` directly under `concurrency:` (the only expression-bearing key of
+///   `release.yml` outside `env:`; a run's group name is not executed), or `if` (evaluated by the
+///   runner, never by a shell); or
+/// * it is a direct child of an `env:` or `with:` mapping, judged by indentation against the
+///   nearest less-indented line. `env:` values reach a script as environment variables, `with:`
+///   values as action inputs; neither is pasted into a shell.
+///
+/// A continuation line, a flow-style step, a quoted key, a list item, a comment and a `run:` line
+/// all fail, whatever YAML form they take.
+fn unsafe_expression_lines(text: &str) -> Vec<(usize, String)> {
+    let lines: Vec<&str> = text.lines().collect();
+    let indent = |line: &str| line.len() - line.trim_start().len();
+    let mut found = Vec::new();
+    for (at, line) in lines.iter().enumerate() {
+        if !line.contains("${{") {
+            continue;
+        }
+        let trimmed = line.trim_start();
+        // A plain key: letters, digits, `_` and `-`, then `: `.
+        let key = trimmed.split_once(": ").map(|(key, _)| key).filter(|key| {
+            !key.is_empty()
+                && key
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        });
+        let parent = lines[..at]
+            .iter()
+            .rev()
+            .find(|earlier| {
+                !earlier.trim().is_empty()
+                    && !earlier.trim_start().starts_with('#')
+                    && indent(earlier) < indent(line)
+            })
+            .map(|earlier| earlier.trim());
+        let safe = match key {
+            Some("if") => true,
+            Some("group") => parent == Some("concurrency:"),
+            Some(_) => matches!(parent, Some("env:" | "with:")),
+            None => false,
+        };
+        if !safe {
+            found.push((at + 1, (*line).to_owned()));
+        }
+    }
+    found
+}
+
+#[test]
+fn an_expression_is_safe_only_in_the_places_the_release_workflow_uses_them() {
+    // The forms that hide an expression in a shell command, which a `run:` reader missed.
+    let cases = [
+        ("inline", "      - run: gate.sh ${{ github.ref_name }}\n"),
+        (
+            "continued scalar",
+            "        run: gate.sh\n          \"${{ github.ref_name }}\"\n",
+        ),
+        (
+            "multi-line scalar",
+            "        run: first line\n          second ${{ github.ref_name }} line\n",
+        ),
+        (
+            "flow style",
+            "      - { name: x, run: \"gate.sh ${{ github.ref_name }}\" }\n",
+        ),
+        (
+            "quoted key",
+            "        \"run\": gate.sh ${{ github.ref_name }}\n",
+        ),
+        (
+            "block scalar",
+            "        run: |\n          gate.sh ${{ github.ref_name }}\n",
+        ),
+        ("comment", "        # ${{ github.ref_name }}\n"),
+        (
+            "env value continued",
+            "        env:\n          TAG: x\n            ${{ github.ref_name }}\n",
+        ),
+        (
+            "group outside concurrency",
+            "jobs:\n  group: ${{ github.ref }}\n",
+        ),
+    ];
+    for (what, text) in cases {
+        assert!(
+            !unsafe_expression_lines(text).is_empty(),
+            "{what} was accepted"
+        );
+    }
+    for (what, text) in [
+        (
+            "env",
+            "        env:\n          TAG: ${{ github.ref_name }}\n",
+        ),
+        (
+            "with",
+            "        with:\n          name: ${{ github.ref_name }}\n",
+        ),
+        ("if", "    if: ${{ github.ref_name == 'x' }}\n"),
+        (
+            "group",
+            "concurrency:\n  group: release-${{ github.ref }}\n",
+        ),
+        (
+            "env after a comment",
+            "        env:\n          # note\n\n          TAG: ${{ github.ref_name }}\n",
+        ),
+    ] {
+        assert!(
+            unsafe_expression_lines(text).is_empty(),
+            "{what} was refused"
+        );
+    }
+}
+
 #[test]
 fn no_run_step_of_the_release_workflow_holds_an_expression() {
     // `${{ }}` in a `run:` is pasted into the shell before it runs, so an event field there is a
-    // script injection. They go through `env:` (and `with:`, `if:`, `concurrency`) only.
+    // script injection. The rule is inverted so it fails closed: every line of the file that holds
+    // an expression must be one of the safe places in `unsafe_expression_lines`, whatever YAML form
+    // a run step takes.
     let release = workflow("release.yml");
+    let unsafe_lines = unsafe_expression_lines(&release);
+    assert!(
+        unsafe_lines.is_empty(),
+        "an expression outside env:, with:, if: and concurrency.group: {unsafe_lines:?}"
+    );
+    // The lines the real file holds: the concurrency group and three `env:` values.
+    let holding = release.lines().filter(|line| line.contains("${{")).count();
+    assert_eq!(
+        holding, 4,
+        "the file's expression lines changed: review each one"
+    );
+    // The run-step reader finds the steps (it is also what the test above is cross-checked with).
     let blocks = run_blocks(&release);
     assert!(
         blocks.len() >= 3,
