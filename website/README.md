@@ -40,3 +40,5 @@ BASE_PATH=/ SITE_URL=http://localhost npm run build
   deploy doesn't 404.
 - The logo/favicon come from the repo's own `assets/icon.svg` — keep them in sync if the
   brand icon changes.
+
+<!-- throwaway: verifies task 3.8, closed unmerged -->
