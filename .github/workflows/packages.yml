@@ -477,6 +477,40 @@ jobs:
             "proton-drive-sync-engine-${UPSTREAM}/packaging/smoke-test.sh"
           bash packaging/smoke-test.sh "$UPSTREAM" arch first-install.txt second-install.txt
 
+  # The release's asset set, checked on every package build rather than only at a tag: the draft
+  # job refuses any set but the tarball, the source RPM, three RPMs, three debs and the Arch
+  # package, named for the version. A change that breaks that (a new RPM subpackage, a debuginfo
+  # package) would otherwise show up after a tag, about 25 minutes into the release. The check is
+  # the draft job's own (`draft.sh --check-assets`), not a copy of it. It needs all four build
+  # jobs, so it is skipped with them when the builds are not needed.
+  release-assets:
+    needs: [changes, tarball, rpm, deb, arch]
+    if: needs.changes.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: source-tarball
+          path: release-files
+      - uses: actions/download-artifact@v8
+        with:
+          name: rpm-packages
+          path: release-files
+      - uses: actions/download-artifact@v8
+        with:
+          name: deb-packages
+          path: release-files
+      - uses: actions/download-artifact@v8
+        with:
+          name: arch-package
+          path: release-files
+      - name: Check the asset set
+        run: |
+          set -euo pipefail
+          ls -l release-files
+          packaging/release/draft.sh --check-assets release-files "$(packaging/version.sh current)"
+
   # The one required check. It runs on every run (`always()`) and reads what the others did:
   # a skipped build or smoke job is fine when `changes` said no build was needed, and nothing else
   # is. A failed or cancelled job fails it. Every job that gates a merge is in `needs`: a smoke job
@@ -484,7 +518,7 @@ jobs:
   # shapes `needs` can take.)
   packages-ok:
     if: always()
-    needs: [changes, tarball, rpm, deb, arch, smoke-rpm, smoke-deb, smoke-arch]
+    needs: [changes, tarball, rpm, deb, arch, smoke-rpm, smoke-deb, smoke-arch, release-assets]
     runs-on: ubuntu-latest
     steps:
       - name: Check the results

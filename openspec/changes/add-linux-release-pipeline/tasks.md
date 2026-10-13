@@ -148,7 +148,7 @@
       The doctor check is not in this task; it is 3.10. Verify: every cell passes, and a one-off
       run with the unit enabled (the old `debian/rules`) fails the deb cells on the
       `default.target.wants` check
-- [ ] 3.8 Add the pull-request trigger and a weekly `schedule`. Add a change-detection job over the
+- [x] 3.8 Add the pull-request trigger and a weekly `schedule`. Add a change-detection job over the
       `linux-packages` filter, which build and smoke jobs check with `if:`. Add the aggregator job
       `packages-ok` (design D2), and make only it a required check. Verify on two pull requests:
       - one touching only `website/` shows `packages-ok` passed with every build job skipped,
@@ -160,9 +160,24 @@
       `packages.yml`, and `packages-ok` passes on a pull request that builds (PR #473). The three
       smoke jobs are in `needs` (PR 2b), and `tests/scripts.rs` runs the aggregator's script over
       every shape `needs` can take (all green, builds skipped, each job failed or cancelled, a
-      smoke job skipped while builds were needed, no answer from `changes`). Left: the two
-      verifying pull requests above (the website-only one and the one that makes a job fail), and
-      branch protection.
+      smoke job skipped while builds were needed, no answer from `changes`).
+
+      Verified on 2026-10-13 with two throwaway draft pull requests against `main` at `0723cc7`,
+      both closed unmerged with their branches deleted:
+      - PR #475 changed only `website/README.md`. Packages run 38417756086: `changes` passed, and
+        `tarball`, `rpm`, `deb`, `arch`, `smoke-rpm`, `smoke-deb` and `smoke-arch` were all skipped
+        (no build or smoke job ran); `packages-ok` passed. The pull request read `mergeable:
+        MERGEABLE`, `mergeStateStatus: CLEAN` (it was a draft and GitHub still said CLEAN).
+      - PR #476 added a `Depends` on a package that does not exist to `packaging/debian/control`.
+        Packages run 38417794552: `changes`, `tarball`, `rpm`, `deb`, `arch`, `smoke-rpm` (43, 44)
+        and `smoke-arch` all ran and passed; the five `smoke-deb` cells (ubuntu 22.04, 24.04, 26.04,
+        debian 12, 13) ran and failed at the install; `packages-ok` failed. The pull request read
+        `mergeable: MERGEABLE`, `mergeStateStatus: BLOCKED` (the required check failed).
+
+      `packages-ok` was added to `main`'s required status checks on 2026-10-13
+      (`gh api repos/osirison/proton-drive-sync-engine/branches/main/protection/required_status_checks
+      -q .contexts` lists it with `rust`, `cargo-audit`, `analyze (rust)` and `frontend`), so nothing
+      is left for this task.
 - [x] 3.9 Fix whatever the first real builds of the deb and Arch trees (never built before) and the
       RPM tree turn up, in the trees themselves. Record each fix in that tree's README's validation
       section. Verify: all build and smoke jobs are green on the pull request
@@ -193,10 +208,24 @@
 
 - [ ] 4.1 Create `.github/workflows/release.yml`, triggered on pushed `v*` tags. Its gate job checks
       the tag regex, that the tag equals `v` plus the `Cargo.toml` version, that the commit is an
-      ancestor of `origin/main`, and `version.sh check`. Verify on a fork:
-      - `v0.1.0-beta.2` on a `0.1.0-beta.1` tree fails naming both versions;
+      ancestor of `origin/main`, and `version.sh check`. Verify with throwaway test tags on this
+      repository (the maintainer's decision of 2026-10-13: a user cannot fork their own repository,
+      so the checks use test tags and test draft releases here, deleted afterwards):
+      - `v0.1.0-beta.2` on a tree whose `Cargo.toml` says another version fails naming both
+        versions;
       - a matching tag on a branch commit fails;
       - neither creates a release
+
+      Done: `packaging/release/gate.sh` holds the checks and `release.yml` calls it. The tag shape
+      and the tree's version come from new read-only `version.sh` subcommands (`tag-version`,
+      `current`), so the workflow keeps no pattern of its own. The ancestry check fails closed
+      (only `git merge-base --is-ancestor` exit 0 passes; a missing `origin/main`, exit 128 and
+      any other failure stop the release), and the workflow fetches the whole history and `main`
+      by name first. `tests/scripts.rs` runs the gate in a temporary repository: a match on `main`
+      and a commit behind its tip pass; a branch commit, a missing `origin/main`, a `git` that
+      answers 128, a version mismatch (the message names both versions), a tag of the wrong shape
+      and a drifted version site all fail. Left: the live runs on test tags, after this merges
+      (they need the workflow on `main`).
 - [ ] 4.2 Add the `ci` and `packages` jobs as calls to the two reusable workflows. Add the `draft`
       job, the only one with `contents: write`:
       - write `SHA256SUMS`;
@@ -205,12 +234,43 @@
       - use `--clobber` and remove stale assets when a draft exists;
       - fail when the release is already published.
 
-      Verify on a fork:
+      Verify with test tags and test draft releases on this repository (see 4.1):
       - a beta tag gives a draft pre-release with exactly the listed assets;
       - `sha256sum -c SHA256SUMS` passes on the downloaded assets;
       - no asset name contains `~`;
       - a re-run replaces the assets;
       - a re-run after publishing fails and leaves the release unchanged
+
+      Done: `ci` and `packages` call `ci.yml` and `packages.yml` after `gate` (each caller job
+      grants `contents: read`, which is all the two files ask for), and `draft` needs all three.
+      `packaging/release/draft.sh` does the rest. It finds the tag's releases through the API list
+      (a lookup by tag may not return a draft), refuses a published release and more than one draft
+      before it writes anything, requires exactly the expected assets (the tarball, the source RPM,
+      three RPMs, three debs, the Arch package; named by the upstream version; no `~`), writes
+      `SHA256SUMS` and checks it, then creates the draft (`--draft --verify-tag --generate-notes
+      --notes-file`, plus `--prerelease` as `version.sh is-prerelease` says) or replaces the one
+      draft (`gh release upload --clobber`, then deletes the draft's assets this run did not
+      produce). `tests/scripts.rs` runs it with a stub `gh` over every branch: no release, one draft
+      with a stale asset, a draft on a later page of the listing, two drafts, a published release
+      (with and without a draft beside it), a failed listing, bad assets, and the beta and final
+      `--prerelease` decisions; on the refusals the stub fails on any write. Other tests hold
+      `release.yml` to the rules above (each `permissions:` block exactly, `needs`, the artifacts
+      by name, no `${{ }}` in any `run:` step) and check that no other workflow runs on a tag push.
+      The asset set is also checked on every package build: `packages.yml` has a `release-assets`
+      job (in `packages-ok`'s `needs`, skipped with the builds) that runs `draft.sh --check-assets`,
+      the draft job's own check, so a new RPM subpackage or a debuginfo package fails the pull
+      request and not the first release. Replacing a draft touches its assets only: for one tag the
+      pre-release flag and the notes header cannot change, so only the notes GitHub generated at
+      creation can go stale, and no refresh is built. Left, after this merges:
+      - the live checks: `v0.1.0` on `main` gives a draft that is not a pre-release with the ten
+        assets, `sha256sum -c` passes on them, no name has `~`, and a re-run of the run leaves one
+        draft with replaced assets;
+      - "a beta tag gives a draft pre-release" cannot be shown live before the first release: `main`
+        says `0.1.0`, so only `v0.1.0` passes the gate until 7.1. The stub test covers the
+        `--prerelease` decision; the live check is 7.3;
+      - "a re-run after publishing fails and leaves the release unchanged" needs a published
+        release, which a test must not make; the stub test covers it, and it is shown live at the
+        first release
 - [ ] 4.3 Write `packaging/release-notes.md`, the draft's notes header:
       - a link to the docs packages page (not a copy of its commands);
       - the `proton-drive` prerequisite: install it from `https://proton.me/drive/download` and
@@ -218,7 +278,15 @@
         (design D15);
       - a pre-release warning.
 
-      Verify: the fork's draft shows it above the generated notes
+      Verify: the test draft shows it above the generated notes
+
+      Done: `packaging/release-notes.md` has the three parts. The warning sits between two marker
+      lines that `draft.sh` removes, with the warning, for a final version (and keeps, without the
+      markers, for a pre-release), so a `v0.1.0` draft carries no pre-release warning.
+      `tests/scripts.rs` checks both versions' notes as `gh` receives them. `gh release create
+      --help` says notes given with `--notes` are prepended to generated ones; it does not say the
+      same of `--notes-file`. Left: look at the first test draft (`v0.1.0`) to see the notes file
+      above the generated notes.
 - [ ] 4.4 Add a tag ruleset limiting who may create `v*` tags. Verify:
       `gh api repos/osirison/proton-drive-sync-engine/rulesets` lists it
 

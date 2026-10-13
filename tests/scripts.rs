@@ -3006,6 +3006,7 @@ fn packages_ok_lists_every_build_and_smoke_job() {
         "smoke-rpm",
         "smoke-deb",
         "smoke-arch",
+        "release-assets",
     ] {
         assert!(
             needs.iter().any(|name| name == job),
@@ -3116,4 +3117,1588 @@ fn packages_ok_fails_when_the_change_check_gave_no_answer() {
     // `changes` skipped or failed with build=false is no answer either.
     let output = aggregate_all("false", &all_jobs("skipped", &[("changes", "skipped")]));
     assert_eq!(output.status.code(), Some(1));
+}
+
+// --- The release workflow: version.sh's tag questions, the gate and the draft script ----------------
+
+#[test]
+fn version_answers_the_tag_questions_the_release_workflow_asks() {
+    let directory = tempdir().expect("tempdir");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let ask = |args: &[&str]| version_script(root, directory.path(), None, args);
+    for (tag, upstream) in [
+        ("v0.1.0", "0.1.0"),
+        ("v0.1.0-beta.1", "0.1.0-beta.1"),
+        ("v10.20.30-rc.12", "10.20.30-rc.12"),
+        ("v1.0.0-alpha.1", "1.0.0-alpha.1"),
+    ] {
+        let output = ask(&["tag-version", tag]);
+        assert!(output.status.success(), "{tag}: {}", stderr_of(&output));
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            format!("{upstream}\n")
+        );
+    }
+    // Everything outside the accepted shape is refused with nothing on stdout.
+    for tag in [
+        "0.1.0",
+        "v0.1",
+        "v0.1.0-beta",
+        "v0.1.0-beta.0",
+        "v0.1.0-preview.1",
+        "v01.0.0",
+        "v0.1.0+b.1",
+        "v0.1.0-beta.1 ",
+        "V0.1.0",
+        "",
+    ] {
+        let output = ask(&["tag-version", tag]);
+        assert_eq!(output.status.code(), Some(1), "'{tag}' was accepted");
+        assert!(output.stdout.is_empty(), "'{tag}'");
+        assert!(stderr_of(&output).contains("not a release tag"), "'{tag}'");
+    }
+    for (version, answer) in [
+        ("0.1.0", "false"),
+        ("0.1.0-beta.1", "true"),
+        ("2.0.0-rc.3", "true"),
+    ] {
+        let output = ask(&["is-prerelease", version]);
+        assert!(output.status.success(), "{version}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            format!("{answer}\n")
+        );
+    }
+    // A version of the wrong shape is an error, not "false".
+    for version in ["v0.1.0", "0.1", "0.1.0-beta"] {
+        let output = ask(&["is-prerelease", version]);
+        assert_eq!(output.status.code(), Some(1), "{version}");
+        assert!(output.stdout.is_empty());
+    }
+    let cargo = fs::read_to_string(root.join("Cargo.toml")).expect("Cargo.toml");
+    let expected = cargo
+        .lines()
+        .find_map(|line| line.strip_prefix("version = \""))
+        .and_then(|rest| rest.strip_suffix('"'))
+        .expect("version line");
+    let output = ask(&["current"]);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        format!("{expected}\n")
+    );
+}
+
+/// A git repository in `directory/tree` holding a copy of the version sites and `gate.sh`, with
+/// the fixed author a commit needs.
+struct GateTree {
+    directory: tempfile::TempDir,
+    tree: std::path::PathBuf,
+}
+
+fn real_git() -> std::path::PathBuf {
+    std::env::split_paths(&std::env::var_os("PATH").expect("PATH"))
+        .map(|dir| dir.join("git"))
+        .find(|candidate| candidate.is_file())
+        .expect("git on PATH")
+}
+
+fn gate_tree() -> GateTree {
+    let directory = tempdir().expect("tempdir");
+    let (tree, _stubs) = copy_of_the_version_sites(directory.path());
+    let release = tree.join("packaging/release");
+    fs::create_dir_all(&release).expect("release directory");
+    fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("packaging/release/gate.sh"),
+        release.join("gate.sh"),
+    )
+    .expect("gate.sh");
+    let gate = GateTree { directory, tree };
+    gate.git(&["init", "-q", "-b", "main"]);
+    gate.commit("first");
+    gate
+}
+
+impl GateTree {
+    fn git_command(&self, args: &[&str]) -> std::process::Command {
+        let mut command = common::sandboxed("git", self.directory.path());
+        command
+            .current_dir(&self.tree)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .args([
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args);
+        command
+    }
+
+    fn git(&self, args: &[&str]) -> String {
+        let output = common::run_other_tool(&mut self.git_command(args));
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            stderr_of(&output)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
+    /// Commits everything and returns the commit.
+    fn commit(&self, message: &str) -> String {
+        self.git(&["add", "-A"]);
+        self.git(&["commit", "-q", "--allow-empty", "-m", message]);
+        self.git(&["rev-parse", "HEAD"])
+    }
+
+    fn set_main(&self, commit: &str) {
+        self.git(&["update-ref", "refs/remotes/origin/main", commit]);
+    }
+
+    /// Runs the gate for `tag`; `path_first` is a directory placed ahead of `PATH`.
+    fn gate(&self, tag: &str, path_first: Option<&Path>) -> std::process::Output {
+        let mut command = common::sandboxed("bash", self.directory.path());
+        command
+            .arg(self.tree.join("packaging/release/gate.sh"))
+            .arg(tag)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null");
+        if let Some(first) = path_first {
+            let path = std::env::var("PATH").expect("PATH");
+            command.env(
+                "PATH",
+                common::path_with_stubs(&format!("{}:{path}", first.display())),
+            );
+        }
+        common::run_other_tool(&mut command)
+    }
+}
+
+#[test]
+fn the_gate_passes_a_matching_tag_on_main() {
+    let gate = gate_tree();
+    let commit = gate.commit("second");
+    gate.set_main(&commit);
+    let output = gate.gate("v0.1.0", None);
+    assert!(output.status.success(), "{}", stderr_of(&output));
+}
+
+#[test]
+fn the_gate_passes_a_commit_that_is_behind_the_tip_of_main() {
+    let gate = gate_tree();
+    let tagged = gate.commit("tagged");
+    let tip = gate.commit("later work on main");
+    gate.set_main(&tip);
+    gate.git(&["checkout", "-q", "--detach", &tagged]);
+    let output = gate.gate("v0.1.0", None);
+    assert!(output.status.success(), "{}", stderr_of(&output));
+}
+
+#[test]
+fn the_gate_refuses_a_commit_that_is_not_an_ancestor_of_main() {
+    let gate = gate_tree();
+    let main = gate.commit("on main");
+    gate.set_main(&main);
+    gate.git(&["checkout", "-q", "-b", "branch"]);
+    gate.commit("only on a branch");
+    let output = gate.gate("v0.1.0", None);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr_of(&output).contains("not an ancestor of refs/remotes/origin/main"),
+        "{}",
+        stderr_of(&output)
+    );
+}
+
+#[test]
+fn the_gate_refuses_when_origin_main_cannot_be_read() {
+    // A tag-push checkout has no origin/main until it is fetched. Not knowing is not a pass.
+    let gate = gate_tree();
+    let output = gate.gate("v0.1.0", None);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr_of(&output).contains("cannot read refs/remotes/origin/main"),
+        "{}",
+        stderr_of(&output)
+    );
+}
+
+#[test]
+fn the_gate_refuses_when_git_cannot_answer_the_ancestry_question() {
+    // `git merge-base --is-ancestor` exits 128 when it cannot read a ref. A shim that makes it do
+    // that: only exit status 0 may pass.
+    let gate = gate_tree();
+    let commit = gate.commit("second");
+    gate.set_main(&commit);
+    let shim = gate.directory.path().join("git-shim");
+    fs::create_dir(&shim).expect("shim directory");
+    write_executable(
+        &shim.join("git"),
+        &format!(
+            "#!/bin/sh\nfor argument in \"$@\"; do\n  if [ \"$argument\" = merge-base ]; then\n    echo 'fatal: stub: cannot read a ref' >&2\n    exit 128\n  fi\ndone\nexec {} \"$@\"\n",
+            real_git().display()
+        ),
+    );
+    let output = gate.gate("v0.1.0", Some(&shim));
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr_of(&output).contains("could not tell whether"),
+        "{}",
+        stderr_of(&output)
+    );
+}
+
+#[test]
+fn the_gate_names_both_versions_when_the_tag_and_cargo_toml_differ() {
+    let gate = gate_tree();
+    let commit = gate.commit("second");
+    gate.set_main(&commit);
+    for tag in ["v0.1.0-beta.2", "v0.1.1", "v0.2.0"] {
+        let output = gate.gate(tag, None);
+        let stderr = stderr_of(&output);
+        assert_eq!(output.status.code(), Some(1), "{tag}: {stderr}");
+        assert!(stderr.contains(&tag[1..]), "{tag}: {stderr}");
+        assert!(
+            stderr.contains("Cargo.toml at this commit says 0.1.0"),
+            "{stderr}"
+        );
+    }
+}
+
+#[test]
+fn the_gate_refuses_a_tag_of_the_wrong_shape() {
+    let gate = gate_tree();
+    let commit = gate.commit("second");
+    gate.set_main(&commit);
+    for tag in ["0.1.0", "v0.1", "v0.1.0-beta", "v0.1.0+b.1", "vv0.1.0"] {
+        let output = gate.gate(tag, None);
+        assert_eq!(output.status.code(), Some(1), "{tag}");
+        assert!(stderr_of(&output).contains("not a release tag"), "{tag}");
+    }
+}
+
+#[test]
+fn the_gate_runs_the_version_check() {
+    // Cargo.toml and the tag agree and the commit is on main; one other site does not.
+    let gate = gate_tree();
+    let pkgbuild = gate.tree.join("packaging/arch/PKGBUILD");
+    let text = fs::read_to_string(&pkgbuild).expect("PKGBUILD");
+    fs::write(&pkgbuild, text.replacen("pkgver=0.1.0", "pkgver=0.1.1", 1)).expect("edit");
+    let commit = gate.commit("drifted");
+    gate.set_main(&commit);
+    let output = gate.gate("v0.1.0", None);
+    let stderr = stderr_of(&output);
+    assert_ne!(output.status.code(), Some(0), "{stderr}");
+    assert!(stderr.contains("PKGBUILD"), "{stderr}");
+}
+
+// --- draft.sh, with a stub `gh` -------------------------------------------------------------------
+
+const GH_STUB: &str = r#"#!/bin/sh
+# Logs every call. A read (`gh api repos/... --paginate`) is answered from $STUB_GH_RELEASES. Any
+# write (release create, upload, delete-asset, edit, or an api call with a method) is logged
+# and refused with status 99 unless $STUB_GH_ALLOW_WRITES is set, so a call a test did not expect
+# fails loudly.
+printf '%s\n' "$*" >> "$STUB_GH_LOG"
+previous=""
+for argument in "$@"; do
+  if [ "$previous" = --notes-file ]; then cp "$argument" "$STUB_GH_NOTES"; fi
+  previous="$argument"
+done
+case "$1 $2" in
+  "api "*)
+    for argument in "$@"; do
+      case "$argument" in -X | --method | --input | -f | -F) echo "stub gh: api write" >&2; exit 99 ;; esac
+    done
+    # A listing without --paginate would return only the first page of releases.
+    case " $* " in *" --paginate "*) ;; *) echo "stub gh: a releases listing without --paginate" >&2; exit 98 ;; esac
+    if [ -n "$STUB_GH_API_FAILS" ]; then echo "stub gh: api failed" >&2; exit 1; fi
+    cat "$STUB_GH_RELEASES"
+    ;;
+  "release create" | "release upload" | "release delete-asset" | "release edit" | "release delete")
+    if [ -z "$STUB_GH_ALLOW_WRITES" ]; then echo "stub gh: unexpected write: $*" >&2; exit 99; fi
+    if [ "$2" = create ]; then echo "https://github.com/o/r/releases/tag/untagged-draft"; fi
+    ;;
+  *)
+    echo "stub gh: unexpected call: $*" >&2
+    exit 98
+    ;;
+esac
+"#;
+
+struct DraftTree {
+    directory: tempfile::TempDir,
+    tree: std::path::PathBuf,
+    assets: std::path::PathBuf,
+    stubs: std::path::PathBuf,
+}
+
+fn draft_tree() -> DraftTree {
+    let directory = tempdir().expect("tempdir");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let tree = directory.path().join("tree");
+    fs::create_dir_all(tree.join("packaging/release")).expect("tree");
+    for file in [
+        "packaging/version.sh",
+        "packaging/release/draft.sh",
+        "packaging/release-notes.md",
+    ] {
+        fs::copy(root.join(file), tree.join(file))
+            .unwrap_or_else(|error| panic!("{file}: {error}"));
+    }
+    let stubs = directory.path().join("gh-stubs");
+    fs::create_dir(&stubs).expect("stubs");
+    write_executable(&stubs.join("gh"), GH_STUB);
+    let assets = directory.path().join("assets");
+    fs::create_dir(&assets).expect("assets");
+    DraftTree {
+        directory,
+        tree,
+        assets,
+        stubs,
+    }
+}
+
+/// The nine files a release holds besides SHA256SUMS, named for `upstream`.
+fn asset_names(upstream: &str) -> Vec<String> {
+    vec![
+        format!("proton-drive-sync-engine-{upstream}.tar.gz"),
+        format!("proton-drive-sync-engine-{upstream}-1.fc43.src.rpm"),
+        format!("proton-drive-sync-engine-{upstream}-1.fc43.x86_64.rpm"),
+        format!("proton-drive-sync-engine-nautilus-{upstream}-1.fc43.noarch.rpm"),
+        format!("proton-drive-sync-engine-nemo-{upstream}-1.fc43.noarch.rpm"),
+        format!("proton-drive-sync-engine_{upstream}-1_amd64.deb"),
+        format!("proton-sync-nautilus_{upstream}-1_all.deb"),
+        format!("proton-sync-nemo_{upstream}-1_all.deb"),
+        format!("proton-drive-sync-engine-{upstream}-1-x86_64.pkg.tar.zst"),
+    ]
+}
+
+fn release_json(id: u64, tag: &str, draft: bool, assets: &[&str]) -> serde_json::Value {
+    serde_json::json!({
+        "id": id,
+        "tag_name": tag,
+        "draft": draft,
+        "html_url": format!("https://github.com/o/r/releases/{id}"),
+        "assets": assets.iter().map(|name| serde_json::json!({ "name": name })).collect::<Vec<_>>(),
+    })
+}
+
+impl DraftTree {
+    fn fill(&self, upstream: &str) {
+        for name in asset_names(upstream) {
+            fs::write(self.assets.join(&name), format!("contents of {name}")).expect("asset");
+        }
+    }
+
+    /// Runs `draft.sh <tag> assets` with `pages` (one JSON array each, as `--paginate` prints them)
+    /// as the API's answer. Returns the output and the stub's log.
+    fn run(
+        &self,
+        tag: &str,
+        pages: &[Vec<serde_json::Value>],
+        allow_writes: bool,
+    ) -> (std::process::Output, Vec<String>) {
+        let releases = self.directory.path().join("releases.json");
+        let text: String = pages
+            .iter()
+            .map(|page| serde_json::Value::Array(page.clone()).to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&releases, text).expect("releases");
+        self.run_with(tag, &releases, allow_writes, false)
+    }
+
+    fn run_with(
+        &self,
+        tag: &str,
+        releases: &Path,
+        allow_writes: bool,
+        api_fails: bool,
+    ) -> (std::process::Output, Vec<String>) {
+        let log = self.directory.path().join("gh.log");
+        let mut command = self.command();
+        command
+            .arg(tag)
+            .arg(&self.assets)
+            .env("STUB_GH_LOG", &log)
+            .env("STUB_GH_RELEASES", releases)
+            .env("STUB_GH_NOTES", self.directory.path().join("notes.copy"));
+        if allow_writes {
+            command.env("STUB_GH_ALLOW_WRITES", "1");
+        }
+        if api_fails {
+            command.env("STUB_GH_API_FAILS", "1");
+        }
+        let output = common::run_other_tool(&mut command);
+        // The real `gh` must never be reached: this stub directory is ahead of the sandbox's
+        // refusing `gh`, and a run that lost it would have recorded a hit there.
+        let hits = common::stub_hits(&command);
+        assert!(hits.is_empty(), "the test reached a refusing stub: {hits}");
+        let calls = fs::read_to_string(&log)
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        (output, calls)
+    }
+
+    /// `bash draft.sh` in the sandbox, with the stub `gh` first on `PATH` (ahead of the sandbox's
+    /// refusing one) and no way to reach the host's GitHub: no token, an empty `gh` config
+    /// directory and a host that does not resolve.
+    fn command(&self) -> std::process::Command {
+        let mut command = common::sandboxed("bash", self.directory.path());
+        command
+            .arg(self.tree.join("packaging/release/draft.sh"))
+            .env("GITHUB_REPOSITORY", "o/r")
+            .env("GH_TOKEN", "")
+            .env("GITHUB_TOKEN", "")
+            .env("GH_CONFIG_DIR", self.directory.path().join("gh-config"))
+            .env("GH_HOST", "gh.invalid");
+        let mut path = std::ffi::OsString::from(&self.stubs);
+        path.push(":");
+        path.push(common::path_with_stubs(
+            &std::env::var("PATH").expect("PATH"),
+        ));
+        command.env("PATH", path);
+        command
+    }
+
+    /// `draft.sh --check-assets <assets dir> <version>`.
+    fn check_assets(&self, version: &str) -> std::process::Output {
+        let mut command = self.command();
+        command.arg("--check-assets").arg(&self.assets).arg(version);
+        common::run_other_tool(&mut command)
+    }
+
+    fn notes(&self) -> String {
+        fs::read_to_string(self.directory.path().join("notes.copy")).expect("the notes file gh saw")
+    }
+
+    fn names_in_assets(&self) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(&self.assets)
+            .expect("assets")
+            .map(|entry| {
+                entry
+                    .expect("entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        names.sort();
+        names
+    }
+}
+
+fn writes(calls: &[String]) -> Vec<&String> {
+    calls
+        .iter()
+        .filter(|call| {
+            [
+                "release create",
+                "release upload",
+                "release delete-asset",
+                "release edit",
+                "release delete",
+            ]
+            .iter()
+            .any(|write| call.starts_with(write))
+        })
+        .collect()
+}
+
+#[test]
+fn a_tag_with_no_release_creates_a_draft_pre_release_with_exactly_the_assets() {
+    let tree = draft_tree();
+    tree.fill("0.1.0-beta.1");
+    let other = release_json(1, "v0.0.9", false, &["old.tar.gz"]);
+    let (output, calls) = tree.run("v0.1.0-beta.1", &[vec![other]], true);
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    let writes = writes(&calls);
+    assert_eq!(writes.len(), 1, "{calls:?}");
+    let create = writes[0];
+    assert!(
+        create.starts_with("release create v0.1.0-beta.1 "),
+        "{create}"
+    );
+    for flag in [
+        "--draft",
+        "--verify-tag",
+        "--generate-notes",
+        "--notes-file",
+        "--prerelease",
+        "--repo o/r",
+    ] {
+        assert!(create.contains(flag), "{flag} missing: {create}");
+    }
+    // The nine assets and SHA256SUMS, nothing else.
+    let mut expected = asset_names("0.1.0-beta.1");
+    expected.push("SHA256SUMS".to_owned());
+    for name in &expected {
+        assert!(
+            create.contains(&format!("/assets/{name} "))
+                || create.contains(&format!("/assets/{name}")),
+            "{name}: {create}"
+        );
+    }
+    assert_eq!(create.matches("/assets/").count(), 10, "{create}");
+    // SHA256SUMS lists the other nine, in the form sha256sum -c reads, and checks out.
+    let sums = fs::read_to_string(tree.assets.join("SHA256SUMS")).expect("SHA256SUMS");
+    let mut listed: Vec<&str> = sums
+        .lines()
+        .map(|line| line.split_once("  ").expect("hash, two spaces, name").1)
+        .collect();
+    listed.sort_unstable();
+    let mut want = asset_names("0.1.0-beta.1");
+    want.sort();
+    assert_eq!(listed, want);
+    let mut check = common::sandboxed("sha256sum", tree.directory.path());
+    check
+        .current_dir(&tree.assets)
+        .args(["--check", "--strict", "SHA256SUMS"]);
+    let checked = common::run_other_tool(&mut check);
+    assert!(checked.status.success(), "{}", stderr_of(&checked));
+    assert!(expected.iter().all(|name| !name.contains('~')));
+    assert_eq!(tree.names_in_assets().len(), 10);
+}
+
+#[test]
+fn a_final_version_is_not_marked_pre_release() {
+    let tree = draft_tree();
+    tree.fill("0.1.0");
+    let (output, calls) = tree.run("v0.1.0", &[vec![]], true);
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    let writes = writes(&calls);
+    assert_eq!(writes.len(), 1, "{calls:?}");
+    assert!(writes[0].contains("--draft"));
+    assert!(!writes[0].contains("--prerelease"), "{}", writes[0]);
+}
+
+#[test]
+fn the_notes_header_links_the_docs_states_the_prerequisite_and_warns_only_for_a_pre_release() {
+    for (upstream, tag, pre) in [
+        ("0.1.0-beta.1", "v0.1.0-beta.1", true),
+        ("0.1.0", "v0.1.0", false),
+    ] {
+        let tree = draft_tree();
+        tree.fill(upstream);
+        let (output, _) = tree.run(tag, &[vec![]], true);
+        assert!(output.status.success(), "{}", stderr_of(&output));
+        let notes = tree.notes();
+        assert!(
+            notes.contains(
+                "https://osirison.github.io/proton-drive-sync-engine/distribution/packages/"
+            ),
+            "{notes}"
+        );
+        assert!(
+            notes.contains("https://proton.me/drive/download"),
+            "{notes}"
+        );
+        assert!(notes.contains("proton-drive auth login"), "{notes}");
+        assert!(!notes.contains("<!--"), "a marker was left in: {notes}");
+        assert_eq!(
+            notes.contains("This is a pre-release"),
+            pre,
+            "{tag}: {notes}"
+        );
+        // No install commands are copied here: those are the packages page's.
+        for command in ["dnf install", "apt install", "apt-get install", "pacman -"] {
+            assert!(!notes.contains(command), "{command}: {notes}");
+        }
+        // The prerequisite comes first for a final release, and after the warning for a beta.
+        assert!(
+            notes.trim_start().starts_with(if pre {
+                "> **This is a pre-release"
+            } else {
+                "## Before you install"
+            }),
+            "{notes}"
+        );
+    }
+}
+
+#[test]
+fn a_draft_that_exists_is_replaced_not_duplicated() {
+    let tree = draft_tree();
+    tree.fill("0.1.0-beta.1");
+    let kept = asset_names("0.1.0-beta.1")[0].clone();
+    let draft = release_json(
+        7,
+        "v0.1.0-beta.1",
+        true,
+        &[&kept, "SHA256SUMS", "stale-from-an-earlier-run.deb"],
+    );
+    // Another tag's draft and published release are none of this run's business.
+    let others = vec![
+        release_json(8, "v0.1.0-beta.2", true, &["x"]),
+        release_json(9, "v0.0.9", false, &["y"]),
+    ];
+    let (output, calls) = tree.run("v0.1.0-beta.1", &[vec![draft.clone()], others], true);
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    let writes = writes(&calls);
+    assert_eq!(writes.len(), 2, "{calls:?}");
+    assert!(
+        writes[0].starts_with("release upload v0.1.0-beta.1 "),
+        "{}",
+        writes[0]
+    );
+    assert!(writes[0].contains("--clobber") && writes[0].contains("--repo o/r"));
+    assert_eq!(writes[0].matches("/assets/").count(), 10);
+    assert_eq!(
+        writes[1].as_str(),
+        "release delete-asset v0.1.0-beta.1 stale-from-an-earlier-run.deb --repo o/r --yes"
+    );
+    assert!(!calls.iter().any(|call| call.starts_with("release create")));
+}
+
+#[test]
+fn a_draft_with_no_stale_asset_deletes_nothing() {
+    let tree = draft_tree();
+    tree.fill("0.1.0");
+    let names = asset_names("0.1.0");
+    let mut held: Vec<&str> = names.iter().map(String::as_str).collect();
+    held.push("SHA256SUMS");
+    let (output, calls) = tree.run(
+        "v0.1.0",
+        &[vec![release_json(7, "v0.1.0", true, &held)]],
+        true,
+    );
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    let writes = writes(&calls);
+    assert_eq!(writes.len(), 1, "{calls:?}");
+    assert!(writes[0].starts_with("release upload "));
+}
+
+#[test]
+fn a_draft_on_a_later_page_of_the_listing_is_found() {
+    let tree = draft_tree();
+    tree.fill("0.1.0-beta.1");
+    let filler: Vec<_> = (100..130)
+        .map(|id| release_json(id, "v0.0.1", false, &[]))
+        .collect();
+    let draft = release_json(7, "v0.1.0-beta.1", true, &["old"]);
+    let (output, calls) = tree.run("v0.1.0-beta.1", &[filler, vec![draft]], true);
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    assert!(calls.iter().any(|call| call.starts_with("release upload ")));
+    assert!(
+        !calls.iter().any(|call| call.starts_with("release create")),
+        "{calls:?}"
+    );
+}
+
+#[test]
+fn two_drafts_for_one_tag_fail_naming_both_and_change_nothing() {
+    let tree = draft_tree();
+    tree.fill("0.1.0-beta.1");
+    let drafts = vec![
+        release_json(4242, "v0.1.0-beta.1", true, &[]),
+        release_json(4343, "v0.1.0-beta.1", true, &[]),
+    ];
+    let (output, calls) = tree.run("v0.1.0-beta.1", &[drafts], false);
+    let stderr = stderr_of(&output);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("4242") && stderr.contains("4343"),
+        "{stderr}"
+    );
+    assert!(writes(&calls).is_empty(), "{calls:?}");
+    assert!(
+        !tree.assets.join("SHA256SUMS").exists(),
+        "SHA256SUMS written"
+    );
+}
+
+#[test]
+fn a_published_release_fails_the_run_and_changes_nothing() {
+    for also_a_draft in [false, true] {
+        let tree = draft_tree();
+        tree.fill("0.1.0-beta.1");
+        let mut page = vec![release_json(5, "v0.1.0-beta.1", false, &["a"])];
+        if also_a_draft {
+            page.push(release_json(6, "v0.1.0-beta.1", true, &["b"]));
+        }
+        let (output, calls) = tree.run("v0.1.0-beta.1", &[page], false);
+        let stderr = stderr_of(&output);
+        assert_eq!(output.status.code(), Some(1), "{stderr}");
+        assert!(stderr.contains("already published"), "{stderr}");
+        assert!(writes(&calls).is_empty(), "{calls:?}");
+        assert!(
+            !tree.assets.join("SHA256SUMS").exists(),
+            "SHA256SUMS written"
+        );
+        assert_eq!(tree.names_in_assets().len(), 9);
+    }
+}
+
+#[test]
+fn a_listing_that_fails_stops_the_run_before_any_write() {
+    let tree = draft_tree();
+    tree.fill("0.1.0");
+    let releases = tree.directory.path().join("empty.json");
+    fs::write(&releases, "[]").expect("releases");
+    let (output, calls) = tree.run_with("v0.1.0", &releases, true, true);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr_of(&output));
+    assert!(writes(&calls).is_empty(), "{calls:?}");
+}
+
+#[test]
+fn a_bad_tag_stops_the_run_before_gh_is_called() {
+    let tree = draft_tree();
+    tree.fill("0.1.0");
+    for tag in ["0.1.0", "v0.1", "v0.1.0-beta"] {
+        let (output, calls) = tree.run(tag, &[vec![]], true);
+        assert_eq!(output.status.code(), Some(1), "{tag}");
+        assert!(calls.is_empty(), "{tag}: {calls:?}");
+    }
+}
+
+#[test]
+fn assets_that_are_not_the_expected_set_are_refused_before_any_write() {
+    // (what to change, what the message must say)
+    type Change = fn(&DraftTree);
+    let cases: [(&str, Change, &str); 6] = [
+        (
+            "a tilde in a name",
+            |t| {
+                fs::write(
+                    t.assets
+                        .join("proton-drive-sync-engine_0.1.0~beta.1-1_amd64.deb"),
+                    "x",
+                )
+                .unwrap();
+            },
+            "contains '~'",
+        ),
+        (
+            "a name without the version",
+            |t| {
+                fs::write(t.assets.join("proton-drive-sync-engine-9.9.9.tar.gz"), "x").unwrap();
+            },
+            "is not named for version",
+        ),
+        (
+            "an unexpected file",
+            |t| {
+                fs::write(t.assets.join("notes.txt-0.1.0"), "x").unwrap();
+            },
+            "unexpected asset",
+        ),
+        (
+            "a missing deb",
+            |t| {
+                fs::remove_file(t.assets.join("proton-sync-nemo_0.1.0-1_all.deb")).unwrap();
+            },
+            "expected 1 tarball",
+        ),
+        (
+            "a second tarball",
+            |t| {
+                fs::write(
+                    t.assets.join("proton-drive-sync-engine-0.1.0-extra.tar.gz"),
+                    "x",
+                )
+                .unwrap();
+            },
+            "is not named for version",
+        ),
+        (
+            "a missing source rpm",
+            |t| {
+                fs::remove_file(
+                    t.assets
+                        .join("proton-drive-sync-engine-0.1.0-1.fc43.src.rpm"),
+                )
+                .unwrap();
+            },
+            "expected 1 tarball",
+        ),
+    ];
+    for (what, change, message) in cases {
+        let tree = draft_tree();
+        tree.fill("0.1.0");
+        change(&tree);
+        let (output, calls) = tree.run("v0.1.0", &[vec![]], false);
+        let stderr = stderr_of(&output);
+        assert_eq!(output.status.code(), Some(1), "{what}: {stderr}");
+        assert!(stderr.contains(message), "{what}: {stderr}");
+        assert!(writes(&calls).is_empty(), "{what}: {calls:?}");
+    }
+}
+
+#[test]
+fn a_stale_sha256sums_is_replaced_and_does_not_list_itself() {
+    let tree = draft_tree();
+    tree.fill("0.1.0");
+    fs::write(
+        tree.assets.join("SHA256SUMS"),
+        "0000  proton-drive-sync-engine-0.1.0.tar.gz\n",
+    )
+    .unwrap();
+    let (output, _) = tree.run("v0.1.0", &[vec![]], true);
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    let sums = fs::read_to_string(tree.assets.join("SHA256SUMS")).unwrap();
+    assert_eq!(sums.lines().count(), 9, "{sums}");
+    assert!(!sums.contains("SHA256SUMS"));
+    assert!(!sums.contains("0000  "));
+}
+
+// --- the workflow files -------------------------------------------------------------------------
+
+fn workflow(name: &str) -> String {
+    fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(".github/workflows")
+            .join(name),
+    )
+    .unwrap_or_else(|error| panic!("{name}: {error}"))
+}
+
+/// The text of job `name` of a workflow, up to the next job.
+fn job_block(text: &str, name: &str) -> String {
+    let header = format!("  {name}:");
+    let mut lines = text.lines().skip_while(|line| *line != header.as_str());
+    let mut block = vec![lines.next().unwrap_or_else(|| panic!("no job {name}"))];
+    for line in lines {
+        let is_job_key = line.starts_with("  ")
+            && !line.starts_with("   ")
+            && !line.trim_start().starts_with('#')
+            && line.trim_end().ends_with(':');
+        if is_job_key {
+            break;
+        }
+        block.push(line);
+    }
+    block.join("\n")
+}
+
+#[test]
+fn the_release_workflow_runs_on_version_tags_and_only_the_draft_job_can_write() {
+    let release = workflow("release.yml");
+    let on = release.split("\npermissions:").next().expect("on block");
+    assert!(on.contains("tags:\n      - \"v*\""), "{on}");
+    assert!(
+        !on.contains("branches:") && !on.contains("pull_request") && !on.contains("schedule"),
+        "{on}"
+    );
+    // Top-level permissions read-only; exactly one `contents: write`, in the draft job.
+    assert!(release.contains("\npermissions:\n  contents: read\n"));
+    assert_eq!(release.matches("contents: write").count(), 1);
+    assert!(job_block(&release, "draft").contains("contents: write"));
+    for call in ["ci", "packages"] {
+        let block = job_block(&release, call);
+        assert!(block.contains("needs: gate"), "{call}: {block}");
+        assert!(
+            block.contains(&format!(
+                "uses: ./.github/workflows/{}.yml",
+                if call == "ci" { "ci" } else { "packages" }
+            )),
+            "{block}"
+        );
+        // A caller job grants what the called file asks for, which is contents: read and nothing else.
+        assert!(
+            block.contains("permissions:\n      contents: read\n"),
+            "{block}"
+        );
+    }
+    let draft = job_block(&release, "draft");
+    assert!(draft.contains("needs: [gate, ci, packages]"), "{draft}");
+    // The four artifacts are downloaded by name.
+    for artifact in [
+        "source-tarball",
+        "rpm-packages",
+        "deb-packages",
+        "arch-package",
+    ] {
+        assert!(draft.contains(&format!("name: {artifact}\n")), "{artifact}");
+    }
+    // The gate fetches what its ancestry check needs, and runs the script.
+    let gate = job_block(&release, "gate");
+    assert!(gate.contains("fetch-depth: 0"), "{gate}");
+    assert!(
+        gate.contains("git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main"),
+        "{gate}"
+    );
+    assert!(gate.contains("packaging/release/gate.sh"), "{gate}");
+    // The logic lives in the scripts the tests run, not in the workflow.
+    assert!(draft.contains("packaging/release/draft.sh"));
+    assert!(
+        !release.contains("gh release"),
+        "gh release is called by draft.sh only"
+    );
+}
+
+#[test]
+fn the_called_workflows_ask_only_for_what_their_caller_grants() {
+    for name in ["ci.yml", "packages.yml"] {
+        let text = workflow(name);
+        assert!(
+            text.contains("\nworkflow_call:") || text.contains("\n  workflow_call:"),
+            "{name}"
+        );
+        // One permissions block, at the top, contents: read; none on a job.
+        let permissions: Vec<&str> = text
+            .lines()
+            .filter(|line| line.trim_start().starts_with("permissions:"))
+            .collect();
+        assert_eq!(
+            permissions,
+            ["permissions:"],
+            "{name} sets permissions below the top level"
+        );
+        assert!(
+            text.contains("\npermissions:\n  contents: read\n"),
+            "{name}"
+        );
+    }
+    // packages.yml's concurrency group is per run for everything but a pull request, so a tag
+    // run's group never meets the caller's (release.yml's is named after the ref).
+    let packages = workflow("packages.yml");
+    let group = packages
+        .lines()
+        .find(|line| line.trim_start().starts_with("group: packages-"))
+        .expect("group");
+    assert!(group.contains("github.run_id"), "{group}");
+    assert!(
+        group.contains("github.event_name == 'pull_request'"),
+        "{group}"
+    );
+    assert!(workflow("release.yml").contains("group: release-${{ github.ref }}"));
+}
+
+#[test]
+fn no_other_workflow_runs_on_a_tag_push() {
+    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join(".github/workflows");
+    for entry in fs::read_dir(&directory).expect("workflows") {
+        let path = entry.expect("entry").path();
+        let name = path
+            .file_name()
+            .expect("name")
+            .to_string_lossy()
+            .into_owned();
+        if name == "release.yml" || !name.ends_with(".yml") {
+            continue;
+        }
+        let text = fs::read_to_string(&path).expect("workflow");
+        let on = text
+            .split("\non:")
+            .nth(1)
+            .and_then(|rest| rest.split("\npermissions:").next())
+            .map(|rest| rest.split("\njobs:").next().expect("on block"))
+            .unwrap_or_else(|| panic!("{name}: no on: block"));
+        assert!(!on.contains("tags:"), "{name} names tags");
+        // A `push:` trigger without a branch or path filter fires for tags too. On the same
+        // indentation, `push:` must be followed by `branches:` (or `paths:`).
+        if let Some(after) = on.split("\n  push:").nth(1) {
+            let filter = after
+                .lines()
+                .skip(1)
+                .find(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#'))
+                .unwrap_or("");
+            assert!(
+                filter.trim_start().starts_with("branches:")
+                    || filter.trim_start().starts_with("paths:"),
+                "{name}: push is not filtered to branches: {filter}"
+            );
+        }
+    }
+}
+
+// --- Fix round 1 ------------------------------------------------------------------------------
+
+#[test]
+fn the_gate_compares_with_the_remote_main_and_not_a_tag_called_origin_main() {
+    // `origin/main` is looked up under refs/tags/ before refs/remotes/, so a tag of that name on a
+    // branch commit would be compared with itself and pass.
+    let gate = gate_tree();
+    let main = gate.commit("on main");
+    gate.set_main(&main);
+    gate.git(&["checkout", "-q", "-b", "branch"]);
+    let branch = gate.commit("only on a branch");
+    gate.git(&["tag", "origin/main", &branch]);
+    let output = gate.gate("v0.1.0", None);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr_of(&output));
+    assert!(
+        stderr_of(&output).contains("not an ancestor of refs/remotes/origin/main"),
+        "{}",
+        stderr_of(&output)
+    );
+}
+
+#[test]
+fn version_current_refuses_a_cargo_toml_with_no_version() {
+    let directory = tempdir().expect("tempdir");
+    let (tree, _stubs) = copy_of_the_version_sites(directory.path());
+    let manifest = tree.join("Cargo.toml");
+    let text = fs::read_to_string(&manifest).expect("Cargo.toml");
+    fs::write(&manifest, text.replacen("version = \"0.1.0\"", "", 1)).expect("edit");
+    let output = version_script(&tree, directory.path(), None, &["current"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert!(
+        stderr_of(&output).contains("no version"),
+        "{}",
+        stderr_of(&output)
+    );
+}
+
+#[test]
+fn an_empty_release_listing_is_not_read_as_no_release() {
+    // The API prints [] when there are none. Nothing at all would have created a second draft.
+    let tree = draft_tree();
+    tree.fill("0.1.0");
+    let releases = tree.directory.path().join("nothing.json");
+    fs::write(&releases, "").expect("releases");
+    let (output, calls) = tree.run_with("v0.1.0", &releases, true, false);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr_of(&output));
+    assert!(
+        stderr_of(&output).contains("came back empty"),
+        "{}",
+        stderr_of(&output)
+    );
+    assert!(writes(&calls).is_empty(), "{calls:?}");
+}
+
+#[test]
+fn notes_with_broken_pre_release_markers_are_refused_for_every_tag() {
+    let block = "<!-- pre-release -->\nA warning.\n<!-- /pre-release -->\n";
+    let cases = [
+        ("the start marker missing", "Intro.\nA warning.\n<!-- /pre-release -->\n## Install\nsteps\n".to_owned()),
+        ("the end marker missing", "Intro.\n<!-- pre-release -->\nA warning.\n## Install\nsteps\n".to_owned()),
+        ("the end before the start", "<!-- /pre-release -->\nA warning.\n<!-- pre-release -->\n## Install\nsteps\n".to_owned()),
+        ("a duplicated pair", format!("{block}## Install\nsteps\n{block}")),
+        ("a duplicated start", "<!-- pre-release -->\n<!-- pre-release -->\nA warning.\n<!-- /pre-release -->\n## Install\n".to_owned()),
+    ];
+    for (what, text) in cases {
+        for (upstream, tag) in [("0.1.0", "v0.1.0"), ("0.1.0-beta.1", "v0.1.0-beta.1")] {
+            let tree = draft_tree();
+            tree.fill(upstream);
+            fs::write(tree.tree.join("packaging/release-notes.md"), &text).expect("notes");
+            let (output, calls) = tree.run(tag, &[vec![]], true);
+            let stderr = stderr_of(&output);
+            assert_eq!(output.status.code(), Some(1), "{what} {tag}: {stderr}");
+            assert!(stderr.contains("exactly one"), "{what} {tag}: {stderr}");
+            assert!(calls.is_empty(), "{what} {tag}: {calls:?}");
+        }
+    }
+}
+
+#[test]
+fn notes_that_are_empty_once_the_block_is_dropped_are_refused() {
+    let tree = draft_tree();
+    tree.fill("0.1.0");
+    fs::write(
+        tree.tree.join("packaging/release-notes.md"),
+        "<!-- pre-release -->\nOnly a warning.\n<!-- /pre-release -->\n",
+    )
+    .expect("notes");
+    let (output, calls) = tree.run("v0.1.0", &[vec![]], true);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr_of(&output));
+    assert!(
+        stderr_of(&output).contains("notes are empty"),
+        "{}",
+        stderr_of(&output)
+    );
+    assert!(writes(&calls).is_empty(), "{calls:?}");
+}
+
+#[test]
+fn an_asset_named_for_another_version_is_refused_even_when_it_contains_this_one() {
+    // 0.1.0 is a substring of every 0.1.0-beta.N name.
+    for (assets_for, tag) in [
+        ("0.1.0-beta.1", "v0.1.0"),
+        ("0.1.0", "v0.1.0-beta.1"),
+        ("0.1.0-beta.10", "v0.1.0-beta.1"),
+        ("0.1.0-beta.1", "v0.1.0-beta.10"),
+    ] {
+        let tree = draft_tree();
+        tree.fill(assets_for);
+        let (output, calls) = tree.run(tag, &[vec![]], false);
+        let stderr = stderr_of(&output);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{assets_for} for {tag}: {stderr}"
+        );
+        assert!(
+            stderr.contains("is not named for version"),
+            "{assets_for} for {tag}: {stderr}"
+        );
+        assert!(writes(&calls).is_empty(), "{calls:?}");
+    }
+}
+
+#[test]
+fn check_assets_accepts_the_expected_set_and_refuses_any_other_without_touching_gh() {
+    let tree = draft_tree();
+    tree.fill("0.1.0-beta.1");
+    let output = tree.check_assets("0.1.0-beta.1");
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("9 assets"));
+    // It writes nothing: no SHA256SUMS.
+    assert!(!tree.assets.join("SHA256SUMS").exists());
+    // The set it would refuse: an extra debuginfo RPM, a wrong version, a bad version argument.
+    fs::write(
+        tree.assets
+            .join("proton-drive-sync-engine-debuginfo-0.1.0-beta.1-1.fc43.x86_64.rpm"),
+        "x",
+    )
+    .expect("extra");
+    let output = tree.check_assets("0.1.0-beta.1");
+    assert_eq!(output.status.code(), Some(1));
+    fs::remove_file(
+        tree.assets
+            .join("proton-drive-sync-engine-debuginfo-0.1.0-beta.1-1.fc43.x86_64.rpm"),
+    )
+    .expect("remove");
+    assert_eq!(tree.check_assets("0.1.0").status.code(), Some(1));
+    assert_eq!(tree.check_assets("0.1").status.code(), Some(1));
+}
+
+// --- release.yml: what a `run:` may contain, and its permissions, exactly ---------------------------
+
+/// The text of every `run:` step: a block scalar (`|`, `>`, with any chomping or indent mark), a
+/// value on the following lines, or an inline value.
+fn run_blocks(text: &str) -> Vec<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let indent = |line: &str| line.len() - line.trim_start().len();
+    let mut blocks = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let trimmed = lines[i].trim_start();
+        let body = trimmed.strip_prefix("- ").map_or(trimmed, str::trim_start);
+        if let Some(rest) = body.strip_prefix("run:") {
+            let key_indent = lines[i].len() - body.len();
+            let rest = rest.trim();
+            if rest.is_empty() || rest.starts_with('|') || rest.starts_with('>') {
+                let mut block = String::new();
+                i += 1;
+                while i < lines.len()
+                    && (lines[i].trim().is_empty() || indent(lines[i]) > key_indent)
+                {
+                    block.push_str(lines[i]);
+                    block.push('\n');
+                    i += 1;
+                }
+                blocks.push(block);
+                continue;
+            }
+            blocks.push(rest.to_owned());
+        }
+        i += 1;
+    }
+    blocks
+}
+
+#[test]
+fn run_blocks_reads_every_form_of_a_run_value() {
+    let sample = "jobs:\n  a:\n    steps:\n      - run: echo ${{ inline }}\n      - name: x\n        run: |\n          one ${{ pipe }}\n\n          two\n        env:\n          K: ${{ not.a.run }}\n      - name: y\n        run: >-\n          folded ${{ gt }}\n      - run:\n          next ${{ line }}\n      # run: ${{ commented }}\n      - name: z\n        run: plain\n";
+    let blocks = run_blocks(sample);
+    assert_eq!(blocks.len(), 5, "{blocks:?}");
+    assert!(blocks[0].contains("${{ inline }}"));
+    assert!(
+        blocks[1].contains("${{ pipe }}")
+            && blocks[1].contains("two")
+            && !blocks[1].contains("not.a.run")
+    );
+    assert!(blocks[2].contains("${{ gt }}"));
+    assert!(blocks[3].contains("${{ line }}"));
+    assert_eq!(blocks[4], "plain");
+    assert!(!blocks.iter().any(|block| block.contains("commented")));
+}
+
+/// Every line of `text` that holds `${{` and is not in a place where an expression is safe, as
+/// (line number, line). Fails closed: it does not parse YAML, it asks of each such line whether it
+/// is a plain `key: value` line and either
+///
+/// * its key is `group` directly under `concurrency:` (the only expression-bearing key of
+///   `release.yml` outside `env:`; a run's group name is not executed), or `if` (evaluated by the
+///   runner, never by a shell); or
+/// * it is a direct child of an `env:` mapping, judged by indentation against the nearest
+///   less-indented line. `env:` values reach a script as environment variables; they are not
+///   pasted into a shell. (`with:` is not allowed: an input such as `script:` of
+///   `actions/github-script` is run.)
+///
+/// A continuation line, a flow-style step, a quoted key, a list item, a comment and a `run:` line
+/// all fail, whatever YAML form they take.
+fn unsafe_expression_lines(text: &str) -> Vec<(usize, String)> {
+    let lines: Vec<&str> = text.lines().collect();
+    let indent = |line: &str| line.len() - line.trim_start().len();
+    let mut found = Vec::new();
+    for (at, line) in lines.iter().enumerate() {
+        if !line.contains("${{") {
+            continue;
+        }
+        let trimmed = line.trim_start();
+        // A plain key: letters, digits, `_` and `-`, then `: `.
+        let key = trimmed.split_once(": ").map(|(key, _)| key).filter(|key| {
+            !key.is_empty()
+                && key
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        });
+        let parent = lines[..at]
+            .iter()
+            .rev()
+            .find(|earlier| {
+                !earlier.trim().is_empty()
+                    && !earlier.trim_start().starts_with('#')
+                    && indent(earlier) < indent(line)
+            })
+            .map(|earlier| earlier.trim());
+        let safe = match key {
+            Some("if") => true,
+            Some("group") => parent == Some("concurrency:"),
+            Some(_) => parent == Some("env:"),
+            None => false,
+        };
+        if !safe {
+            found.push((at + 1, (*line).to_owned()));
+        }
+    }
+    found
+}
+
+/// The expression lines `release.yml` holds, trimmed, and how many times each. A new expression
+/// needs an edit here AND a pass of `unsafe_expression_lines`.
+const PINNED_EXPRESSION_LINES: [(&str, usize); 3] = [
+    ("group: release-${{ github.ref }}", 1),
+    ("TAG: ${{ github.ref_name }}", 2),
+    ("GH_TOKEN: ${{ github.token }}", 1),
+];
+
+/// What differs between the lines of `text` that hold a `{` and `PINNED_EXPRESSION_LINES`, plus any
+/// line holding a backslash. Pinning on `{`, not just `${{`, catches a double-quoted scalar that
+/// YAML joins across a line break (`"…$\` then `{{ x }}"`, or one brace per line), where no single
+/// line holds `${{`. A backslash anywhere is refused: it is that join, and also the escapes
+/// (`\x24\x7b\x7b`, `$…`) that YAML decodes into `${{` with no literal brace in the file.
+fn expression_pin_problems(text: &str) -> Vec<String> {
+    let mut problems = Vec::new();
+    let mut seen: Vec<(String, usize)> = Vec::new();
+    for (at, line) in text.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.contains('\\') {
+            problems.push(format!("line {} holds a backslash: {trimmed}", at + 1));
+        }
+        if !line.contains('{') {
+            continue;
+        }
+        match seen.iter_mut().find(|(known, _)| known == trimmed) {
+            Some((_, count)) => *count += 1,
+            None => seen.push((trimmed.to_owned(), 1)),
+        }
+        let allowed = PINNED_EXPRESSION_LINES
+            .iter()
+            .any(|(pinned, _)| *pinned == trimmed);
+        if !allowed {
+            problems.push(format!(
+                "line {} is not a pinned expression line: {trimmed}",
+                at + 1
+            ));
+        }
+    }
+    for (pinned, count) in PINNED_EXPRESSION_LINES {
+        let found = seen
+            .iter()
+            .find(|(known, _)| known == pinned)
+            .map_or(0, |(_, found)| *found);
+        if found != count {
+            problems.push(format!(
+                "`{pinned}` appears {found} times, expected {count}"
+            ));
+        }
+    }
+    problems
+}
+
+#[test]
+fn an_expression_is_safe_only_in_the_places_the_release_workflow_uses_them() {
+    // The forms that hide an expression in a shell command, which a `run:` reader missed.
+    let cases = [
+        ("inline", "      - run: gate.sh ${{ github.ref_name }}\n"),
+        (
+            "continued scalar",
+            "        run: gate.sh\n          \"${{ github.ref_name }}\"\n",
+        ),
+        (
+            "multi-line scalar",
+            "        run: first line\n          second ${{ github.ref_name }} line\n",
+        ),
+        (
+            "flow style",
+            "      - { name: x, run: \"gate.sh ${{ github.ref_name }}\" }\n",
+        ),
+        (
+            "quoted key",
+            "        \"run\": gate.sh ${{ github.ref_name }}\n",
+        ),
+        (
+            "block scalar",
+            "        run: |\n          gate.sh ${{ github.ref_name }}\n",
+        ),
+        ("comment", "        # ${{ github.ref_name }}\n"),
+        (
+            "env value continued",
+            "        env:\n          TAG: x\n            ${{ github.ref_name }}\n",
+        ),
+        (
+            "group outside concurrency",
+            "jobs:\n  group: ${{ github.ref }}\n",
+        ),
+        (
+            "with input (github-script runs `script`)",
+            "        with:\n          script: ${{ github.ref_name }}\n",
+        ),
+    ];
+    for (what, text) in cases {
+        assert!(
+            !unsafe_expression_lines(text).is_empty(),
+            "{what} was accepted"
+        );
+    }
+    for (what, text) in [
+        (
+            "env",
+            "        env:\n          TAG: ${{ github.ref_name }}\n",
+        ),
+        ("if", "    if: ${{ github.ref_name == 'x' }}\n"),
+        (
+            "group",
+            "concurrency:\n  group: release-${{ github.ref }}\n",
+        ),
+        (
+            "env after a comment",
+            "        env:\n          # note\n\n          TAG: ${{ github.ref_name }}\n",
+        ),
+    ] {
+        assert!(
+            unsafe_expression_lines(text).is_empty(),
+            "{what} was refused"
+        );
+    }
+}
+
+#[test]
+fn the_pinned_expression_lines_are_pinned_exactly() {
+    let real = "concurrency:\n  group: release-${{ github.ref }}\nenv:\n  TAG: ${{ github.ref_name }}\n  GH_TOKEN: ${{ github.token }}\nenv:\n  TAG: ${{ github.ref_name }}\n";
+    assert!(expression_pin_problems(real).is_empty());
+    let cases = [
+        // One safe line swapped for another expression, keeping the count at four.
+        (
+            "swapped for a with input",
+            real.replacen(
+                "  GH_TOKEN: ${{ github.token }}",
+                "  script: ${{ github.ref_name }}",
+                1,
+            ),
+        ),
+        // A pinned line more often than the file has it, and less often.
+        (
+            "one more",
+            format!("{real}env:\n  TAG: ${{{{ github.ref_name }}}}\n"),
+        ),
+        (
+            "one fewer",
+            real.replacen("env:\n  TAG: ${{ github.ref_name }}\n", "", 1),
+        ),
+        // A double-quoted scalar YAML joins across a line break: no line holds `${{`.
+        (
+            "split $ and {{",
+            format!("{real}run: \"gate.sh $\\\n  {{{{ github.ref_name }}}}\"\n"),
+        ),
+        (
+            "one brace per line",
+            format!("{real}run: \"gate.sh $\\\n  {{\\\n  {{ github.ref_name }}}}\"\n"),
+        ),
+        (
+            "\\u escapes",
+            format!("{real}run: \"gate.sh \\u0024\\u007b\\u007b github.ref_name }}}}\"\n"),
+        ),
+        (
+            "\\x escapes",
+            format!("{real}run: \"gate.sh \\x24\\x7b\\x7b github.ref_name }}}}\"\n"),
+        ),
+        ("a flow mapping", format!("{real}- {{ name: x }}\n")),
+    ];
+    for (what, text) in cases {
+        assert!(
+            !expression_pin_problems(&text).is_empty(),
+            "{what} was accepted"
+        );
+    }
+}
+
+#[test]
+fn no_run_step_of_the_release_workflow_holds_an_expression() {
+    // `${{ }}` in a `run:` is pasted into the shell before it runs, so an event field there is a
+    // script injection. The rule is inverted so it fails closed: every line of the file that holds
+    // an expression must be one of the safe places in `unsafe_expression_lines`, whatever YAML form
+    // a run step takes.
+    let release = workflow("release.yml");
+    let unsafe_lines = unsafe_expression_lines(&release);
+    assert!(
+        unsafe_lines.is_empty(),
+        "an expression outside env:, with:, if: and concurrency.group: {unsafe_lines:?}"
+    );
+    // The lines the real file holds, exactly: the concurrency group and three `env:` values.
+    let problems = expression_pin_problems(&release);
+    assert!(
+        problems.is_empty(),
+        "the file's expression lines changed: review each one: {problems:?}"
+    );
+    // The run-step reader finds the steps (it is also what the test above is cross-checked with).
+    let blocks = run_blocks(&release);
+    assert!(
+        blocks.len() >= 3,
+        "found {} run steps: {blocks:?}",
+        blocks.len()
+    );
+    for block in &blocks {
+        assert!(
+            !block.contains("${{"),
+            "an expression in a run step: {block}"
+        );
+    }
+    // The values the scripts read arrive through the environment instead.
+    assert!(release.contains("TAG: ${{ github.ref_name }}"));
+}
+
+/// The lines of every `permissions:` mapping, in file order.
+fn permission_blocks(text: &str) -> Vec<Vec<String>> {
+    let lines: Vec<&str> = text.lines().collect();
+    let indent = |line: &str| line.len() - line.trim_start().len();
+    let mut blocks = Vec::new();
+    for (at, line) in lines.iter().enumerate() {
+        if line.trim() == "permissions:" {
+            blocks.push(
+                lines[at + 1..]
+                    .iter()
+                    .take_while(|next| indent(next) > indent(line))
+                    .map(|next| next.trim().to_owned())
+                    .collect(),
+            );
+        }
+    }
+    blocks
+}
+
+#[test]
+fn the_release_workflow_pins_its_permissions_and_its_other_settings_exactly() {
+    let release = workflow("release.yml");
+    // Top level, `ci`, `packages`: contents read and nothing else. `draft`: contents write only.
+    assert_eq!(
+        permission_blocks(&release),
+        [
+            vec!["contents: read"],
+            vec!["contents: read"],
+            vec!["contents: read"],
+            vec!["contents: write"],
+        ]
+    );
+    assert!(release.contains("  cancel-in-progress: false\n"));
+    assert!(!release.contains("cancel-in-progress: true"));
+    assert!(release.contains("\ndefaults:\n  run:\n    shell: bash\n"));
+    let draft = job_block(&release, "draft");
+    assert_eq!(
+        draft.matches("          path: release-files\n").count(),
+        4,
+        "{draft}"
+    );
+    assert!(
+        draft.contains("          GH_TOKEN: ${{ github.token }}\n"),
+        "{draft}"
+    );
+    assert!(
+        draft.contains("          persist-credentials: false\n"),
+        "{draft}"
+    );
+    // Only the draft job reads the token.
+    assert_eq!(release.matches("github.token").count(), 1);
+}
+
+#[test]
+fn packages_checks_the_release_asset_set_on_every_build() {
+    let workflow = workflow("packages.yml");
+    let job = job_block(&workflow, "release-assets");
+    // It waits for all four build jobs and is skipped with them.
+    for needed in ["changes", "tarball", "rpm", "deb", "arch"] {
+        assert!(job.contains(needed), "{needed}: {job}");
+    }
+    assert!(
+        job.contains("needs: [changes, tarball, rpm, deb, arch]"),
+        "{job}"
+    );
+    assert!(
+        job.contains("if: needs.changes.outputs.build == 'true'"),
+        "{job}"
+    );
+    for artifact in [
+        "source-tarball",
+        "rpm-packages",
+        "deb-packages",
+        "arch-package",
+    ] {
+        assert!(job.contains(&format!("name: {artifact}\n")), "{artifact}");
+    }
+    // The release's own check, with the version Cargo.toml states.
+    assert!(
+        job.contains(
+            r#"packaging/release/draft.sh --check-assets release-files "$(packaging/version.sh current)""#
+        ),
+        "{job}"
+    );
+    // And it gates the merge.
+    assert!(
+        aggregator_needs()
+            .iter()
+            .any(|name| name == "release-assets")
+    );
+}
+
+#[test]
+fn the_asset_download_directory_is_not_a_directory_of_the_repository() {
+    // The artifacts are downloaded into the checkout. The first version used `assets`, which the
+    // repository has (assets/icon.svg), and the asset check found the icon among the packages.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for (file, job) in [("packages.yml", "release-assets"), ("release.yml", "draft")] {
+        let block = job_block(&workflow(file), job);
+        let paths: Vec<&str> = block
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("path: "))
+            .collect();
+        assert_eq!(paths.len(), 4, "{file} {job}: {paths:?}");
+        for path in paths {
+            assert!(
+                !root.join(path).exists(),
+                "{file}: {path} exists in the repository"
+            );
+        }
+    }
+}
+
+#[test]
+fn every_package_name_is_checked_for_the_version_not_only_the_tarball() {
+    // Each package alone is renamed for another version; the tarball stays right.
+    for (assets_for, other) in [("0.1.0", "0.1.0-beta.1"), ("0.1.0-beta.1", "0.1.0-beta.10")] {
+        for name in asset_names(assets_for).into_iter().skip(1) {
+            let tree = draft_tree();
+            tree.fill(assets_for);
+            fs::rename(
+                tree.assets.join(&name),
+                tree.assets.join(name.replacen(assets_for, other, 1)),
+            )
+            .expect("rename");
+            let output = tree.check_assets(assets_for);
+            let stderr = stderr_of(&output);
+            assert_eq!(output.status.code(), Some(1), "{name} as {other}: {stderr}");
+            assert!(
+                stderr.contains("is not named for version"),
+                "{name}: {stderr}"
+            );
+        }
+    }
 }
