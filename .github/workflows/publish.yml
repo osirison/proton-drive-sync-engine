@@ -1,0 +1,143 @@
+name: Publish
+
+# A published GitHub release becomes a build on the distribution channels (openspec change
+# add-linux-release-pipeline, design D9, D11, D12). release.yml made the draft; a person published
+# it; this workflow follows.
+#
+#   publish   ONE job, in the environment `release`, the only job that can read the four secrets,
+#             so a run asks for ONE approval. Its steps, in order:
+#               route       the release's prerelease flag (from the API) picks the channels
+#               preflight   every credential is tried and every failure listed, before any channel
+#               apt         (not built yet: the next change adds it here)
+#               AUR         aur-publish.sh
+#               COPR        copr.sh, which submits and then waits for the builds
+#               final       fails the job, naming each step that did not succeed
+#   verify    (not built yet: the next change adds one job per channel here, outside the
+#             environment, with no secrets)
+#
+# All logic is in packaging/release/*.sh, which tests/scripts.rs runs with stubs. This file only
+# calls them. No `run:` holds an expression: the tag, the dry-run flag and the secrets reach the
+# scripts through `env:` (tests/scripts.rs pins every line that holds an expression).
+#
+# THE ENVIRONMENT. GitHub creates an environment, with NO protection, the first time a workflow
+# names it. The maintainer must create `release` with a required reviewer and the four secrets
+# (COPR_CONFIG, AUR_SSH_KEY, APT_SIGNING_KEY, APT_DEPLOY_KEY; task 5.5) BEFORE any release is
+# published, or the first run reads whatever the unprotected environment holds.
+#
+# NEVER PUBLISH A RELEASE FROM A WORKFLOW. A release published with GITHUB_TOKEN fires no other
+# workflow, so this one would never run.
+#
+# RUNNING IT BY HAND. Run it from the tag (`gh workflow run publish.yml --ref <tag> -f tag=<tag>`),
+# not from main: a run on main uses main's scripts and its packaging. dry_run defaults to TRUE; a
+# dry run reads everything and writes nothing (see packaging/release/route.sh and the channel
+# scripts). The run still waits for the environment's approval.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The release tag to publish, for example v0.1.0-beta.1. The release must be published.
+        required: true
+        type: string
+      dry_run:
+        description: Log the channels it would publish to and push, build and upload nothing.
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+# One run per tag at a time. A run waiting behind another is not cancelled. GitHub keeps ONE waiting
+# run per group, so a third run for the same tag replaces the waiting second one: a known limit.
+# `release.tag_name` is the tag on a release event and `inputs.tag` the dispatch input, so both
+# triggers name the same group.
+concurrency:
+  group: publish-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+# The COPR namespace (design Open Questions: NOT final). This is the ONLY place it is written; the
+# scripts read COPR_OWNER and fail when it is unset. The AUR commits are made under this name; no
+# personal address is in the repository.
+env:
+  COPR_OWNER: osirison
+  AUR_GIT_NAME: proton-drive-sync-engine release
+  AUR_GIT_EMAIL: noreply@github.com
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: release
+    timeout-minutes: 300
+    env:
+      # Read-only (contents: read): lets gh read the release and download its assets.
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      # persist-credentials: false keeps the token out of .git; the scripts that need it get it
+      # from the job's environment.
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Choose the channels
+        id: route
+        env:
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: packaging/release/route.sh "$TAG"
+
+      # copr-cli is not on the runner. Pinned: 2.6 is the newest on PyPI (2026-10-13).
+      - name: Install copr-cli
+        run: |
+          python3 -m venv "$RUNNER_TEMP/copr-venv"
+          "$RUNNER_TEMP/copr-venv/bin/pip" install --quiet copr-cli==2.6
+          echo "$RUNNER_TEMP/copr-venv/bin" >> "$GITHUB_PATH"
+
+      # The secrets are read here and in no other step, and written to files in a directory only
+      # this user can enter; the cleanup step at the end removes it.
+      - name: Write the credentials
+        env:
+          COPR_CONFIG: ${{ secrets.COPR_CONFIG }}
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+          APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
+          APT_DEPLOY_KEY: ${{ secrets.APT_DEPLOY_KEY }}
+        run: packaging/release/credentials.sh write
+
+      - name: Preflight
+        id: preflight
+        env:
+          COPR_TOKEN_EXPIRES: ${{ vars.COPR_TOKEN_EXPIRES }}
+        run: packaging/release/preflight.sh
+
+      # --- PR 4b plugs the apt step in HERE (task 6.3), with this same `if:` and `id: apt`, and
+      # --- adds `apt` to the list the final step is given. ------------------------------------
+
+      # A channel step runs even if the one before it failed, but only after a good preflight and
+      # not after a cancel. Each records its own result for the final step.
+      - name: AUR
+        id: aur
+        if: "!cancelled() && steps.preflight.outcome == 'success'"
+        run: packaging/release/aur-publish.sh "$PUBLISH_TAG"
+
+      - name: COPR
+        id: copr
+        if: "!cancelled() && steps.preflight.outcome == 'success'"
+        run: packaging/release/copr.sh "$PUBLISH_TAG"
+
+      # Fails the job when any step did not succeed, and names which. Skipped when the route step
+      # itself failed: there is nothing to add to its message.
+      - name: Check every step succeeded
+        if: "always() && steps.route.outcome == 'success'"
+        run: packaging/release/aggregate.sh preflight aur copr
+
+      - name: Remove the credentials
+        if: always()
+        run: packaging/release/credentials.sh remove
+
+  # --- PR 4b adds the verification jobs HERE (task 6.6): `needs: publish`, no `environment`, no
+  # --- secrets, one per channel. -------------------------------------------------------------

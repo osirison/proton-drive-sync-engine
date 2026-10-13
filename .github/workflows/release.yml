@@ -2,7 +2,7 @@ name: Release
 
 # A pushed version tag becomes a DRAFT GitHub release (openspec change add-linux-release-pipeline,
 # design D12). Nothing here publishes a release or touches a distribution channel: a person
-# publishes the draft, and publish.yml (a later change) does the rest.
+# publishes the draft, and publish.yml does the rest.
 #
 #   gate      the tag is v plus the Cargo.toml version, the commit is on main, version.sh check
 #   ci        the full CI suite, called from ci.yml
@@ -49,6 +49,13 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
         run: packaging/release/gate.sh "$TAG"
+      # The COPR token lasts 180 days (design D11). This only WARNS, 14 days ahead and also when
+      # the variable is empty, unparseable or past; it never fails a tag run. The publish
+      # workflow's preflight is the step that fails. A repository variable is read through `env:`.
+      - name: Warn when the COPR token is about to expire
+        env:
+          COPR_TOKEN_EXPIRES: ${{ vars.COPR_TOKEN_EXPIRES }}
+        run: packaging/release/token-expiry.sh warn
 
   # A caller job grants the permissions the called jobs ask for. ci.yml and packages.yml both ask
   # for `contents: read` at the top and set no permissions on any job.

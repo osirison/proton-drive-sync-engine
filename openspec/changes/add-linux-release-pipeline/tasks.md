@@ -356,6 +356,22 @@
 
       Verify: a dry run for a pre-release tag logs beta targets only, one for a final tag logs
       both, and each run asks for one approval
+
+      Done (PR 4a, 2026-10-13; not ticked, the Verify needs section 5): `publish.yml` has the two
+      triggers (`dispatch.dry_run` defaults to true), one `publish` job in environment `release`
+      (the only place `secrets.` is read, in one step that writes them to mode-600 files),
+      `contents: read`, a per-tag `concurrency` group that is never cancelled, and
+      `persist-credentials: false`. `packaging/release/route.sh` reads the release through the API
+      (a draft or missing release is an error), accepts `prerelease` only as the JSON true or
+      false, refuses a flag that disagrees with `version.sh is-prerelease` (a beta marked final
+      would otherwise reach stable), and fails closed, printing nothing. The dry run logs each
+      routed channel with its COPR project and AUR package. The apt step and the verification jobs
+      (6.3, 6.6) have marked places in the file. Tests: `tests/scripts.rs` (routing, the
+      workflow's pinned expression lines, permissions, step order and gating, the namespace in one
+      place). Left: a dry run for a beta tag and for a final tag asking for one approval needs the
+      environment (5.5) and a published release.
+      GitHub creates an environment with no protection the first time a workflow names it. The
+      maintainer must create `release` with its reviewer (5.5) BEFORE any release is published.
 - [ ] 6.2 Add the preflight steps at the top of the `publish` job:
       - `copr-cli whoami`, and fail when `COPR_TOKEN_EXPIRES` has passed;
       - `ssh -T` to the AUR;
@@ -365,6 +381,28 @@
 
       Also warn in `release.yml` when `COPR_TOKEN_EXPIRES` is within 14 days. Verify: a dispatch
       with a deliberately broken `COPR_CONFIG` fails in preflight, and no channel step runs
+
+      Done (PR 4a; not ticked, it needs the secrets): `preflight.sh` tries all four credentials
+      and lists every failure with the credential and its renewal step; the exit is 1 if any failed
+      and the channel steps are gated on `steps.preflight.outcome == 'success'`. Findings:
+      - `copr-cli whoami` reads the user name from the config file and asks the server nothing
+        (checked in copr-cli 2.6 and 2.7: a fake token answers with its user name). It proves the
+        file is there and parses, not that the token works. The token's age is therefore carried by
+        `COPR_TOKEN_EXPIRES`, and a token the server refuses shows at the build as "Login
+        invalid/expired" (the COPR step fails then).
+      - The date format is `YYYY-MM-DD`, read as UTC, the last day the token works. Empty,
+        unparseable or past fails the preflight and names the variable (`token-expiry.sh check`).
+      - `ssh -T aur@aur.archlinux.org` exits 1 on success. The check is the greeting aurweb
+        prints, `Welcome to AUR, <user>! Interactive shell is disabled.` (read from aurweb's
+        `git/serve.py`), with exit 255 (ssh's own failure) always a failure. Both ssh hosts are
+        pinned in `packaging/release/known_hosts`; the fingerprints equal the ones the AUR and
+        GitHub publish and a test holds them.
+      - The signing key is imported into a throwaway keyring, used to sign a test string over
+        SHA-512 and verified; a key with an expiry only warns (D11 wants none).
+      The `release.yml` warning is `token-expiry.sh warn` in the gate job: it never fails, and
+      it warns also when the variable is empty (it does not exist until 5.1) or unparseable.
+      Left: the Verify (a dispatch with a broken `COPR_CONFIG`) and the first real use of the AUR
+      greeting match and the pinned host keys, which need 5.1 and 5.2.
 - [ ] 6.3 Add the apt step (design D10). Each channel step runs even if an earlier channel step
       failed:
       - download the `.deb` assets of the newest three releases per suite;
@@ -379,6 +417,21 @@
       `.SRCINFO` and the install script to `ssh://aur@aur.archlinux.org/<pkgname>.git`, creating
       the package on its first push. It does nothing when the generated tree equals the AUR head.
       Verify: a re-run makes no new AUR commit
+
+      Done (PR 4a; not ticked, it needs the AUR account): `aur-publish.sh` downloads the release's
+      tarball and `SHA256SUMS`, checks one against the other, and runs the `packaging/arch/aur.sh`
+      INSIDE that tarball (the tagged bytes, not the PKGBUILD of whatever the workflow was checked
+      out at) in an `archlinux:base-devel` container that is given the work directory and nothing
+      else (`aur-container.sh`; the runner has no makepkg). It then clones the AUR package, replaces
+      its files with the three generated ones and commits and pushes `HEAD:refs/heads/master` only
+      if git sees a difference. An empty clone (a package the AUR has not got yet) takes the name
+      `master` and the push creates the package. The commit identity is `AUR_GIT_NAME` and
+      `AUR_GIT_EMAIL` from the workflow's `env:` (no personal address in the repository). The test
+      uses local bare repositories: the first run makes one commit, the same run again none, a
+      changed tarball exactly one; a dry run clones and compares but pushes nothing. The
+      container step was also run by hand in podman with the real `makepkg` on a `git archive`
+      tarball (both channels, `.SRCINFO` printed, pkgbase as expected). Left: the live run against
+      the AUR (5.2), and a re-run showing no new commit there.
 - [ ] 6.5 Add the COPR step:
       - run `copr-cli build --nowait` on the release's source RPM URL, in every non-EOL chroot of
         the routed projects;
@@ -388,6 +441,25 @@
       Add a final step that fails the job if any channel step failed, naming which. Verify: a
       re-run for the same tag starts no new build, and the job ends only after the COPR builds
       finish
+
+      Done (PR 4a; not ticked, it needs the COPR project and token): `copr.sh` builds the release's
+      source RPM (its URL read from the release's assets; exactly one `*.src.rpm` named for the
+      version) in each routed project with `copr-cli build --nowait` and NO `-r`, which the CLI
+      documents as all the project's chroots: the chroots are the project's (5.1 creates one per
+      non-EOL Fedora release), so no list is kept here; `copr-cli get` has no JSON to read them
+      from. It submits every routed project first, then runs `watch-build` on each project's IDs,
+      which exits non-zero when a chroot fails; every failed project is named and the others are
+      still watched. The skip rule reads `list-packages --with-all-builds --output-format json`
+      (the only call that gives each build's state and version): a succeeded build whose version
+      before the last dash equals `version.sh spell rpm` skips the project; a build still running is
+      waited for and not submitted again; a failed or cancelled one is built again; a read that
+      fails or is not a JSON list fails the project (never read as "no builds"). COPR returns only
+      the newest ten builds per package, so an old version's build outside them is not seen and is
+      built again: a cost, never a wrong skip. The final step is `aggregate.sh preflight aur copr`:
+      each step records `ok` or `failed` and a missing record counts as failed. `copr-cli` is
+      installed from PyPI at 2.6 (no hashes). Left: the live run (5.1), the re-run Verify, and
+      whether COPR stops building in a chroot once its Fedora release is end of life (not checked;
+      5.1 creates the chroots).
 - [ ] 6.6 Add one verification job per channel. Each runs after `publish`, outside the environment,
       with no secrets:
       - `dnf copr enable` plus `dnf install` per Fedora chroot;

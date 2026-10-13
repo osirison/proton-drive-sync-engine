@@ -613,6 +613,50 @@ so a release published that way would silently skip publishing to the channels.
 **Tag protection.** A tag ruleset limits who may create `v*` tags. A tag only makes a draft, so
 this is defence in depth, not the main gate.
 
+Decisions made when writing the `publish` job (the scripts are in `packaging/release/`, tested with
+stubs like `draft.sh`; the workflow only calls them):
+
+- **Routing reads the API and checks it against the tag.** `route.sh` takes `prerelease` from the
+  published release (a draft or a missing release is an error), accepts only the JSON `true` or
+  `false`, and refuses a flag that disagrees with `version.sh is-prerelease`: a beta published as a
+  final release would otherwise reach the stable channels. Every failure prints no channel.
+- **Credentials are files, written in one step.** Only one step reads `secrets.*`; it writes mode-600
+  files in a mode-700 directory and passes their paths on. An `if: always()` step removes them.
+  Nothing else in the file reads a secret, and no `run:` holds an expression, so the tag, the dry-run
+  flag and the secrets reach scripts through `env:` only (the tests pin every expression line).
+- **One step per channel, each recorded.** Each channel step is `if: !cancelled() && preflight
+  succeeded`, not `always()`, so a person cancelling the run stops the publishing. Every step records
+  `ok` or `failed` in a results directory (failed until the script reaches its end), and the final
+  step `aggregate.sh` fails naming every step that is not `ok`, a missing record included.
+- **The COPR namespace is one `env:` value, `COPR_OWNER`**, in `publish.yml`. The scripts read it and
+  fail when it is unset. The project names are `proton-drive-sync-engine` and `-beta` from D9.
+- **COPR token date:** `COPR_TOKEN_EXPIRES` is `YYYY-MM-DD` in UTC, the last day the token works.
+  `copr-cli whoami` does not ask the server (it prints the user name from the config), so it only
+  proves the config parses; the date is what stands for the token's age.
+- **COPR chroots:** `copr-cli build` without `-r` builds in every chroot of the project, so the
+  project's chroot list (task 5.1) is the list of non-EOL releases, and no list is kept in the
+  workflow. `copr-cli get` has no JSON, so the list could not be read from it anyway.
+- **COPR skip rule:** `list-packages --with-all-builds --output-format json` is read, and a build
+  counts when its state is `succeeded` and its version before the last dash equals the RPM spelling
+  of the upstream version (the release part carries a dist tag that changes). A running build is
+  waited for, not repeated. COPR gives only the newest ten builds, so an old version may be built
+  again; a failed read fails the project.
+- **AUR tree from the tarball.** The tree is made by the `aur.sh` and PKGBUILD inside the release's
+  own tarball, so a dispatch for an older tag from any checkout publishes that tag's packaging. It
+  runs in an `archlinux:base-devel` container with only the work directory mounted. The push is
+  `HEAD:refs/heads/master` (the AUR takes master only), made only when git sees a difference.
+- **Pinned host keys.** `packaging/release/known_hosts` holds the Ed25519 keys of
+  `aur.archlinux.org` and `github.com`; ssh runs with `StrictHostKeyChecking=yes` and no other
+  known-hosts file.
+- **A dry run reads and never writes.** It reads the release and each channel's current state
+  (the COPR project's builds, the AUR clone) and logs what it would do; it never runs
+  `copr-cli build` or `watch-build`, and never commits or pushes. A dispatch's `dry_run` defaults to
+  true.
+- **Known limits.** GitHub keeps one pending run per concurrency group, so a third run for a tag
+  replaces the waiting second; `copr-cli` is pinned to 2.6 from PyPI without hashes; the two
+  verification jobs and the apt step (6.3, 6.6) are a later change and have marked places in the
+  file.
+
 ### D13. The install smoke test
 
 `packaging/smoke-test.sh` runs inside each clean container after the distribution's package
@@ -790,7 +834,8 @@ Alternatives rejected:
 ## Open Questions
 
 - The COPR namespace is assumed to be `osirison`, the Fedora account name. If it differs, only
-  the strings in the commands and docs change.
+  the strings in the commands and docs change. In `publish.yml` it is one value, `COPR_OWNER` in the
+  workflow's `env:`; a test holds the scripts free of it.
 - That the `ubuntu:26.04` container tag exists under that name, and its glibc version.
 - Whether to pin the rustup toolchain used for the deb to a fixed version, rather than `stable`,
   for repeatable re-runs.
