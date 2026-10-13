@@ -2200,3 +2200,668 @@ fn a_symlink_to_an_empty_directory_can_be_the_out_dir() {
         .collect();
     assert!(leftovers.is_empty(), "staging left behind: {leftovers:?}");
 }
+
+// ---- packaging/smoke-test.sh (design D13) ----
+//
+// The script runs inside a clean container after a package install. Here it runs against a fake
+// root (`SMOKE_ROOT`) and a fake /proc (`SMOKE_PROC`), with stubs for the binaries and `ldd`, so
+// nothing on this machine is looked at or started. The stub `proton-sync` logs every argument
+// list to `ran.log`: the script may run the CLIs only with `--version` and `doctor`.
+
+struct SmokeTree {
+    directory: tempfile::TempDir,
+    root: std::path::PathBuf,
+    proc: std::path::PathBuf,
+    stubs: std::path::PathBuf,
+}
+
+const SMOKE_VERSION: &str = "0.1.0-beta.1";
+// The fake root's binaries, spelled in two pieces: `tests/test_isolation.rs` fails a file with a
+// string literal that ends in one of this crate's binary names (a bare name resolves to the
+// installed one). These are files in a fake tree, never run by name.
+const SMOKE_DAEMON: &str = concat!("proton", "-syncd");
+const SMOKE_CLI: &str = concat!("proton", "-sync");
+const DOCTOR_REPORT: &str = "  missing  proton-drive  proton-drive was not found on PATH\n\
+           help: https://proton.me/drive/download\n";
+const ARCH_NOTE: &str = "==> Proton's proton-drive command-line client must be installed and signed in\n\
+     ==> Download it from https://proton.me/drive/download, then run: proton-drive auth login\n";
+
+fn write_executable(path: &Path, text: &str) {
+    write_file(path, text);
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).expect("mode");
+}
+
+fn write_file(path: &Path, text: &str) {
+    fs::create_dir_all(path.parent().expect("parent")).expect("directory");
+    fs::write(path, text).expect("write");
+}
+
+/// A fake install of the main package for `family` (`rpm`, `deb` or `arch`) that passes.
+fn smoke_tree(family: &str) -> SmokeTree {
+    let directory = tempdir().expect("tempdir");
+    let marks = directory.path();
+    let root = marks.join("root");
+    let proc = marks.join("proc");
+    let stubs = marks.join("stubs");
+    write_file(&proc.join("1/comm"), "init\n");
+    fs::create_dir_all(&stubs).expect("stubs");
+    let log = marks.join("ran.log");
+    // Every stub binary records its arguments; the GUI must never be run at all.
+    write_executable(
+        &root.join(format!("usr/bin/{SMOKE_DAEMON}")),
+        &format!(
+            "#!/bin/sh\necho \"syncd $*\" >> '{log}'\n[ \"$1\" = --version ] || exit 99\necho 'proton-syncd {SMOKE_VERSION}'\n",
+            log = log.display()
+        ),
+    );
+    write_file(&marks.join("doctor.txt"), DOCTOR_REPORT);
+    write_file(&marks.join("doctor.exit"), "1");
+    // `doctor.socket` / `doctor.daemon` in the test's directory make the stub misbehave.
+    write_executable(
+        &root.join(format!("usr/bin/{SMOKE_CLI}")),
+        &format!(
+            "#!/bin/sh\necho \"sync $*\" >> '{log}'\n\
+             case \"$1\" in\n\
+             --version) echo 'proton-sync {SMOKE_VERSION}' ;;\n\
+             doctor)\n\
+               [ -e '{marks}/doctor.socket' ] && mkdir -p \"$XDG_RUNTIME_DIR/proton-sync\"\n\
+               [ -e '{marks}/doctor.sockfile' ] && python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' \"$XDG_STATE_HOME/control.sock\"\n\
+               [ -e '{marks}/doctor.daemon' ] && mkdir -p '{marks}/proc/4242' && echo proton-syncd > '{marks}/proc/4242/comm'\n\
+               cat '{marks}/doctor.txt'; exit \"$(cat '{marks}/doctor.exit')\" ;;\n\
+             *) exit 99 ;;\n\
+             esac\n",
+            log = log.display(),
+            marks = marks.display()
+        ),
+    );
+    write_executable(
+        &root.join("usr/bin/proton-sync-gui"),
+        &format!("#!/bin/sh\necho \"gui $*\" >> '{}'\n", log.display()),
+    );
+    write_file(
+        &root.join("usr/lib/systemd/user/proton-syncd.service"),
+        "[Service]\nExecStart=/usr/bin/proton-syncd --config %h/.config/proton-sync.toml\n",
+    );
+    for path in [
+        "usr/share/applications/app.protondrivesync.engine.desktop",
+        "usr/share/metainfo/app.protondrivesync.engine.metainfo.xml",
+        "usr/share/icons/hicolor/256x256/apps/app.protondrivesync.engine.png",
+        "usr/share/icons/hicolor/scalable/apps/app.protondrivesync.engine.svg",
+    ] {
+        write_file(&root.join(path), "x\n");
+    }
+    let licences: &[&str] = if family == "deb" {
+        &["usr/share/doc/proton-drive-sync-engine/copyright"]
+    } else {
+        &[
+            "usr/share/licenses/proton-drive-sync-engine/LICENSE",
+            "usr/share/licenses/proton-drive-sync-engine/OFL-instrument-sans.txt",
+            "usr/share/licenses/proton-drive-sync-engine/OFL-ibm-plex-mono.txt",
+        ]
+    };
+    for path in licences {
+        write_file(&root.join(path), "x\n");
+    }
+    write_executable(
+        &stubs.join("ldd"),
+        "#!/bin/sh\necho '\tlibc.so.6 => /lib/libc.so.6 (0x1)'\n",
+    );
+    // The validators exist on a developer's machine too, and reject these placeholder files.
+    for validator in ["desktop-file-validate", "appstreamcli"] {
+        write_executable(&stubs.join(validator), "#!/bin/sh\nexit 0\n");
+    }
+    write_file(&marks.join("first.txt"), ARCH_NOTE);
+    write_file(
+        &marks.join("second.txt"),
+        "reinstalling proton-drive-sync-engine...\n",
+    );
+    SmokeTree {
+        directory,
+        root,
+        proc,
+        stubs,
+    }
+}
+
+impl SmokeTree {
+    fn file(&self, name: &str) -> std::path::PathBuf {
+        self.directory.path().join(name)
+    }
+
+    fn command(&self) -> std::process::Command {
+        let mut command = common::sandboxed("bash", self.directory.path());
+        command
+            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("packaging/smoke-test.sh"))
+            .env("SMOKE_ROOT", &self.root)
+            .env("SMOKE_PROC", &self.proc)
+            // Stubs first, then the sandbox's refusing `curl`/`secret-tool` (present, as the
+            // script's PATH check wants), then only the system directories: a developer's own
+            // `proton-drive` is not on this PATH.
+            .env(
+                "PATH",
+                common::path_with_stubs(&format!("{}:/usr/bin:/bin", self.stubs.display())),
+            );
+        command
+    }
+
+    fn run(&self, family: &str) -> std::process::Output {
+        let mut command = self.command();
+        command.arg(SMOKE_VERSION).arg(family);
+        if family == "arch" {
+            command
+                .arg(self.file("first.txt"))
+                .arg(self.file("second.txt"));
+        }
+        common::run_other_tool(&mut command)
+    }
+
+    fn ran(&self) -> Vec<String> {
+        fs::read_to_string(self.file("ran.log"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+}
+
+fn stderr_of(output: &std::process::Output) -> String {
+    String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+#[test]
+fn smoke_test_passes_a_good_install_in_each_family_and_runs_only_version_and_doctor() {
+    for family in ["rpm", "deb", "arch"] {
+        let tree = smoke_tree(family);
+        let output = tree.run(family);
+        assert!(output.status.success(), "{family}: {}", stderr_of(&output));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("all checks passed"), "{family}: {stdout}");
+        // The spec: the binaries run only with --version, except `proton-sync doctor`; never the GUI.
+        assert_eq!(
+            tree.ran(),
+            ["syncd --version", "sync --version", "sync doctor"],
+            "{family}"
+        );
+    }
+}
+
+#[test]
+fn smoke_test_names_each_thing_that_is_wrong_and_exits_1() {
+    // (what is broken, family, how, the part of the failure message that names it)
+    type Break = fn(&SmokeTree);
+    let cases: Vec<(&str, &str, Break, &str)> = vec![
+        (
+            "daemon prints another version",
+            "rpm",
+            |t| {
+                let path = t.root.join(format!("usr/bin/{SMOKE_DAEMON}"));
+                let text = fs::read_to_string(&path)
+                    .unwrap()
+                    .replace(SMOKE_VERSION, "0.0.9");
+                write_executable(&path, &text);
+            },
+            "proton-syncd --version printed 'proton-syncd 0.0.9'",
+        ),
+        (
+            "control CLI is missing",
+            "rpm",
+            |t| fs::remove_file(t.root.join(format!("usr/bin/{SMOKE_CLI}"))).unwrap(),
+            "/usr/bin/proton-sync is not installed",
+        ),
+        (
+            "GUI is missing",
+            "rpm",
+            |t| fs::remove_file(t.root.join("usr/bin/proton-sync-gui")).unwrap(),
+            "/usr/bin/proton-sync-gui is not installed",
+        ),
+        (
+            "unit runs another program",
+            "deb",
+            |t| {
+                write_file(
+                    &t.root.join("usr/lib/systemd/user/proton-syncd.service"),
+                    "[Service]\nExecStart=/usr/local/bin/proton-syncd\n",
+                );
+            },
+            "ExecStart does not begin with /usr/bin/",
+        ),
+        (
+            "unit is missing",
+            "deb",
+            |t| fs::remove_file(t.root.join("usr/lib/systemd/user/proton-syncd.service")).unwrap(),
+            "proton-syncd.service is not installed",
+        ),
+        (
+            "unit enabled for every user (the old debian/rules)",
+            "deb",
+            |t| {
+                let wants = t.root.join("etc/systemd/user/default.target.wants");
+                fs::create_dir_all(&wants).unwrap();
+                std::os::unix::fs::symlink(
+                    "/usr/lib/systemd/user/proton-syncd.service",
+                    wants.join("proton-syncd.service"),
+                )
+                .unwrap();
+            },
+            "the install enabled the unit",
+        ),
+        (
+            "unit enabled under another target",
+            "rpm",
+            |t| {
+                let wants = t
+                    .root
+                    .join("usr/lib/systemd/user/graphical-session.target.wants");
+                write_file(&wants.join("proton-syncd.service"), "x");
+            },
+            "the install enabled the unit",
+        ),
+        (
+            "a library does not resolve",
+            "rpm",
+            |t| {
+                write_executable(
+                    &t.stubs.join("ldd"),
+                    "#!/bin/sh\necho '\tlibwebkit2gtk-4.1.so.0 => not found'\n",
+                );
+            },
+            "ldd proton-sync-gui",
+        ),
+        (
+            "desktop entry does not validate",
+            "rpm",
+            |t| {
+                write_executable(
+                    &t.stubs.join("desktop-file-validate"),
+                    "#!/bin/sh\nexit 1\n",
+                )
+            },
+            "desktop-file-validate rejects",
+        ),
+        (
+            "metainfo does not validate",
+            "rpm",
+            |t| write_executable(&t.stubs.join("appstreamcli"), "#!/bin/sh\nexit 3\n"),
+            "appstreamcli rejects",
+        ),
+        (
+            "a licence text is missing",
+            "arch",
+            |t| {
+                fs::remove_file(
+                    t.root
+                        .join("usr/share/licenses/proton-drive-sync-engine/OFL-ibm-plex-mono.txt"),
+                )
+                .unwrap();
+            },
+            "OFL-ibm-plex-mono.txt is not installed",
+        ),
+        (
+            "the deb has no copyright file",
+            "deb",
+            |t| {
+                fs::remove_file(
+                    t.root
+                        .join("usr/share/doc/proton-drive-sync-engine/copyright"),
+                )
+                .unwrap();
+            },
+            "copyright is not installed",
+        ),
+        (
+            "doctor exits 0",
+            "rpm",
+            |t| write_file(&t.file("doctor.exit"), "0"),
+            "proton-sync doctor exited 0, expected 1",
+        ),
+        (
+            "doctor exits 3 (could not check)",
+            "rpm",
+            |t| write_file(&t.file("doctor.exit"), "3"),
+            "proton-sync doctor exited 3, expected 1",
+        ),
+        (
+            "doctor does not print the download URL",
+            "rpm",
+            |t| {
+                write_file(
+                    &t.file("doctor.txt"),
+                    "  missing  proton-drive  proton-drive was not found on PATH\n",
+                );
+            },
+            "did not print https://proton.me/drive/download",
+        ),
+        (
+            "doctor does not report proton-drive missing",
+            "rpm",
+            |t| {
+                write_file(
+                    &t.file("doctor.txt"),
+                    "  ok       proton-drive  proton-drive 1.4.2\n  help: https://proton.me/drive/download\n",
+                );
+            },
+            "did not report proton-drive as missing",
+        ),
+        (
+            "doctor starts the daemon",
+            "rpm",
+            |t| write_file(&t.file("doctor.daemon"), ""),
+            "a proton-syncd process exists after proton-sync doctor",
+        ),
+        (
+            "doctor leaves a control socket directory",
+            "rpm",
+            |t| write_file(&t.file("doctor.socket"), ""),
+            "left a socket or a socket directory",
+        ),
+        (
+            "doctor binds a control socket outside the runtime directory",
+            "rpm",
+            |t| write_file(&t.file("doctor.sockfile"), ""),
+            "left a socket or a socket directory",
+        ),
+        (
+            "a daemon is already running",
+            "rpm",
+            |t| write_file(&t.proc.join("77/comm"), "proton-syncd\n"),
+            "already running before the doctor check",
+        ),
+        (
+            "proton-drive is on PATH",
+            "rpm",
+            |t| write_executable(&t.stubs.join("proton-drive"), "#!/bin/sh\nexit 0\n"),
+            "needs a container without proton-drive",
+        ),
+        (
+            "the Arch install printed no download URL",
+            "arch",
+            |t| write_file(&t.file("first.txt"), "then run: proton-drive auth login\n"),
+            "pacman -U did not print https://proton.me/drive/download",
+        ),
+        (
+            "the Arch install printed no sign-in command",
+            "arch",
+            |t| {
+                write_file(
+                    &t.file("first.txt"),
+                    "see https://proton.me/drive/download\n",
+                );
+            },
+            "did not print 'proton-drive auth login'",
+        ),
+        (
+            "the Arch reinstall printed the note again",
+            "arch",
+            |t| write_file(&t.file("second.txt"), ARCH_NOTE),
+            "printed again on a reinstall",
+        ),
+    ];
+    for (what, family, break_it, expected) in cases {
+        let tree = smoke_tree(family);
+        break_it(&tree);
+        let output = tree.run(family);
+        let stderr = stderr_of(&output);
+        assert_eq!(output.status.code(), Some(1), "{what}: {stderr}");
+        // One broken thing is one failure: no check blames the wrong cause.
+        assert_eq!(stderr.matches("FAIL:").count(), 1, "{what}: {stderr}");
+        assert!(
+            stderr.contains(expected),
+            "{what}: wanted '{expected}' in:\n{stderr}"
+        );
+    }
+}
+
+#[test]
+fn smoke_test_reports_every_failure_not_just_the_first() {
+    let tree = smoke_tree("rpm");
+    write_file(&tree.file("doctor.exit"), "0");
+    fs::remove_file(tree.root.join("usr/bin/proton-sync-gui")).unwrap();
+    let stderr = stderr_of(&tree.run("rpm"));
+    assert!(
+        stderr.contains("proton-sync-gui is not installed"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("expected 1"), "{stderr}");
+    assert!(stderr.contains("2 check(s) failed"), "{stderr}");
+}
+
+#[test]
+fn smoke_test_refuses_arguments_it_does_not_understand() {
+    let tree = smoke_tree("rpm");
+    for args in [
+        vec![],
+        vec![SMOKE_VERSION],
+        vec![SMOKE_VERSION, "msi"],
+        vec![SMOKE_VERSION, "arch", "only-one-file"],
+        vec![SMOKE_VERSION, "rpm", "extra"],
+    ] {
+        let mut command = tree.command();
+        command.args(&args);
+        let output = common::run_other_tool(&mut command);
+        assert_eq!(
+            output.status.code(),
+            Some(64),
+            "{args:?}: {}",
+            stderr_of(&output)
+        );
+        assert!(stderr_of(&output).contains("usage:"), "{args:?}");
+    }
+    assert!(tree.ran().is_empty(), "nothing ran: {:?}", tree.ran());
+}
+
+// ---- packages.yml's `packages-ok` aggregator ----
+//
+// The one required check on main: a wrong answer here blocks every pull request (or lets a failed
+// smoke install through). The script is lifted out of the workflow file and run over the `needs`
+// JSON the runner would give it, so what runs here is the text that ships.
+
+/// The `run:` block of `packages-ok`'s "Check the results" step.
+fn aggregator_script() -> String {
+    let workflow = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join(".github/workflows/packages.yml"),
+    )
+    .expect("packages.yml");
+    let job = workflow
+        .split("\n  packages-ok:\n")
+        .nth(1)
+        .expect("the packages-ok job");
+    let step = job
+        .split("      - name: Check the results\n")
+        .nth(1)
+        .expect("its step");
+    let body = step
+        .split("        run: |\n")
+        .nth(1)
+        .expect("its run block");
+    body.lines()
+        .take_while(|line| line.is_empty() || line.starts_with("          "))
+        .map(|line| line.strip_prefix("          ").unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The job names `packages-ok` lists in `needs`.
+fn aggregator_needs() -> Vec<String> {
+    let workflow = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join(".github/workflows/packages.yml"),
+    )
+    .expect("packages.yml");
+    let job = workflow
+        .split("\n  packages-ok:\n")
+        .nth(1)
+        .expect("the packages-ok job");
+    let line = job
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("needs: ["))
+        .expect("needs");
+    line.trim_end_matches(']')
+        .split(',')
+        .map(|name| name.trim().to_owned())
+        .collect()
+}
+
+/// Runs the aggregator on `needs` (job -> result) with `build` as `changes`' output.
+fn aggregate(build: &str, results: &[(&str, &str)]) -> std::process::Output {
+    let directory = tempdir().expect("tempdir");
+    let mut needs = serde_json::Map::new();
+    for (job, result) in results {
+        let mut entry = serde_json::json!({ "result": result, "outputs": {} });
+        // `build` "none" is a `changes` job that published no output at all.
+        if *job == "changes" && build != "none" {
+            entry["outputs"] = serde_json::json!({ "build": build, "fedora": "43" });
+        }
+        needs.insert((*job).to_owned(), entry);
+    }
+    let mut command = common::sandboxed("bash", directory.path());
+    command
+        .arg("-c")
+        .arg(aggregator_script())
+        .env("NEEDS", serde_json::Value::Object(needs).to_string());
+    common::run_other_tool(&mut command)
+}
+
+/// Every job in `needs` with `result`, except the ones in `except`.
+fn all_jobs<'a>(result: &'a str, except: &[(&'a str, &'a str)]) -> Vec<(String, String)> {
+    aggregator_needs()
+        .into_iter()
+        .map(|job| {
+            let own = except
+                .iter()
+                .find(|(name, _)| *name == job)
+                .map_or(result, |(_, own)| *own);
+            (job, own.to_owned())
+        })
+        .collect()
+}
+
+fn aggregate_all(build: &str, jobs: &[(String, String)]) -> std::process::Output {
+    let pairs: Vec<(&str, &str)> = jobs
+        .iter()
+        .map(|(job, result)| (job.as_str(), result.as_str()))
+        .collect();
+    aggregate(build, &pairs)
+}
+
+#[test]
+fn packages_ok_lists_every_build_and_smoke_job() {
+    let needs = aggregator_needs();
+    for job in [
+        "changes",
+        "tarball",
+        "rpm",
+        "deb",
+        "arch",
+        "smoke-rpm",
+        "smoke-deb",
+        "smoke-arch",
+    ] {
+        assert!(
+            needs.iter().any(|name| name == job),
+            "{job} not in {needs:?}"
+        );
+    }
+    // And no job in the workflow that builds or tests is missing from the list.
+    let workflow = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join(".github/workflows/packages.yml"),
+    )
+    .expect("packages.yml");
+    let jobs: Vec<&str> = workflow
+        .lines()
+        .skip_while(|line| *line != "jobs:")
+        .filter_map(|line| {
+            let name = line.strip_prefix("  ")?.strip_suffix(':')?;
+            (!name.starts_with(' ') && !name.starts_with('#') && !name.is_empty()).then_some(name)
+        })
+        .collect();
+    for job in jobs.iter().filter(|job| **job != "packages-ok") {
+        assert!(needs.iter().any(|name| name == job), "{job} is not gated");
+    }
+    // A smoke job installs what its build job made, so it must wait for it (and is then skipped
+    // with it when the builds are not needed).
+    for (smoke, build) in [
+        ("smoke-rpm", "rpm"),
+        ("smoke-deb", "deb"),
+        ("smoke-arch", "arch"),
+    ] {
+        let block = workflow
+            .split(&format!("\n  {smoke}:\n"))
+            .nth(1)
+            .unwrap_or_else(|| panic!("job {smoke}"));
+        let line = block
+            .lines()
+            .find(|line| line.starts_with("    needs:"))
+            .unwrap_or_else(|| panic!("{smoke} has no needs"));
+        assert!(
+            line.contains(build),
+            "{smoke} does not wait for {build}: {line}"
+        );
+    }
+}
+
+#[test]
+fn packages_ok_passes_when_everything_passed_or_the_builds_were_not_needed() {
+    // Every job succeeded.
+    let output = aggregate_all("true", &all_jobs("success", &[]));
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    // `changes` said no build: every other job skipped (build and smoke alike).
+    let output = aggregate_all("false", &all_jobs("skipped", &[("changes", "success")]));
+    assert!(output.status.success(), "{}", stderr_of(&output));
+}
+
+#[test]
+fn packages_ok_fails_for_a_failed_or_cancelled_job_whether_or_not_builds_were_needed() {
+    for build in ["true", "false"] {
+        for job in aggregator_needs().iter().filter(|job| *job != "changes") {
+            for bad in ["failure", "cancelled"] {
+                let output = aggregate_all(
+                    build,
+                    &all_jobs(
+                        if build == "true" {
+                            "success"
+                        } else {
+                            "skipped"
+                        },
+                        &[("changes", "success"), (job, bad)],
+                    ),
+                );
+                let stderr = stderr_of(&output);
+                assert_eq!(
+                    output.status.code(),
+                    Some(1),
+                    "{job} {bad} (build={build}): {stderr}"
+                );
+                assert!(
+                    stderr.contains(&format!("{job}: {bad}")),
+                    "{job} {bad}: {stderr}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn packages_ok_fails_when_a_job_that_had_to_run_was_skipped() {
+    // Builds were needed, so a smoke job that never ran is not a pass.
+    for job in aggregator_needs().iter().filter(|job| *job != "changes") {
+        let output = aggregate_all("true", &all_jobs("success", &[(job, "skipped")]));
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{job}: {}",
+            stderr_of(&output)
+        );
+    }
+}
+
+#[test]
+fn packages_ok_fails_when_the_change_check_gave_no_answer() {
+    for build in ["", "none", "maybe"] {
+        let output = aggregate_all(build, &all_jobs("success", &[]));
+        assert_eq!(output.status.code(), Some(1), "build '{build}'");
+    }
+    let output = aggregate_all("true", &all_jobs("success", &[("changes", "failure")]));
+    assert_eq!(output.status.code(), Some(1));
+    // `changes` skipped or failed with build=false is no answer either.
+    let output = aggregate_all("false", &all_jobs("skipped", &[("changes", "skipped")]));
+    assert_eq!(output.status.code(), Some(1));
+}

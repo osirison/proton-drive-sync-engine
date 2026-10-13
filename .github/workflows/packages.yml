@@ -354,13 +354,137 @@ jobs:
           path: out/*.pkg.tar.zst
           if-no-files-found: error
 
+  # The install smoke tests (design D13): the built package, installed with the distribution's own
+  # package manager in a CLEAN container of every supported release, then `packaging/smoke-test.sh`
+  # out of the same tarball. Each job needs its build job, so a skipped or failed build skips it
+  # (and `packages-ok` reads the build's result). `fail-fast: false`: one release failing must
+  # not hide whether the others install.
+  #
+  # Fedora: every release that is not end of life (read from endoflife.date on 2026-10-13: 43 and
+  # 44), against the RPM built on the oldest one. The matrix cannot read FEDORA_OLDEST, so the two
+  # are changed together when a release reaches end of life (the oldest must stay in this list).
+  smoke-rpm:
+    needs: [tarball, rpm]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        fedora: ["43", "44"]
+    container: fedora:${{ matrix.fedora }}
+    env:
+      UPSTREAM: ${{ needs.tarball.outputs.upstream }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: source-tarball
+          path: art
+      - uses: actions/download-artifact@v8
+        with:
+          name: rpm-packages
+          path: rpm
+      # Only the main package: the file-manager extensions are tested by nothing here.
+      - name: Install the package
+        run: |
+          set -euo pipefail
+          dnf -y install rpm/proton-drive-sync-engine-[0-9]*.x86_64.rpm
+      # After the package, so its scriptlets ran without them. The smoke test validates the
+      # desktop entry and the metainfo with these where they are installed.
+      - name: Install the file validators
+        run: dnf -y install desktop-file-utils appstream
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          tar -xzf "art/proton-drive-sync-engine-${UPSTREAM}.tar.gz" --strip-components=1 \
+            "proton-drive-sync-engine-${UPSTREAM}/packaging/smoke-test.sh"
+          bash packaging/smoke-test.sh "$UPSTREAM" rpm
+
+  # One .deb built on Ubuntu 22.04 must install on all five (spec "Supported distribution
+  # releases"). Its Depends come from dpkg-shlibdeps on jammy, so the 24.04, 26.04 and Debian 13
+  # cells are the t64-rename check (design D6). Recommends are installed (apt's default), which is
+  # where `curl` and `secret-tool` come from.
+  smoke-deb:
+    needs: [tarball, deb]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["ubuntu:22.04", "ubuntu:24.04", "ubuntu:26.04", "debian:12", "debian:13"]
+    container: ${{ matrix.image }}
+    env:
+      UPSTREAM: ${{ needs.tarball.outputs.upstream }}
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: source-tarball
+          path: art
+      - uses: actions/download-artifact@v8
+        with:
+          name: deb-packages
+          path: deb
+      - name: Install the package
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install -y "$PWD"/deb/proton-drive-sync-engine_*_amd64.deb
+          dpkg -s proton-drive-sync-engine | grep -E '^(Version|Depends|Recommends):'
+      # Not on Ubuntu 22.04 and Debian 12: their desktop-file-utils does not know Desktop Entry
+      # 1.5 ("value 1.5 for key Version is not a known version") and their appstream warns on
+      # tags newer than it, so they reject a file the current tools accept. The smoke test skips
+      # a validator that is not installed.
+      - name: Install the file validators
+        if: matrix.image != 'ubuntu:22.04' && matrix.image != 'debian:12'
+        run: apt-get install -y desktop-file-utils appstream
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          tar -xzf "art/proton-drive-sync-engine-${UPSTREAM}.tar.gz" --strip-components=1 \
+            "proton-drive-sync-engine-${UPSTREAM}/packaging/smoke-test.sh"
+          bash packaging/smoke-test.sh "$UPSTREAM" deb
+
+  # `pacman -U` twice, keeping the output of both: the first prints the install note (post_install),
+  # the second is a reinstall and must not (post_upgrade), task 2.7.
+  smoke-arch:
+    needs: [tarball, arch]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container: archlinux:latest
+    env:
+      UPSTREAM: ${{ needs.tarball.outputs.upstream }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: source-tarball
+          path: art
+      - uses: actions/download-artifact@v8
+        with:
+          name: arch-package
+          path: pkg
+      - name: Install the package
+        run: |
+          set -euo pipefail
+          pacman -Syu --noconfirm
+          pacman -U --noconfirm pkg/proton-drive-sync-engine-*.pkg.tar.zst 2>&1 | tee first-install.txt
+          pacman -U --noconfirm pkg/proton-drive-sync-engine-*.pkg.tar.zst 2>&1 | tee second-install.txt
+      - name: Install the file validators
+        run: pacman -S --noconfirm --needed desktop-file-utils appstream
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          tar -xzf "art/proton-drive-sync-engine-${UPSTREAM}.tar.gz" --strip-components=1 \
+            "proton-drive-sync-engine-${UPSTREAM}/packaging/smoke-test.sh"
+          bash packaging/smoke-test.sh "$UPSTREAM" arch first-install.txt second-install.txt
+
   # The one required check. It runs on every run (`always()`) and reads what the others did:
-  # a skipped build job is fine when `changes` said no build was needed, and nothing else is.
-  # A failed or cancelled job fails it. New jobs that gate a merge (the install tests) go into
-  # `needs`; nothing else here changes.
+  # a skipped build or smoke job is fine when `changes` said no build was needed, and nothing else
+  # is. A failed or cancelled job fails it. Every job that gates a merge is in `needs`: a smoke job
+  # left out would fail without failing the check. (`tests/scripts.rs` runs this script over the
+  # shapes `needs` can take.)
   packages-ok:
     if: always()
-    needs: [changes, tarball, rpm, deb, arch]
+    needs: [changes, tarball, rpm, deb, arch, smoke-rpm, smoke-deb, smoke-arch]
     runs-on: ubuntu-latest
     steps:
       - name: Check the results

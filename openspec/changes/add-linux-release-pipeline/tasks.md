@@ -157,8 +157,12 @@
         `packages-ok` fails when one of them is made to fail
 
       Done: the triggers, the `changes` job, the build jobs' gate and `packages-ok` are in
-      `packages.yml`, and `packages-ok` passes on a pull request that builds (PR #473). Left: the
-      smoke jobs in `needs`, the two verifying pull requests above, and branch protection.
+      `packages.yml`, and `packages-ok` passes on a pull request that builds (PR #473). The three
+      smoke jobs are in `needs` (PR 2b), and `tests/scripts.rs` runs the aggregator's script over
+      every shape `needs` can take (all green, builds skipped, each job failed or cancelled, a
+      smoke job skipped while builds were needed, no answer from `changes`). Left: the two
+      verifying pull requests above (the website-only one and the one that makes a job fail), and
+      branch protection.
 - [ ] 3.9 Fix whatever the first real builds of the deb and Arch trees (never built before) and the
       RPM tree turn up, in the trees themselves. Record each fix in that tree's README's validation
       section. Verify: all build and smoke jobs are green on the pull request
