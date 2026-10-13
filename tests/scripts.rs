@@ -3117,3 +3117,965 @@ fn packages_ok_fails_when_the_change_check_gave_no_answer() {
     let output = aggregate_all("false", &all_jobs("skipped", &[("changes", "skipped")]));
     assert_eq!(output.status.code(), Some(1));
 }
+
+// --- The release workflow: version.sh's tag questions, the gate and the draft script ----------------
+
+#[test]
+fn version_answers_the_tag_questions_the_release_workflow_asks() {
+    let directory = tempdir().expect("tempdir");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let ask = |args: &[&str]| version_script(root, directory.path(), None, args);
+    for (tag, upstream) in [
+        ("v0.1.0", "0.1.0"),
+        ("v0.1.0-beta.1", "0.1.0-beta.1"),
+        ("v10.20.30-rc.12", "10.20.30-rc.12"),
+        ("v1.0.0-alpha.1", "1.0.0-alpha.1"),
+    ] {
+        let output = ask(&["tag-version", tag]);
+        assert!(output.status.success(), "{tag}: {}", stderr_of(&output));
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            format!("{upstream}\n")
+        );
+    }
+    // Everything outside the accepted shape is refused with nothing on stdout.
+    for tag in [
+        "0.1.0",
+        "v0.1",
+        "v0.1.0-beta",
+        "v0.1.0-beta.0",
+        "v0.1.0-preview.1",
+        "v01.0.0",
+        "v0.1.0+b.1",
+        "v0.1.0-beta.1 ",
+        "V0.1.0",
+        "",
+    ] {
+        let output = ask(&["tag-version", tag]);
+        assert_eq!(output.status.code(), Some(1), "'{tag}' was accepted");
+        assert!(output.stdout.is_empty(), "'{tag}'");
+        assert!(stderr_of(&output).contains("not a release tag"), "'{tag}'");
+    }
+    for (version, answer) in [
+        ("0.1.0", "false"),
+        ("0.1.0-beta.1", "true"),
+        ("2.0.0-rc.3", "true"),
+    ] {
+        let output = ask(&["is-prerelease", version]);
+        assert!(output.status.success(), "{version}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            format!("{answer}\n")
+        );
+    }
+    // A version of the wrong shape is an error, not "false".
+    for version in ["v0.1.0", "0.1", "0.1.0-beta"] {
+        let output = ask(&["is-prerelease", version]);
+        assert_eq!(output.status.code(), Some(1), "{version}");
+        assert!(output.stdout.is_empty());
+    }
+    let cargo = fs::read_to_string(root.join("Cargo.toml")).expect("Cargo.toml");
+    let expected = cargo
+        .lines()
+        .find_map(|line| line.strip_prefix("version = \""))
+        .and_then(|rest| rest.strip_suffix('"'))
+        .expect("version line");
+    let output = ask(&["current"]);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        format!("{expected}\n")
+    );
+}
+
+/// A git repository in `directory/tree` holding a copy of the version sites and `gate.sh`, with
+/// the fixed author a commit needs.
+struct GateTree {
+    directory: tempfile::TempDir,
+    tree: std::path::PathBuf,
+}
+
+fn real_git() -> std::path::PathBuf {
+    std::env::split_paths(&std::env::var_os("PATH").expect("PATH"))
+        .map(|dir| dir.join("git"))
+        .find(|candidate| candidate.is_file())
+        .expect("git on PATH")
+}
+
+fn gate_tree() -> GateTree {
+    let directory = tempdir().expect("tempdir");
+    let (tree, _stubs) = copy_of_the_version_sites(directory.path());
+    let release = tree.join("packaging/release");
+    fs::create_dir_all(&release).expect("release directory");
+    fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("packaging/release/gate.sh"),
+        release.join("gate.sh"),
+    )
+    .expect("gate.sh");
+    let gate = GateTree { directory, tree };
+    gate.git(&["init", "-q", "-b", "main"]);
+    gate.commit("first");
+    gate
+}
+
+impl GateTree {
+    fn git_command(&self, args: &[&str]) -> std::process::Command {
+        let mut command = common::sandboxed("git", self.directory.path());
+        command
+            .current_dir(&self.tree)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .args([
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args);
+        command
+    }
+
+    fn git(&self, args: &[&str]) -> String {
+        let output = common::run_other_tool(&mut self.git_command(args));
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            stderr_of(&output)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
+    /// Commits everything and returns the commit.
+    fn commit(&self, message: &str) -> String {
+        self.git(&["add", "-A"]);
+        self.git(&["commit", "-q", "--allow-empty", "-m", message]);
+        self.git(&["rev-parse", "HEAD"])
+    }
+
+    fn set_main(&self, commit: &str) {
+        self.git(&["update-ref", "refs/remotes/origin/main", commit]);
+    }
+
+    /// Runs the gate for `tag`; `path_first` is a directory placed ahead of `PATH`.
+    fn gate(&self, tag: &str, path_first: Option<&Path>) -> std::process::Output {
+        let mut command = common::sandboxed("bash", self.directory.path());
+        command
+            .arg(self.tree.join("packaging/release/gate.sh"))
+            .arg(tag)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null");
+        if let Some(first) = path_first {
+            let path = std::env::var("PATH").expect("PATH");
+            command.env(
+                "PATH",
+                common::path_with_stubs(&format!("{}:{path}", first.display())),
+            );
+        }
+        common::run_other_tool(&mut command)
+    }
+}
+
+#[test]
+fn the_gate_passes_a_matching_tag_on_main() {
+    let gate = gate_tree();
+    let commit = gate.commit("second");
+    gate.set_main(&commit);
+    let output = gate.gate("v0.1.0", None);
+    assert!(output.status.success(), "{}", stderr_of(&output));
+}
+
+#[test]
+fn the_gate_passes_a_commit_that_is_behind_the_tip_of_main() {
+    let gate = gate_tree();
+    let tagged = gate.commit("tagged");
+    let tip = gate.commit("later work on main");
+    gate.set_main(&tip);
+    gate.git(&["checkout", "-q", "--detach", &tagged]);
+    let output = gate.gate("v0.1.0", None);
+    assert!(output.status.success(), "{}", stderr_of(&output));
+}
+
+#[test]
+fn the_gate_refuses_a_commit_that_is_not_an_ancestor_of_main() {
+    let gate = gate_tree();
+    let main = gate.commit("on main");
+    gate.set_main(&main);
+    gate.git(&["checkout", "-q", "-b", "branch"]);
+    gate.commit("only on a branch");
+    let output = gate.gate("v0.1.0", None);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr_of(&output).contains("not an ancestor of origin/main"),
+        "{}",
+        stderr_of(&output)
+    );
+}
+
+#[test]
+fn the_gate_refuses_when_origin_main_cannot_be_read() {
+    // A tag-push checkout has no origin/main until it is fetched. Not knowing is not a pass.
+    let gate = gate_tree();
+    let output = gate.gate("v0.1.0", None);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr_of(&output).contains("cannot read origin/main"),
+        "{}",
+        stderr_of(&output)
+    );
+}
+
+#[test]
+fn the_gate_refuses_when_git_cannot_answer_the_ancestry_question() {
+    // `git merge-base --is-ancestor` exits 128 when it cannot read a ref. A shim that makes it do
+    // that: only exit status 0 may pass.
+    let gate = gate_tree();
+    let commit = gate.commit("second");
+    gate.set_main(&commit);
+    let shim = gate.directory.path().join("git-shim");
+    fs::create_dir(&shim).expect("shim directory");
+    write_executable(
+        &shim.join("git"),
+        &format!(
+            "#!/bin/sh\nfor argument in \"$@\"; do\n  if [ \"$argument\" = merge-base ]; then\n    echo 'fatal: stub: cannot read a ref' >&2\n    exit 128\n  fi\ndone\nexec {} \"$@\"\n",
+            real_git().display()
+        ),
+    );
+    let output = gate.gate("v0.1.0", Some(&shim));
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr_of(&output).contains("could not tell whether"),
+        "{}",
+        stderr_of(&output)
+    );
+}
+
+#[test]
+fn the_gate_names_both_versions_when_the_tag_and_cargo_toml_differ() {
+    let gate = gate_tree();
+    let commit = gate.commit("second");
+    gate.set_main(&commit);
+    for tag in ["v0.1.0-beta.2", "v0.1.1", "v0.2.0"] {
+        let output = gate.gate(tag, None);
+        let stderr = stderr_of(&output);
+        assert_eq!(output.status.code(), Some(1), "{tag}: {stderr}");
+        assert!(stderr.contains(&tag[1..]), "{tag}: {stderr}");
+        assert!(
+            stderr.contains("Cargo.toml at this commit says 0.1.0"),
+            "{stderr}"
+        );
+    }
+}
+
+#[test]
+fn the_gate_refuses_a_tag_of_the_wrong_shape() {
+    let gate = gate_tree();
+    let commit = gate.commit("second");
+    gate.set_main(&commit);
+    for tag in ["0.1.0", "v0.1", "v0.1.0-beta", "v0.1.0+b.1", "vv0.1.0"] {
+        let output = gate.gate(tag, None);
+        assert_eq!(output.status.code(), Some(1), "{tag}");
+        assert!(stderr_of(&output).contains("not a release tag"), "{tag}");
+    }
+}
+
+#[test]
+fn the_gate_runs_the_version_check() {
+    // Cargo.toml and the tag agree and the commit is on main; one other site does not.
+    let gate = gate_tree();
+    let pkgbuild = gate.tree.join("packaging/arch/PKGBUILD");
+    let text = fs::read_to_string(&pkgbuild).expect("PKGBUILD");
+    fs::write(&pkgbuild, text.replacen("pkgver=0.1.0", "pkgver=0.1.1", 1)).expect("edit");
+    let commit = gate.commit("drifted");
+    gate.set_main(&commit);
+    let output = gate.gate("v0.1.0", None);
+    let stderr = stderr_of(&output);
+    assert_ne!(output.status.code(), Some(0), "{stderr}");
+    assert!(stderr.contains("PKGBUILD"), "{stderr}");
+}
+
+// --- draft.sh, with a stub `gh` -------------------------------------------------------------------
+
+const GH_STUB: &str = r#"#!/bin/sh
+# Logs every call. A read (`gh api repos/... --paginate`) is answered from $STUB_GH_RELEASES. Any
+# write (release create, upload, delete-asset, edit, or an api call with a method) is logged
+# and refused with status 99 unless $STUB_GH_ALLOW_WRITES is set, so a call a test did not expect
+# fails loudly.
+printf '%s\n' "$*" >> "$STUB_GH_LOG"
+previous=""
+for argument in "$@"; do
+  if [ "$previous" = --notes-file ]; then cp "$argument" "$STUB_GH_NOTES"; fi
+  previous="$argument"
+done
+case "$1 $2" in
+  "api "*)
+    for argument in "$@"; do
+      case "$argument" in -X | --method | --input | -f | -F) echo "stub gh: api write" >&2; exit 99 ;; esac
+    done
+    if [ -n "$STUB_GH_API_FAILS" ]; then echo "stub gh: api failed" >&2; exit 1; fi
+    cat "$STUB_GH_RELEASES"
+    ;;
+  "release create" | "release upload" | "release delete-asset" | "release edit" | "release delete")
+    if [ -z "$STUB_GH_ALLOW_WRITES" ]; then echo "stub gh: unexpected write: $*" >&2; exit 99; fi
+    if [ "$2" = create ]; then echo "https://github.com/o/r/releases/tag/untagged-draft"; fi
+    ;;
+  *)
+    echo "stub gh: unexpected call: $*" >&2
+    exit 98
+    ;;
+esac
+"#;
+
+struct DraftTree {
+    directory: tempfile::TempDir,
+    tree: std::path::PathBuf,
+    assets: std::path::PathBuf,
+    stubs: std::path::PathBuf,
+}
+
+fn draft_tree() -> DraftTree {
+    let directory = tempdir().expect("tempdir");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let tree = directory.path().join("tree");
+    fs::create_dir_all(tree.join("packaging/release")).expect("tree");
+    for file in [
+        "packaging/version.sh",
+        "packaging/release/draft.sh",
+        "packaging/release-notes.md",
+    ] {
+        fs::copy(root.join(file), tree.join(file))
+            .unwrap_or_else(|error| panic!("{file}: {error}"));
+    }
+    let stubs = directory.path().join("gh-stubs");
+    fs::create_dir(&stubs).expect("stubs");
+    write_executable(&stubs.join("gh"), GH_STUB);
+    let assets = directory.path().join("assets");
+    fs::create_dir(&assets).expect("assets");
+    DraftTree {
+        directory,
+        tree,
+        assets,
+        stubs,
+    }
+}
+
+/// The nine files a release holds besides SHA256SUMS, named for `upstream`.
+fn asset_names(upstream: &str) -> Vec<String> {
+    vec![
+        format!("proton-drive-sync-engine-{upstream}.tar.gz"),
+        format!("proton-drive-sync-engine-{upstream}-1.fc43.src.rpm"),
+        format!("proton-drive-sync-engine-{upstream}-1.fc43.x86_64.rpm"),
+        format!("proton-drive-sync-engine-nautilus-{upstream}-1.fc43.noarch.rpm"),
+        format!("proton-drive-sync-engine-nemo-{upstream}-1.fc43.noarch.rpm"),
+        format!("proton-drive-sync-engine_{upstream}-1_amd64.deb"),
+        format!("proton-sync-nautilus_{upstream}-1_all.deb"),
+        format!("proton-sync-nemo_{upstream}-1_all.deb"),
+        format!("proton-drive-sync-engine-{upstream}-1-x86_64.pkg.tar.zst"),
+    ]
+}
+
+fn release_json(id: u64, tag: &str, draft: bool, assets: &[&str]) -> serde_json::Value {
+    serde_json::json!({
+        "id": id,
+        "tag_name": tag,
+        "draft": draft,
+        "html_url": format!("https://github.com/o/r/releases/{id}"),
+        "assets": assets.iter().map(|name| serde_json::json!({ "name": name })).collect::<Vec<_>>(),
+    })
+}
+
+impl DraftTree {
+    fn fill(&self, upstream: &str) {
+        for name in asset_names(upstream) {
+            fs::write(self.assets.join(&name), format!("contents of {name}")).expect("asset");
+        }
+    }
+
+    /// Runs `draft.sh <tag> assets` with `pages` (one JSON array each, as `--paginate` prints them)
+    /// as the API's answer. Returns the output and the stub's log.
+    fn run(
+        &self,
+        tag: &str,
+        pages: &[Vec<serde_json::Value>],
+        allow_writes: bool,
+    ) -> (std::process::Output, Vec<String>) {
+        let releases = self.directory.path().join("releases.json");
+        let text: String = pages
+            .iter()
+            .map(|page| serde_json::Value::Array(page.clone()).to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&releases, text).expect("releases");
+        self.run_with(tag, &releases, allow_writes, false)
+    }
+
+    fn run_with(
+        &self,
+        tag: &str,
+        releases: &Path,
+        allow_writes: bool,
+        api_fails: bool,
+    ) -> (std::process::Output, Vec<String>) {
+        let log = self.directory.path().join("gh.log");
+        let mut command = common::sandboxed("bash", self.directory.path());
+        command
+            .arg(self.tree.join("packaging/release/draft.sh"))
+            .arg(tag)
+            .arg(&self.assets)
+            .env("GITHUB_REPOSITORY", "o/r")
+            .env("STUB_GH_LOG", &log)
+            .env("STUB_GH_RELEASES", releases)
+            .env("STUB_GH_NOTES", self.directory.path().join("notes.copy"));
+        if allow_writes {
+            command.env("STUB_GH_ALLOW_WRITES", "1");
+        }
+        if api_fails {
+            command.env("STUB_GH_API_FAILS", "1");
+        }
+        let path = std::env::var("PATH").expect("PATH");
+        command.env(
+            "PATH",
+            common::path_with_stubs(&format!("{}:{path}", self.stubs.display())),
+        );
+        let output = common::run_other_tool(&mut command);
+        let calls = fs::read_to_string(&log)
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        (output, calls)
+    }
+
+    fn notes(&self) -> String {
+        fs::read_to_string(self.directory.path().join("notes.copy")).expect("the notes file gh saw")
+    }
+
+    fn names_in_assets(&self) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(&self.assets)
+            .expect("assets")
+            .map(|entry| {
+                entry
+                    .expect("entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        names.sort();
+        names
+    }
+}
+
+fn writes(calls: &[String]) -> Vec<&String> {
+    calls
+        .iter()
+        .filter(|call| {
+            [
+                "release create",
+                "release upload",
+                "release delete-asset",
+                "release edit",
+                "release delete",
+            ]
+            .iter()
+            .any(|write| call.starts_with(write))
+        })
+        .collect()
+}
+
+#[test]
+fn a_tag_with_no_release_creates_a_draft_pre_release_with_exactly_the_assets() {
+    let tree = draft_tree();
+    tree.fill("0.1.0-beta.1");
+    let other = release_json(1, "v0.0.9", false, &["old.tar.gz"]);
+    let (output, calls) = tree.run("v0.1.0-beta.1", &[vec![other]], true);
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    let writes = writes(&calls);
+    assert_eq!(writes.len(), 1, "{calls:?}");
+    let create = writes[0];
+    assert!(
+        create.starts_with("release create v0.1.0-beta.1 "),
+        "{create}"
+    );
+    for flag in [
+        "--draft",
+        "--verify-tag",
+        "--generate-notes",
+        "--notes-file",
+        "--prerelease",
+        "--repo o/r",
+    ] {
+        assert!(create.contains(flag), "{flag} missing: {create}");
+    }
+    // The nine assets and SHA256SUMS, nothing else.
+    let mut expected = asset_names("0.1.0-beta.1");
+    expected.push("SHA256SUMS".to_owned());
+    for name in &expected {
+        assert!(
+            create.contains(&format!("/assets/{name} "))
+                || create.contains(&format!("/assets/{name}")),
+            "{name}: {create}"
+        );
+    }
+    assert_eq!(create.matches("/assets/").count(), 10, "{create}");
+    // SHA256SUMS lists the other nine, in the form sha256sum -c reads, and checks out.
+    let sums = fs::read_to_string(tree.assets.join("SHA256SUMS")).expect("SHA256SUMS");
+    let mut listed: Vec<&str> = sums
+        .lines()
+        .map(|line| line.split_once("  ").expect("hash, two spaces, name").1)
+        .collect();
+    listed.sort_unstable();
+    let mut want = asset_names("0.1.0-beta.1");
+    want.sort();
+    assert_eq!(listed, want);
+    let mut check = common::sandboxed("sha256sum", tree.directory.path());
+    check
+        .current_dir(&tree.assets)
+        .args(["--check", "--strict", "SHA256SUMS"]);
+    let checked = common::run_other_tool(&mut check);
+    assert!(checked.status.success(), "{}", stderr_of(&checked));
+    assert!(expected.iter().all(|name| !name.contains('~')));
+    assert_eq!(tree.names_in_assets().len(), 10);
+}
+
+#[test]
+fn a_final_version_is_not_marked_pre_release() {
+    let tree = draft_tree();
+    tree.fill("0.1.0");
+    let (output, calls) = tree.run("v0.1.0", &[vec![]], true);
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    let writes = writes(&calls);
+    assert_eq!(writes.len(), 1, "{calls:?}");
+    assert!(writes[0].contains("--draft"));
+    assert!(!writes[0].contains("--prerelease"), "{}", writes[0]);
+}
+
+#[test]
+fn the_notes_header_links_the_docs_states_the_prerequisite_and_warns_only_for_a_pre_release() {
+    for (upstream, tag, pre) in [
+        ("0.1.0-beta.1", "v0.1.0-beta.1", true),
+        ("0.1.0", "v0.1.0", false),
+    ] {
+        let tree = draft_tree();
+        tree.fill(upstream);
+        let (output, _) = tree.run(tag, &[vec![]], true);
+        assert!(output.status.success(), "{}", stderr_of(&output));
+        let notes = tree.notes();
+        assert!(
+            notes.contains(
+                "https://osirison.github.io/proton-drive-sync-engine/distribution/packages/"
+            ),
+            "{notes}"
+        );
+        assert!(
+            notes.contains("https://proton.me/drive/download"),
+            "{notes}"
+        );
+        assert!(notes.contains("proton-drive auth login"), "{notes}");
+        assert!(!notes.contains("<!--"), "a marker was left in: {notes}");
+        assert_eq!(
+            notes.contains("This is a pre-release"),
+            pre,
+            "{tag}: {notes}"
+        );
+        // No install commands are copied here: those are the packages page's.
+        for command in ["dnf install", "apt install", "apt-get install", "pacman -"] {
+            assert!(!notes.contains(command), "{command}: {notes}");
+        }
+        // The prerequisite comes first for a final release, and after the warning for a beta.
+        assert!(
+            notes.trim_start().starts_with(if pre {
+                "> **This is a pre-release"
+            } else {
+                "## Before you install"
+            }),
+            "{notes}"
+        );
+    }
+}
+
+#[test]
+fn a_draft_that_exists_is_replaced_not_duplicated() {
+    let tree = draft_tree();
+    tree.fill("0.1.0-beta.1");
+    let kept = asset_names("0.1.0-beta.1")[0].clone();
+    let draft = release_json(
+        7,
+        "v0.1.0-beta.1",
+        true,
+        &[&kept, "SHA256SUMS", "stale-from-an-earlier-run.deb"],
+    );
+    // Another tag's draft and published release are none of this run's business.
+    let others = vec![
+        release_json(8, "v0.1.0-beta.2", true, &["x"]),
+        release_json(9, "v0.0.9", false, &["y"]),
+    ];
+    let (output, calls) = tree.run("v0.1.0-beta.1", &[vec![draft.clone()], others], true);
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    let writes = writes(&calls);
+    assert_eq!(writes.len(), 2, "{calls:?}");
+    assert!(
+        writes[0].starts_with("release upload v0.1.0-beta.1 "),
+        "{}",
+        writes[0]
+    );
+    assert!(writes[0].contains("--clobber") && writes[0].contains("--repo o/r"));
+    assert_eq!(writes[0].matches("/assets/").count(), 10);
+    assert_eq!(
+        writes[1].as_str(),
+        "release delete-asset v0.1.0-beta.1 stale-from-an-earlier-run.deb --repo o/r --yes"
+    );
+    assert!(!calls.iter().any(|call| call.starts_with("release create")));
+}
+
+#[test]
+fn a_draft_with_no_stale_asset_deletes_nothing() {
+    let tree = draft_tree();
+    tree.fill("0.1.0");
+    let names = asset_names("0.1.0");
+    let mut held: Vec<&str> = names.iter().map(String::as_str).collect();
+    held.push("SHA256SUMS");
+    let (output, calls) = tree.run(
+        "v0.1.0",
+        &[vec![release_json(7, "v0.1.0", true, &held)]],
+        true,
+    );
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    let writes = writes(&calls);
+    assert_eq!(writes.len(), 1, "{calls:?}");
+    assert!(writes[0].starts_with("release upload "));
+}
+
+#[test]
+fn a_draft_on_a_later_page_of_the_listing_is_found() {
+    let tree = draft_tree();
+    tree.fill("0.1.0-beta.1");
+    let filler: Vec<_> = (100..130)
+        .map(|id| release_json(id, "v0.0.1", false, &[]))
+        .collect();
+    let draft = release_json(7, "v0.1.0-beta.1", true, &["old"]);
+    let (output, calls) = tree.run("v0.1.0-beta.1", &[filler, vec![draft]], true);
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    assert!(calls.iter().any(|call| call.starts_with("release upload ")));
+    assert!(
+        !calls.iter().any(|call| call.starts_with("release create")),
+        "{calls:?}"
+    );
+}
+
+#[test]
+fn two_drafts_for_one_tag_fail_naming_both_and_change_nothing() {
+    let tree = draft_tree();
+    tree.fill("0.1.0-beta.1");
+    let drafts = vec![
+        release_json(4242, "v0.1.0-beta.1", true, &[]),
+        release_json(4343, "v0.1.0-beta.1", true, &[]),
+    ];
+    let (output, calls) = tree.run("v0.1.0-beta.1", &[drafts], false);
+    let stderr = stderr_of(&output);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("4242") && stderr.contains("4343"),
+        "{stderr}"
+    );
+    assert!(writes(&calls).is_empty(), "{calls:?}");
+    assert!(
+        !tree.assets.join("SHA256SUMS").exists(),
+        "SHA256SUMS written"
+    );
+}
+
+#[test]
+fn a_published_release_fails_the_run_and_changes_nothing() {
+    for also_a_draft in [false, true] {
+        let tree = draft_tree();
+        tree.fill("0.1.0-beta.1");
+        let mut page = vec![release_json(5, "v0.1.0-beta.1", false, &["a"])];
+        if also_a_draft {
+            page.push(release_json(6, "v0.1.0-beta.1", true, &["b"]));
+        }
+        let (output, calls) = tree.run("v0.1.0-beta.1", &[page], false);
+        let stderr = stderr_of(&output);
+        assert_eq!(output.status.code(), Some(1), "{stderr}");
+        assert!(stderr.contains("already published"), "{stderr}");
+        assert!(writes(&calls).is_empty(), "{calls:?}");
+        assert!(
+            !tree.assets.join("SHA256SUMS").exists(),
+            "SHA256SUMS written"
+        );
+        assert_eq!(tree.names_in_assets().len(), 9);
+    }
+}
+
+#[test]
+fn a_listing_that_fails_stops_the_run_before_any_write() {
+    let tree = draft_tree();
+    tree.fill("0.1.0");
+    let releases = tree.directory.path().join("empty.json");
+    fs::write(&releases, "[]").expect("releases");
+    let (output, calls) = tree.run_with("v0.1.0", &releases, true, true);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr_of(&output));
+    assert!(writes(&calls).is_empty(), "{calls:?}");
+}
+
+#[test]
+fn a_bad_tag_stops_the_run_before_gh_is_called() {
+    let tree = draft_tree();
+    tree.fill("0.1.0");
+    for tag in ["0.1.0", "v0.1", "v0.1.0-beta"] {
+        let (output, calls) = tree.run(tag, &[vec![]], true);
+        assert_eq!(output.status.code(), Some(1), "{tag}");
+        assert!(calls.is_empty(), "{tag}: {calls:?}");
+    }
+}
+
+#[test]
+fn assets_that_are_not_the_expected_set_are_refused_before_any_write() {
+    // (what to change, what the message must say)
+    type Change = fn(&DraftTree);
+    let cases: [(&str, Change, &str); 6] = [
+        (
+            "a tilde in a name",
+            |t| {
+                fs::write(
+                    t.assets
+                        .join("proton-drive-sync-engine_0.1.0~beta.1-1_amd64.deb"),
+                    "x",
+                )
+                .unwrap();
+            },
+            "contains '~'",
+        ),
+        (
+            "a name without the version",
+            |t| {
+                fs::write(t.assets.join("proton-drive-sync-engine-9.9.9.tar.gz"), "x").unwrap();
+            },
+            "does not contain the version",
+        ),
+        (
+            "an unexpected file",
+            |t| {
+                fs::write(t.assets.join("notes.txt-0.1.0"), "x").unwrap();
+            },
+            "unexpected asset",
+        ),
+        (
+            "a missing deb",
+            |t| {
+                fs::remove_file(t.assets.join("proton-sync-nemo_0.1.0-1_all.deb")).unwrap();
+            },
+            "expected 1 tarball",
+        ),
+        (
+            "a second tarball",
+            |t| {
+                fs::write(
+                    t.assets.join("proton-drive-sync-engine-0.1.0-extra.tar.gz"),
+                    "x",
+                )
+                .unwrap();
+            },
+            "expected 1 tarball",
+        ),
+        (
+            "a missing source rpm",
+            |t| {
+                fs::remove_file(
+                    t.assets
+                        .join("proton-drive-sync-engine-0.1.0-1.fc43.src.rpm"),
+                )
+                .unwrap();
+            },
+            "expected 1 tarball",
+        ),
+    ];
+    for (what, change, message) in cases {
+        let tree = draft_tree();
+        tree.fill("0.1.0");
+        change(&tree);
+        let (output, calls) = tree.run("v0.1.0", &[vec![]], false);
+        let stderr = stderr_of(&output);
+        assert_eq!(output.status.code(), Some(1), "{what}: {stderr}");
+        assert!(stderr.contains(message), "{what}: {stderr}");
+        assert!(writes(&calls).is_empty(), "{what}: {calls:?}");
+    }
+}
+
+#[test]
+fn a_stale_sha256sums_is_replaced_and_does_not_list_itself() {
+    let tree = draft_tree();
+    tree.fill("0.1.0");
+    fs::write(
+        tree.assets.join("SHA256SUMS"),
+        "0000  proton-drive-sync-engine-0.1.0.tar.gz\n",
+    )
+    .unwrap();
+    let (output, _) = tree.run("v0.1.0", &[vec![]], true);
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    let sums = fs::read_to_string(tree.assets.join("SHA256SUMS")).unwrap();
+    assert_eq!(sums.lines().count(), 9, "{sums}");
+    assert!(!sums.contains("SHA256SUMS"));
+    assert!(!sums.contains("0000  "));
+}
+
+// --- the workflow files -------------------------------------------------------------------------
+
+fn workflow(name: &str) -> String {
+    fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(".github/workflows")
+            .join(name),
+    )
+    .unwrap_or_else(|error| panic!("{name}: {error}"))
+}
+
+/// The text of job `name` of a workflow, up to the next job.
+fn job_block(text: &str, name: &str) -> String {
+    let header = format!("  {name}:");
+    let mut lines = text.lines().skip_while(|line| *line != header.as_str());
+    let mut block = vec![lines.next().unwrap_or_else(|| panic!("no job {name}"))];
+    for line in lines {
+        let is_job_key = line.starts_with("  ")
+            && !line.starts_with("   ")
+            && !line.trim_start().starts_with('#')
+            && line.trim_end().ends_with(':');
+        if is_job_key {
+            break;
+        }
+        block.push(line);
+    }
+    block.join("\n")
+}
+
+#[test]
+fn the_release_workflow_runs_on_version_tags_and_only_the_draft_job_can_write() {
+    let release = workflow("release.yml");
+    let on = release.split("\npermissions:").next().expect("on block");
+    assert!(on.contains("tags:\n      - \"v*\""), "{on}");
+    assert!(
+        !on.contains("branches:") && !on.contains("pull_request") && !on.contains("schedule"),
+        "{on}"
+    );
+    // Top-level permissions read-only; exactly one `contents: write`, in the draft job.
+    assert!(release.contains("\npermissions:\n  contents: read\n"));
+    assert_eq!(release.matches("contents: write").count(), 1);
+    assert!(job_block(&release, "draft").contains("contents: write"));
+    for call in ["ci", "packages"] {
+        let block = job_block(&release, call);
+        assert!(block.contains("needs: gate"), "{call}: {block}");
+        assert!(
+            block.contains(&format!(
+                "uses: ./.github/workflows/{}.yml",
+                if call == "ci" { "ci" } else { "packages" }
+            )),
+            "{block}"
+        );
+        // A caller job grants what the called file asks for, which is contents: read and nothing else.
+        assert!(
+            block.contains("permissions:\n      contents: read\n"),
+            "{block}"
+        );
+    }
+    let draft = job_block(&release, "draft");
+    assert!(draft.contains("needs: [gate, ci, packages]"), "{draft}");
+    // The four artifacts are downloaded by name.
+    for artifact in [
+        "source-tarball",
+        "rpm-packages",
+        "deb-packages",
+        "arch-package",
+    ] {
+        assert!(draft.contains(&format!("name: {artifact}\n")), "{artifact}");
+    }
+    // The gate fetches what its ancestry check needs, and runs the script.
+    let gate = job_block(&release, "gate");
+    assert!(gate.contains("fetch-depth: 0"), "{gate}");
+    assert!(
+        gate.contains("git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main"),
+        "{gate}"
+    );
+    assert!(gate.contains("packaging/release/gate.sh"), "{gate}");
+    // The logic lives in the scripts the tests run, not in the workflow.
+    assert!(draft.contains("packaging/release/draft.sh"));
+    assert!(
+        !release.contains("gh release"),
+        "gh release is called by draft.sh only"
+    );
+}
+
+#[test]
+fn the_called_workflows_ask_only_for_what_their_caller_grants() {
+    for name in ["ci.yml", "packages.yml"] {
+        let text = workflow(name);
+        assert!(
+            text.contains("\nworkflow_call:") || text.contains("\n  workflow_call:"),
+            "{name}"
+        );
+        // One permissions block, at the top, contents: read; none on a job.
+        let permissions: Vec<&str> = text
+            .lines()
+            .filter(|line| line.trim_start().starts_with("permissions:"))
+            .collect();
+        assert_eq!(
+            permissions,
+            ["permissions:"],
+            "{name} sets permissions below the top level"
+        );
+        assert!(
+            text.contains("\npermissions:\n  contents: read\n"),
+            "{name}"
+        );
+    }
+    // packages.yml's concurrency group is per run for everything but a pull request, so a tag
+    // run's group never meets the caller's (release.yml's is named after the ref).
+    let packages = workflow("packages.yml");
+    let group = packages
+        .lines()
+        .find(|line| line.trim_start().starts_with("group: packages-"))
+        .expect("group");
+    assert!(group.contains("github.run_id"), "{group}");
+    assert!(
+        group.contains("github.event_name == 'pull_request'"),
+        "{group}"
+    );
+    assert!(workflow("release.yml").contains("group: release-${{ github.ref }}"));
+}
+
+#[test]
+fn no_other_workflow_runs_on_a_tag_push() {
+    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join(".github/workflows");
+    for entry in fs::read_dir(&directory).expect("workflows") {
+        let path = entry.expect("entry").path();
+        let name = path
+            .file_name()
+            .expect("name")
+            .to_string_lossy()
+            .into_owned();
+        if name == "release.yml" || !name.ends_with(".yml") {
+            continue;
+        }
+        let text = fs::read_to_string(&path).expect("workflow");
+        let on = text
+            .split("\non:")
+            .nth(1)
+            .and_then(|rest| rest.split("\npermissions:").next())
+            .map(|rest| rest.split("\njobs:").next().expect("on block"))
+            .unwrap_or_else(|| panic!("{name}: no on: block"));
+        assert!(!on.contains("tags:"), "{name} names tags");
+        // A `push:` trigger without a branch or path filter fires for tags too. On the same
+        // indentation, `push:` must be followed by `branches:` (or `paths:`).
+        if let Some(after) = on.split("\n  push:").nth(1) {
+            let filter = after
+                .lines()
+                .skip(1)
+                .find(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#'))
+                .unwrap_or("");
+            assert!(
+                filter.trim_start().starts_with("branches:")
+                    || filter.trim_start().starts_with("paths:"),
+                "{name}: push is not filtered to branches: {filter}"
+            );
+        }
+    }
+}

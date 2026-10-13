@@ -556,6 +556,29 @@ This is documented in the runbook.
 
 Only the draft job gets `contents: write`.
 
+The gate and draft logic is in `packaging/release/gate.sh` and `draft.sh`, which `tests/scripts.rs`
+runs with a stub `gh`, so the workflow only calls them. Decisions made when writing them:
+
+- **One definition of the tag.** The tag shape, the version a tag names, "is this a pre-release" and
+  the tree's version are `version.sh` subcommands (`tag-version`, `is-prerelease`, `current`). The
+  workflow and the scripts hold no pattern of their own.
+- **The ancestry check fails closed.** `git merge-base --is-ancestor` answers 0 (is), 1 (is not) and
+  128 (a ref it cannot read), and only 0 passes. The gate job checks out the whole history and then
+  fetches `main` by name, because a tag-push checkout has no `origin/main`.
+- **Drafts are found through the API list**, filtered on `tag_name`, because a lookup by tag may
+  not return a draft and GitHub allows two drafts on one tag. One draft is replaced; two fail naming
+  both; a published release fails; all three are decided before anything is written. A per-tag
+  `concurrency` group (never cancelled) stops two runs of one tag racing to make two drafts.
+- **The draft holds exactly** the tarball, the source RPM, three RPMs, three debs, the Arch package
+  and `SHA256SUMS`; `draft.sh` refuses any other set, a name without the upstream version and a name
+  with `~`.
+- **The pre-release warning is conditional.** It sits between two marker lines in
+  `release-notes.md`, and `draft.sh` drops it for a final version. The notes file is passed with
+  `--notes-file` beside `--generate-notes`; `gh release create --help` documents the order only for
+  `--notes`, so the first real draft is looked at.
+- **Verification uses test tags and test draft releases on this repository**, not a fork (the
+  maintainer's decision of 2026-10-13: a user cannot fork their own repository).
+
 **`publish.yml`** runs on `release: [published]` and on `workflow_dispatch` with inputs `tag` and
 `dry_run`. The event is `published`, not `released`, because `released` does not fire for
 pre-releases. It has two kinds of job.

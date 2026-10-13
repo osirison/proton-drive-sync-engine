@@ -3,6 +3,9 @@
 #
 #   packaging/version.sh check            compare every version site with the root Cargo.toml
 #   packaging/version.sh set <upstream>   write every version site
+#   packaging/version.sh tag-version <tag>   the upstream version a release tag names, or an error
+#   packaging/version.sh is-prerelease <v>   prints true or false
+#   packaging/version.sh current             the version the root Cargo.toml states
 #
 # The upstream version is X.Y.Z for a final release or X.Y.Z-P.N for a pre-release, where P is
 # alpha, beta or rc and N is a positive integer. The git tag is "v" plus the upstream version.
@@ -53,6 +56,9 @@ usage() {
 usage: packaging/version.sh check
        packaging/version.sh set <upstream version>
        packaging/version.sh spell <rpm|deb|arch> <upstream version>
+       packaging/version.sh tag-version <tag>
+       packaging/version.sh is-prerelease <upstream version>
+       packaging/version.sh current
 
 The upstream version is X.Y.Z or X.Y.Z-(alpha|beta|rc).N, for example 0.1.0 or 0.1.0-beta.1.
 EOF
@@ -591,7 +597,46 @@ cmd_spell() {
   echo
 }
 
+# The upstream version a release tag names: "v" plus a version of the accepted shape. The release
+# workflow's gate asks this instead of keeping a tag pattern of its own.
+cmd_tag_version() {
+  [[ $# -eq 1 ]] || { usage; exit 2; }
+  if [[ "$1" != v* ]] || ! valid_shape "${1#v}"; then
+    die "'$1' is not a release tag: it must be v plus X.Y.Z or X.Y.Z-(alpha|beta|rc).N (for example v0.1.0 or v0.1.0-beta.1)"
+  fi
+  printf '%s\n' "${1#v}"
+}
+
+# Prints true when the version has a pre-release part and false when it has none. The answer is on
+# stdout so that a version of the wrong shape (exit 1, nothing printed) is not read as "false".
+cmd_is_prerelease() {
+  [[ $# -eq 1 ]] || { usage; exit 2; }
+  valid_shape "$1" || die "'$1' is not an upstream version (X.Y.Z or X.Y.Z-(alpha|beta|rc).N)"
+  if [[ "$1" == *-* ]]; then echo true; else echo false; fi
+}
+
+# The version the root Cargo.toml states, which every other site is held to.
+cmd_current() {
+  [[ $# -eq 0 ]] || { usage; exit 2; }
+  local version
+  version="$(manifest_version Cargo.toml)"
+  [[ -n "$version" ]] || die "Cargo.toml: no version in the [package] table"
+  printf '%s\n' "$version"
+}
+
 case "${1:-}" in
+  tag-version)
+    shift
+    cmd_tag_version "$@"
+    ;;
+  is-prerelease)
+    shift
+    cmd_is_prerelease "$@"
+    ;;
+  current)
+    shift
+    cmd_current "$@"
+    ;;
   spell)
     shift
     cmd_spell "$@"
