@@ -48,7 +48,7 @@ jobs:
     steps:
       - name: Fetch Dependabot metadata
         id: meta
-        uses: dependabot/fetch-metadata@v3
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
         with:
           # The action tests the input as a string (core.getInput), so "false" would be truthy:
           # pass 'true' or an empty value, never a boolean expression.

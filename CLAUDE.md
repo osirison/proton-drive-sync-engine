@@ -218,4 +218,5 @@ One bullet per module. Only rules a change elsewhere could break, and traps, are
 
 - Errors: `AppResult<T>` = `Result<T, Box<dyn Error + Send + Sync>>`; build ad-hoc errors with `boxed_error(...)`.
 - Logging: `tracing` to **stderr** (stdout is reserved for machine-readable dry-run JSON); `RUST_LOG`, default `info`.
+- Workflows: every external `uses:` is `owner/repo@<40-hex commit> # <version>` (Dependabot maintains both; `tests/scripts.rs` enforces it). `dtolnay/rust-toolchain` has no version tag (`stable` is a branch), so its comment says so and its steps set `toolchain: stable` explicitly.
 - Uploads, downloads and deletes are never auto-retried (to avoid duplicate side effects); only read-only listings retry, per `proton_list_attempts`. Continuing past a failed action (#136) is not a retry: each action is attempted at most once per pass.

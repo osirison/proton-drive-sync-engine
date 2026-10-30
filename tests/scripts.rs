@@ -7120,9 +7120,104 @@ fn the_sandbox_replaces_every_tool_a_publish_script_could_reach_the_host_with() 
 #[test]
 fn the_publish_checkout_keeps_no_credentials_and_fetches_the_history_the_gate_needs() {
     let publish = workflow("publish.yml");
+    // The ref (a pinned commit) is not part of what this checks: skip the step's own line,
+    // then compare what follows it.
+    let step = publish
+        .split("      - uses: actions/checkout@")
+        .nth(1)
+        .and_then(|rest| rest.split_once('\n'))
+        .map(|(_, after)| after)
+        .expect("a checkout step");
     assert!(
-        publish.contains("      - uses: actions/checkout@v7\n        with:\n          persist-credentials: false\n          fetch-depth: 0\n"),
+        step.starts_with(
+            "        with:\n          persist-credentials: false\n          fetch-depth: 0\n"
+        ),
         "the checkout step"
+    );
+}
+
+/// The value of a `uses` key on one workflow line, or `None` when the line is not a `uses:` line
+/// (a comment, another key, or text that merely contains the word).
+fn uses_value(line: &str) -> Option<&str> {
+    let line = line.trim_start();
+    if line.starts_with('#') {
+        return None;
+    }
+    let line = line.strip_prefix("- ").map_or(line, str::trim_start);
+    let key_end = line.find(':')?;
+    let key = line[..key_end].trim_end();
+    let key = [('"', '"'), ('\'', '\'')]
+        .iter()
+        .find_map(|&(open, close)| key.strip_prefix(open)?.strip_suffix(close))
+        .unwrap_or(key);
+    (key == "uses").then(|| line[key_end + 1..].trim())
+}
+
+#[test]
+fn every_workflow_step_names_an_action_by_commit_with_its_version_in_a_comment() {
+    // A tag can be moved upstream; a commit cannot. Dependabot keeps the pin and the comment
+    // together, so a pinned line is `owner/repo[/path]@<40 hex> # <version>`. Dependabot only
+    // maintains version-shaped comments, so the comment must be `v<digit>...`; the one action
+    // with no release tag carries its own exact comment.
+    const NO_TAG: (&str, &str) = ("dtolnay/rust-toolchain", "stable branch, no release tag");
+    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join(".github/workflows");
+    let (mut pinned, mut local, mut files) = (0, 0, 0);
+    for entry in fs::read_dir(&directory).expect("workflows") {
+        let path = entry.expect("entry").path();
+        let name = path
+            .file_name()
+            .expect("name")
+            .to_string_lossy()
+            .into_owned();
+        // GitHub loads both extensions.
+        if !(name.ends_with(".yml") || name.ends_with(".yaml")) {
+            continue;
+        }
+        files += 1;
+        for line in fs::read_to_string(&path).expect("workflow").lines() {
+            let Some(reference) = uses_value(line) else {
+                continue;
+            };
+            if reference.starts_with("./") {
+                local += 1;
+                continue;
+            }
+            let (action, rest) = reference
+                .split_once('@')
+                .unwrap_or_else(|| panic!("{name}: no @ in `{line}`"));
+            let (sha, comment) = rest
+                .split_once('#')
+                .unwrap_or_else(|| panic!("{name}: no version comment in `{line}`"));
+            let (sha, comment) = (sha.trim(), comment.trim());
+            assert!(
+                sha.len() == 40 && sha.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')),
+                "{name}: `{line}` is not pinned to a full commit"
+            );
+            assert!(
+                action.split('/').count() >= 2 && !action.contains(char::is_whitespace),
+                "{name}: `{line}` is not owner/repo[/path]"
+            );
+            if action == NO_TAG.0 {
+                assert_eq!(
+                    comment, NO_TAG.1,
+                    "{name}: `{line}` must carry the comment `{}`",
+                    NO_TAG.1
+                );
+            } else {
+                let mut chars = comment.chars();
+                assert!(
+                    chars.next() == Some('v') && chars.next().is_some_and(|c| c.is_ascii_digit()),
+                    "{name}: comment `{comment}` in `{line}` is not a version (`v` then a digit)"
+                );
+            }
+            pinned += 1;
+        }
+    }
+    // Not vacuous: there are workflows, pinned lines and the two local references.
+    assert!(
+        files >= 8 && pinned >= 40 && local >= 2,
+        "floor not met: workflow files {files} (expected >= 8), pinned `uses:` lines {pinned} \
+         (expected >= 40), local `./` references {local} (expected >= 2)"
     );
 }
 

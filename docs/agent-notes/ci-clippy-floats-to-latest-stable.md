@@ -13,9 +13,9 @@ locally, and CI's `rust` job fails at Lint, e.g.
 error: use of deprecated method `std::sync::atomic::Atomic::<usize>::fetch_update`: renamed to `try_update`
 ```
 
-**Cause:** the job uses `dtolnay/rust-toolchain@stable`, which floats to the newest stable
-(1.99.0 on 2026-10-07). The machine default can lag (1.97.1 here), so an API deprecated in
-between passes locally.
+**Cause:** the job pins `dtolnay/rust-toolchain` to a commit, but its `toolchain: stable` input
+floats to the newest stable (1.99.0 on 2026-10-07). The machine default can lag (1.97.1 here),
+so an API deprecated in between passes locally.
 
 **Before pushing:** install the CI toolchain alongside the default (never `rustup default`
 or `rustup update` — other sessions use the default) and lint with it:

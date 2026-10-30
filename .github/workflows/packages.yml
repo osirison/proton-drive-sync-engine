@@ -63,7 +63,7 @@ jobs:
       build: ${{ steps.filter.outputs.build }}
       fedora: ${{ env.FEDORA_OLDEST }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 2
       - id: filter
@@ -101,7 +101,7 @@ jobs:
     outputs:
       upstream: ${{ steps.version.outputs.upstream }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # The upstream version is the root Cargo.toml's; `packaging/version.sh check` (CI's `rust`
       # job) holds every other site to it.
       - id: version
@@ -132,7 +132,7 @@ jobs:
           tops="$(tar -tzf "out/proton-drive-sync-engine-${UPSTREAM}.tar.gz" | cut -d/ -f1 | sort -u)"
           [[ "$tops" == "${prefix%/}" ]] || { echo "top-level entries: $tops" >&2; exit 1; }
           echo "$(wc -l < in-commit.txt) files, one top-level directory."
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: source-tarball
           path: out/proton-drive-sync-engine-*.tar.gz
@@ -150,7 +150,7 @@ jobs:
     steps:
       - name: Install the build tools
         run: dnf -y install rpm-build 'dnf-command(builddep)'
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: source-tarball
           path: art
@@ -187,7 +187,7 @@ jobs:
           grep -q 'https://proton.me/drive/download' <<<"$info"
           grep -q 'proton-drive auth login' <<<"$info"
           if grep -q '^proton-drive' <<<"$requires"; then echo "the CLI must not be a dependency" >&2; exit 1; fi
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: rpm-packages
           path: out/*.rpm
@@ -211,7 +211,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends build-essential ca-certificates curl dpkg-dev
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: source-tarball
           path: art
@@ -251,7 +251,7 @@ jobs:
             echo "the CLI must not be a package relation" >&2
             exit 1
           fi
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: deb-packages
           path: out/*.deb
@@ -273,7 +273,7 @@ jobs:
           pacman -Syu --noconfirm --needed sudo namcap
           useradd -m builder
           echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: source-tarball
           path: art
@@ -348,7 +348,7 @@ jobs:
           cp "$home/assets/proton-drive-sync-engine-${UPSTREAM}.tar.gz" .
           chown -R builder:builder .
           sudo -u builder makepkg --verifysource
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: arch-package
           path: out/*.pkg.tar.zst
@@ -375,11 +375,11 @@ jobs:
     env:
       UPSTREAM: ${{ needs.tarball.outputs.upstream }}
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: source-tarball
           path: art
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: rpm-packages
           path: rpm
@@ -416,11 +416,11 @@ jobs:
       UPSTREAM: ${{ needs.tarball.outputs.upstream }}
       DEBIAN_FRONTEND: noninteractive
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: source-tarball
           path: art
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: deb-packages
           path: deb
@@ -454,11 +454,11 @@ jobs:
     env:
       UPSTREAM: ${{ needs.tarball.outputs.upstream }}
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: source-tarball
           path: art
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: arch-package
           path: pkg
@@ -488,20 +488,20 @@ jobs:
     if: needs.changes.outputs.build == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v8
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: source-tarball
           path: release-files
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: rpm-packages
           path: release-files
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: deb-packages
           path: release-files
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: arch-package
           path: release-files
