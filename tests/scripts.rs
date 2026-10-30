@@ -7535,3 +7535,618 @@ fn copr_cli_is_installed_from_the_hash_locked_file_with_hashes_required_and_no_d
         );
     }
 }
+
+// --- dependabot-security-fix.sh, with a stub `gh` ----------------------------------------------------
+//
+// The script decides whether a Dependabot pull request fixes an open security alert (#494). It is
+// run for real; only `gh` is a stub that logs its arguments and answers from a file, so the real
+// GitHub is never reached. The fixture alerts have the shape of alert 35 of this repository
+// (`postcss-selector-parser`, `website/package-lock.json`, `< 6.1.5`, patched `6.1.5`).
+
+const SECURITY_GH_STUB: &str = r#"#!/bin/sh
+printf '%s\n' "$*" >> "$STUB_GH_LOG"
+case "$1 $2" in
+  "api --paginate") ;;
+  *) echo "stub gh: unexpected call: $*" >&2; exit 98 ;;
+esac
+if [ -n "$STUB_GH_EXIT" ]; then echo "gh: HTTP 403: Resource not accessible by personal access token" >&2; exit "$STUB_GH_EXIT"; fi
+cat "$STUB_GH_REPLY"
+"#;
+
+#[derive(Clone)]
+struct SecurityCase {
+    token: &'static str,
+    names: &'static str,
+    group: &'static str,
+    ecosystem: &'static str,
+    directory: &'static str,
+    previous: &'static str,
+    new: &'static str,
+}
+
+impl SecurityCase {
+    /// The real case: `postcss-selector-parser` 6.1.4 to 6.1.5 in `/website`.
+    fn base() -> Self {
+        Self {
+            token: "token",
+            names: "postcss-selector-parser",
+            group: "",
+            ecosystem: "npm_and_yarn",
+            directory: "/website",
+            previous: "6.1.4",
+            new: "6.1.5",
+        }
+    }
+}
+
+struct SecurityRun {
+    output: std::process::Output,
+    github_output: String,
+    calls: Vec<String>,
+}
+
+fn alert(
+    number: u64,
+    state: &str,
+    name: &str,
+    manifest: &str,
+    range: &str,
+    patched: Option<&str>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "number": number,
+        "state": state,
+        "dependency": {
+            "package": { "ecosystem": "npm", "name": name },
+            "manifest_path": manifest,
+            "scope": "runtime",
+            "relationship": "transitive",
+        },
+        "security_advisory": { "ghsa_id": "GHSA-xxxx-xxxx-xxxx", "severity": "medium" },
+        "security_vulnerability": {
+            "package": { "ecosystem": "npm", "name": name },
+            "severity": "medium",
+            "vulnerable_version_range": range,
+            "first_patched_version": patched.map(|p| serde_json::json!({ "identifier": p })),
+        },
+    })
+}
+
+/// Alert 35 as GitHub returned it.
+fn alert_35() -> serde_json::Value {
+    alert(
+        35,
+        "open",
+        "postcss-selector-parser",
+        "website/package-lock.json",
+        "< 6.1.5",
+        Some("6.1.5"),
+    )
+}
+
+fn security_run_raw(case: &SecurityCase, reply: &str, gh_exit: Option<i32>) -> SecurityRun {
+    let directory = tempdir().expect("tempdir");
+    let stubs = directory.path().join("stubs");
+    write_executable(&stubs.join("gh"), SECURITY_GH_STUB);
+    let reply_file = directory.path().join("reply.json");
+    fs::write(&reply_file, reply).expect("reply");
+    let log = directory.path().join("gh.log");
+    let github_output = directory.path().join("github-output");
+    fs::write(&github_output, "").expect("output");
+    let mut command = common::sandboxed("bash", directory.path());
+    let mut path = std::ffi::OsString::from(&stubs);
+    path.push(":");
+    path.push(common::path_with_stubs(
+        &std::env::var("PATH").expect("PATH"),
+    ));
+    command
+        .arg(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join(".github/scripts/dependabot-security-fix.sh"),
+        )
+        .env("PATH", path)
+        .env("GH_TOKEN", case.token)
+        .env("GITHUB_TOKEN", "")
+        .env("GH_CONFIG_DIR", directory.path().join("gh-config"))
+        .env("GH_HOST", "gh.invalid")
+        .env("REPOSITORY", "o/r")
+        .env("ECOSYSTEM", case.ecosystem)
+        .env("DIRECTORY", case.directory)
+        .env("DEP_NAMES", case.names)
+        .env("DEP_GROUP", case.group)
+        .env("PREVIOUS", case.previous)
+        .env("NEW", case.new)
+        .env("GITHUB_OUTPUT", &github_output)
+        .env("STUB_GH_LOG", &log)
+        .env("STUB_GH_REPLY", &reply_file);
+    if let Some(code) = gh_exit {
+        command.env("STUB_GH_EXIT", code.to_string());
+    }
+    let output = common::run_other_tool(&mut command);
+    let hits = common::stub_hits(&command);
+    assert!(hits.is_empty(), "the test reached a refusing stub: {hits}");
+    SecurityRun {
+        output,
+        github_output: fs::read_to_string(&github_output).expect("github output"),
+        calls: fs::read_to_string(&log)
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect(),
+    }
+}
+
+/// One JSON array per page, as `gh api --paginate` prints them.
+fn security_run(case: &SecurityCase, pages: &[Vec<serde_json::Value>]) -> SecurityRun {
+    let reply: Vec<String> = pages
+        .iter()
+        .map(|page| serde_json::Value::Array(page.clone()).to_string())
+        .collect();
+    security_run_raw(case, &reply.join("\n"), None)
+}
+
+fn security_stdout(run: &SecurityRun) -> String {
+    String::from_utf8_lossy(&run.output.stdout).into_owned()
+}
+
+/// Asserts a clean exit that wrote exactly `fix=<expected>`.
+fn assert_fix(run: &SecurityRun, expected: bool) {
+    assert!(run.output.status.success(), "{:?}", run.output);
+    assert_eq!(
+        run.github_output,
+        format!("fix={expected}\n"),
+        "{}",
+        security_stdout(run)
+    );
+}
+
+/// `alert_35` with one field replaced, for the "is it still checked" cases.
+fn security_decides(case: &SecurityCase, alerts: Vec<serde_json::Value>) -> bool {
+    let run = security_run(case, &[alerts]);
+    assert!(run.output.status.success(), "{:?}", run.output);
+    match run.github_output.as_str() {
+        "fix=true\n" => true,
+        "fix=false\n" => false,
+        other => panic!("unexpected output {other:?}"),
+    }
+}
+
+#[test]
+fn a_real_fix_arms_and_says_which_alert_matched() {
+    let run = security_run(&SecurityCase::base(), &[vec![alert_35()]]);
+    assert_fix(&run, true);
+    assert!(
+        security_stdout(&run).contains("alert 35: match"),
+        "{}",
+        security_stdout(&run)
+    );
+}
+
+#[test]
+fn a_minor_bump_above_the_patched_version_arms_when_the_old_version_was_vulnerable() {
+    let case = SecurityCase {
+        new: "6.2.0",
+        ..SecurityCase::base()
+    };
+    assert_fix(&security_run(&case, &[vec![alert_35()]]), true);
+}
+
+#[test]
+fn a_stale_open_alert_does_not_arm_a_bump_of_an_already_fixed_package() {
+    // The alert stays open for about an hour after its fix merges: undici 8.12.3 is already past
+    // the range, so 8.13.0 is an ordinary minor bump and needs review.
+    let stale = alert(
+        32,
+        "open",
+        "undici",
+        "website/package-lock.json",
+        "< 8.12.3",
+        Some("8.12.3"),
+    );
+    let case = SecurityCase {
+        names: "undici",
+        previous: "8.12.3",
+        new: "8.13.0",
+        ..SecurityCase::base()
+    };
+    let run = security_run(&case, &[vec![stale]]);
+    assert_fix(&run, false);
+    assert!(security_stdout(&run).contains("not inside the vulnerable range"));
+}
+
+#[test]
+fn a_new_version_below_the_patched_one_does_not_arm() {
+    let case = SecurityCase {
+        new: "6.1.4",
+        previous: "6.1.3",
+        ..SecurityCase::base()
+    };
+    let run = security_run(&case, &[vec![alert_35()]]);
+    assert_fix(&run, false);
+    assert!(security_stdout(&run).contains("below the patched version"));
+}
+
+#[test]
+fn an_alert_with_no_patched_version_does_not_arm() {
+    let alert = alert(
+        35,
+        "open",
+        "postcss-selector-parser",
+        "website/package-lock.json",
+        "< 6.1.5",
+        None,
+    );
+    assert_fix(&security_run(&SecurityCase::base(), &[vec![alert]]), false);
+}
+
+#[test]
+fn more_than_one_dependency_or_a_group_never_reaches_the_api() {
+    for case in [
+        SecurityCase {
+            names: "postcss-selector-parser,undici",
+            ..SecurityCase::base()
+        },
+        SecurityCase {
+            group: "npm-minor",
+            ..SecurityCase::base()
+        },
+    ] {
+        let run = security_run(&case, &[vec![alert_35()]]);
+        assert_fix(&run, false);
+        assert!(run.calls.is_empty(), "{:?}", run.calls);
+    }
+}
+
+#[test]
+fn the_servers_filter_is_not_trusted() {
+    let case = SecurityCase::base();
+    let other_package = alert(
+        35,
+        "open",
+        "undici",
+        "website/package-lock.json",
+        "< 6.1.5",
+        Some("6.1.5"),
+    );
+    let other_manifest = alert(
+        35,
+        "open",
+        "postcss-selector-parser",
+        "gui/package-lock.json",
+        "< 6.1.5",
+        Some("6.1.5"),
+    );
+    let mut fixed = alert_35();
+    fixed["state"] = "fixed".into();
+    let mut dismissed = alert_35();
+    dismissed["state"] = "dismissed".into();
+    for wrong in [other_package, other_manifest, fixed, dismissed] {
+        assert!(!security_decides(&case, vec![wrong.clone()]), "{wrong}");
+        // The matching alert beside it still arms: the wrong one is skipped, not fatal.
+        assert!(security_decides(&case, vec![wrong, alert_35()]));
+    }
+    // The advisory's package name is checked too, not only the dependency's.
+    let mut mismatched = alert_35();
+    mismatched["security_vulnerability"]["package"]["name"] = "undici".into();
+    assert!(!security_decides(&case, vec![mismatched]));
+    let mut dependency_only = alert_35();
+    dependency_only["dependency"]["package"]["name"] = "undici".into();
+    assert!(!security_decides(&case, vec![dependency_only]));
+}
+
+#[test]
+fn a_two_comparator_range_must_hold_on_both_sides() {
+    let range = ">= 8.0.0, < 8.12.3";
+    let alert = || {
+        alert(
+            32,
+            "open",
+            "undici",
+            "website/package-lock.json",
+            range,
+            Some("8.12.3"),
+        )
+    };
+    let base = SecurityCase {
+        names: "undici",
+        ..SecurityCase::base()
+    };
+    let at = |previous: &'static str| SecurityCase {
+        previous,
+        new: "8.13.0",
+        ..base.clone()
+    };
+    assert!(security_decides(&at("8.0.0"), vec![alert()]));
+    assert!(security_decides(&at("8.12.2"), vec![alert()]));
+    assert!(
+        !security_decides(&at("7.9.9"), vec![alert()]),
+        "below the lower bound"
+    );
+    assert!(
+        !security_decides(&at("8.12.3"), vec![alert()]),
+        "at the upper bound"
+    );
+}
+
+#[test]
+fn a_prerelease_or_an_unknown_range_never_matches() {
+    let case = SecurityCase::base();
+    for (previous, new) in [
+        ("6.1.4-beta.1", "6.1.5"),
+        ("6.1.4", "6.2.0-rc.1"),
+        ("6.1.4+x", "6.1.5"),
+    ] {
+        let case = SecurityCase {
+            previous,
+            new,
+            ..case.clone()
+        };
+        let run = security_run(&case, &[vec![alert_35()]]);
+        assert_fix(&run, false);
+        assert!(
+            run.calls.is_empty(),
+            "a bad version is refused before the API: {:?}",
+            run.calls
+        );
+    }
+    let with = |range: &str, patched: &str| {
+        alert(
+            35,
+            "open",
+            "postcss-selector-parser",
+            "website/package-lock.json",
+            range,
+            Some(patched),
+        )
+    };
+    for (range, patched) in [
+        ("< 6.1.5-beta", "6.1.5"),
+        ("~> 6.1", "6.1.5"),
+        ("< 6.1.5 || > 7", "6.1.5"),
+        ("< 6.1.5,", "6.1.5"),
+        ("", "6.1.5"),
+        ("< 6.1.5", "6.1.5-rc.1"),
+        ("< 6.1.5", ""),
+    ] {
+        assert!(
+            !security_decides(&case, vec![with(range, patched)]),
+            "{range:?} {patched:?}"
+        );
+    }
+}
+
+#[test]
+fn versions_compare_numerically_with_missing_parts_as_zero() {
+    // The range `= 1.2` holds for 1.2.0, and 1.10.0 is above a patched 1.9.0 (text order says no).
+    let with = |range: &str, patched: &str| {
+        alert(
+            7,
+            "open",
+            "left-pad",
+            "website/package-lock.json",
+            range,
+            Some(patched),
+        )
+    };
+    let case = |previous: &'static str, new: &'static str| SecurityCase {
+        names: "left-pad",
+        previous,
+        new,
+        ..SecurityCase::base()
+    };
+    assert!(security_decides(
+        &case("1.2.0", "1.10.0"),
+        vec![with("= 1.2", "1.9.0")]
+    ));
+    assert!(security_decides(
+        &case("1.2", "1.10.0"),
+        vec![with("= 1.2.0", "1.9.0")]
+    ));
+    assert!(!security_decides(
+        &case("1.2.0", "1.9.0"),
+        vec![with("= 1.2", "1.10.0")]
+    ));
+    assert!(security_decides(
+        &case("1.2.0", "1.02.0"),
+        vec![with("<= 1.2", "1.2.0")]
+    ));
+}
+
+#[test]
+fn a_failed_lookup_fails_the_job_and_never_reads_as_no_alerts() {
+    let run = security_run_raw(&SecurityCase::base(), "[]", Some(1));
+    assert!(!run.output.status.success(), "{:?}", run.output);
+    assert!(
+        !run.github_output.contains("fix=true"),
+        "{}",
+        run.github_output
+    );
+    assert!(
+        String::from_utf8_lossy(&run.output.stderr).contains("refusing to treat"),
+        "{:?}",
+        run.output
+    );
+}
+
+#[test]
+fn a_reply_that_is_not_a_list_of_alerts_fails_the_job() {
+    for reply in [
+        "<html>bad gateway</html>",
+        "{\"message\":\"Not Found\"}",
+        "",
+        "[1,",
+        "\"x\"",
+    ] {
+        let run = security_run_raw(&SecurityCase::base(), reply, None);
+        assert!(!run.output.status.success(), "{reply:?}: {:?}", run.output);
+        assert!(!run.github_output.contains("fix=true"), "{reply:?}");
+    }
+}
+
+#[test]
+fn an_empty_token_says_fix_false_without_calling_gh() {
+    let case = SecurityCase {
+        token: "",
+        ..SecurityCase::base()
+    };
+    let run = security_run(&case, &[vec![alert_35()]]);
+    assert_fix(&run, false);
+    assert!(run.calls.is_empty(), "{:?}", run.calls);
+    assert!(security_stdout(&run).contains("DEPENDABOT_ALERTS_TOKEN"));
+}
+
+#[test]
+fn the_manifest_comes_from_the_ecosystem_and_directory_and_the_query_is_encoded() {
+    let query = |case: &SecurityCase| {
+        let run = security_run(case, &[vec![]]);
+        assert_fix(&run, false);
+        assert_eq!(run.calls.len(), 1, "{:?}", run.calls);
+        run.calls[0].clone()
+    };
+    assert_eq!(
+        query(&SecurityCase::base()),
+        "api --paginate repos/o/r/dependabot/alerts?state=open&package=postcss-selector-parser&manifest=website%2Fpackage-lock.json&per_page=100"
+    );
+    let root = SecurityCase {
+        ecosystem: "cargo",
+        directory: "/",
+        names: "serde",
+        ..SecurityCase::base()
+    };
+    assert!(query(&root).contains("&package=serde&manifest=Cargo.lock&"));
+    let gui = SecurityCase {
+        directory: "/gui/",
+        names: "@scope/pkg",
+        ..SecurityCase::base()
+    };
+    assert!(query(&gui).contains("&package=%40scope%2Fpkg&manifest=gui%2Fpackage-lock.json&"));
+}
+
+#[test]
+fn an_unknown_ecosystem_a_bad_directory_or_a_bad_name_never_reaches_the_api() {
+    for case in [
+        SecurityCase {
+            ecosystem: "github_actions",
+            directory: "/",
+            ..SecurityCase::base()
+        },
+        SecurityCase {
+            directory: "/../etc",
+            ..SecurityCase::base()
+        },
+        SecurityCase {
+            directory: "website",
+            ..SecurityCase::base()
+        },
+        SecurityCase {
+            names: "bad name&state=all",
+            ..SecurityCase::base()
+        },
+    ] {
+        let run = security_run(&case, &[vec![alert_35()]]);
+        assert_fix(&run, false);
+        assert!(run.calls.is_empty(), "{:?}", run.calls);
+    }
+}
+
+#[test]
+fn a_matching_alert_on_a_later_page_is_found() {
+    let filler = alert(
+        30,
+        "open",
+        "other",
+        "website/package-lock.json",
+        "< 1.0.0",
+        Some("1.0.0"),
+    );
+    let run = security_run(&SecurityCase::base(), &[vec![filler], vec![alert_35()]]);
+    assert_fix(&run, true);
+    assert!(security_stdout(&run).contains("alert 35: match"));
+}
+
+// --- dependabot-auto-merge.yml, as text -------------------------------------------------------------
+
+fn auto_merge_workflow() -> String {
+    fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join(".github/workflows/dependabot-auto-merge.yml"),
+    )
+    .expect("dependabot-auto-merge.yml")
+}
+
+/// The workflow without whole-line comments.
+fn without_comments(text: &str) -> String {
+    text.lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The text of the step whose `- name:` is `name`.
+fn workflow_step(text: &str, name: &str) -> String {
+    let start = text
+        .find(&format!("      - name: {name}\n"))
+        .unwrap_or_else(|| panic!("no step {name}"));
+    let rest = &text[start + 1..];
+    let end = rest.find("\n      - name: ").unwrap_or(rest.len());
+    rest[..end].to_owned()
+}
+
+#[test]
+fn the_alerts_token_reaches_only_the_lookup_step() {
+    let text = without_comments(&auto_merge_workflow());
+    assert_eq!(text.matches("DEPENDABOT_ALERTS_TOKEN").count(), 1, "{text}");
+    assert!(
+        workflow_step(&text, "Look for a security fix")
+            .contains("GH_TOKEN: ${{ secrets.DEPENDABOT_ALERTS_TOKEN }}")
+    );
+    assert!(!text.contains("alert-lookup"));
+    assert!(!text.contains("github-token"));
+    assert!(!workflow_step(&text, "Fetch Dependabot metadata").contains("with:"));
+}
+
+#[test]
+fn no_expression_is_written_into_a_run_block() {
+    let text = without_comments(&auto_merge_workflow());
+    let lines: Vec<&str> = text.lines().collect();
+    let mut runs = 0;
+    for (index, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        let Some(rest) = trimmed.strip_prefix("run:") else {
+            continue;
+        };
+        runs += 1;
+        let indent = line.len() - trimmed.len();
+        assert!(!rest.contains("${{"), "{line}");
+        for next in &lines[index + 1..] {
+            let next_indent = next.len() - next.trim_start().len();
+            if !next.trim().is_empty() && next_indent <= indent {
+                break;
+            }
+            assert!(!next.contains("${{"), "an expression inside run: {next}");
+        }
+    }
+    assert_eq!(runs, 2, "the lookup and the merge");
+}
+
+#[test]
+fn the_decision_script_comes_from_the_base_commit_without_credentials() {
+    let text = without_comments(&auto_merge_workflow());
+    let checkout = workflow_step(&text, "Check out the decision script from the base commit");
+    assert!(
+        checkout.contains("persist-credentials: false"),
+        "{checkout}"
+    );
+    assert!(
+        checkout.contains("ref: ${{ github.event.pull_request.base.sha }}"),
+        "{checkout}"
+    );
+    assert!(checkout.contains("uses: actions/checkout@"), "{checkout}");
+    // The script is run from that checkout, and the merge arms on its output or a patch bump.
+    assert!(text.contains("run: bash .github/scripts/dependabot-security-fix.sh"));
+    assert!(text.contains(
+        "if: steps.security.outputs.fix == 'true' || steps.meta.outputs.update-type == 'version-update:semver-patch'"
+    ));
+    assert!(text.contains(
+        "if: github.actor == 'dependabot[bot]' && github.event.pull_request.user.login == 'dependabot[bot]'"
+    ));
+}
