@@ -175,10 +175,7 @@ impl PublishTree {
     }
 
     fn remote_refs(&self, name: &str) -> String {
-        self.git(
-            &self.path(name),
-            &["for-each-ref", "--format=%(refname)"],
-        )
+        self.git(&self.path(name), &["for-each-ref", "--format=%(refname)"])
     }
 
     fn remote_show(&self, name: &str, file: &str) -> String {
@@ -217,7 +214,9 @@ impl PublishTree {
         let signing = self.path("apt-signing-key");
         fs::write(
             &signing,
-            keys.iter().map(|key| key.secret.as_str()).collect::<String>(),
+            keys.iter()
+                .map(|key| key.secret.as_str())
+                .collect::<String>(),
         )
         .expect("signing key");
         let recorded = self.path("apt-fingerprints.txt");
@@ -231,14 +230,27 @@ impl PublishTree {
             ("APT_SIGNING_KEY_FILE", signing.display().to_string()),
             ("APT_DEPLOY_KEY_FILE", deploy.display().to_string()),
             ("APT_FINGERPRINT_FILE", recorded.display().to_string()),
-            ("PUBLISH_GPG_TMPDIR", self.path("gpgtmp").display().to_string()),
-            ("STUB_RELEASE_PAGES", self.path("release-pages").display().to_string()),
-            ("STUB_FTP_LOG", self.path("ftparchive.log").display().to_string()),
+            (
+                "PUBLISH_GPG_TMPDIR",
+                self.path("gpgtmp").display().to_string(),
+            ),
+            (
+                "STUB_RELEASE_PAGES",
+                self.path("release-pages").display().to_string(),
+            ),
+            (
+                "STUB_FTP_LOG",
+                self.path("ftparchive.log").display().to_string(),
+            ),
         ];
         let mut environment: Vec<(&str, &str)> = vec![
             (
                 "PUBLISH_CHANNELS",
-                if tag.contains('-') { "beta" } else { "beta stable" },
+                if tag.contains('-') {
+                    "beta"
+                } else {
+                    "beta stable"
+                },
             ),
             ("PUBLISH_DRY_RUN", if dry_run { "true" } else { "false" }),
             ("APT_GIT_NAME", "Release Bot"),
@@ -266,7 +278,13 @@ impl PublishTree {
         fs::read_dir(self.path("gpgtmp"))
             .map(|entries| {
                 entries
-                    .map(|entry| entry.expect("entry").file_name().to_string_lossy().into_owned())
+                    .map(|entry| {
+                        entry
+                            .expect("entry")
+                            .file_name()
+                            .to_string_lossy()
+                            .into_owned()
+                    })
                     .collect()
             })
             .unwrap_or_default()
@@ -360,10 +378,19 @@ fn beta_is_the_newest_three_of_all_releases_and_stable_the_newest_three_finals()
         "0.1.0",
     ]);
     // A draft is not published, and a tag that is no release tag is not a release of this package.
-    let mut rows: Vec<(String, bool, bool)> = ["0.4.0-beta.1", "0.2.1", "0.1.0-beta.10", "0.3.0", "0.1.0-beta.9", "0.4.0-beta.2", "0.2.0", "0.1.0"]
-        .iter()
-        .map(|upstream| (format!("v{upstream}"), false, upstream.contains('-')))
-        .collect();
+    let mut rows: Vec<(String, bool, bool)> = [
+        "0.4.0-beta.1",
+        "0.2.1",
+        "0.1.0-beta.10",
+        "0.3.0",
+        "0.1.0-beta.9",
+        "0.4.0-beta.2",
+        "0.2.0",
+        "0.1.0",
+    ]
+    .iter()
+    .map(|upstream| (format!("v{upstream}"), false, upstream.contains('-')))
+    .collect();
     rows.push(("v9.9.9".to_owned(), true, false));
     rows.push(("nightly".to_owned(), false, true));
     tree.apt_listing(&rows);
@@ -373,14 +400,23 @@ fn beta_is_the_newest_three_of_all_releases_and_stable_the_newest_three_finals()
     let output = tree.apt_publish("v0.4.0-beta.2", false, &remote, &[key], &[]);
     let text = stderr_of(&output);
     assert!(output.status.success(), "{text}");
-    assert!(text.contains("suite beta: 0.4.0-beta.2 0.4.0-beta.1 0.3.0\n"), "{text}");
+    assert!(
+        text.contains("suite beta: 0.4.0-beta.2 0.4.0-beta.1 0.3.0\n"),
+        "{text}"
+    );
     assert!(text.contains("suite stable: 0.3.0 0.2.1 0.2.0\n"), "{text}");
     assert!(text.contains("ignoring the release nightly"), "{text}");
     assert_eq!(tree.results("apt").as_deref(), Some("ok"));
     // Exactly the five releases the two suites use are downloaded, once each, with the two patterns.
     assert_eq!(
         sorted(tree.apt_downloads()),
-        ["v0.2.0", "v0.2.1", "v0.3.0", "v0.4.0-beta.1", "v0.4.0-beta.2"]
+        [
+            "v0.2.0",
+            "v0.2.1",
+            "v0.3.0",
+            "v0.4.0-beta.1",
+            "v0.4.0-beta.2"
+        ]
     );
     assert!(
         tree.log("gh.log").iter().any(|line| {
@@ -408,7 +444,10 @@ fn beta_is_the_newest_three_of_all_releases_and_stable_the_newest_three_finals()
         debs_of(&["0.3.0", "0.2.1", "0.2.0"])
     );
     let files = tree.remote_files("apt.git");
-    let pool: Vec<&String> = files.iter().filter(|file| file.starts_with("pool/")).collect();
+    let pool: Vec<&String> = files
+        .iter()
+        .filter(|file| file.starts_with("pool/"))
+        .collect();
     assert_eq!(
         pool.len(),
         15,
@@ -426,18 +465,34 @@ fn beta_is_the_newest_three_of_all_releases_and_stable_the_newest_three_finals()
         "dists/stable/Release",
         "dists/stable/Release.gpg",
     ] {
-        assert!(files.iter().any(|file| file == expected), "{expected}: {files:?}");
+        assert!(
+            files.iter().any(|file| file == expected),
+            "{expected}: {files:?}"
+        );
     }
-    assert!(tree.remote_show("apt.git", "dists/beta/Release").contains("Suite: beta\n"));
+    assert!(
+        tree.remote_show("apt.git", "dists/beta/Release")
+            .contains("Suite: beta\n")
+    );
     // One commit on gh-pages, by the release identity, naming the version, and nothing but gh-pages.
     let repository = tree.path("apt.git");
-    assert_eq!(tree.git(&repository, &["rev-list", "--count", "gh-pages"]), "1");
     assert_eq!(
-        tree.git(&repository, &["log", "-1", "--format=%an <%ae>%n%s", "gh-pages"]),
+        tree.git(&repository, &["rev-list", "--count", "gh-pages"]),
+        "1"
+    );
+    assert_eq!(
+        tree.git(
+            &repository,
+            &["log", "-1", "--format=%an <%ae>%n%s", "gh-pages"]
+        ),
         "Release Bot <bot@example.invalid>\nPublish 0.4.0-beta.2"
     );
     assert_eq!(tree.remote_refs("apt.git"), "refs/heads/gh-pages");
-    assert!(tree.gpg_homes_left().is_empty(), "{:?}", tree.gpg_homes_left());
+    assert!(
+        tree.gpg_homes_left().is_empty(),
+        "{:?}",
+        tree.gpg_homes_left()
+    );
 }
 
 #[test]
@@ -451,13 +506,20 @@ fn stable_does_not_exist_until_a_final_release_is_published() {
     assert!(text.contains("suite stable: not created"), "{text}");
     let files = tree.remote_files("apt.git");
     assert!(files.iter().any(|file| file == "dists/beta/InRelease"));
-    assert!(files.iter().all(|file| !file.starts_with("dists/stable")), "{files:?}");
+    assert!(
+        files.iter().all(|file| !file.starts_with("dists/stable")),
+        "{files:?}"
+    );
     // Nothing published at all is an error, not an empty repository.
     tree.apt_listing(&[("v0.1.0".to_owned(), true, false)]);
     let other = tree.apt_remote("other.git");
     let output = tree.apt_publish("v0.1.0", false, &other, &[&apt_keys()[0]], &[]);
     assert_eq!(output.status.code(), Some(1));
-    assert!(stderr_of(&output).contains("there is no published release"), "{}", stderr_of(&output));
+    assert!(
+        stderr_of(&output).contains("there is no published release"),
+        "{}",
+        stderr_of(&output)
+    );
     assert_eq!(tree.remote_refs("other.git"), "");
     assert_eq!(tree.results("apt").as_deref(), Some("failed"));
 }
@@ -465,7 +527,13 @@ fn stable_does_not_exist_until_a_final_release_is_published() {
 #[test]
 fn the_tree_does_not_depend_on_the_order_the_api_lists_the_releases_in() {
     let tree = PublishTree::new();
-    let forward = ["0.1.0-beta.1", "0.1.0-beta.2", "0.1.0", "0.2.0-beta.1", "0.2.0"];
+    let forward = [
+        "0.1.0-beta.1",
+        "0.1.0-beta.2",
+        "0.1.0",
+        "0.2.0-beta.1",
+        "0.2.0",
+    ];
     tree.apt_world(&forward);
     let first = tree.apt_remote("first.git");
     let second = tree.apt_remote("second.git");
@@ -515,8 +583,15 @@ fn a_run_that_changes_nothing_pushes_nothing_and_a_changed_release_set_pushes_on
         "{}",
         stderr_of(&again)
     );
-    assert_eq!(tree.apt_pushes("apt.git").len(), 1, "a second push was made");
-    assert_eq!(tree.git(&tree.path("apt.git"), &["rev-parse", "gh-pages"]), head);
+    assert_eq!(
+        tree.apt_pushes("apt.git").len(),
+        1,
+        "a second push was made"
+    );
+    assert_eq!(
+        tree.git(&tree.path("apt.git"), &["rev-parse", "gh-pages"]),
+        head
+    );
     assert_eq!(tree.remote_show("apt.git", "dists/beta/Release"), release);
     assert_eq!(tree.results("apt").as_deref(), Some("ok"));
 
@@ -525,8 +600,14 @@ fn a_run_that_changes_nothing_pushes_nothing_and_a_changed_release_set_pushes_on
     let changed = tree.apt_publish("v0.1.1", false, &remote, &[key], &[]);
     assert!(changed.status.success(), "{}", stderr_of(&changed));
     assert_eq!(tree.apt_pushes("apt.git").len(), 2);
-    assert_eq!(tree.git(&tree.path("apt.git"), &["rev-list", "--count", "gh-pages"]), "1");
-    assert_ne!(tree.git(&tree.path("apt.git"), &["rev-parse", "gh-pages"]), head);
+    assert_eq!(
+        tree.git(&tree.path("apt.git"), &["rev-list", "--count", "gh-pages"]),
+        "1"
+    );
+    assert_ne!(
+        tree.git(&tree.path("apt.git"), &["rev-parse", "gh-pages"]),
+        head
+    );
     assert!(
         tree.remote_files("apt.git")
             .iter()
@@ -543,15 +624,26 @@ fn a_dry_run_makes_a_test_signature_and_pushes_nothing() {
     let output = tree.apt_publish("v0.1.0", true, &remote, &[key], &[]);
     let text = stderr_of(&output);
     assert!(output.status.success(), "{text}");
-    assert!(text.contains("made a test signature over beta/Release (verified and discarded)"), "{text}");
+    assert!(
+        text.contains("made a test signature over beta/Release (verified and discarded)"),
+        "{text}"
+    );
     assert!(text.contains("DRY RUN: "), "{text}");
     assert!(text.contains("has no gh-pages branch yet"), "{text}");
     assert!(!text.contains("pushed gh-pages"), "{text}");
-    assert_eq!(tree.remote_refs("apt.git"), "", "a dry run created a branch");
+    assert_eq!(
+        tree.remote_refs("apt.git"),
+        "",
+        "a dry run created a branch"
+    );
     assert!(tree.apt_pushes("apt.git").is_empty());
     // The releases and the assets were read: that is what a dry run is for.
     assert_eq!(sorted(tree.apt_downloads()), ["v0.1.0", "v0.1.0-beta.1"]);
-    assert!(tree.gpg_homes_left().is_empty(), "{:?}", tree.gpg_homes_left());
+    assert!(
+        tree.gpg_homes_left().is_empty(),
+        "{:?}",
+        tree.gpg_homes_left()
+    );
     assert_eq!(tree.results("apt").as_deref(), Some("ok"));
 
     // After a real publish of the same releases, a dry run finds the same tree there: it would
@@ -567,8 +659,16 @@ fn a_dry_run_makes_a_test_signature_and_pushes_nothing() {
     // A dry run with a different release set says what a real run would do, and still does not.
     tree.apt_world(&["0.1.0-beta.1", "0.1.0", "0.1.1"]);
     let dry = tree.apt_publish("v0.1.1", true, &remote, &[key], &[]);
-    assert!(stderr_of(&dry).contains("DRY RUN: gh-pages of "), "{}", stderr_of(&dry));
-    assert!(stderr_of(&dry).contains("would force-push a single commit"), "{}", stderr_of(&dry));
+    assert!(
+        stderr_of(&dry).contains("DRY RUN: gh-pages of "),
+        "{}",
+        stderr_of(&dry)
+    );
+    assert!(
+        stderr_of(&dry).contains("would force-push a single commit"),
+        "{}",
+        stderr_of(&dry)
+    );
     assert_eq!(tree.apt_pushes("apt.git").len(), 1);
     assert!(tree.gpg_homes_left().is_empty());
 }
@@ -587,8 +687,16 @@ fn a_release_whose_debs_do_not_match_its_checksums_stops_the_run_and_pushes_noth
                 let main = main.clone();
                 move |dir: &Path| {
                     let sums = fs::read_to_string(dir.join("SHA256SUMS")).expect("sums");
-                    let real = sums.lines().find(|l| l.ends_with(&main)).expect("line").split(' ').next().expect("sum").to_owned();
-                    fs::write(dir.join("SHA256SUMS"), sums.replace(&real, &"f".repeat(64))).expect("write");
+                    let real = sums
+                        .lines()
+                        .find(|l| l.ends_with(&main))
+                        .expect("line")
+                        .split(' ')
+                        .next()
+                        .expect("sum")
+                        .to_owned();
+                    fs::write(dir.join("SHA256SUMS"), sums.replace(&real, &"f".repeat(64)))
+                        .expect("write");
                 }
             }),
             "SHA256SUMS lists ffffffff",
@@ -597,7 +705,11 @@ fn a_release_whose_debs_do_not_match_its_checksums_stops_the_run_and_pushes_noth
             "a deb the sums do not list",
             Box::new(move |dir: &Path| {
                 let sums = fs::read_to_string(dir.join("SHA256SUMS")).expect("sums");
-                let kept: String = sums.lines().filter(|l| !l.ends_with(nemo)).map(|l| format!("{l}\n")).collect();
+                let kept: String = sums
+                    .lines()
+                    .filter(|l| !l.ends_with(nemo))
+                    .map(|l| format!("{l}\n"))
+                    .collect();
                 fs::write(dir.join("SHA256SUMS"), kept).expect("write");
             }),
             "SHA256SUMS lists proton-sync-nemo_0.2.0-1_all.deb not at all",
@@ -606,7 +718,11 @@ fn a_release_whose_debs_do_not_match_its_checksums_stops_the_run_and_pushes_noth
             "a deb listed twice",
             Box::new(move |dir: &Path| {
                 let sums = fs::read_to_string(dir.join("SHA256SUMS")).expect("sums");
-                let line = sums.lines().find(|l| l.ends_with(nemo)).expect("line").to_owned();
+                let line = sums
+                    .lines()
+                    .find(|l| l.ends_with(nemo))
+                    .expect("line")
+                    .to_owned();
                 fs::write(dir.join("SHA256SUMS"), format!("{sums}{line}\n")).expect("write");
             }),
             "more than once",
@@ -638,7 +754,8 @@ fn a_release_whose_debs_do_not_match_its_checksums_stops_the_run_and_pushes_noth
             Box::new({
                 let main = main.clone();
                 move |dir: &Path| {
-                    fs::rename(dir.join(&main), dir.join(main.replace("0.2.0", "0.2.1"))).expect("rename");
+                    fs::rename(dir.join(&main), dir.join(main.replace("0.2.0", "0.2.1")))
+                        .expect("rename");
                 }
             }),
             "is not a deb named for this version",
@@ -647,10 +764,15 @@ fn a_release_whose_debs_do_not_match_its_checksums_stops_the_run_and_pushes_noth
             "two main debs",
             Box::new(move |dir: &Path| {
                 let renamed = format!("{MAIN_DEB}_0.2.0-2_amd64.deb");
-                fs::copy(dir.join(format!("{MAIN_DEB}_0.2.0-1_amd64.deb")), dir.join(&renamed)).expect("copy");
+                fs::copy(
+                    dir.join(format!("{MAIN_DEB}_0.2.0-1_amd64.deb")),
+                    dir.join(&renamed),
+                )
+                .expect("copy");
                 let sums = fs::read_to_string(dir.join("SHA256SUMS")).expect("sums");
                 let sum = sha256_of(&dir.join(&renamed));
-                fs::write(dir.join("SHA256SUMS"), format!("{sums}{sum}  {renamed}\n")).expect("write");
+                fs::write(dir.join("SHA256SUMS"), format!("{sums}{sum}  {renamed}\n"))
+                    .expect("write");
             }),
             "must hold exactly one proton-drive-sync-engine_*_amd64.deb",
         ),
@@ -664,7 +786,11 @@ fn a_release_whose_debs_do_not_match_its_checksums_stops_the_run_and_pushes_noth
         let text = stderr_of(&output);
         assert_eq!(output.status.code(), Some(1), "{what}: {text}");
         assert!(text.contains(message), "{what}: {text}");
-        assert_eq!(tree.remote_refs("apt.git"), "", "{what}: something was pushed");
+        assert_eq!(
+            tree.remote_refs("apt.git"),
+            "",
+            "{what}: something was pushed"
+        );
         assert_eq!(tree.results("apt").as_deref(), Some("failed"), "{what}");
         assert!(tree.gpg_homes_left().is_empty(), "{what}");
     }
@@ -678,14 +804,27 @@ fn a_release_whose_prerelease_flag_disagrees_with_its_tag_stops_the_run_when_it_
         let upstream = tag.trim_start_matches('v');
         let rows: Vec<(String, bool, bool)> = ["0.1.0", "0.2.0-beta.1", "0.2.0"]
             .iter()
-            .map(|u| (format!("v{u}"), false, if *u == upstream { flag } else { u.contains('-') }))
+            .map(|u| {
+                (
+                    format!("v{u}"),
+                    false,
+                    if *u == upstream {
+                        flag
+                    } else {
+                        u.contains('-')
+                    },
+                )
+            })
             .collect();
         tree.apt_listing(&rows);
         let remote = tree.apt_remote("apt.git");
         let output = tree.apt_publish("v0.2.0", false, &remote, &[&apt_keys()[0]], &[]);
         let text = stderr_of(&output);
         assert_eq!(output.status.code(), Some(1), "{tag}: {text}");
-        assert!(text.contains(&format!("the release {tag} is marked prerelease={flag}")), "{tag}: {text}");
+        assert!(
+            text.contains(&format!("the release {tag} is marked prerelease={flag}")),
+            "{tag}: {text}"
+        );
         assert_eq!(tree.remote_refs("apt.git"), "", "{tag}");
     }
     // A wrong flag on a release the suites do not use is no reason to stop.
@@ -712,34 +851,73 @@ fn a_withdrawn_tag_is_left_out_and_the_variable_is_optional_and_never_a_glob() {
     let key = &apt_keys()[0];
     // Unset (the variable is optional): all four are candidates, the newest three are used.
     let output = tree.apt_publish("v0.4.0", true, &remote, &[key], &[]);
-    assert!(output.status.success(), "unset APT_WITHDRAWN: {}", stderr_of(&output));
-    assert!(stderr_of(&output).contains("suite beta: 0.4.0 0.3.0 0.2.0\n"), "{}", stderr_of(&output));
+    assert!(
+        output.status.success(),
+        "unset APT_WITHDRAWN: {}",
+        stderr_of(&output)
+    );
+    assert!(
+        stderr_of(&output).contains("suite beta: 0.4.0 0.3.0 0.2.0\n"),
+        "{}",
+        stderr_of(&output)
+    );
     // Empty is the same.
     let output = tree.apt_publish("v0.4.0", true, &remote, &[key], &[("APT_WITHDRAWN", "")]);
     assert!(output.status.success(), "{}", stderr_of(&output));
     // Space and comma separated; the next release takes the withdrawn one's place.
-    for value in ["v0.3.0", "v0.3.0,v0.9.9", " v0.3.0  v0.9.9 ", "v0.9.9, v0.3.0"] {
+    for value in [
+        "v0.3.0",
+        "v0.3.0,v0.9.9",
+        " v0.3.0  v0.9.9 ",
+        "v0.9.9, v0.3.0",
+    ] {
         let output = tree.apt_publish("v0.4.0", true, &remote, &[key], &[("APT_WITHDRAWN", value)]);
         let text = stderr_of(&output);
         assert!(output.status.success(), "'{value}': {text}");
-        assert!(text.contains("leaving out v0.3.0: it is in APT_WITHDRAWN"), "'{value}': {text}");
-        assert!(text.contains("suite beta: 0.4.0 0.2.0 0.1.0\n"), "'{value}': {text}");
+        assert!(
+            text.contains("leaving out v0.3.0: it is in APT_WITHDRAWN"),
+            "'{value}': {text}"
+        );
+        assert!(
+            text.contains("suite beta: 0.4.0 0.2.0 0.1.0\n"),
+            "'{value}': {text}"
+        );
     }
     // Withdrawing the newest one lets the older ones back in as the newest.
-    let output = tree.apt_publish("v0.3.0", true, &remote, &[key], &[("APT_WITHDRAWN", "v0.4.0 v0.3.0")]);
-    assert!(stderr_of(&output).contains("suite beta: 0.2.0 0.1.0\n"), "{}", stderr_of(&output));
+    let output = tree.apt_publish(
+        "v0.3.0",
+        true,
+        &remote,
+        &[key],
+        &[("APT_WITHDRAWN", "v0.4.0 v0.3.0")],
+    );
+    assert!(
+        stderr_of(&output).contains("suite beta: 0.2.0 0.1.0\n"),
+        "{}",
+        stderr_of(&output)
+    );
     // A name that is not a release tag is an error, not a silent no-op.
     for bad in ["nightly", "0.3.0", "v0.3"] {
         let output = tree.apt_publish("v0.4.0", true, &remote, &[key], &[("APT_WITHDRAWN", bad)]);
         assert_eq!(output.status.code(), Some(1), "'{bad}'");
-        assert!(stderr_of(&output).contains(&format!("APT_WITHDRAWN names '{bad}', which is not a release tag")), "{}", stderr_of(&output));
+        assert!(
+            stderr_of(&output).contains(&format!(
+                "APT_WITHDRAWN names '{bad}', which is not a release tag"
+            )),
+            "{}",
+            stderr_of(&output)
+        );
     }
     // A glob is never expanded: `v*` is not a tag, and a file called v0.3.0 in the working
     // directory must not turn it into one.
     fs::write(tree.path("v0.3.0"), "").expect("decoy");
     let output = tree.apt_publish("v0.4.0", true, &remote, &[key], &[("APT_WITHDRAWN", "v*")]);
     assert_eq!(output.status.code(), Some(1), "{}", stderr_of(&output));
-    assert!(stderr_of(&output).contains("APT_WITHDRAWN names 'v*'"), "{}", stderr_of(&output));
+    assert!(
+        stderr_of(&output).contains("APT_WITHDRAWN names 'v*'"),
+        "{}",
+        stderr_of(&output)
+    );
 }
 
 // --- the signing key and the fingerprints ---------------------------------------------------------
@@ -753,43 +931,106 @@ fn nothing_is_signed_with_a_key_that_is_not_the_recorded_one_or_while_none_is_re
     // The shipped fingerprint file is the placeholder: refuse, even for a dry run.
     for dry_run in [false, true] {
         let shipped = tree.script("apt-key-fingerprints.txt");
-        let output = tree.apt_publish("v0.1.0", dry_run, &remote, &[&keys[0]], &[("APT_FINGERPRINT_FILE", shipped.to_str().expect("utf-8"))]);
+        let output = tree.apt_publish(
+            "v0.1.0",
+            dry_run,
+            &remote,
+            &[&keys[0]],
+            &[("APT_FINGERPRINT_FILE", shipped.to_str().expect("utf-8"))],
+        );
         let text = stderr_of(&output);
         assert_eq!(output.status.code(), Some(1), "dry_run={dry_run}: {text}");
-        assert!(text.contains("no signing-key fingerprint is recorded"), "{text}");
+        assert!(
+            text.contains("no signing-key fingerprint is recorded"),
+            "{text}"
+        );
         assert!(tree.gpg_homes_left().is_empty(), "dry_run={dry_run}");
     }
     // Recorded: the other key. Recorded: one of the two keys that sign. Recorded: both, signing with one.
     let other = tree.path("other-fingerprints.txt");
     let cases = [
-        ("another key", vec![keys[1].fingerprint.clone()], vec![&keys[0]]),
-        ("one of two", vec![keys[0].fingerprint.clone()], vec![&keys[0], &keys[1]]),
-        ("a key missing", vec![keys[0].fingerprint.clone(), keys[1].fingerprint.clone()], vec![&keys[0]]),
+        (
+            "another key",
+            vec![keys[1].fingerprint.clone()],
+            vec![&keys[0]],
+        ),
+        (
+            "one of two",
+            vec![keys[0].fingerprint.clone()],
+            vec![&keys[0], &keys[1]],
+        ),
+        (
+            "a key missing",
+            vec![keys[0].fingerprint.clone(), keys[1].fingerprint.clone()],
+            vec![&keys[0]],
+        ),
     ];
     for (what, recorded, signing) in cases {
         fs::write(&other, recorded.join("\n") + "\n").expect("write");
-        let output = tree.apt_publish("v0.1.0", false, &remote, &signing, &[("APT_FINGERPRINT_FILE", other.to_str().expect("utf-8"))]);
+        let output = tree.apt_publish(
+            "v0.1.0",
+            false,
+            &remote,
+            &signing,
+            &[("APT_FINGERPRINT_FILE", other.to_str().expect("utf-8"))],
+        );
         let text = stderr_of(&output);
         assert_eq!(output.status.code(), Some(1), "{what}: {text}");
-        assert!(text.contains("apt-key-fingerprints.txt records"), "{what}: {text}");
+        assert!(
+            text.contains("apt-key-fingerprints.txt records"),
+            "{what}: {text}"
+        );
         assert!(text.contains("nothing is signed"), "{what}: {text}");
         assert_eq!(tree.remote_refs("apt.git"), "", "{what}");
-        assert!(tree.gpg_homes_left().is_empty(), "{what}: the throwaway GNUPGHOME is still there");
+        assert!(
+            tree.gpg_homes_left().is_empty(),
+            "{what}: the throwaway GNUPGHOME is still there"
+        );
         assert_eq!(tree.results("apt").as_deref(), Some("failed"), "{what}");
     }
     // A key file that is missing, empty or not a key.
     for (what, content, message) in [
         ("empty", "", "APT_SIGNING_KEY_FILE is not a readable file"),
-        ("not a key", "hello\n", "gpg could not import the signing key"),
+        (
+            "not a key",
+            "hello\n",
+            "gpg could not import the signing key",
+        ),
     ] {
         fs::write(tree.path("bad-key"), content).expect("write");
-        let output = tree.apt_publish("v0.1.0", false, &remote, &[&keys[0]], &[("APT_SIGNING_KEY_FILE", tree.path("bad-key").to_str().expect("utf-8"))]);
+        let output = tree.apt_publish(
+            "v0.1.0",
+            false,
+            &remote,
+            &[&keys[0]],
+            &[(
+                "APT_SIGNING_KEY_FILE",
+                tree.path("bad-key").to_str().expect("utf-8"),
+            )],
+        );
         assert_eq!(output.status.code(), Some(1), "{what}");
-        assert!(stderr_of(&output).contains(message), "{what}: {}", stderr_of(&output));
+        assert!(
+            stderr_of(&output).contains(message),
+            "{what}: {}",
+            stderr_of(&output)
+        );
     }
-    let output = tree.apt_publish("v0.1.0", false, &remote, &[&keys[0]], &[("APT_SIGNING_KEY_FILE", tree.path("missing").to_str().expect("utf-8"))]);
+    let output = tree.apt_publish(
+        "v0.1.0",
+        false,
+        &remote,
+        &[&keys[0]],
+        &[(
+            "APT_SIGNING_KEY_FILE",
+            tree.path("missing").to_str().expect("utf-8"),
+        )],
+    );
     assert_eq!(output.status.code(), Some(1));
-    assert!(stderr_of(&output).contains("APT_SIGNING_KEY_FILE is not a readable file"), "{}", stderr_of(&output));
+    assert!(
+        stderr_of(&output).contains("APT_SIGNING_KEY_FILE is not a readable file"),
+        "{}",
+        stderr_of(&output)
+    );
     assert!(tree.gpg_homes_left().is_empty());
 }
 
@@ -815,22 +1056,36 @@ fn every_key_in_the_file_signs_every_file_with_sha512_and_the_key_files_hold_the
         for suite in ["beta", "stable"] {
             let dists = checkout.join("dists").join(suite);
             let clearsigned = tree.gpgv_valid_signatures(&keyring, &dists.join("InRelease"), None);
-            let detached = tree.gpgv_valid_signatures(&keyring, &dists.join("Release.gpg"), Some(&dists.join("Release")));
+            let detached = tree.gpgv_valid_signatures(
+                &keyring,
+                &dists.join("Release.gpg"),
+                Some(&dists.join("Release")),
+            );
             for (file, signatures) in [("InRelease", clearsigned), ("Release.gpg", detached)] {
                 // One VALIDSIG per key (a one-key ring on a two-signature file would hide the second).
-                let found: Vec<String> = sorted(signatures.iter().map(|fields| fields[0].clone()).collect());
+                let found: Vec<String> =
+                    sorted(signatures.iter().map(|fields| fields[0].clone()).collect());
                 assert_eq!(found, expected, "{what}: {suite}/{file}");
                 for fields in &signatures {
                     // VALIDSIG fingerprint date timestamp expire version reserved pk-algo hash-algo ...
                     assert_eq!(fields[6], "22", "{what}: {suite}/{file} is not EdDSA");
-                    assert_eq!(fields[7], "10", "{what}: {suite}/{file} is not signed over SHA-512");
+                    assert_eq!(
+                        fields[7], "10",
+                        "{what}: {suite}/{file} is not signed over SHA-512"
+                    );
                 }
             }
         }
         // The armored file holds the same keys as the binary one.
         let asc = fs::read_to_string(checkout.join("proton-drive-sync-engine.asc")).expect("asc");
-        assert!(asc.starts_with("-----BEGIN PGP PUBLIC KEY BLOCK-----"), "{what}");
-        for path in ["proton-drive-sync-engine.gpg", "proton-drive-sync-engine.asc"] {
+        assert!(
+            asc.starts_with("-----BEGIN PGP PUBLIC KEY BLOCK-----"),
+            "{what}"
+        );
+        for path in [
+            "proton-drive-sync-engine.gpg",
+            "proton-drive-sync-engine.asc",
+        ] {
             let mut command = common::sandboxed("gpg", tree.directory.path());
             command
                 .env("GNUPGHOME", tree.path("gpgv-home"))
@@ -866,7 +1121,10 @@ fn the_push_goes_through_ssh_with_the_key_and_the_pinned_host_keys_and_nothing_e
     );
     let text = stderr_of(&output);
     assert_eq!(output.status.code(), Some(1), "{text}");
-    assert!(text.contains("cannot read ssh://git@apt.example.invalid/"), "{text}");
+    assert!(
+        text.contains("cannot read ssh://git@apt.example.invalid/"),
+        "{text}"
+    );
     let calls = tree.log("ssh.log");
     assert!(!calls.is_empty(), "git never called ssh");
     let key = tree.path("apt-deploy-key");
@@ -897,12 +1155,26 @@ fn the_push_needs_the_deploy_key_and_an_identity_and_the_step_needs_what_route_w
     let remote = tree.apt_remote("apt.git");
     let key = &apt_keys()[0];
     let missing = tree.path("no-such-key");
-    let output = tree.apt_publish("v0.1.0", false, &remote, &[key], &[("APT_DEPLOY_KEY_FILE", missing.to_str().expect("utf-8"))]);
+    let output = tree.apt_publish(
+        "v0.1.0",
+        false,
+        &remote,
+        &[key],
+        &[("APT_DEPLOY_KEY_FILE", missing.to_str().expect("utf-8"))],
+    );
     assert_eq!(output.status.code(), Some(1));
-    assert!(stderr_of(&output).contains("APT_DEPLOY_KEY_FILE is not a readable file"), "{}", stderr_of(&output));
+    assert!(
+        stderr_of(&output).contains("APT_DEPLOY_KEY_FILE is not a readable file"),
+        "{}",
+        stderr_of(&output)
+    );
     let output = tree.apt_publish("v0.1.0", false, &remote, &[key], &[("APT_GIT_NAME", "")]);
     assert_eq!(output.status.code(), Some(1));
-    assert!(stderr_of(&output).contains("APT_GIT_NAME and APT_GIT_EMAIL are not set"), "{}", stderr_of(&output));
+    assert!(
+        stderr_of(&output).contains("APT_GIT_NAME and APT_GIT_EMAIL are not set"),
+        "{}",
+        stderr_of(&output)
+    );
     assert_eq!(tree.remote_refs("apt.git"), "");
     // What route.sh writes: a missing or odd value stops the step before anything is read.
     for (name, value) in [
@@ -915,16 +1187,30 @@ fn the_push_needs_the_deploy_key_and_an_identity_and_the_step_needs_what_route_w
         let before = tree.log("gh.log").len();
         let output = tree.apt_publish("v0.1.0", false, &remote, &[key], &[(name, value)]);
         assert_eq!(output.status.code(), Some(1), "{name}='{value}'");
-        assert_eq!(tree.log("gh.log").len(), before, "{name}='{value}': gh was called");
+        assert_eq!(
+            tree.log("gh.log").len(),
+            before,
+            "{name}='{value}': gh was called"
+        );
     }
     for tag in ["0.1.0", "v0.1", "latest"] {
         let output = tree.apt_publish(tag, false, &remote, &[key], &[]);
         assert_eq!(output.status.code(), Some(1), "{tag}");
     }
     // A listing that fails is a failed step, not an empty repository.
-    let output = tree.apt_publish("v0.1.0", false, &remote, &[key], &[("STUB_GH_API_FAILS", "1")]);
+    let output = tree.apt_publish(
+        "v0.1.0",
+        false,
+        &remote,
+        &[key],
+        &[("STUB_GH_API_FAILS", "1")],
+    );
     assert_eq!(output.status.code(), Some(1));
-    assert!(stderr_of(&output).contains("cannot list the releases of o/r"), "{}", stderr_of(&output));
+    assert!(
+        stderr_of(&output).contains("cannot list the releases of o/r"),
+        "{}",
+        stderr_of(&output)
+    );
     assert_eq!(tree.remote_refs("apt.git"), "");
     assert_eq!(tree.results("apt").as_deref(), Some("failed"));
 }
@@ -943,11 +1229,21 @@ fn the_local_mode_makes_a_signed_tree_from_directories_and_downloads_and_pushes_
     fs::create_dir_all(tree.path("gpgtmp")).expect("tmp");
     let out = tree.path("out");
     let environment = [
-        ("APT_SIGNING_KEY_FILE", tree.path("key").display().to_string()),
-        ("PUBLISH_GPG_TMPDIR", tree.path("gpgtmp").display().to_string()),
-        ("STUB_FTP_LOG", tree.path("ftparchive.log").display().to_string()),
+        (
+            "APT_SIGNING_KEY_FILE",
+            tree.path("key").display().to_string(),
+        ),
+        (
+            "PUBLISH_GPG_TMPDIR",
+            tree.path("gpgtmp").display().to_string(),
+        ),
+        (
+            "STUB_FTP_LOG",
+            tree.path("ftparchive.log").display().to_string(),
+        ),
     ];
-    let environment: Vec<(&str, &str)> = environment.iter().map(|(n, v)| (*n, v.as_str())).collect();
+    let environment: Vec<(&str, &str)> =
+        environment.iter().map(|(n, v)| (*n, v.as_str())).collect();
     let beta = tree.path("assets/v0.1.0-beta.1");
     let stable = tree.path("assets/v0.1.0");
     let output = tree.run(
@@ -974,16 +1270,29 @@ fn the_local_mode_makes_a_signed_tree_from_directories_and_downloads_and_pushes_
     }
     assert!(tree.gpg_homes_left().is_empty());
     // Mistakes in the arguments.
-    let output = tree.run("apt-publish.sh", &["--local", out.to_str().expect("utf-8"), "nonsense"], &environment);
+    let output = tree.run(
+        "apt-publish.sh",
+        &["--local", out.to_str().expect("utf-8"), "nonsense"],
+        &environment,
+    );
     assert_eq!(output.status.code(), Some(1));
-    let output = tree.run("apt-publish.sh", &["--local", out.to_str().expect("utf-8")], &environment);
+    let output = tree.run(
+        "apt-publish.sh",
+        &["--local", out.to_str().expect("utf-8")],
+        &environment,
+    );
     assert_eq!(output.status.code(), Some(1));
     let output = tree.run("apt-publish.sh", &["--frobnicate"], &environment);
     assert_eq!(output.status.code(), Some(1));
 }
 
 /// A minimal real .deb: `dpkg-deb --build` of a control file only.
-fn real_deb(directory: &Path, package: &str, upstream: &str, architecture: &str) -> std::path::PathBuf {
+fn real_deb(
+    directory: &Path,
+    package: &str,
+    upstream: &str,
+    architecture: &str,
+) -> std::path::PathBuf {
     let root = directory.join(format!("build-{package}-{upstream}"));
     fs::create_dir_all(root.join("DEBIAN")).expect("DEBIAN");
     let version = format!("{}-1", upstream.replace('-', "~"));
@@ -1005,7 +1314,10 @@ fn real_deb(directory: &Path, package: &str, upstream: &str, architecture: &str)
 
 #[test]
 fn the_real_apt_ftparchive_makes_the_same_packages_files_whatever_the_order_of_the_inputs() {
-    if !have_tools("real_apt_ftparchive", &["apt-ftparchive", "dpkg-deb", "gpg", "gpgv"]) {
+    if !have_tools(
+        "real_apt_ftparchive",
+        &["apt-ftparchive", "dpkg-deb", "gpg", "gpgv"],
+    ) {
         return;
     }
     let tree = PublishTree::new(); // no stub: the real tool is the first apt-ftparchive on PATH
@@ -1013,18 +1325,33 @@ fn the_real_apt_ftparchive_makes_the_same_packages_files_whatever_the_order_of_t
     fs::write(tree.path("key"), &key.secret).expect("key");
     fs::create_dir_all(tree.path("gpgtmp")).expect("tmp");
     let environment = [
-        ("APT_SIGNING_KEY_FILE", tree.path("key").display().to_string()),
-        ("PUBLISH_GPG_TMPDIR", tree.path("gpgtmp").display().to_string()),
+        (
+            "APT_SIGNING_KEY_FILE",
+            tree.path("key").display().to_string(),
+        ),
+        (
+            "PUBLISH_GPG_TMPDIR",
+            tree.path("gpgtmp").display().to_string(),
+        ),
     ];
-    let environment: Vec<(&str, &str)> = environment.iter().map(|(n, v)| (*n, v.as_str())).collect();
+    let environment: Vec<(&str, &str)> =
+        environment.iter().map(|(n, v)| (*n, v.as_str())).collect();
     let mut specs = Vec::new();
     for upstream in ["0.1.0-beta.9", "0.1.0-beta.10", "0.1.0", "0.2.0"] {
         let directory = tree.path(&format!("real/v{upstream}"));
         fs::create_dir_all(&directory).expect("dir");
         let mut sums = String::new();
-        for (package, architecture) in [(MAIN_DEB, "amd64"), ("proton-sync-nautilus", "all"), ("proton-sync-nemo", "all")] {
+        for (package, architecture) in [
+            (MAIN_DEB, "amd64"),
+            ("proton-sync-nautilus", "all"),
+            ("proton-sync-nemo", "all"),
+        ] {
             let built = real_deb(&directory, package, upstream, architecture);
-            sums.push_str(&format!("{}  {}\n", sha256_of(&built), built.file_name().expect("name").to_string_lossy()));
+            sums.push_str(&format!(
+                "{}  {}\n",
+                sha256_of(&built),
+                built.file_name().expect("name").to_string_lossy()
+            ));
         }
         fs::write(directory.join("SHA256SUMS"), sums).expect("sums");
         specs.push(format!("{upstream}={}", directory.display()));
@@ -1042,38 +1369,73 @@ fn the_real_apt_ftparchive_makes_the_same_packages_files_whatever_the_order_of_t
     let backward = run("backward", &[3, 2, 1, 0]);
     for suite in ["beta", "stable"] {
         let relative = format!("dists/{suite}/main/binary-amd64/Packages");
-        let (a, b) = (fs::read(forward.join(&relative)).expect("a"), fs::read(backward.join(&relative)).expect("b"));
+        let (a, b) = (
+            fs::read(forward.join(&relative)).expect("a"),
+            fs::read(backward.join(&relative)).expect("b"),
+        );
         assert!(!a.is_empty(), "{suite}");
-        assert_eq!(a, b, "{suite}: Packages differs with the order of the inputs");
+        assert_eq!(
+            a, b,
+            "{suite}: Packages differs with the order of the inputs"
+        );
         let text = String::from_utf8(a).expect("utf-8");
         // Real stanzas: the package, the revision's tilde spelling and the pool path.
-        assert!(text.contains("Package: proton-drive-sync-engine\n"), "{text}");
-        assert!(text.contains("Filename: pool/main/p/proton-drive-sync-engine/"), "{text}");
-        let release = fs::read_to_string(forward.join(format!("dists/{suite}/Release"))).expect("Release");
+        assert!(
+            text.contains("Package: proton-drive-sync-engine\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Filename: pool/main/p/proton-drive-sync-engine/"),
+            "{text}"
+        );
+        let release =
+            fs::read_to_string(forward.join(format!("dists/{suite}/Release"))).expect("Release");
         assert!(release.contains(&format!("Suite: {suite}\n")), "{release}");
-        assert!(release.contains("Architectures: amd64\n") && release.contains("Components: main\n"), "{release}");
+        assert!(
+            release.contains("Architectures: amd64\n") && release.contains("Components: main\n"),
+            "{release}"
+        );
         // Release states the SHA-256 of the Packages file it covers.
-        assert!(release.contains(&sha256_of(&forward.join(&relative))), "{release}");
-        let signatures = tree.gpgv_valid_signatures(&forward.join("proton-drive-sync-engine.gpg"), &forward.join(format!("dists/{suite}/InRelease")), None);
+        assert!(
+            release.contains(&sha256_of(&forward.join(&relative))),
+            "{release}"
+        );
+        let signatures = tree.gpgv_valid_signatures(
+            &forward.join("proton-drive-sync-engine.gpg"),
+            &forward.join(format!("dists/{suite}/InRelease")),
+            None,
+        );
         assert_eq!(signatures.len(), 1);
     }
     // beta holds the newest three of all four (beta.10, 0.1.0, 0.2.0); stable the finals only.
-    let beta = fs::read_to_string(forward.join("dists/beta/main/binary-amd64/Packages")).expect("beta");
-    assert!(beta.contains("Version: 0.2.0-1\n") && beta.contains("Version: 0.1.0~beta.10-1\n"), "{beta}");
+    let beta =
+        fs::read_to_string(forward.join("dists/beta/main/binary-amd64/Packages")).expect("beta");
+    assert!(
+        beta.contains("Version: 0.2.0-1\n") && beta.contains("Version: 0.1.0~beta.10-1\n"),
+        "{beta}"
+    );
     assert!(!beta.contains("Version: 0.1.0~beta.9-1\n"), "{beta}");
-    let stable = fs::read_to_string(forward.join("dists/stable/main/binary-amd64/Packages")).expect("stable");
+    let stable = fs::read_to_string(forward.join("dists/stable/main/binary-amd64/Packages"))
+        .expect("stable");
     assert!(!stable.contains('~'), "{stable}");
 }
 
 #[test]
 fn the_pull_request_fixture_makes_trees_for_the_old_key_both_keys_and_the_new_key() {
-    if !have_tools("apt_local_fixture", &["apt-ftparchive", "dpkg-deb", "gpg", "gpgv"]) {
+    if !have_tools(
+        "apt_local_fixture",
+        &["apt-ftparchive", "dpkg-deb", "gpg", "gpgv"],
+    ) {
         return;
     }
     let tree = PublishTree::new();
     let debs = tree.path("debs");
     fs::create_dir_all(&debs).expect("debs");
-    for (package, architecture) in [(MAIN_DEB, "amd64"), ("proton-sync-nautilus", "all"), ("proton-sync-nemo", "all")] {
+    for (package, architecture) in [
+        (MAIN_DEB, "amd64"),
+        ("proton-sync-nautilus", "all"),
+        ("proton-sync-nemo", "all"),
+    ] {
         real_deb(&debs, package, "0.1.0-beta.1", architecture);
     }
     let work = tree.path("fixture");
@@ -1087,8 +1449,16 @@ fn the_pull_request_fixture_makes_trees_for_the_old_key_both_keys_and_the_new_ke
         &[],
     );
     assert!(output.status.success(), "{}", stderr_of(&output));
-    assert_eq!(fs::read_to_string(work.join("suites.txt")).expect("suites").trim(), "beta");
-    let old = fs::read_to_string(work.join("fingerprint.txt")).expect("fingerprint").trim().to_owned();
+    assert_eq!(
+        fs::read_to_string(work.join("suites.txt"))
+            .expect("suites")
+            .trim(),
+        "beta"
+    );
+    let old = fs::read_to_string(work.join("fingerprint.txt"))
+        .expect("fingerprint")
+        .trim()
+        .to_owned();
     assert_eq!(old.len(), 40);
     let signers = |tree_dir: &Path, ring: &Path| -> Vec<String> {
         sorted(
@@ -1102,10 +1472,16 @@ fn the_pull_request_fixture_makes_trees_for_the_old_key_both_keys_and_the_new_ke
     let single = signers(&serve, &serve.join("proton-drive-sync-engine.gpg"));
     assert_eq!(single, [old.clone()]);
     // The overlap release is signed by both keys; the new one by one, and not the old.
-    let dual = signers(&serve.join("dual"), &serve.join("dual/proton-drive-sync-engine.gpg"));
+    let dual = signers(
+        &serve.join("dual"),
+        &serve.join("dual/proton-drive-sync-engine.gpg"),
+    );
     assert_eq!(dual.len(), 2);
     assert!(dual.contains(&old));
-    let new = signers(&serve.join("new"), &serve.join("new/proton-drive-sync-engine.gpg"));
+    let new = signers(
+        &serve.join("new"),
+        &serve.join("new/proton-drive-sync-engine.gpg"),
+    );
     assert_eq!(new.len(), 1);
     assert_ne!(new[0], old);
     assert!(serve.join("keys/old.gpg").exists() && serve.join("keys/new.gpg").exists());

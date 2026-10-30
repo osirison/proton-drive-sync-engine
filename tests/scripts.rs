@@ -6632,7 +6632,8 @@ fn the_copr_namespace_is_written_once_in_the_workflow_and_nowhere_in_the_scripts
         // Pages host of the repository's owner (design D10): a different namespace, which a user
         // types and so cannot be read from a variable. It is allowed in that file, on that one
         // line, and nowhere else.
-        let allowed = "readonly SITE_URL=\"https://osirison.github.io/proton-drive-sync-engine-apt/\"";
+        let allowed =
+            "readonly SITE_URL=\"https://osirison.github.io/proton-drive-sync-engine-apt/\"";
         let is_client = path.file_name().is_some_and(|name| name == "apt-client.sh");
         let remaining = if is_client {
             assert_eq!(text.matches(allowed).count(), 1, "{}", path.display());

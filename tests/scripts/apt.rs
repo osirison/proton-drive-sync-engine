@@ -230,7 +230,14 @@ fn the_text_options_serve_the_jobs_that_run_it_elsewhere() {
     assert!(text.ends_with("EOF\n"), "{text}");
     // An explicit key URL wins over the one derived from the repository's.
     let output = client(
-        &["print", "beta", "--uri", "http://h/", "--key-url", "http://k/key.gpg"],
+        &[
+            "print",
+            "beta",
+            "--uri",
+            "http://h/",
+            "--key-url",
+            "http://k/key.gpg",
+        ],
         &[],
     );
     let text = stdout_of(&output);
@@ -291,7 +298,10 @@ fn the_recorded_fingerprints_are_read_strictly_and_none_recorded_is_a_refusal() 
         format!("# the key\n\n{b}  # trailing\n{a}\n{grouped}\n"),
     )
     .expect("write");
-    let output = client(&["fingerprints"], &[("APT_FINGERPRINT_FILE", file.to_str().expect("utf-8"))]);
+    let output = client(
+        &["fingerprints"],
+        &[("APT_FINGERPRINT_FILE", file.to_str().expect("utf-8"))],
+    );
     assert!(output.status.success(), "{}", stderr_of(&output));
     assert_eq!(stdout_of(&output), format!("{b}\n{a}\n"));
     for (what, text) in [
@@ -302,13 +312,19 @@ fn the_recorded_fingerprints_are_read_strictly_and_none_recorded_is_a_refusal() 
         ("only comments", "# nothing\n".to_owned()),
     ] {
         fs::write(&file, format!("{text}\n")).expect("write");
-        let output = client(&["fingerprints"], &[("APT_FINGERPRINT_FILE", file.to_str().expect("utf-8"))]);
+        let output = client(
+            &["fingerprints"],
+            &[("APT_FINGERPRINT_FILE", file.to_str().expect("utf-8"))],
+        );
         assert_eq!(output.status.code(), Some(1), "{what}");
         assert!(stdout_of(&output).is_empty(), "{what}");
     }
     let output = client(
         &["fingerprints"],
-        &[("APT_FINGERPRINT_FILE", directory.path().join("missing").to_str().expect("utf-8"))],
+        &[(
+            "APT_FINGERPRINT_FILE",
+            directory.path().join("missing").to_str().expect("utf-8"),
+        )],
     );
     assert_eq!(output.status.code(), Some(1));
     assert!(stderr_of(&output).contains("does not exist"));
@@ -334,7 +350,11 @@ fn generate_key(uid: &str, with_subkey: bool) -> AptKey {
             .args(["--batch", "--pinentry-mode", "loopback", "--passphrase", ""])
             .args(arguments);
         let output = common::run_other_tool(&mut command);
-        assert!(output.status.success(), "gpg {arguments:?}: {}", stderr_of(&output));
+        assert!(
+            output.status.success(),
+            "gpg {arguments:?}: {}",
+            stderr_of(&output)
+        );
         output
     };
     gpg(&["--quick-gen-key", uid, "ed25519", "sign", "never"]);
@@ -349,7 +369,8 @@ fn generate_key(uid: &str, with_subkey: bool) -> AptKey {
     if with_subkey {
         gpg(&["--quick-add-key", &fingerprint, "cv25519", "encr", "never"]);
     }
-    let secret = String::from_utf8(gpg(&["--armor", "--export-secret-keys"]).stdout).expect("armor");
+    let secret =
+        String::from_utf8(gpg(&["--armor", "--export-secret-keys"]).stdout).expect("armor");
     let mut command = common::sandboxed("gpgconf", directory.path());
     command
         .env("GNUPGHOME", &home)
@@ -391,7 +412,10 @@ fn the_fingerprint_command_shows_the_primary_key_and_not_a_subkey() {
     fs::write(&secret, &key.secret).expect("secret");
     let gpg = |arguments: &[&str]| {
         let mut command = common::sandboxed("gpg", directory.path());
-        command.env("GNUPGHOME", &home).arg("--batch").args(arguments);
+        command
+            .env("GNUPGHOME", &home)
+            .arg("--batch")
+            .args(arguments);
         let output = common::run_other_tool(&mut command);
         assert!(output.status.success(), "{}", stderr_of(&output));
         output
@@ -405,8 +429,9 @@ fn the_fingerprint_command_shows_the_primary_key_and_not_a_subkey() {
     ));
     assert!(
         text.starts_with(&format!(
-            "gpg --show-keys --with-colons {}/etc/apt/keyrings/proton-drive-sync-engine.gpg | awk"
-        , root.display())),
+            "gpg --show-keys --with-colons {}/etc/apt/keyrings/proton-drive-sync-engine.gpg | awk",
+            root.display()
+        )),
         "{text}"
     );
     let script = directory.path().join("show.sh");
@@ -418,6 +443,8 @@ fn the_fingerprint_command_shows_the_primary_key_and_not_a_subkey() {
     // Two lines would mean the subkey's fingerprint was printed as well.
     assert_eq!(stdout_of(&output), format!("{}\n", key.fingerprint));
     let mut command = common::sandboxed("gpgconf", directory.path());
-    command.env("GNUPGHOME", &home).args(["--kill", "gpg-agent"]);
+    command
+        .env("GNUPGHOME", &home)
+        .args(["--kill", "gpg-agent"]);
     common::run_other_tool(&mut command);
 }
