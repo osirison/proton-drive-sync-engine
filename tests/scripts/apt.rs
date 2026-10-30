@@ -24,16 +24,57 @@ fn on_path(tool: &str) -> bool {
 /// skips on the runner is a hole in the gate; ci.yml's `rust` job installs them) and otherwise
 /// prints why it is skipping.
 pub(super) fn have_tools(test: &str, tools: &[&str]) -> bool {
-    let missing: Vec<&&str> = tools.iter().filter(|tool| !on_path(tool)).collect();
-    if missing.is_empty() {
-        return true;
+    let missing: Vec<&str> = tools
+        .iter()
+        .copied()
+        .filter(|tool| !on_path(tool))
+        .collect();
+    let ci = std::env::var_os("CI").is_some_and(|value| !value.is_empty());
+    match tool_verdict(test, &missing, ci) {
+        Ok(go_on) => {
+            if !go_on {
+                eprintln!(
+                    "SKIPPED {test}: {missing:?} not on PATH (this test fails when CI is set)"
+                );
+            }
+            go_on
+        }
+        Err(message) => panic!("{message}"),
     }
+}
+
+/// What a test does about missing tools: `Ok(true)` goes on, `Ok(false)` skips, `Err` fails.
+fn tool_verdict(test: &str, missing: &[&str], ci: bool) -> Result<bool, String> {
+    if missing.is_empty() {
+        Ok(true)
+    } else if ci {
+        Err(format!(
+            "{test}: {missing:?} not on PATH and CI is set: install them in ci.yml's rust job"
+        ))
+    } else {
+        Ok(false)
+    }
+}
+
+#[test]
+fn missing_tools_skip_a_test_on_a_developers_machine_and_fail_it_in_ci() {
+    assert_eq!(tool_verdict("t", &[], false), Ok(true));
+    assert_eq!(tool_verdict("t", &[], true), Ok(true));
+    assert_eq!(tool_verdict("t", &["apt-ftparchive"], false), Ok(false));
+    let failure = tool_verdict("t", &["apt-ftparchive"], true).expect_err("CI must fail");
     assert!(
-        std::env::var_os("CI").is_none_or(|value| value.is_empty()),
-        "{test}: {missing:?} not on PATH and CI is set: install them in ci.yml's rust job"
+        failure.contains("apt-ftparchive") && failure.contains("CI is set"),
+        "{failure}"
     );
-    eprintln!("SKIPPED {test}: {missing:?} not on PATH (this test fails when CI is set)");
-    false
+    // Nothing in the workflow's job list was missed: the runner has what the tests ask for.
+    let ci = workflow("ci.yml");
+    let rust = job_block(&ci, "rust");
+    assert!(
+        rust.contains("      - name: Install apt-utils\n        run: sudo apt-get install -y --no-install-recommends apt-utils\n"),
+        "ci.yml's rust job must install apt-utils, or the real-apt-ftparchive tests fail there"
+    );
+    let install = rust.find("Install apt-utils").expect("step");
+    assert!(install < rust.find("name: Test").expect("test step"));
 }
 
 // --- version.sh sort-key against dpkg -------------------------------------------------------------
@@ -335,6 +376,8 @@ fn the_recorded_fingerprints_are_read_strictly_and_none_recorded_is_a_refusal() 
 pub(super) struct AptKey {
     /// The armored secret key, subkeys included.
     pub(super) secret: String,
+    /// The binary public key, as the repository serves it.
+    pub(super) public: Vec<u8>,
     pub(super) fingerprint: String,
 }
 
@@ -371,6 +414,7 @@ fn generate_key(uid: &str, with_subkey: bool) -> AptKey {
     }
     let secret =
         String::from_utf8(gpg(&["--armor", "--export-secret-keys"]).stdout).expect("armor");
+    let public = gpg(&["--export"]).stdout;
     let mut command = common::sandboxed("gpgconf", directory.path());
     command
         .env("GNUPGHOME", &home)
@@ -378,6 +422,7 @@ fn generate_key(uid: &str, with_subkey: bool) -> AptKey {
     common::run_other_tool(&mut command);
     AptKey {
         secret,
+        public,
         fingerprint,
     }
 }
