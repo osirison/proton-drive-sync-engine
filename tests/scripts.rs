@@ -12,6 +12,15 @@
 
 mod common;
 
+// The apt channel and the verification jobs (openspec change add-linux-release-pipeline, tasks 6.3
+// and 6.6). They use this file's `PublishTree`, stubs and workflow readers through `super::*`.
+#[path = "scripts/apt.rs"]
+mod apt;
+#[path = "scripts/apt_publish.rs"]
+mod apt_publish;
+#[path = "scripts/verify.rs"]
+mod verify;
+
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -4960,7 +4969,25 @@ impl PublishTree {
             "AUR_GIT_EMAIL",
             "AUR_REMOTE_BASE",
             "AUR_GENERATOR",
+            "AUR_CLONE_BASE",
             "GITHUB_PATH",
+            // What the apt and verification scripts read: a value on the host must not leak in.
+            "APT_WITHDRAWN",
+            "APT_GIT_NAME",
+            "APT_GIT_EMAIL",
+            "APT_FINGERPRINT_FILE",
+            "APT_CLIENT_ROOT",
+            "PUBLISH_GPG_TMPDIR",
+            "PUBLISH_TAG",
+            "VERIFY_APT_URI",
+            "VERIFY_APT_KEY_URL",
+            "VERIFY_APT_WAIT_SECS",
+            "VERIFY_APT_POLL_SECS",
+            "VERIFY_COPR_WAIT_SECS",
+            "VERIFY_COPR_POLL_SECS",
+            "VERIFY_EXPECT_VERIFIER",
+            "VERIFY_AUR_HOME",
+            "VERIFY_AUR_SUDOERS",
         ] {
             command.env_remove(name);
         }

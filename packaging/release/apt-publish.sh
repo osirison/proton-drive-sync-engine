@@ -383,7 +383,12 @@ run_publish() {
   # 1. The published releases, minus the withdrawn ones.
   local -A withdrawn=() flag_of=()
   local entry rows upstream flag
-  for entry in ${APT_WITHDRAWN//,/ }; do
+  # APT_WITHDRAWN is optional (unset or empty withdraws nothing). Its names are split on commas and
+  # white space with `tr`, never by the shell's own word splitting, which would expand a `v*`
+  # against the working directory.
+  local -a withdrawn_tags=()
+  mapfile -t withdrawn_tags < <(printf '%s' "${APT_WITHDRAWN-}" | tr ',[:space:]' '\n\n' | sed '/^$/d')
+  for entry in ${withdrawn_tags[@]+"${withdrawn_tags[@]}"}; do
     upstream="$("$version_sh" tag-version "$entry")" || die "APT_WITHDRAWN names '$entry', which is not a release tag"
     withdrawn[$upstream]=1
   done
@@ -423,6 +428,10 @@ run_publish() {
   open_signing_key
   require_recorded_fingerprints
   if [[ "$PUBLISH_DRY_RUN" == true ]]; then
+    # The public keys are part of what gh-pages holds and the comparison reads them; writing them
+    # signs nothing. Without them a dry run after a real publish of the same releases would report a
+    # difference every time.
+    write_keys
     test_sign
   else
     sign_tree

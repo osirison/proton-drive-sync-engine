@@ -34,7 +34,7 @@ cp -- "$debs"/*.deb "$work/release/"
 (cd "$work/release" && sha256sum -- *.deb >SHA256SUMS)
 
 # Two keys, as the rotation needs. A short GNUPGHOME: gpg-agent's socket path has a length limit.
-home="$(mktemp -d /tmp/pdse-fixture.XXXXXX)"
+home="$(mktemp -d "${TMPDIR:-/tmp}/pdse-fixture.XXXXXX")"
 chmod 700 "$home"
 trap 'GNUPGHOME="$home" gpgconf --kill gpg-agent >/dev/null 2>&1 || true; rm -rf -- "$home"' EXIT
 gpg_home() { GNUPGHOME="$home" gpg --batch --quiet --pinentry-mode loopback --passphrase '' "$@"; }
