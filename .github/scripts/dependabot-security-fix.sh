@@ -13,7 +13,11 @@
 #   a. exactly one dependency (no comma in DEP_NAMES, no DEP_GROUP);
 #   b. an alert that is open, for exactly this package, in exactly this manifest;
 #   c. PREVIOUS is inside that alert's vulnerable_version_range;
-#   d. the alert has a first_patched_version and NEW is at or above it.
+#   d. the alert has a first_patched_version, NEW is at or above it, and NEW is in the same
+#      compatibility line as it (see same_line);
+#   e. NEW is strictly above PREVIOUS;
+#   f. NEW is inside the vulnerable range of no open alert for this package and manifest. A
+#      range this script cannot read counts as containing NEW, so such an alert blocks.
 #
 # Inputs (environment): GH_TOKEN, REPOSITORY (owner/name), ECOSYSTEM and DIRECTORY (from
 # fetch-metadata's package-ecosystem and directory), DEP_NAMES, DEP_GROUP, PREVIOUS, NEW,
@@ -68,22 +72,49 @@ vcmp() {
   CMP=0
 }
 
+# same_line V PATCHED: V shares the compatibility line of PATCHED, meaning the leading components
+# of PATCHED up to and including its first non-zero one are equal in V (a missing component is 0).
+# 1.2.5 and 1.9.0 share a line; 1.2.5 and 3.0.0, 0.3.2 and 0.5.0, 0.0.3 and 0.0.4 do not.
+# A bump that crosses into another line is not the fix the alert asked for.
+same_line() {
+  local -a x y
+  local IFS=.
+  read -ra x <<<"$1"
+  read -ra y <<<"$2"
+  local n=${#x[@]} i a b
+  if ((${#y[@]} > n)); then n=${#y[@]}; fi
+  for ((i = 0; i < n; i++)); do
+    a=$((10#${x[i]:-0}))
+    b=$((10#${y[i]:-0}))
+    ((a == b)) || return 1
+    ((b == 0)) || return 0
+  done
+  return 0
+}
+
 # in_range V RANGE: RANGE is comma-separated `op version`, op one of = < <= > >=. Every
-# comparator must hold. Any other form does not match.
+# comparator must hold. Returns 0 when V is inside, 1 when it is not, 2 when the range is not
+# one this script reads.
 in_range() {
-  local version=$1 range=$2 part op bound
-  local -a parts
-  [[ $range != *$'\n'* && $range =~ ^[^,]+(,[^,]+)*$ ]] || return 1
+  local version=$1 range=$2 part op bound i
+  local -a parts ops bounds
+  [[ $range =~ ^[^,]+(,[^,]+)*$ ]] || return 2
   IFS=',' read -ra parts <<<"$range"
+  # Every comparator is read before any is applied, so an unreadable one is never hidden by an
+  # earlier one that already failed.
   for part in "${parts[@]}"; do
     part=${part#"${part%%[![:space:]]*}"}
     part=${part%"${part##*[![:space:]]}"}
-    [[ $part =~ ^(=|<=|>=|<|>)[[:space:]]*([0-9.]+)$ ]] || return 1
+    [[ $part =~ ^(=|<=|>=|<|>)[[:space:]]*([0-9.]+)$ ]] || return 2
     op=${BASH_REMATCH[1]}
     bound=${BASH_REMATCH[2]}
-    valid_version "$bound" || return 1
-    vcmp "$version" "$bound"
-    case $op in
+    valid_version "$bound" || return 2
+    ops+=("$op")
+    bounds+=("$bound")
+  done
+  for i in "${!ops[@]}"; do
+    vcmp "$version" "${bounds[i]}"
+    case ${ops[i]} in
       '=') ((CMP == 0)) || return 1 ;;
       '<') ((CMP < 0)) || return 1 ;;
       '<=') ((CMP <= 0)) || return 1 ;;
@@ -125,6 +156,10 @@ fi
 if ! valid_version "${PREVIOUS:-}" || ! valid_version "${NEW:-}"; then
   no "previous version '${PREVIOUS:-}' or new version '${NEW:-}' is not a plain numeric version"
 fi
+vcmp "$NEW" "$PREVIOUS"
+if ((CMP <= 0)); then
+  no "new version $NEW is not above the previous version $PREVIOUS"
+fi
 if [[ -z ${GH_TOKEN:-} ]]; then
   no "no DEPENDABOT_ALERTS_TOKEN is set, so the alerts cannot be read"
 fi
@@ -164,6 +199,7 @@ if ! rows=$(
         (.security_vulnerability.vulnerable_version_range // ""),
         (.security_vulnerability.first_patched_version.identifier // "")
       ]
+    | map(gsub("[[:cntrl:]]"; " "))
     | join("\u001f")
   ' <<<"$reply"
 ); then
@@ -172,6 +208,7 @@ if ! rows=$(
 fi
 
 match=false
+blocked=false
 while IFS=$'\x1f' read -r number verdict range patched; do
   [[ -n $number ]] || continue
   [[ $number =~ ^[0-9]+$ ]] || number='?'
@@ -179,9 +216,18 @@ while IFS=$'\x1f' read -r number verdict range patched; do
     echo "alert $number: no match, $verdict"
     continue
   fi
+  # f. Any open alert of this package and manifest whose range holds NEW, or whose range cannot
+  # be read, means this update does not clear them all. 1 is the only answer that clears NEW.
+  inside=0
+  in_range "$NEW" "$range" || inside=$?
+  if ((inside != 1)); then
+    echo "alert $number: blocks, new version $NEW is inside the vulnerable range '$range' or the range is not one this script reads"
+    blocked=true
+    continue
+  fi
   # c.
   if ! in_range "$PREVIOUS" "$range"; then
-    echo "alert $number: no match, previous version $PREVIOUS is not inside the vulnerable range '$range' (or the range is not one this script reads)"
+    echo "alert $number: no match, previous version $PREVIOUS is not inside the vulnerable range '$range'"
     continue
   fi
   # d.
@@ -194,10 +240,18 @@ while IFS=$'\x1f' read -r number verdict range patched; do
     echo "alert $number: no match, new version $NEW is below the patched version $patched"
     continue
   fi
+  # d, continued.
+  if ! same_line "$NEW" "$patched"; then
+    echo "alert $number: no match, new version $NEW is not in the compatibility line of the patched version $patched"
+    continue
+  fi
   echo "alert $number: match, $DEP_NAMES $PREVIOUS is inside '$range' and $NEW is at or above the patched $patched, in $manifest"
   match=true
 done <<<"$rows"
 
+if [[ $match == true && $blocked == true ]]; then
+  no "an open alert for $DEP_NAMES in $manifest still covers $NEW or has a range this script cannot read"
+fi
 if [[ $match == true ]]; then
   finish true
 fi

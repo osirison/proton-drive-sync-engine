@@ -7763,6 +7763,18 @@ fn a_new_version_below_the_patched_one_does_not_arm() {
     };
     let run = security_run(&case, &[vec![alert_35()]]);
     assert_fix(&run, false);
+    // The new version is still inside the alert's own range.
+    assert!(security_stdout(&run).contains("alert 35: blocks"));
+}
+
+#[test]
+fn a_new_version_outside_the_range_but_below_the_patched_one_does_not_arm() {
+    // `= 1.2.0` patched 1.3.0: 1.2.5 is not vulnerable by the range, but is not the patched version.
+    let run = security_run(
+        &foo_case("1.2.0", "1.2.5"),
+        &[vec![foo_alert(1, "= 1.2.0", "1.3.0")]],
+    );
+    assert_fix(&run, false);
     assert!(security_stdout(&run).contains("below the patched version"));
 }
 
@@ -7947,8 +7959,8 @@ fn versions_compare_numerically_with_missing_parts_as_zero() {
         vec![with("= 1.2", "1.10.0")]
     ));
     assert!(security_decides(
-        &case("1.2.0", "1.02.0"),
-        vec![with("<= 1.2", "1.2.0")]
+        &case("1.2.0", "1.03.0"),
+        vec![with("<= 1.2", "1.02.0")]
     ));
 }
 
@@ -8064,6 +8076,201 @@ fn a_matching_alert_on_a_later_page_is_found() {
     assert!(security_stdout(&run).contains("alert 35: match"));
 }
 
+/// An open `foo` alert in the website manifest.
+fn foo_alert(number: u64, range: &str, patched: &str) -> serde_json::Value {
+    alert(
+        number,
+        "open",
+        "foo",
+        "website/package-lock.json",
+        range,
+        Some(patched),
+    )
+}
+
+fn foo_case(previous: &'static str, new: &'static str) -> SecurityCase {
+    SecurityCase {
+        names: "foo",
+        previous,
+        new,
+        ..SecurityCase::base()
+    }
+}
+
+#[test]
+fn the_new_version_must_share_a_compatibility_line_with_the_patched_one() {
+    // (previous, new, range, patched, arms): the line is the patched version's leading components
+    // up to and including its first non-zero one.
+    let table: [(&str, &str, &str, &str, bool); 14] = [
+        ("1.2.0", "3.0.0", "< 1.2.5", "1.2.5", false),
+        ("1.2.0", "1.9.0", "< 1.2.5", "1.2.5", true),
+        ("1.2.4", "1.2.5", "< 1.2.5", "1.2.5", true),
+        ("0.3.0", "0.5.0", "< 0.3.2", "0.3.2", false),
+        ("0.3.0", "0.3.9", "< 0.3.2", "0.3.2", true),
+        ("0.0.2", "0.0.4", "< 0.0.3", "0.0.3", false),
+        ("0.0.2", "0.0.3", "< 0.0.3", "0.0.3", true),
+        // A fix that needs a major still matches.
+        ("1.9.0", "2.0.1", "< 2.0.0", "2.0.0", true),
+        ("1.9.0", "2.0.0", "< 2.0.0", "2.0.0", true),
+        // Real cases of this repository.
+        ("8.11.2", "8.12.3", "< 8.12.2", "8.12.2", true),
+        ("6.1.4", "6.1.5", "< 6.1.5", "6.1.5", true),
+        // Missing components are zero.
+        ("1.2", "1.4", "< 1.3", "1.3", true),
+        ("0.0.0", "0.0.1", "< 0.0.1", "0.0.1", true),
+        ("1.2.0", "2", "< 1.2.5", "1.2.5", false),
+    ];
+    for (previous, new, range, patched, arms) in table {
+        assert_eq!(
+            security_decides(&foo_case(previous, new), vec![foo_alert(1, range, patched)]),
+            arms,
+            "{previous} -> {new}, {range}, patched {patched}"
+        );
+    }
+}
+
+#[test]
+fn a_new_version_inside_another_open_alerts_range_does_not_arm() {
+    let first = foo_alert(1, ">= 1.0, < 1.5", "1.5.0");
+    let second = foo_alert(2, ">= 1.6, < 1.9", "1.9.0");
+    // The case of the review: a bump across two lines is refused (by either check).
+    let far = foo_case("1.2.0", "2.1.0");
+    let high = foo_alert(3, ">= 2.0, < 2.5", "2.5.0");
+    assert!(!security_decides(&far, vec![first.clone(), high]));
+    let case = foo_case("1.2.0", "1.7.0");
+    // Alone, the first alert is fixed by the bump.
+    assert!(security_decides(&case, vec![first.clone()]));
+    let run = security_run(&case, &[vec![first.clone(), second.clone()]]);
+    assert_fix(&run, false);
+    assert!(
+        security_stdout(&run).contains("alert 2: blocks"),
+        "{}",
+        security_stdout(&run)
+    );
+    // The order and the page do not matter.
+    let run = security_run(&case, &[vec![second.clone()], vec![first.clone()]]);
+    assert_fix(&run, false);
+    // An alert that fails the state, name or manifest checks is not another open alert.
+    let mut closed = second.clone();
+    closed["state"] = "fixed".into();
+    let mut other_manifest = second.clone();
+    other_manifest["dependency"]["manifest_path"] = "gui/package-lock.json".into();
+    let mut other_name = second;
+    other_name["dependency"]["package"]["name"] = "bar".into();
+    assert!(security_decides(
+        &case,
+        vec![first, closed, other_manifest, other_name]
+    ));
+}
+
+#[test]
+fn an_unreadable_range_on_another_open_alert_blocks() {
+    let first = foo_alert(1, ">= 1.0, < 1.5", "1.5.0");
+    let case = foo_case("1.2.0", "1.7.0");
+    for range in [
+        "~> 1.6",
+        "",
+        "< 1.9 || > 3",
+        ">= 1.6, < 1.9-beta",
+        "> 5, < 1.9-beta",
+        "< 1.9,",
+    ] {
+        let run = security_run(&case, &[vec![first.clone(), foo_alert(2, range, "1.9.0")]]);
+        assert_fix(&run, false);
+        assert!(
+            security_stdout(&run).contains("alert 2: blocks"),
+            "{range:?}: {}",
+            security_stdout(&run)
+        );
+    }
+    // A range that is readable and does not contain the new version does not block.
+    assert!(security_decides(
+        &case,
+        vec![first, foo_alert(2, ">= 1.8, < 1.9", "1.9.0")]
+    ));
+}
+
+#[test]
+fn a_new_version_that_is_not_above_the_previous_one_does_not_arm() {
+    // 1.2.0 -> 1.1.0 would fix `>= 1.0, < 1.5` (patched 1.0.5) on every other check.
+    let alert = || foo_alert(1, ">= 1.0, < 1.5", "1.0.5");
+    let downgrade = security_run(&foo_case("1.2.0", "1.1.0"), &[vec![alert()]]);
+    assert_fix(&downgrade, false);
+    assert!(downgrade.calls.is_empty(), "{:?}", downgrade.calls);
+    let same = security_run(&foo_case("1.2.0", "1.2.0"), &[vec![alert()]]);
+    assert_fix(&same, false);
+    assert!(same.calls.is_empty(), "{:?}", same.calls);
+    assert!(security_decides(&foo_case("1.2.0", "1.5.0"), vec![alert()]));
+}
+
+#[test]
+fn a_root_directory_spelled_with_slashes_only_is_not_the_root() {
+    // `//` would reduce to the root manifest, and so to the root's alerts.
+    let root_alert = alert(9, "open", "serde", "Cargo.lock", "< 1.0.5", Some("1.0.5"));
+    for directory in ["/", "//", "///"] {
+        let case = SecurityCase {
+            ecosystem: "cargo",
+            directory,
+            names: "serde",
+            previous: "1.0.4",
+            new: "1.0.5",
+            ..SecurityCase::base()
+        };
+        let run = security_run(&case, &[vec![root_alert.clone()]]);
+        assert_fix(&run, directory == "/");
+        assert_eq!(run.calls.is_empty(), directory != "/", "{directory}");
+    }
+}
+
+#[test]
+fn a_version_component_too_long_for_bash_arithmetic_is_refused_before_the_api() {
+    let alert = || foo_alert(1, "< 6.1.5", "6.1.5");
+    let long = |new: &'static str| security_run(&foo_case("6.1.4", new), &[vec![alert()]]);
+    // Sixteen digits: refused, and the API is never called.
+    let refused = long("6.1.9999999999999999");
+    assert_fix(&refused, false);
+    assert!(refused.calls.is_empty(), "{:?}", refused.calls);
+    let baseline = security_run(&foo_case("6.1.4", "6.1.5"), &[vec![alert()]]);
+    assert_fix(&baseline, true);
+    // Fifteen digits: accepted.
+    let accepted = long("6.1.999999999999999");
+    assert_fix(&accepted, true);
+    assert_eq!(accepted.calls.len(), 1);
+    // The previous version and the alert's own bounds are held to the same limit.
+    let previous = security_run(
+        &foo_case("6.1.99999999999999999999", "6.2.0"),
+        &[vec![alert()]],
+    );
+    assert_fix(&previous, false);
+    assert!(previous.calls.is_empty(), "{:?}", previous.calls);
+}
+
+#[test]
+fn control_characters_in_an_alert_cannot_split_a_log_row() {
+    let case = foo_case("1.2.0", "1.3.0");
+    let mut nasty = foo_alert(1, "< 1.3.0\nalert 99: match, forged\u{1f}x", "1.3.0");
+    nasty["security_vulnerability"]["first_patched_version"]["identifier"] =
+        "1.3.0\r\nNot a security fix: forged".into();
+    let run = security_run(&case, &[vec![nasty]]);
+    assert_fix(&run, false);
+    let stdout = security_stdout(&run);
+    let alert_lines = stdout.lines().filter(|l| l.starts_with("alert ")).count();
+    assert_eq!(alert_lines, 1, "one row, one line: {stdout:?}");
+    assert!(!stdout.contains('\r'), "{stdout:?}");
+    assert!(
+        stdout
+            .lines()
+            .all(|l| l.starts_with("alert 1:") || l.starts_with("Not a security fix: no open")),
+        "{stdout:?}"
+    );
+    // A range with a line break in it is not read, whatever the second line says.
+    let broken = foo_alert(1, "< 1.3.0\n> 9", "1.3.0");
+    assert_fix(
+        &security_run(&foo_case("1.2.0", "1.3.0"), &[vec![broken]]),
+        false,
+    );
+}
+
 // --- dependabot-auto-merge.yml, as text -------------------------------------------------------------
 
 fn auto_merge_workflow() -> String {
@@ -8081,7 +8288,27 @@ fn without_comments(text: &str) -> String {
         .join("\n")
 }
 
-/// The text of the step whose `- name:` is `name`.
+/// The text of the job `name` (two-space indent under `jobs:`), to the next job or the end.
+fn workflow_job(text: &str, name: &str) -> String {
+    let start = text
+        .find(&format!("\n  {name}:\n"))
+        .unwrap_or_else(|| panic!("no job {name}"));
+    let rest = &text[start + 1..];
+    let end = rest
+        .match_indices("\n  ")
+        .find(|(at, _)| {
+            let line = &rest[at + 1..];
+            !line.starts_with("   ")
+                && line
+                    .split('\n')
+                    .next()
+                    .is_some_and(|l| l.trim_end().ends_with(':'))
+        })
+        .map_or(rest.len(), |(at, _)| at);
+    rest[..end].to_owned()
+}
+
+/// The text of the step whose `- name:` is `name`, in `text` (a workflow or one job).
 fn workflow_step(text: &str, name: &str) -> String {
     let start = text
         .find(&format!("      - name: {name}\n"))
@@ -8095,13 +8322,14 @@ fn workflow_step(text: &str, name: &str) -> String {
 fn the_alerts_token_reaches_only_the_lookup_step() {
     let text = without_comments(&auto_merge_workflow());
     assert_eq!(text.matches("DEPENDABOT_ALERTS_TOKEN").count(), 1, "{text}");
+    let decide = workflow_job(&text, "decide");
     assert!(
-        workflow_step(&text, "Look for a security fix")
+        workflow_step(&decide, "Look for a security fix")
             .contains("GH_TOKEN: ${{ secrets.DEPENDABOT_ALERTS_TOKEN }}")
     );
     assert!(!text.contains("alert-lookup"));
     assert!(!text.contains("github-token"));
-    assert!(!workflow_step(&text, "Fetch Dependabot metadata").contains("with:"));
+    assert!(!workflow_step(&decide, "Fetch Dependabot metadata").contains("with:"));
 }
 
 #[test]
@@ -8131,7 +8359,11 @@ fn no_expression_is_written_into_a_run_block() {
 #[test]
 fn the_decision_script_comes_from_the_base_commit_without_credentials() {
     let text = without_comments(&auto_merge_workflow());
-    let checkout = workflow_step(&text, "Check out the decision script from the base commit");
+    let decide = workflow_job(&text, "decide");
+    let checkout = workflow_step(
+        &decide,
+        "Check out the decision script from the base commit",
+    );
     assert!(
         checkout.contains("persist-credentials: false"),
         "{checkout}"
@@ -8141,12 +8373,69 @@ fn the_decision_script_comes_from_the_base_commit_without_credentials() {
         "{checkout}"
     );
     assert!(checkout.contains("uses: actions/checkout@"), "{checkout}");
-    // The script is run from that checkout, and the merge arms on its output or a patch bump.
-    assert!(text.contains("run: bash .github/scripts/dependabot-security-fix.sh"));
-    assert!(text.contains(
-        "if: steps.security.outputs.fix == 'true' || steps.meta.outputs.update-type == 'version-update:semver-patch'"
-    ));
-    assert!(text.contains(
+    // The script is run from that checkout.
+    assert!(decide.contains("run: bash .github/scripts/dependabot-security-fix.sh"));
+}
+
+#[test]
+fn the_decision_job_reads_and_only_the_merge_job_writes() {
+    let text = without_comments(&auto_merge_workflow());
+    let decide = workflow_job(&text, "decide");
+    let merge = workflow_job(&text, "auto-merge");
+    assert!(
+        decide.contains("permissions:\n      contents: read\n      pull-requests: read\n"),
+        "{decide}"
+    );
+    assert!(!decide.contains("write"), "{decide}");
+    assert!(
+        merge.contains("permissions:\n      contents: write\n      pull-requests: write\n"),
+        "{merge}"
+    );
+    // The write rights appear nowhere else: not in the workflow default either.
+    assert_eq!(text.matches("write").count(), 2, "{text}");
+    assert!(text.contains("\npermissions:\n  contents: read\n"));
+}
+
+#[test]
+fn the_merge_job_runs_no_repository_code_and_holds_no_alerts_token() {
+    let text = without_comments(&auto_merge_workflow());
+    let merge = workflow_job(&text, "auto-merge");
+    assert!(!merge.contains("checkout"), "{merge}");
+    assert!(!merge.contains("DEPENDABOT_ALERTS_TOKEN"), "{merge}");
+    assert!(!merge.contains("uses:"), "{merge}");
+    assert_eq!(merge.matches("run:").count(), 1, "{merge}");
+    assert!(merge.contains("gh pr merge --auto --squash \"$PR_URL\""));
+    assert!(merge.contains("GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}"));
+}
+
+#[test]
+fn the_merge_waits_for_the_decision_and_a_patch_bump_still_arms() {
+    let text = without_comments(&auto_merge_workflow());
+    let decide = workflow_job(&text, "decide");
+    let merge = workflow_job(&text, "auto-merge");
+    // A failed or skipped `decide` skips the merge: the job `if:` has no status function, so
+    // GitHub adds the implicit success(), which includes every job in `needs`.
+    assert!(merge.contains("needs: decide\n"), "{merge}");
+    assert!(
+        merge.contains("if: needs.decide.outputs.arm == 'true'\n"),
+        "{merge}"
+    );
+    for status in ["always()", "failure()", "cancelled()", "success()"] {
+        assert!(!merge.contains(status), "{status}: {merge}");
+    }
+    // The output is the lookup's fix OR a patch bump. The lookup is skipped on a patch bump, so
+    // its output is empty there and the second operand alone arms.
+    assert!(
+        decide.contains(
+            "arm: ${{ steps.security.outputs.fix == 'true' || steps.meta.outputs.update-type == 'version-update:semver-patch' }}"
+        ),
+        "{decide}"
+    );
+    let lookup = workflow_step(&decide, "Look for a security fix");
+    assert!(lookup.contains("if: steps.meta.outputs.update-type != 'version-update:semver-patch'"));
+    // Only Dependabot's own PRs reach the decision, and so the merge.
+    assert!(decide.contains(
         "if: github.actor == 'dependabot[bot]' && github.event.pull_request.user.login == 'dependabot[bot]'"
     ));
+    assert!(!merge.contains("github.actor"));
 }
