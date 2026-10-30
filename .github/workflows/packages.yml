@@ -532,11 +532,12 @@ jobs:
           VERIFY_EXPECT_VERIFIER: ${{ matrix.verifier }}
         run: |
           set -euo pipefail
+          read -ra suites < "$RUNNER_TEMP/apt/suites.txt"
           docker run --rm --network host -v "$PWD/packaging:/repo/packaging:ro" \
             -v "$RUNNER_TEMP/apt/fingerprint.txt:/fingerprint.txt:ro" \
             -e APT_FINGERPRINT_FILE=/fingerprint.txt -e VERIFY_APT_URI=http://127.0.0.1:8080/ \
             -e VERIFY_APT_WAIT_SECS=0 -e VERIFY_EXPECT_VERIFIER "$IMAGE" \
-            bash /repo/packaging/release/verify-apt.sh "$UPSTREAM" $(cat "$RUNNER_TEMP/apt/suites.txt")
+            bash /repo/packaging/release/verify-apt.sh "$UPSTREAM" "${suites[@]}"
       - name: Rotate the signing key
         env:
           IMAGE: ${{ matrix.image }}

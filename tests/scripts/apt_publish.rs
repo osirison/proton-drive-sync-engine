@@ -1470,7 +1470,7 @@ fn the_pull_request_fixture_makes_trees_for_the_old_key_both_keys_and_the_new_ke
     };
     let serve = work.join("serve");
     let single = signers(&serve, &serve.join("proton-drive-sync-engine.gpg"));
-    assert_eq!(single, [old.clone()]);
+    assert_eq!(single, std::slice::from_ref(&old));
     // The overlap release is signed by both keys; the new one by one, and not the old.
     let dual = signers(
         &serve.join("dual"),

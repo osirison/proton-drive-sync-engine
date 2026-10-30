@@ -387,7 +387,7 @@ run_publish() {
   # white space with `tr`, never by the shell's own word splitting, which would expand a `v*`
   # against the working directory.
   local -a withdrawn_tags=()
-  mapfile -t withdrawn_tags < <(printf '%s' "${APT_WITHDRAWN-}" | tr ',[:space:]' '\n\n' | sed '/^$/d')
+  mapfile -t withdrawn_tags < <(printf '%s' "${APT_WITHDRAWN-}" | tr -s ',[:space:]' '\n' | sed '/^$/d')
   for entry in ${withdrawn_tags[@]+"${withdrawn_tags[@]}"}; do
     upstream="$("$version_sh" tag-version "$entry")" || die "APT_WITHDRAWN names '$entry', which is not a release tag"
     withdrawn[$upstream]=1

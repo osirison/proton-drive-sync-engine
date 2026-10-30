@@ -7,6 +7,11 @@ use super::apt::apt_keys;
 use super::*;
 use std::process::Output;
 
+/// Environment variables for a script run, as `(name, value)`.
+type Env<'a> = Vec<(&'a str, &'a str)>;
+/// A table row: what the case is, the script's arguments, and its environment.
+type Case<'a, E> = (&'a str, Vec<&'a str>, E);
+
 // --- verify-channel.sh -----------------------------------------------------------------------------
 
 const VERIFY_DOCKER_STUB: &str = "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$STUB_DOCKER_LOG\"\n[ -z \"$STUB_DOCKER_FAILS\" ] || exit 3\n";
@@ -100,7 +105,7 @@ fn a_verification_that_is_not_given_what_route_wrote_never_starts_a_container() 
         }
         environment
     };
-    let cases: Vec<(&str, Vec<&str>, Vec<(String, String)>)> = vec![
+    let cases: Vec<Case<Vec<(String, String)>>> = vec![
         (
             "no tag",
             vec!["copr", "fedora:43"],
@@ -164,6 +169,13 @@ fn a_verification_that_is_not_given_what_route_wrote_never_starts_a_container() 
             "{what}: a container was started"
         );
     }
+    // The refusal for a missing tag names the cause (route.sh did not run), not just a bad tag.
+    let output = tree.verify_channel(&["copr", "fedora:43"], &[("PUBLISH_CHANNELS", "beta")]);
+    assert!(
+        stderr_of(&output).contains("PUBLISH_TAG is not set: route.sh sets it first"),
+        "{}",
+        stderr_of(&output)
+    );
     // A container that fails fails the job with a non-zero status.
     let output = tree.verify_channel(
         &["apt", "ubuntu:22.04"],
@@ -332,7 +344,7 @@ fn verify_copr_tries_again_until_the_wait_is_over_and_refuses_what_it_was_not_gi
     );
 
     let tree = PublishTree::new();
-    let mut cases: Vec<(&str, Vec<&str>, Vec<(&str, &str)>)> = vec![
+    let mut cases: Vec<Case<Env>> = vec![
         (
             "a non-numeric wait",
             vec!["0.1.0", "beta"],
@@ -535,7 +547,7 @@ fn verify_aur_builds_the_package_the_aur_holds_and_requires_pacman_to_report_its
 #[test]
 fn verify_aur_fails_for_a_stale_package_a_missing_one_a_bad_build_and_a_wrong_installed_version() {
     // (what, packages in the AUR, extra environment, expected message)
-    let cases: Vec<(&str, Vec<(&str, &str)>, Vec<(&str, &str)>, &str)> = vec![
+    let cases: Vec<(&str, Env, Env, &str)> = vec![
         (
             "a PKGBUILD at an older release",
             vec![("proton-drive-sync-engine-beta", "0.1.0beta0")],
@@ -897,7 +909,7 @@ fn verify_apt_fails_when_a_suite_does_not_list_the_release_and_installs_nothing(
 fn verify_apt_requires_the_expected_verifier_the_recorded_key_and_the_installed_version() {
     let ok = madison("0.1.0~beta.1-1", "beta");
     // (what, environment, expected message)
-    let cases: Vec<(&str, Vec<(&str, &str)>, &str)> = vec![
+    let cases: Vec<(&str, Env, &str)> = vec![
         (
             "both verifiers where gpgv alone is expected",
             vec![
