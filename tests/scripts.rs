@@ -3006,6 +3006,7 @@ fn packages_ok_lists_every_build_and_smoke_job() {
         "smoke-rpm",
         "smoke-deb",
         "smoke-arch",
+        "apt-repo",
         "release-assets",
     ] {
         assert!(
@@ -3035,6 +3036,8 @@ fn packages_ok_lists_every_build_and_smoke_job() {
         ("smoke-rpm", "rpm"),
         ("smoke-deb", "deb"),
         ("smoke-arch", "arch"),
+        // The apt repository job installs the deb the deb job made.
+        ("apt-repo", "deb"),
     ] {
         let block = workflow
             .split(&format!("\n  {smoke}:\n"))
@@ -6353,19 +6356,25 @@ fn the_pinned_host_keys_are_the_published_fingerprints_of_the_two_hosts() {
 
 // --- publish.yml and release.yml ----------------------------------------------------------------
 
-const PUBLISH_PINNED_EXPRESSION_LINES: [(&str, usize); 9] = [
+const PUBLISH_PINNED_EXPRESSION_LINES: [(&str, usize); 13] = [
     (
         "group: publish-${{ github.event.release.tag_name || inputs.tag }}",
         1,
     ),
-    ("GH_TOKEN: ${{ github.token }}", 1),
-    ("TAG: ${{ github.event.release.tag_name || inputs.tag }}", 1),
+    // The publish job and the three verification jobs, each with the read-only token.
+    ("GH_TOKEN: ${{ github.token }}", 4),
+    // route.sh runs in the publish job and in each of the three verification jobs.
+    ("TAG: ${{ github.event.release.tag_name || inputs.tag }}", 4),
     ("DRY_RUN: ${{ inputs.dry_run }}", 1),
     ("COPR_CONFIG: ${{ secrets.COPR_CONFIG }}", 1),
     ("AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}", 1),
     ("APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}", 1),
     ("APT_DEPLOY_KEY: ${{ secrets.APT_DEPLOY_KEY }}", 1),
     ("COPR_TOKEN_EXPIRES: ${{ vars.COPR_TOKEN_EXPIRES }}", 1),
+    ("APT_WITHDRAWN: ${{ vars.APT_WITHDRAWN }}", 1),
+    ("IMAGE: fedora:${{ matrix.fedora }}", 1),
+    ("IMAGE: ${{ matrix.image }}", 1),
+    ("VERIFY_EXPECT_VERIFIER: ${{ matrix.verifier }}", 1),
 ];
 
 #[test]
@@ -6435,8 +6444,9 @@ fn only_the_publish_job_reads_secrets_and_it_runs_in_the_release_environment() {
     // Permissions: contents read at the top, and no job asks for more.
     assert_eq!(permission_blocks(&publish), [vec!["contents: read"]]);
     assert!(!publish.contains("contents: write") && !publish.contains("write-all"));
-    // The default token reads: it is the only token, and it is not a secret.
-    assert_eq!(publish.matches("github.token").count(), 1);
+    // The default token reads: it is the only token, and it is not a secret. One in the publish
+    // job and one in each verification job.
+    assert_eq!(publish.matches("github.token").count(), 4);
     // One run at a time per tag, never cancelled.
     assert!(publish.contains("concurrency:\n  group: publish-${{ github.event.release.tag_name || inputs.tag }}\n  cancel-in-progress: false\n"));
     assert!(!publish.contains("cancel-in-progress: true"));
@@ -6506,6 +6516,8 @@ fn the_publish_steps_run_in_order_and_each_channel_runs_after_a_good_preflight_e
         "name: Install copr-cli",
         "name: Write the credentials",
         "name: Preflight",
+        // Apt before the AUR before COPR: the apt step is the quickest and the COPR step waits on builds.
+        "name: apt\n",
         "name: AUR",
         "name: COPR",
         "name: Check every step succeeded",
@@ -6518,7 +6530,7 @@ fn the_publish_steps_run_in_order_and_each_channel_runs_after_a_good_preflight_e
     );
     // Channel steps: not after a cancel, only after a successful preflight; never `always()` (a
     // person cancelling the run must stop the publishing), and never continue-on-error.
-    for step in ["AUR", "COPR"] {
+    for step in ["apt", "AUR", "COPR"] {
         let block = job
             .split("      - name: ")
             .find(|s| s.starts_with(&format!("{step}\n")))
@@ -6533,7 +6545,7 @@ fn the_publish_steps_run_in_order_and_each_channel_runs_after_a_good_preflight_e
     assert!(!job.contains("continue-on-error"));
     assert!(job.contains("id: preflight\n"));
     // The final step names the steps it checks; the cleanup always runs.
-    assert!(job.contains("if: \"always() && steps.route.outcome == 'success'\"\n        run: packaging/release/aggregate.sh preflight aur copr\n"), "the final step is missing or ungated");
+    assert!(job.contains("if: \"always() && steps.route.outcome == 'success'\"\n        run: packaging/release/aggregate.sh preflight apt aur copr\n"), "the final step is missing, ungated, or does not list every step");
     assert!(
         job.contains("if: always()\n        run: packaging/release/credentials.sh remove\n"),
         "the cleanup step is missing or ungated"
@@ -6543,16 +6555,29 @@ fn the_publish_steps_run_in_order_and_each_channel_runs_after_a_good_preflight_e
         "packaging/release/route.sh \"$TAG\"",
         "packaging/release/tag-checkout.sh \"$PUBLISH_TAG\"",
         "packaging/release/preflight.sh",
+        "packaging/release/apt-publish.sh \"$PUBLISH_TAG\"",
         "packaging/release/aur-publish.sh \"$PUBLISH_TAG\"",
         "packaging/release/copr.sh \"$PUBLISH_TAG\"",
     ] {
         assert!(job.contains(&format!("run: {call}\n")), "{call}");
     }
-    // The place the next change plugs the apt step and the verification jobs into is marked.
-    assert!(
-        publish.contains("PR 4b plugs the apt step in HERE")
-            && publish.contains("PR 4b adds the verification jobs HERE")
-    );
+    // The aggregate names exactly the steps that record a result, in step order (each of them
+    // calls record_on_exit with its own name).
+    for step in ["apt", "aur", "copr"] {
+        assert!(
+            job.contains(&format!("id: {step}\n")),
+            "no step with id {step}"
+        );
+    }
+    // The three verification jobs exist, run after the publish job and only for a real run.
+    for name in ["verify-copr", "verify-aur", "verify-apt"] {
+        let block = job_block(&publish, name);
+        assert!(block.contains("    needs: publish\n"), "{name}: {block}");
+        assert!(
+            block.contains("    if: \"!inputs.dry_run\"\n"),
+            "{name}: {block}"
+        );
+    }
     // A release is never published from a workflow, and nothing writes to a release.
     assert!(
         !publish.contains("gh release"),
@@ -6576,11 +6601,24 @@ fn the_copr_namespace_is_written_once_in_the_workflow_and_nowhere_in_the_scripts
     for entry in fs::read_dir(&directory).expect("release dir") {
         let path = entry.expect("entry").path();
         let text = fs::read_to_string(&path).expect("script");
+        // The one other place the name appears is the apt repository's public address, the GitHub
+        // Pages host of the repository's owner (design D10): a different namespace, which a user
+        // types and so cannot be read from a variable. It is allowed in that file, on that one
+        // line, and nowhere else.
+        let allowed = "readonly SITE_URL=\"https://osirison.github.io/proton-drive-sync-engine-apt/\"";
+        let is_client = path.file_name().is_some_and(|name| name == "apt-client.sh");
+        let remaining = if is_client {
+            assert_eq!(text.matches(allowed).count(), 1, "{}", path.display());
+            text.replacen(allowed, "", 1)
+        } else {
+            text
+        };
         assert!(
-            !text.contains("osirison"),
+            !remaining.contains("osirison"),
             "{} holds the COPR namespace",
             path.display()
         );
+        let text = remaining;
         // None of the scripts writes to a release or the API.
         if path.file_name().is_some_and(|name| name != "draft.sh") {
             for write in [
@@ -7495,10 +7533,12 @@ fn copr_cli_is_installed_from_the_hash_locked_file_with_hashes_required_and_no_d
         .lines()
         .filter(|line| line.contains(" install "))
         .collect();
+    // The only other install is apt-utils, for apt-ftparchive, from the runner's own distribution.
     assert_eq!(
         installs,
         [
-            "          \"$RUNNER_TEMP/copr-venv/bin/pip\" install --quiet --require-hashes --no-deps -r packaging/release/copr-cli-requirements.txt"
+            "          \"$RUNNER_TEMP/copr-venv/bin/pip\" install --quiet --require-hashes --no-deps -r packaging/release/copr-cli-requirements.txt",
+            "          sudo apt-get install -y -qq --no-install-recommends apt-utils",
         ]
     );
     let requirements = fs::read_to_string(

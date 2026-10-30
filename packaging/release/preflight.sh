@@ -9,8 +9,8 @@
 # APT_SIGNING_KEY_FILE, APT_DEPLOY_KEY_FILE) and COPR_TOKEN_EXPIRES. All four credentials are tried,
 # whatever the first one did, and every failure is listed with the credential and what to do about
 # it; the exit status is 1 if there was any. All four are checked for a pre-release too (the apt
-# channel is not built in this change, but the secrets are shared), and for a dry run, because
-# every check here only reads.
+# channel serves the beta suite, and the secrets are shared), and for a dry run, because every
+# check here only reads.
 #
 #   COPR  `copr-cli whoami` and the token's last day (token-expiry.sh). NOTE: `whoami` reads the
 #         user name from the config file and asks the server nothing, so it proves the file is

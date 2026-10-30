@@ -62,6 +62,10 @@ jobs:
             libwebkit2gtk-4.1-dev libsoup-3.0-dev libgtk-3-dev \
             libayatana-appindicator3-dev librsvg2-dev \
             libgtk-layer-shell-dev
+      # tests/scripts.rs runs apt-publish.sh against the real apt-ftparchive; with `CI` set the test
+      # fails, not skips, when the tool is missing.
+      - name: Install apt-utils
+        run: sudo apt-get install -y --no-install-recommends apt-utils
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, no release tag
         with:
           toolchain: stable
