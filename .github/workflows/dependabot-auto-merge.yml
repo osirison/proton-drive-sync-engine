@@ -1,10 +1,25 @@
 name: Dependabot auto-merge
 
-# Runs only for PRs opened by Dependabot. Enables GitHub auto-merge for security fixes (any
-# semver) and semver-patch version bumps; GitHub then merges each once all required status
-# checks are green. Security-fix detection needs the optional DEPENDABOT_ALERTS_TOKEN secret
-# (see the fetch step); without it only patch bumps match. Minor/major NON-security bumps are
-# intentionally left for manual review.
+# Runs only for PRs opened by Dependabot. Enables GitHub auto-merge for semver-patch bumps and
+# for security fixes of any semver; GitHub then merges each once all required status checks are
+# green. Minor/major NON-security bumps are intentionally left for manual review.
+#
+# Two jobs, so that no job holds both a secret and write rights:
+#   decide      reads (contents + pull-requests: read). It holds DEPENDABOT_ALERTS_TOKEN, runs
+#               fetch-metadata and a checkout of the PR's BASE commit, and runs the decision
+#               script. It publishes one output, `arm`.
+#   auto-merge  writes (contents + pull-requests: write). It has no checkout, runs no repository
+#               code and holds no secret but its own GITHUB_TOKEN: `gh pr merge --auto`, and only
+#               when `decide` succeeded and said `arm == 'true'`. A failed or skipped `decide`
+#               skips it, because a job's implicit `success()` covers `needs`.
+#
+# A security fix is decided by .github/scripts/dependabot-security-fix.sh, which asks the REST
+# alerts API itself: one dependency, an open alert for exactly that package in exactly that
+# manifest, the old version inside the alert's vulnerable range, the new version at or above the
+# first patched version, in the same compatibility line, and inside no other open alert's range.
+# dependabot/fetch-metadata's own `alert-lookup` is not used: it compares the alert's requirement
+# with "= <version>", never matches, and leaves `ghsa-id` empty (#494). The script is read from
+# the PR's BASE commit, never from the PR's own tree.
 #
 # Prerequisites (set outside this file): "Allow auto-merge" in repo settings, and branch
 # protection on main with the CI + security-audit checks required — the required checks are
@@ -28,35 +43,72 @@ name: Dependabot auto-merge
 # GitHub App instead.
 on: pull_request
 
-# Default to read-only; only the auto-merge job (and only for Dependabot PRs) elevates.
+# Default to read-only; only the auto-merge job (and only after `decide` approved) elevates.
 permissions:
   contents: read
 
 jobs:
-  auto-merge:
-    if: github.actor == 'dependabot[bot]'
+  decide:
+    # The event's actor AND the PR's author must both be Dependabot.
+    if: github.actor == 'dependabot[bot]' && github.event.pull_request.user.login == 'dependabot[bot]'
     runs-on: ubuntu-latest
+    # Read only. fetch-metadata lists the PR's commits (pull-requests: read, as in its README) and
+    # the checkout reads the repository (contents: read).
     permissions:
-      contents: write
-      pull-requests: write
-    # Optional Dependabot secret (Settings > Secrets and variables > Dependabot): a fine-grained
-    # token for THIS repository only with "Dependabot alerts: Read-only" (Metadata read is
-    # implied). Only the fetch-metadata step reads it (via `with:`, so the merge step's
-    # environment never holds it), to look up the alert a PR fixes, so a security fix that is a
-    # minor/major bump can auto-merge. Without it, alert lookup is off and only patch bumps
-    # auto-merge. If it expires or is revoked, the lookup fails and this step fails loudly.
+      contents: read
+      pull-requests: read
+    outputs:
+      # 'true' when the lookup said fix, or the bump is a patch. Anything else does not arm. A
+      # skipped lookup (a patch bump) leaves `fix` empty, so a patch bump still arms.
+      arm: ${{ steps.security.outputs.fix == 'true' || steps.meta.outputs.update-type == 'version-update:semver-patch' }}
+    # DEPENDABOT_ALERTS_TOKEN is an optional Dependabot secret (Settings > Secrets and variables >
+    # Dependabot): a fine-grained token for THIS repository only with "Dependabot alerts:
+    # Read-only" (Metadata read is implied). Only the "Look for a security fix" step reads it,
+    # in its own `env:`. That step is in the `decide` job, which has no write right, and no
+    # third-party action or other step holds the token.
+    #   Missing: the script logs that and says fix=false, so only patch bumps auto-merge.
+    #   Expired or revoked: the lookup fails (401/403), this job goes red, `auto-merge` is
+    #   skipped and a non-patch bump is not armed; patch bumps skip the step and still arm.
     steps:
       - name: Fetch Dependabot metadata
         id: meta
+        # Default GITHUB_TOKEN: enough to read the PR. No alert lookup (see the header).
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+      - name: Check out the decision script from the base commit
+        # A patch bump arms regardless, so it needs no script. The base commit, not the PR head:
+        # the PR's own tree must not decide whether the PR is trusted.
+        if: steps.meta.outputs.update-type != 'version-update:semver-patch'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # The action tests the input as a string (core.getInput), so "false" would be truthy:
-          # pass 'true' or an empty value, never a boolean expression.
-          alert-lookup: ${{ secrets.DEPENDABOT_ALERTS_TOKEN != '' && 'true' || '' }}
-          github-token: ${{ secrets.DEPENDABOT_ALERTS_TOKEN || secrets.GITHUB_TOKEN }}
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.base.sha }}
+      - name: Look for a security fix
+        id: security
+        if: steps.meta.outputs.update-type != 'version-update:semver-patch'
+        run: bash .github/scripts/dependabot-security-fix.sh
+        env:
+          GH_TOKEN: ${{ secrets.DEPENDABOT_ALERTS_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          ECOSYSTEM: ${{ steps.meta.outputs.package-ecosystem }}
+          DIRECTORY: ${{ steps.meta.outputs.directory }}
+          DEP_NAMES: ${{ steps.meta.outputs.dependency-names }}
+          DEP_GROUP: ${{ steps.meta.outputs.dependency-group }}
+          PREVIOUS: ${{ steps.meta.outputs.previous-version }}
+          NEW: ${{ steps.meta.outputs.new-version }}
+
+  auto-merge:
+    needs: decide
+    # `needs.decide.result` must be success (the implicit success() of a job `if:`) and the
+    # decision must be 'true'.
+    if: needs.decide.outputs.arm == 'true'
+    runs-on: ubuntu-latest
+    # The only job with write rights. No checkout and no repository code: the PR URL is the only
+    # input, and it comes from the event.
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
       - name: Enable auto-merge (security fixes + patch bumps)
-        # A fixed or dismissed alert on the old version must not arm auto-merge.
-        if: (steps.meta.outputs.ghsa-id != '' && steps.meta.outputs.alert-state == 'OPEN') || steps.meta.outputs.update-type == 'version-update:semver-patch'
         run: |
           gh pr merge --auto --squash "$PR_URL"
         env:
