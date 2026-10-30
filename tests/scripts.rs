@@ -7120,9 +7120,73 @@ fn the_sandbox_replaces_every_tool_a_publish_script_could_reach_the_host_with() 
 #[test]
 fn the_publish_checkout_keeps_no_credentials_and_fetches_the_history_the_gate_needs() {
     let publish = workflow("publish.yml");
+    // The ref (a pinned commit) is not part of what this checks: skip the step's own line,
+    // then compare what follows it.
+    let step = publish
+        .split("      - uses: actions/checkout@")
+        .nth(1)
+        .and_then(|rest| rest.split_once('\n'))
+        .map(|(_, after)| after)
+        .expect("a checkout step");
     assert!(
-        publish.contains("      - uses: actions/checkout@v7\n        with:\n          persist-credentials: false\n          fetch-depth: 0\n"),
+        step.starts_with(
+            "        with:\n          persist-credentials: false\n          fetch-depth: 0\n"
+        ),
         "the checkout step"
+    );
+}
+
+#[test]
+fn every_workflow_step_names_an_action_by_commit_with_its_version_in_a_comment() {
+    // A tag can be moved upstream; a commit cannot. Dependabot keeps the pin and the comment
+    // together, so a pinned line is `owner/repo[/path]@<40 hex> # <version>`.
+    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join(".github/workflows");
+    let (mut pinned, mut local, mut files) = (0, 0, 0);
+    for entry in fs::read_dir(&directory).expect("workflows") {
+        let path = entry.expect("entry").path();
+        let name = path
+            .file_name()
+            .expect("name")
+            .to_string_lossy()
+            .into_owned();
+        if !name.ends_with(".yml") {
+            continue;
+        }
+        files += 1;
+        for line in fs::read_to_string(&path).expect("workflow").lines() {
+            let Some((_, reference)) = line.split_once("uses:") else {
+                continue;
+            };
+            let reference = reference.trim();
+            if reference.starts_with("./") {
+                local += 1;
+                continue;
+            }
+            let (action, rest) = reference
+                .split_once('@')
+                .unwrap_or_else(|| panic!("{name}: no @ in `{line}`"));
+            let (sha, comment) = rest
+                .split_once(" # ")
+                .unwrap_or_else(|| panic!("{name}: no version comment in `{line}`"));
+            assert!(
+                sha.len() == 40 && sha.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')),
+                "{name}: `{line}` is not pinned to a full commit"
+            );
+            assert!(
+                action.split('/').count() >= 2 && !action.contains(char::is_whitespace),
+                "{name}: `{line}` is not owner/repo[/path]"
+            );
+            assert!(
+                !comment.trim().is_empty(),
+                "{name}: empty comment in `{line}`"
+            );
+            pinned += 1;
+        }
+    }
+    // Not vacuous: there are workflows, pinned lines and the two local references.
+    assert!(
+        files >= 8 && pinned >= 40 && local >= 2,
+        "{files} {pinned} {local}"
     );
 }
 
