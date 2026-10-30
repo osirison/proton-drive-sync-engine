@@ -60,7 +60,13 @@ mod unix_tests {
         assert_eq!(skipped["message"], "sync skipped because daemon is paused");
 
         let resumed = run_control(&socket_path, "resume");
-        assert_eq!(resumed["status"], "running");
+        // Resume queues a pass (#456) and the reply is built right after queueing it, so the main
+        // loop may already be running that pass. `status` reports live activity, so "syncing" is as
+        // correct as "running" here. The standing request is what matters, and it is asserted next.
+        assert!(
+            ["running", "syncing"].contains(&resumed["status"].as_str().unwrap_or_default()),
+            "{resumed}"
+        );
         assert_eq!(resumed["paused"], false);
         // Resuming a paused pair queues a pass of its own (#456). It is waited for, so the
         // `syncnow` below is a pass of its own too and does not coalesce into this one while it is
