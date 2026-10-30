@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Decides whether a Dependabot pull request is the fix for an open security alert, so that
 # .github/workflows/dependabot-auto-merge.yml may arm auto-merge for a minor or major bump.
-# Writes `fix=true` or `fix=false` to $GITHUB_OUTPUT and logs one line per alert considered.
+# Writes `fix=true` or `fix=false` to $GITHUB_OUTPUT and logs one line per alert considered
+# (an alert whose number is missing or not a number is logged as `?`; only a wholly empty row,
+# which is not an alert, is skipped).
 #
 # Why this is not dependabot/fetch-metadata's `alert-lookup`: that matches an alert by comparing
 # the alert's `vulnerableRequirements` to "= <version>", which GitHub reports as a bare version,
@@ -192,7 +194,7 @@ if ! rows=$(
         (.number | tostring),
         (if .state != "open" then "state is not open"
          elif (.dependency.package.name // "") != $name
-              or (.security_vulnerability.package.name // "") != $name
+              or (.security_vulnerability.package.name // $name) != $name
            then "package is not this one"
          elif (.dependency.manifest_path // "") != $manifest then "manifest is not this one"
          else "ok" end),
@@ -210,7 +212,9 @@ fi
 match=false
 blocked=false
 while IFS=$'\x1f' read -r number verdict range patched; do
-  [[ -n $number ]] || continue
+  # Only a wholly empty row (jq prints nothing when there are no alerts) is skipped. An alert with
+  # a missing or odd number is still judged, and logged as `?`.
+  [[ -n $number$verdict$range$patched ]] || continue
   [[ $number =~ ^[0-9]+$ ]] || number='?'
   if [[ $verdict != ok ]]; then
     echo "alert $number: no match, $verdict"

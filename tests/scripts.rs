@@ -8271,6 +8271,91 @@ fn control_characters_in_an_alert_cannot_split_a_log_row() {
     );
 }
 
+/// Alert 35 beside a second open alert of the same package and manifest that has no patch and a
+/// range holding the new version, so it must block; `edit` shapes the second alert.
+fn blocking_beside_alert_35(edit: impl FnOnce(&mut serde_json::Value)) -> SecurityRun {
+    let mut other = alert(
+        36,
+        "open",
+        "postcss-selector-parser",
+        "website/package-lock.json",
+        ">= 6.0.0",
+        None,
+    );
+    edit(&mut other);
+    security_run(&SecurityCase::base(), &[vec![alert_35(), other]])
+}
+
+#[test]
+fn an_alert_with_a_missing_or_odd_number_is_still_judged_and_blocks() {
+    for number in [
+        serde_json::json!("abc"),
+        serde_json::json!(""),
+        serde_json::Value::Null,
+    ] {
+        let run = blocking_beside_alert_35(|a| a["number"] = number.clone());
+        assert_fix(&run, false);
+        assert!(
+            security_stdout(&run).contains("alert ?: blocks"),
+            "{number}: {}",
+            security_stdout(&run)
+        );
+    }
+}
+
+#[test]
+fn an_empty_reply_page_is_skipped_without_a_log_line() {
+    let run = security_run(&SecurityCase::base(), &[vec![]]);
+    assert_fix(&run, false);
+    assert!(
+        security_stdout(&run)
+            .lines()
+            .all(|l| !l.starts_with("alert ")),
+        "{}",
+        security_stdout(&run)
+    );
+}
+
+#[test]
+fn an_alert_without_an_advisory_package_is_not_a_package_mismatch_and_blocks() {
+    let run = blocking_beside_alert_35(|a| a["security_vulnerability"] = serde_json::Value::Null);
+    assert_fix(&run, false);
+    let stdout = security_stdout(&run);
+    assert!(stdout.contains("alert 36: blocks"), "{stdout}");
+    assert!(!stdout.contains("package is not this one"), "{stdout}");
+    // A present, different advisory name is still a mismatch and does not block.
+    let run = blocking_beside_alert_35(|a| {
+        a["security_vulnerability"]["package"]["name"] = "undici".into();
+    });
+    assert_fix(&run, true);
+}
+
+#[test]
+fn a_leading_zero_component_is_decimal_in_the_version_compare() {
+    // 08 and 09 are not valid octal: without the 10# prefix bash stops with an arithmetic error.
+    let run = security_run(
+        &foo_case("1.08.0", "1.10.0"),
+        &[vec![foo_alert(1, "< 1.10.0", "1.10.0")]],
+    );
+    assert_fix(&run, true);
+    let run = security_run(
+        &foo_case("1.07.0", "1.09.0"),
+        &[vec![foo_alert(1, "< 1.09.0", "1.09.0")]],
+    );
+    assert_fix(&run, true);
+}
+
+#[test]
+fn a_leading_zero_component_is_decimal_in_the_compatibility_line_check() {
+    // 010 is 10, not octal 8. The version compare is right either way here (new equals the patched
+    // version), so only the line check can tell: it must see 010 equal to 10 and share the line.
+    let run = security_run(
+        &foo_case("0.9.0", "0.010.0"),
+        &[vec![foo_alert(1, "< 0.10.0", "0.10.0")]],
+    );
+    assert_fix(&run, true);
+}
+
 // --- dependabot-auto-merge.yml, as text -------------------------------------------------------------
 
 fn auto_merge_workflow() -> String {

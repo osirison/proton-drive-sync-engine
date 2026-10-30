@@ -64,8 +64,8 @@ jobs:
     # DEPENDABOT_ALERTS_TOKEN is an optional Dependabot secret (Settings > Secrets and variables >
     # Dependabot): a fine-grained token for THIS repository only with "Dependabot alerts:
     # Read-only" (Metadata read is implied). Only the "Look for a security fix" step reads it,
-    # in its own `env:`, and only this job exists beside it: no third-party action and no other
-    # step ever holds it, and the job has no write right.
+    # in its own `env:`. That step is in the `decide` job, which has no write right, and no
+    # third-party action or other step holds the token.
     #   Missing: the script logs that and says fix=false, so only patch bumps auto-merge.
     #   Expired or revoked: the lookup fails (401/403), this job goes red, `auto-merge` is
     #   skipped and a non-patch bump is not armed; patch bumps skip the step and still arm.
