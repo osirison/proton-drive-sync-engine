@@ -80,8 +80,10 @@ older tag read the old names.
 ### Before the first secret: a scratch directory
 
 Every private key below is made in one scratch directory outside the repository, with `umask 077`,
-and deleted as soon as it is stored. Work in one terminal for the whole setup; in a new one, set
-`repo` and `scratch` again.
+and deleted as soon as it is stored. Work in one terminal for the whole setup. In a new shell, run
+`umask 077`, set `repo="$(git rev-parse --show-toplevel)"`, and set `scratch` to the SAME directory
+that `echo "$scratch"` printed (for example `scratch=/tmp/pdse-setup.AbC123`). Do not run `mktemp`
+again: it makes a new directory and the keys already in the old one are lost.
 
 ```sh
 repo="$(git rev-parse --show-toplevel)"      # run inside your checkout; the pinned known_hosts is in it

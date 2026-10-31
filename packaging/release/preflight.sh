@@ -105,7 +105,7 @@ check_signing() {
     if [[ -n "$expires" ]]; then
       echo "::warning title=APT_SIGNING_KEY has an expiry::the apt signing key expires, but design D11 says it must not (users would have to fetch a new key)"
     fi
-    echo "preflight.sh: apt signing key: signed and verified a test string with $fingerprint"
+    echo "apt signing key: signed and verified a test string with $fingerprint"
   ) >"$home.log" 2>&1 || result=$?
   if [[ "$result" != 0 ]]; then
     fail "$name: $(tr '\n' ' ' <"$home.log"). $renew"
