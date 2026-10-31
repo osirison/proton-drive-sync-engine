@@ -7,7 +7,8 @@ publish workflow reads them from there.
 Everything here is what `.github/workflows/release.yml`, `publish.yml` and `packages.yml` and the
 scripts in `packaging/release/` really do. Where the scripts do not settle something, this page says
 it is your choice. `tests/scripts.rs` checks that every secret and variable `publish.yml` reads is
-named here and that every script named here exists.
+named here, that each is of the kind and set where the workflows read it, that the environment is
+created before the first `--env release` command, and that every script named here exists.
 
 ## What a release is
 
@@ -38,10 +39,18 @@ workflow, so `publish.yml` would never run. Publish from the web page, signed in
 
 ## One-time setup
 
-Do these once, in this order. They are tasks 5.1 to 5.5 of the change. Nothing here is done by the
-repository. Keep the private key files only as long as it takes to paste them into GitHub; delete
-them afterwards. The exception is the apt signing key (below): GitHub secrets cannot be read back,
-so keep an offline copy of that one.
+Do these once, in this order: the `release` environment first, then the four secrets. Nothing here
+is done by the repository. The runbook's order is not the order of the change's tasks: `tasks.md`
+lists the environment last (task 5.5) and keeps that numbering, but `gh secret set --env release`
+needs the environment to exist, so setting a secret before creating it fails. The sections below
+carry their task numbers: 5.5, then 5.1 to 5.4.
+
+**The first real use of each credential is the first real publish.** A dry run needs a published
+release (`route.sh` refuses a draft), so none can run before the first release exists. Preflight is
+the only check that tries all four credentials, and it runs inside the publish run itself, before any
+channel step. What you can check earlier is local and is named in each section: the COPR file
+parses, the AUR accepts the SSH key, the apt key makes a signature on your machine, and the
+environment waits for your approval.
 
 ### Every secret and variable
 
@@ -68,10 +77,51 @@ pushed to the AUR and to the apt repository; your choice, no personal address is
 Per the file's own rule, do not rename any of these names without re-tagging: the scripts of an
 older tag read the old names.
 
+### Before the first secret: a scratch directory
+
+Every private key below is made in one scratch directory outside the repository, with `umask 077`,
+and deleted as soon as it is stored. Work in one terminal for the whole setup; in a new one, set
+`repo` and `scratch` again.
+
+```sh
+repo="$(git rev-parse --show-toplevel)"      # run inside your checkout; the pinned known_hosts is in it
+umask 077
+scratch="$(mktemp -d /tmp/pdse-setup.XXXXXX)"   # mode 700
+echo "$scratch"
+```
+
+Nothing in this runbook writes a key under `$repo`. `.gitignore` also lists `aur-ssh-key`,
+`apt-signing-key.asc` and `apt-deploy-key` as a second guard, but do not rely on it: when you commit,
+name the file (`git add packaging/release/apt-key-fingerprints.txt`), never `git add -A`.
+
+### The `release` environment (task 5.5)
+
+Settings, Environments, New environment, named `release`. Create it first and put **no secret in it
+yet**: the secret commands below use `--env release`, which needs the environment to exist.
+
+1. Required reviewers: yourself. Leave "Prevent self-review" off, or you cannot approve your own
+   run.
+2. Deployment branches and tags: "Selected branches and tags", with `main` (branch) and `v*` (tag).
+   This stops a dispatch from any other branch: without it, anyone who can push a branch can run
+   `publish.yml` as edited on that branch, and your approval click is only a click, not a review of
+   that code. It does **not** stop a `v*` tag. Whoever can push one can run `gh workflow run
+   publish.yml --ref <that tag>`, which runs `publish.yml` as edited at that tag, and an edited copy
+   can drop the gate. Tag creation is restricted by the repository ruleset "Release tags v*" (id
+   25018911: active on `refs/tags/v*`, with creation, update and deletion rules), and the repository
+   admin role bypasses it always. So the reviewer's approval is what stands between such a tag and
+   the secrets: before you approve a run, check that its ref is `main` or a tag you made.
+3. GitHub creates an environment with no protection the first time a workflow names it. Creating
+   this one first, and before any release is published, removes that case.
+
+Check: `gh workflow run publish.yml --ref main -f tag=v0.0.0-test -f dry_run=true` makes a run that
+waits for your approval before its first step, so before any job reads a secret; it asks once.
+Reject it. A dispatch with `--ref` another branch is refused before the approval. (The tag value is
+not looked at until the run is approved.) This reads no secret and works before any release exists.
+
 ### COPR project and token (task 5.1)
 
 1. Sign in at https://copr.fedorainfracloud.org/api/ with the Fedora account. The page shows the
-   config text and the login. Save it as `~/.config/copr`.
+   config text and the login. Save it as `~/.config/copr` and run `chmod 600 ~/.config/copr`.
 2. Create the beta project, with network on (the build downloads crates) and one chroot per
    Fedora release that is not end of life. `packages.yml` lists them: today 43 and 44, and the
    packages are built for x86_64:
@@ -80,6 +130,13 @@ older tag read the old names.
    copr-cli create --chroot fedora-43-x86_64 --chroot fedora-44-x86_64 --enable-net on \
      proton-drive-sync-engine-beta
    ```
+
+   `copr-cli create` with no owner makes the project under the account in `~/.config/copr`. The
+   scripts name the project `<COPR_OWNER>/<name>`, and `publish.yml` has `COPR_OWNER: osirison`. So
+   `COPR_OWNER` must equal what `copr-cli --config ~/.config/copr whoami` prints (for a project
+   under a group, `@group`, and the project is then created under that group; I have not run the
+   group form). If they differ, change `COPR_OWNER` in `publish.yml`'s top-level `env:` (and the
+   tag you cut must contain the change), or create the project under the owner `publish.yml` names.
 
    `copr.sh` builds in every chroot the project has and keeps no list of its own. When a Fedora
    release reaches end of life, the lists in `packages.yml` (`FEDORA_OLDEST`, the `smoke-rpm`
@@ -103,7 +160,8 @@ older tag read the old names.
    file parses: `whoami` asks the server nothing, so it succeeds with a made-up token
    (`docs/agent-notes/copr-cli-whoami-does-not-check-the-token.md`). No script in this repository
    tries the token against the server. A refused token first shows at the first `copr-cli build`, as
-   "Login invalid/expired", so the date is the only thing that stands for its age.
+   "Login invalid/expired", so the date is the only thing that stands for its age. The first real
+   use of the token is the first real publish.
 
 What warns before it lapses: the gate job of `release.yml` prints a warning, 14 days ahead and also
 when the variable is empty, unparseable or already past. It never fails a tag run. Preflight in
@@ -118,54 +176,58 @@ To renew: do steps 1, 4 and 5 again (new token into `COPR_CONFIG`, new date into
 1. Register an account at https://aur.archlinux.org/. Use a key for CI and nothing else:
 
    ```sh
-   ssh-keygen -t ed25519 -N '' -C 'proton-drive-sync-engine CI' -f ./aur-ssh-key
+   ssh-keygen -t ed25519 -N '' -C 'proton-drive-sync-engine CI' -f "$scratch/aur-ssh-key"
    ```
 
-2. Paste `aur-ssh-key.pub` into the account page (https://aur.archlinux.org/account/, field
+2. Paste `$scratch/aur-ssh-key.pub` into the account page (https://aur.archlinux.org/account/, field
    "SSH Public Key").
 3. Store the private key and check it:
 
    ```sh
-   gh secret set AUR_SSH_KEY --env release --repo osirison/proton-drive-sync-engine < ./aur-ssh-key
-   ssh -i ./aur-ssh-key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
-     -o UserKnownHostsFile=packaging/release/known_hosts -T aur@aur.archlinux.org; echo "exit $?"
+   gh secret set AUR_SSH_KEY --env release --repo osirison/proton-drive-sync-engine < "$scratch/aur-ssh-key"
+   ssh -i "$scratch/aur-ssh-key" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+     -o UserKnownHostsFile="$repo/packaging/release/known_hosts" -T aur@aur.archlinux.org; echo "exit $?"
    ```
 
    The AUR has no shell, so the right answer is `Welcome to AUR, <user>! Interactive shell is
-   disabled.` and **exit 1**. Exit 255 is a failure. This also tests the pinned host key.
-4. Delete `aur-ssh-key`. You make no package by hand: the first push of `aur-publish.sh` creates
-   `proton-drive-sync-engine-beta`, and the first final release creates `proton-drive-sync-engine`.
+   disabled.` and **exit 1**. Exit 255 is a failure. This also tests the pinned host key. It is the
+   only credential check you can make against the real service before the first publish.
+4. Delete the key now: `rm -f "$scratch/aur-ssh-key" "$scratch/aur-ssh-key.pub"`. You make no
+   package by hand: the first push of `aur-publish.sh` creates `proton-drive-sync-engine-beta`, and
+   the first final release creates `proton-drive-sync-engine`.
 
 ### The apt signing key (task 5.3)
 
 Make it on your own machine, with nothing from a pipeline involved. Ed25519, **no expiry** and
 **no passphrase**: the scripts sign with an empty passphrase, and an expiring key would stop apt for
-every user until each downloaded the key again. The name in the key is your choice.
+every user until each downloaded the key again. The name in the key is your choice. The key lives in
+`$scratch` (set above, `umask 077` in force, so the exported file is mode 600):
 
 ```sh
-export GNUPGHOME="$(mktemp -d /tmp/pdse-key.XXXXXX)"; chmod 700 "$GNUPGHOME"
+export GNUPGHOME="$scratch/gnupg"; mkdir -m 700 "$GNUPGHOME"
 gpg --batch --pinentry-mode loopback --passphrase '' \
   --quick-gen-key 'Proton Drive sync engine apt <you@example.org>' ed25519 sign never
-gpg --armor --export-secret-keys "$(gpg --batch --with-colons --list-keys | awk -F: '$1 == "pub" { want = 1; next } $1 == "fpr" && want { print $10; want = 0 }')" > apt-signing-key.asc
+gpg --armor --export-secret-keys "$(gpg --batch --with-colons --list-keys | awk -F: '$1 == "pub" { want = 1; next } $1 == "fpr" && want { print $10; want = 0 }')" > "$scratch/apt-signing-key.asc"
 ```
 
-1. Store the key and **keep an offline copy** of `apt-signing-key.asc` (encrypted, off this
+1. Store the key and **keep an offline copy** of `$scratch/apt-signing-key.asc` (encrypted, off this
    machine). A lost key means a rotation with no overlap, and every user must fetch the new key.
+   GitHub secrets cannot be read back, so this copy is the only one.
 
    ```sh
-   gh secret set APT_SIGNING_KEY --env release --repo osirison/proton-drive-sync-engine < apt-signing-key.asc
+   gh secret set APT_SIGNING_KEY --env release --repo osirison/proton-drive-sync-engine < "$scratch/apt-signing-key.asc"
    ```
 
 2. Read its fingerprint (40 hex digits, the **primary** key's):
 
    ```sh
-   gpg --show-keys --with-colons apt-signing-key.asc | awk -F: '$1 == "sec" { want = 1; next } $1 == "fpr" && want { print $10; want = 0 }'
+   gpg --show-keys --with-colons "$scratch/apt-signing-key.asc" | awk -F: '$1 == "sec" { want = 1; next } $1 == "fpr" && want { print $10; want = 0 }'
    ```
 
 3. In a pull request, put that fingerprint in `packaging/release/apt-key-fingerprints.txt`: one
    fingerprint per line, 40 upper-case hex digits, no spaces; a line starting with `#` is a note.
    Merge it **before the first tag**. The file ships in the tag, and every step after the gate runs
-   the tag's files.
+   the tag's files. Commit that one file by name.
 4. What the file does, so you know what a failure means:
    - While it holds no fingerprint (it does not at first), `apt-publish.sh` refuses to run, **a dry
      run too**, and `verify-apt.sh` refuses too.
@@ -173,13 +235,19 @@ gpg --armor --export-secret-keys "$(gpg --batch --with-colons --list-keys | awk 
      the file. A different key in the secret, or an extra one, publishes nothing.
    - `verify-apt.sh` compares the key the live site serves with the file. A key swapped on the site
      fails the verification job.
-5. Check. A dry run (below) makes one test signature with the key and verifies it with `gpgv`, and
-   preflight signs and verifies a test string. Preflight warns, and does not fail, if the key has an
-   expiry. Task 5.3 also wants proof that apt on Ubuntu 22.04 (`gpgv`), Debian 13 (`sqv`) and Ubuntu
+5. Check. Step 2 shows the key parses. The first real use of the key in CI is the first real
+   publish: preflight signs and verifies a test string with it (and warns, without failing, if the
+   key has an expiry), then the `apt` step signs the repository. A dry run (below) also makes one
+   test signature with `gpgv`, but it needs a published release, so it comes after the first
+   release. Task 5.3 also wants proof that apt on Ubuntu 22.04 (`gpgv`), Debian 13 (`sqv`) and Ubuntu
    26.04 (`gpgv`) accept the key: the `apt-repo` job of `packages.yml` runs that with throwaway keys on
    every pull request, and `verify-apt` runs it against the real key at every release.
-6. `rm -rf "$GNUPGHOME"; unset GNUPGHOME`, and delete `apt-signing-key.asc` from the working
-   directory once the offline copy exists.
+6. When the offline copy exists and the pull request is open, delete the key and its keyring:
+
+   ```sh
+   gpgconf --kill gpg-agent; unset GNUPGHOME
+   rm -rf "$scratch/gnupg" "$scratch/apt-signing-key.asc"
+   ```
 
 ### The apt repository and GitHub Pages (task 5.4)
 
@@ -189,51 +257,37 @@ gpg --armor --export-secret-keys "$(gpg --batch --with-colons --list-keys | awk 
    in `apt-client.sh` names `https://osirison.github.io/proton-drive-sync-engine-apt/`: a different
    owner or name changes both files.
 2. Give it a `gh-pages` branch holding `.nojekyll` and a placeholder file (the first publish
-   replaces the branch, whatever it holds; the placeholder text is your choice):
+   replaces the branch, whatever it holds; the placeholder text is your choice). Clone it in the
+   scratch directory, not inside this repository:
 
    ```sh
-   git clone git@github.com:osirison/proton-drive-sync-engine-apt.git && cd proton-drive-sync-engine-apt
+   git clone git@github.com:osirison/proton-drive-sync-engine-apt.git "$scratch/apt-repo" && cd "$scratch/apt-repo"
    git switch --orphan gh-pages
    touch .nojekyll && echo placeholder > index.html
    git add -A && git commit -m 'Placeholder' && git push origin gh-pages
+   cd "$repo"
    ```
 
 3. Settings, Pages: deploy from the branch `gh-pages`, folder `/`.
 4. A write deploy key, only for this repository:
 
    ```sh
-   ssh-keygen -t ed25519 -N '' -C 'apt deploy key' -f ./apt-deploy-key
+   ssh-keygen -t ed25519 -N '' -C 'apt deploy key' -f "$scratch/apt-deploy-key"
    ```
 
-   Add `apt-deploy-key.pub` under the apt repository's Settings, Deploy keys, with **Allow write
-   access** ticked. Then:
+   Add `$scratch/apt-deploy-key.pub` under the apt repository's Settings, Deploy keys, with **Allow
+   write access** ticked. Then:
 
    ```sh
-   gh secret set APT_DEPLOY_KEY --env release --repo osirison/proton-drive-sync-engine < ./apt-deploy-key
+   gh secret set APT_DEPLOY_KEY --env release --repo osirison/proton-drive-sync-engine < "$scratch/apt-deploy-key"
    ```
 
 5. Check: `https://osirison.github.io/proton-drive-sync-engine-apt/` serves the placeholder.
-   Preflight runs `git ls-remote` of the repository with the key, which proves the key can **read**.
-   It cannot see whether write access is ticked; a key without it fails at the push, in the `apt`
-   step. Delete `apt-deploy-key` afterwards.
-
-### The `release` environment (task 5.5)
-
-Settings, Environments, New environment, named `release`:
-
-1. Required reviewers: yourself. Leave "Prevent self-review" off, or you cannot approve your own
-   run.
-2. Deployment branches and tags: "Selected branches and tags", with `main` (branch) and `v*` (tag),
-   and nothing else. Without this, anyone who can push a branch can dispatch `publish.yml` as edited
-   on that branch, and your approval click is only a click, not a review of that code.
-3. The four secrets above are environment secrets of this environment.
-4. GitHub creates an environment with no protection the first time a workflow names it, so create
-   this one **before** any release is published.
-
-Check: `gh workflow run publish.yml --ref main -f tag=v0.0.0-test -f dry_run=true` makes a run that
-waits for your approval before its first step, so before any job reads a secret; it asks once.
-Reject it. A dispatch with `--ref` another branch is refused before the approval. (The tag value is
-not looked at until the run is approved.)
+   Preflight runs `git ls-remote` of the repository with the key, which proves the key can **read**,
+   in the first publish run: that is the key's first real use. It cannot see whether write access is
+   ticked; a key without it fails at the push, in the `apt` step.
+6. All four secrets are stored. Delete everything private that is left:
+   `rm -rf "$scratch"; unset scratch`. The only copy of the apt signing key is now the offline one.
 
 ### Immutable releases (a repository setting; your decision)
 
@@ -270,8 +324,8 @@ Downsides, all consequences of that:
 
 - A published release with a wrong asset cannot be repaired. You fix forward with the next version
   (the same rule as for COPR and the AUR).
-- A tag that was published is gone for good: deleting the release does not free the tag name. "Delete
-  the tag, fix, and tag again" (below) works only **before** you publish the draft. Test with drafts
+- A tag that was published is gone for good: deleting the release does not free the tag name. "Start
+  over" (below) works only **before** you publish the draft. Test with drafts
   and delete the draft, as the 4.2 live runs did; do not publish a throwaway release.
 - You cannot attach anything (a signature, a fixed `SHA256SUMS`) to a published release.
 - `APT_WITHDRAWN` is unaffected: it needs no change to the release.
@@ -300,7 +354,24 @@ shows it as immutable.
    `release.yml` runs: `gate.sh` (tag shape, tag equals `Cargo.toml`, the commit is on `origin/main`,
    `version.sh check`), the full CI suite, the package builds and install smoke tests, and then
    `draft.sh`. A failed job leaves **no** draft. A fix to the scripts does not reach an existing tag:
-   the tag's own files run. Delete the tag, fix, and tag again (only while no release is published).
+   the tag's own files run.
+
+   **Start over (only while no release of that tag is published).** The draft exists from this step
+   on, and a re-run of `release.yml` reuses it: `draft.sh` replaces its assets only, so the notes
+   GitHub generated and the target it recorded stay as the first run left them. So delete the draft
+   as well as the tag. `gh release view` and `gh release delete` may not find a draft by its tag, so
+   find its id and delete by id (more than one id is possible; delete each):
+
+   ```sh
+   id="$(gh api repos/osirison/proton-drive-sync-engine/releases \
+     --jq '.[] | select(.tag_name == "v0.2.0" and .draft) | .id')"
+   gh api -X DELETE "repos/osirison/proton-drive-sync-engine/releases/$id"
+   git push origin :refs/tags/v0.2.0 && git tag -d v0.2.0
+   ```
+
+   Deleting a release does not delete its tag. The ruleset "Release tags v*" has a deletion rule for
+   `v*` tags, and only the repository admin role bypasses it, so the tag push works signed in as the
+   admin (the live runs of task 4.1 showed an admin delete go through). Then fix, and tag again.
 3. **Check the draft** (Releases, the draft, or through the API: `gh release view` may not find a
    draft by tag):
 
@@ -351,10 +422,13 @@ A dispatch runs `main`'s `publish.yml` but checks out the tag and runs the tag's
 
 ### A tag must contain the channel scripts
 
-A tag cut before the publish workflow (#480) cannot be published at all. A tag cut before the apt
-channel and the verification scripts were added (the pull request that added this page) can be
-published to COPR and the AUR, fails at the `apt` step because `apt-publish.sh` does not exist in
-it, and cannot be verified. Both fail closed. Re-tag with a version that contains them.
+A release event runs the workflow file **at the tag**, so what a tag publishes is fixed by what it
+contains. A tag cut before the publish workflow (#480) has no `publish.yml`: publishing its release
+starts nothing. A tag cut after #480 and before the pull request that added this page has a
+`publish.yml` with the COPR and AUR steps only: a normal publish runs that file, goes green with
+those two channels, skips apt without saying so, and verifies nothing. Only a `workflow_dispatch`
+from `main` runs the newer file, and that fails at the `apt` step, because `apt-publish.sh` does not
+exist in such a tag. Re-tag with a version that contains the channel scripts. No tag exists yet.
 
 ### The pre-release rule
 
@@ -423,23 +497,40 @@ its 1500 s wait. The usual cause is the listing lagging a release that was just 
 minute and run the step again (`gh workflow run publish.yml --ref main -f tag=<tag> -f dry_run=false`).
 If it still fails, the release is a draft, was deleted, or its tag is not the one you dispatched; look
 at the release page. Two cases pass on purpose: a tag in `APT_WITHDRAWN` (the step logs "this is a
-deliberate rebuild without it"; that is how a withdrawal is applied), and a published tag older than
-the newest three, which is in the listing and is simply outside the window.
+deliberate rebuild without it"; see "Withdraw a version from apt" for why you do not dispatch one),
+and a published tag older than the newest three, which is in the listing and is simply outside the
+window.
 
 **Withdraw a version from apt.** The apt tree is rebuilt from the published releases on every run.
-Set the repository variable `APT_WITHDRAWN` to the tags to leave out (space or comma separated, each
-a release tag), then dispatch a real run for a tag that is still published. Use the newest one:
 
-```sh
-gh variable set APT_WITHDRAWN --repo osirison/proton-drive-sync-engine --body 'v0.2.0-beta.2'
-gh workflow run publish.yml --ref main -f tag=v0.2.0-beta.3 -f dry_run=false
-```
+1. Set the repository variable `APT_WITHDRAWN` to the tags to leave out (space or comma separated,
+   each a release tag). A name that is not a release tag stops the run.
+2. Dispatch a real run for **the newest tag that is not in `APT_WITHDRAWN`**:
+
+   ```sh
+   gh variable set APT_WITHDRAWN --repo osirison/proton-drive-sync-engine --body 'v0.2.0-beta.2'
+   gh workflow run publish.yml --ref main -f tag=v0.2.0-beta.3 -f dry_run=false
+   ```
+
+   The `apt` step rebuilds the tree without the withdrawn tags and pushes it, and `verify-apt` then
+   finds the dispatched version and passes.
+
+Do **not** dispatch the withdrawn tag itself. The `apt` step lets it through on purpose (it logs "this
+is a deliberate rebuild without it") and does rebuild the tree without it, so the withdrawal is
+applied. But `verify-apt` then waits its full 1500 s for a version the tree no longer holds, and the
+run ends red.
+
+What the dispatch does to the other channels: the AUR step compares with the AUR head only, and the
+COPR step skips a project that already has a succeeded build of the version. So dispatching the
+newest tag changes neither. If the withdrawn version is the **newest** release, the newest tag that is
+not withdrawn is an older one: dispatching it also pushes that older tag's `PKGBUILD` to the AUR,
+which rolls the AUR back to that version as well (there is no way to withdraw the newest version from
+apt alone), and COPR is skipped, so COPR keeps the withdrawn build until you remove it by hand.
 
 Each suite keeps the newest three, so withdrawing one lets the next older release back into the
-window. A name that is not a release tag stops the run. The variable works whether or not releases
-are immutable (see "Immutable releases"): it changes what the tree is built from, not the release.
-The release and its assets stay on GitHub; removing them is your choice. Users who installed it keep
-it.
+window. The variable works whether or not releases are immutable (see "Immutable releases"): it
+changes what the tree is built from, not the release. The release and its assets stay on GitHub;
+removing them is your choice. Users who installed it keep it.
 
 **Withdraw a version from COPR or the AUR.** No script does it. Remove the build in COPR by hand, or
 push the previous `PKGBUILD` to the AUR (a dispatch for the previous tag does that, see above), and

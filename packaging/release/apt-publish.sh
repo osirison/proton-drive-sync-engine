@@ -491,9 +491,11 @@ run_publish() {
   done <<<"$rows"
   # The tag being published must be in the tree, or the step would push a repository without it,
   # record `ok`, and verify-apt would fail only after its whole wait. The listing can lag a release
-  # that was just published. The one exception is a withdrawn tag: dispatching it is how a
-  # withdrawal is applied (docs/releasing.md), and the tree is meant to be built without it. A tag
-  # older than the newest three is a candidate and passes: it is listed, only the window leaves it out.
+  # that was just published. The one exception is a withdrawn tag: the tree is meant to be built
+  # without it, so it passes. That is NOT how a withdrawal is applied: dispatch the newest tag that is
+  # not withdrawn, because verify-apt waits for the dispatched version and a withdrawn one is not in
+  # the tree (docs/releasing.md, "Withdraw a version from apt"). A tag older than the newest three is
+  # a candidate and passes: it is listed, only the window leaves it out.
   choose_suites < <(printf '%s\n' "${candidates[@]}")
   if [[ -n "${withdrawn[$tag_upstream_value]-}" ]]; then
     log "$tag is in APT_WITHDRAWN: this is a deliberate rebuild without it"

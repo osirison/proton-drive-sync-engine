@@ -26,3 +26,10 @@ gui/src-tauri/gen/
 # Python bytecode
 __pycache__/
 *.pyc
+
+# Release setup keys (docs/releasing.md makes them in a scratch directory; this is a second guard)
+aur-ssh-key
+aur-ssh-key.pub
+apt-signing-key.asc
+apt-deploy-key
+apt-deploy-key.pub

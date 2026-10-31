@@ -110,7 +110,10 @@ check_signing() {
   if [[ "$result" != 0 ]]; then
     fail "$name: $(tr '\n' ' ' <"$home.log"). $renew"
   else
-    sed 's/^/preflight.sh: /' "$home.log" >&2
+    # A workflow command only counts at the start of a line, so the annotation is printed as it is, on
+    # stdout, and only the other lines get the prefix.
+    grep '^::' "$home.log" || true
+    sed -e '/^::/d' -e 's/^/preflight.sh: /' "$home.log" >&2
   fi
   rm -f -- "$home.log"
 }

@@ -530,8 +530,10 @@ design above did not settle them):
 - **The tag being published must be in the listing.** After the listing, the run stops unless the
   tag's version is among the published releases (the listing can lag a release that was just
   published; the remedy is to wait and run the step again). Two cases pass: a tag in
-  `APT_WITHDRAWN` (dispatching it is how a withdrawal is applied; logged as a deliberate rebuild),
-  and a tag older than the newest three (listed, only outside the window).
+  `APT_WITHDRAWN` (the tree is built without it and the step logs a deliberate rebuild; it is not
+  how a withdrawal is applied, because `verify-apt` then waits for a version the tree no longer
+  holds: dispatch the newest tag that is not withdrawn), and a tag older than the newest three
+  (listed, only outside the window).
 - **A deb must say in its control file what its name says.** `apt-ftparchive` writes `Packages` from
   the control file, so the name and `SHA256SUMS` are not enough: `dpkg-deb -f` (control only, no
   maintainer script) must give a `Package` equal to the name's and one of the packages
@@ -588,7 +590,10 @@ The approval is a click on a run, not a review of the code that run executes: fo
 it is a self-click, so it does not by itself stop a `workflow_dispatch` of a workflow edited on a
 branch from reading the keys. What does is the environment's **deployment branches and tags**
 setting, limited to `main` and tags matching `v*` (task 5.5); the file that runs is then main's or a
-tag's. The publish job also checks out the tag's commit and runs the release gate on it before it
+tag's. That does not close a `v*` tag: whoever can push one can dispatch `--ref <tag>` and run
+`publish.yml` as edited there. Tag creation is restricted by the ruleset "Release tags v*" (the
+repository admin role bypasses it), and the reviewer's approval is what stands between such a tag
+and the secrets. The publish job also checks out the tag's commit and runs the release gate on it before it
 writes a secret (`tag-checkout.sh`), so a dispatch from any ref publishes the tag's own scripts and
 packaging, and a tag made by hand on a commit that is not on `main` publishes nothing.
 

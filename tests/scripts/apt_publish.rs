@@ -910,6 +910,14 @@ fn a_deb_whose_control_file_does_not_match_its_name_is_never_signed_into_the_rep
             "control file says Version '99.0-1'",
         ),
         (
+            "an epoch in front of the right version",
+            Box::new({
+                let main = main.clone();
+                move |dir: &Path| put_deb(dir, &main, MAIN_DEB, "9:0.2.0-1", "amd64")
+            }),
+            "control file says Version '9:0.2.0-1'",
+        ),
+        (
             "a revision other than the name's",
             Box::new(move |dir: &Path| put_deb(dir, nemo, "proton-sync-nemo", "0.2.0-2", "all")),
             "control file says Version '0.2.0-2'",
@@ -986,6 +994,25 @@ fn a_prerelease_deb_passes_with_the_tilde_spelling_and_is_refused_with_the_name_
     let output = tree.apt_publish("v0.2.0-beta.1", false, &remote, &[&apt_keys()[0]], &[]);
     assert!(output.status.success(), "{}", stderr_of(&output));
     assert_eq!(tree.apt_pushes("apt.git").len(), 1);
+    // An epoch in front of the right pre-release spelling is another version: it would sort above
+    // every release of this project.
+    let tree = PublishTree::new();
+    tree.apt_world(&["0.1.0", "0.2.0-beta.1"]);
+    put_deb(
+        &tree.path("assets/v0.2.0-beta.1"),
+        &format!("{MAIN_DEB}_0.2.0-beta.1-1_amd64.deb"),
+        MAIN_DEB,
+        "9:0.2.0~beta.1-1",
+        "amd64",
+    );
+    let remote = tree.apt_remote("apt.git");
+    let output = tree.apt_publish("v0.2.0-beta.1", false, &remote, &[&apt_keys()[0]], &[]);
+    assert_refused_before_the_tree(
+        &tree,
+        "epoch",
+        &output,
+        "control file says Version '9:0.2.0~beta.1-1'",
+    );
     // The name's spelling in the control file is not the deb's version.
     let tree = PublishTree::new();
     tree.apt_world(&["0.1.0", "0.2.0-beta.1"]);

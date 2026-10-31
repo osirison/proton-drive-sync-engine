@@ -353,6 +353,11 @@
       a secret, and asks for exactly one approval; a dispatch with `--ref` some other branch is
       refused before approval
 
+      Order note (not a change to the numbering): `docs/releasing.md` does 5.5 first, then
+      5.1 to 5.4. `gh secret set --env release` needs the environment to exist, so a secret set
+      before the environment fails. The runbook creates `release` with its reviewer and deployment
+      rule and no secrets, then each section stores its secret.
+
 ## 6. Publish workflow
 
 - [ ] 6.1 Create `.github/workflows/publish.yml` (design D12):

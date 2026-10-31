@@ -4848,41 +4848,49 @@ shift 3
 exec bash "$@"
 "#;
 
-/// The secret half of a throwaway Ed25519 key, armored, made once per test binary.
+/// The secret half of a throwaway Ed25519 key, armored, made once per test binary. It never expires.
 fn test_signing_key() -> &'static str {
     static KEY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    KEY.get_or_init(|| {
-        let directory = tempdir().expect("tempdir");
-        let home = directory.path().join("gpg");
-        fs::create_dir(&home).expect("gnupg home");
-        fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).expect("mode");
-        let gpg = |arguments: &[&str]| {
-            let mut command = common::sandboxed("gpg", directory.path());
-            command.env("GNUPGHOME", &home).args(arguments);
-            common::run_other_tool(&mut command)
-        };
-        let made = gpg(&[
-            "--batch",
-            "--pinentry-mode",
-            "loopback",
-            "--passphrase",
-            "",
-            "--quick-gen-key",
-            "preflight test <preflight@example.invalid>",
-            "ed25519",
-            "sign",
-            "never",
-        ]);
-        assert!(made.status.success(), "{}", stderr_of(&made));
-        let exported = gpg(&["--batch", "--armor", "--export-secret-keys"]);
-        assert!(exported.status.success(), "{}", stderr_of(&exported));
-        let mut command = common::sandboxed("gpgconf", directory.path());
-        command
-            .env("GNUPGHOME", &home)
-            .args(["--kill", "gpg-agent"]);
-        common::run_other_tool(&mut command);
-        String::from_utf8(exported.stdout).expect("armored key")
-    })
+    KEY.get_or_init(|| signing_key_expiring("never"))
+}
+
+/// The same, but expiring in a year (preflight warns about it).
+fn expiring_signing_key() -> &'static str {
+    static KEY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| signing_key_expiring("1y"))
+}
+
+fn signing_key_expiring(expiry: &str) -> String {
+    let directory = tempdir().expect("tempdir");
+    let home = directory.path().join("gpg");
+    fs::create_dir(&home).expect("gnupg home");
+    fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).expect("mode");
+    let gpg = |arguments: &[&str]| {
+        let mut command = common::sandboxed("gpg", directory.path());
+        command.env("GNUPGHOME", &home).args(arguments);
+        common::run_other_tool(&mut command)
+    };
+    let made = gpg(&[
+        "--batch",
+        "--pinentry-mode",
+        "loopback",
+        "--passphrase",
+        "",
+        "--quick-gen-key",
+        "preflight test <preflight@example.invalid>",
+        "ed25519",
+        "sign",
+        expiry,
+    ]);
+    assert!(made.status.success(), "{}", stderr_of(&made));
+    let exported = gpg(&["--batch", "--armor", "--export-secret-keys"]);
+    assert!(exported.status.success(), "{}", stderr_of(&exported));
+    let mut command = common::sandboxed("gpgconf", directory.path());
+    command
+        .env("GNUPGHOME", &home)
+        .args(["--kill", "gpg-agent"]);
+    common::run_other_tool(&mut command);
+    String::from_utf8(exported.stdout).expect("armored key")
 }
 
 struct PublishTree {
@@ -5443,6 +5451,173 @@ fn remove_also_deletes_the_gnupg_homes_a_killed_step_left_with_the_private_key_i
     assert!(missing.status.success(), "{}", stderr_of(&missing));
 }
 
+/// Makes each path (a directory) unwritable for its owner, so `rm -rf` cannot empty it, and puts the
+/// mode back when dropped so the test's temporary directory can be deleted, a failed assert included.
+struct Locked(Vec<std::path::PathBuf>);
+
+impl Locked {
+    fn new(directories: Vec<std::path::PathBuf>) -> Self {
+        for directory in &directories {
+            fs::set_permissions(directory, fs::Permissions::from_mode(0o500)).expect("lock");
+        }
+        Locked(directories)
+    }
+}
+
+impl Drop for Locked {
+    fn drop(&mut self) {
+        for directory in &self.0 {
+            let _ = fs::set_permissions(directory, fs::Permissions::from_mode(0o700));
+        }
+    }
+}
+
+/// A directory holding one file.
+fn directory_with_file(path: &Path) {
+    fs::create_dir(path).expect("directory");
+    fs::write(path.join("private-keys-v1.d"), "x").expect("file");
+}
+
+impl PublishTree {
+    /// A `gpgconf` that records `<GNUPGHOME>|<arguments>` and does nothing else.
+    fn gpgconf_stub(&self) {
+        write_executable(
+            &self.stubs.join("gpgconf"),
+            "#!/bin/sh\nprintf '%s|%s\\n' \"$GNUPGHOME\" \"$*\" >>\"$STUB_GPGCONF_LOG\"\n",
+        );
+    }
+}
+
+#[test]
+fn remove_looks_only_at_the_top_of_the_base_directory() {
+    let tree = PublishTree::new();
+    tree.gpgconf_stub();
+    let base = tree.path("leftovers");
+    fs::create_dir(&base).expect("base");
+    directory_with_file(&base.join("pdse-gpg.top"));
+    // Something that merely sits deeper under a directory that is not ours.
+    fs::create_dir_all(base.join("keepme")).expect("keepme");
+    directory_with_file(&base.join("keepme/pdse-gpg.inner"));
+    let output = tree.run(
+        "credentials.sh",
+        &["remove"],
+        &[
+            ("PUBLISH_GPG_TMPDIR", &base.display().to_string()),
+            (
+                "STUB_GPGCONF_LOG",
+                &tree.path("gpgconf.log").display().to_string(),
+            ),
+        ],
+    );
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    assert!(!base.join("pdse-gpg.top").exists());
+    assert!(
+        base.join("keepme/pdse-gpg.inner").exists(),
+        "a nested entry was removed: the search went below the top of the base directory"
+    );
+}
+
+#[test]
+fn an_entry_that_cannot_be_removed_does_not_stop_the_others_and_the_run_fails() {
+    let tree = PublishTree::new();
+    tree.gpgconf_stub();
+    let base = tree.path("leftovers");
+    fs::create_dir(&base).expect("base");
+    // Several entries of each kind, so that whatever order `find` lists them in, some of the
+    // removable ones come after the first that cannot be removed.
+    let mut stuck = Vec::new();
+    let mut removable = Vec::new();
+    for number in 0..5 {
+        let path = base.join(format!("pdse-gpg.stuck{number}"));
+        directory_with_file(&path);
+        stuck.push(path);
+        let path = base.join(format!("pdse-gpg.fine{number}"));
+        directory_with_file(&path);
+        removable.push(path);
+    }
+    fs::write(base.join("pdse-gpg.fine0.log"), "log\n").expect("log");
+    // The credentials directory is the first thing removed and cannot be either.
+    let credentials = tree.path("credentials");
+    directory_with_file(&credentials);
+    let mut to_lock = stuck.clone();
+    to_lock.push(credentials.clone());
+    let _locked = Locked::new(to_lock);
+    // A user that can write anywhere (root) cannot make an entry unremovable this way.
+    if fs::remove_file(stuck[0].join("private-keys-v1.d")).is_ok() {
+        eprintln!("skipped: this user can remove files from a read-only directory");
+        return;
+    }
+    let output = tree.run(
+        "credentials.sh",
+        &["remove"],
+        &[
+            ("PUBLISH_GPG_TMPDIR", &base.display().to_string()),
+            (
+                "STUB_GPGCONF_LOG",
+                &tree.path("gpgconf.log").display().to_string(),
+            ),
+        ],
+    );
+    assert_eq!(output.status.code(), Some(1), "{}", stderr_of(&output));
+    for path in &removable {
+        assert!(!path.exists(), "{} was left behind", path.display());
+    }
+    assert!(!base.join("pdse-gpg.fine0.log").exists());
+    // What it could not remove is still there, and each is named.
+    let text = stderr_of(&output);
+    for path in stuck.iter().chain([&credentials]) {
+        assert!(path.exists());
+        assert!(
+            text.contains(&path.display().to_string()),
+            "{} is not named: {text}",
+            path.display()
+        );
+    }
+}
+
+#[test]
+fn each_leftover_gnupg_home_has_its_agent_stopped_and_nothing_else_does() {
+    let tree = PublishTree::new();
+    tree.gpgconf_stub();
+    let base = tree.path("leftovers");
+    fs::create_dir(&base).expect("base");
+    directory_with_file(&base.join("pdse-gpg.AAAAAA"));
+    directory_with_file(&base.join("pdse-gpg.BBBBBB"));
+    // A log beside a home is a file, and a link to a directory is not a home: no agent to stop.
+    fs::write(base.join("pdse-gpg.AAAAAA.log"), "log\n").expect("log");
+    let elsewhere = tree.path("elsewhere");
+    directory_with_file(&elsewhere);
+    std::os::unix::fs::symlink(&elsewhere, base.join("pdse-gpg.link")).expect("link");
+    let log = tree.path("gpgconf.log");
+    let output = tree.run(
+        "credentials.sh",
+        &["remove"],
+        &[
+            ("PUBLISH_GPG_TMPDIR", &base.display().to_string()),
+            ("STUB_GPGCONF_LOG", &log.display().to_string()),
+        ],
+    );
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    let mut calls = tree.log("gpgconf.log");
+    calls.sort();
+    assert_eq!(
+        calls,
+        [
+            format!(
+                "{}|--kill gpg-agent",
+                base.join("pdse-gpg.AAAAAA").display()
+            ),
+            format!(
+                "{}|--kill gpg-agent",
+                base.join("pdse-gpg.BBBBBB").display()
+            ),
+        ]
+    );
+    // The link is removed, and what it pointed to is not.
+    assert!(!base.join("pdse-gpg.link").exists());
+    assert!(elsewhere.join("private-keys-v1.d").exists());
+}
+
 // --- preflight.sh (task 6.2) --------------------------------------------------------------------
 
 impl PublishTree {
@@ -5535,6 +5710,45 @@ fn a_preflight_with_four_working_credentials_passes_and_asks_the_aur_with_the_pi
     }
     // `ssh -T` to the AUR exits 1 on success; that is not a failure.
     assert!(stderr_of(&output).contains("Welcome to AUR"));
+}
+
+#[test]
+fn a_signing_key_with_an_expiry_warns_with_an_annotation_the_runner_reads_and_still_passes() {
+    let tree = PublishTree::new();
+    let good = tree.good_credentials();
+    let output = tree.preflight(&good);
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    assert!(
+        !stdout_of(&output).contains("::warning"),
+        "a key without an expiry warned: {}",
+        stdout_of(&output)
+    );
+    let expiring = tree.path("creds/expiring");
+    fs::write(&expiring, expiring_signing_key()).expect("expiring key");
+    let environment = with(
+        &good,
+        "APT_SIGNING_KEY_FILE",
+        &expiring.display().to_string(),
+    );
+    let output = tree.preflight(&environment);
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    // A workflow command counts only at the start of a line.
+    let stdout = stdout_of(&output);
+    let annotations: Vec<&str> = stdout
+        .lines()
+        .filter(|line| line.starts_with("::warning"))
+        .collect();
+    assert_eq!(annotations.len(), 1, "{stdout}\n{}", stderr_of(&output));
+    assert!(
+        annotations[0].contains("APT_SIGNING_KEY"),
+        "{}",
+        annotations[0]
+    );
+    assert!(
+        !stderr_of(&output).contains("::warning"),
+        "the annotation was printed twice, or with a prefix: {}",
+        stderr_of(&output)
+    );
 }
 
 #[test]
