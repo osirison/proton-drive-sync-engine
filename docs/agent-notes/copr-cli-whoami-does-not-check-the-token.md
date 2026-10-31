@@ -1,6 +1,6 @@
 ---
 trigger: copr-cli whoami, copr-cli list-packages, copr-cli build
-depends_on: packaging/release/preflight.sh, packaging/release/copr.sh
+depends_on: packaging/release/preflight.sh, packaging/release/copr.sh, packaging/release/token-expiry.sh
 recorded: 2026-10-13
 ---
 
@@ -22,5 +22,14 @@ Checked against copr-cli 2.6 (PyPI) and 2.7 (Fedora 43) in a throwaway `fedora:4
 - `build --nowait` prints a line `Created builds: <id> [<id>...]` and `watch-build <ids>` exits
   non-zero when a build failed or was cancelled.
 - `get` (the project) has no JSON output.
-- The 180-day token expiry is tracked by the repository variable `COPR_TOKEN_EXPIRES`
-  (`YYYY-MM-DD`, UTC, the last good day).
+- The token lasts 180 days, and nothing in `copr-cli` shows its age. It is tracked by the
+  repository variable `COPR_TOKEN_EXPIRES` (`YYYY-MM-DD`, UTC, the last good day; set it to 180
+  days after the token was made). `token-expiry.sh` is the one reader: `release.yml` warns 14 days
+  ahead (and on an empty, unparseable or past value; it never fails), the publish preflight fails on
+  an empty, unparseable or past value, and on one more than 200 days ahead (a typo that would
+  switch the check off). Nothing warns unless a tag is pushed or a publish runs.
+- To renew: sign in at https://copr.fedorainfracloud.org/api/ , copy the new `~/.config/copr` text
+  into the environment secret `COPR_CONFIG` (environment `release`), then set
+  `COPR_TOKEN_EXPIRES` to the new last day. Steps and commands: `docs/releasing.md`. An expired
+  token that was not renewed first shows at `build` ("Login invalid/expired"), and `whoami` still
+  succeeds.

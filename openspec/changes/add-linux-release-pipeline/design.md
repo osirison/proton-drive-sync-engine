@@ -508,6 +508,81 @@ Alternatives rejected:
 - **Release assets as the pool:** apt needs one base URL with a `dists/` tree, and Pages cannot
   redirect.
 
+Decisions made when writing the apt step (`apt-publish.sh`, `apt-client.sh`; the brief and the
+design above did not settle them):
+
+- **The tree is a pure function of the published releases.** Every run rebuilds both suites from
+  the releases GitHub lists as published, whatever `PUBLISH_CHANNELS` says. A pre-release can only
+  enter `beta`; a final release enters both. So a run for one tag never drops or changes what
+  another tag contributed. `PUBLISH_CHANNELS` is required (it proves `route.sh` ran) and logged,
+  and selects nothing.
+- **"Newest three" is by version.** Suite `beta` holds the newest 3 of all published releases,
+  finals included (D9: a final release reaches the beta channel too); suite `stable` holds the
+  newest 3 finals and does not exist until one is published. The order is `version.sh sort-key`
+  (numbers as numbers; alpha, beta, rc, then the final), never the release date, which a re-publish
+  or a back-dated release would change. It is the order dpkg gives the package versions.
+- **Withdrawal is the repository variable `APT_WITHDRAWN`**: release tags to leave out, split on
+  commas and white space without the shell's own splitting (a `v*` must not expand against the
+  working directory). A name that is not a release tag stops the run. It changes only what the tree
+  is built from, never the release, so it works whether or not the repository's releases are
+  immutable (off today; turning that on is the maintainer's decision, see below). The next older
+  release re-enters a window it leaves.
+- **The tag being published must be in the listing.** After the listing, the run stops unless the
+  tag's version is among the published releases (the listing can lag a release that was just
+  published; the remedy is to wait and run the step again). Two cases pass: a tag in
+  `APT_WITHDRAWN` (the tree is built without it and the step logs a deliberate rebuild; that applies
+  the withdrawal to apt alone, but `verify-apt` then waits for a version the tree no longer holds
+  and the run ends red, so the default is to dispatch the newest tag that is not withdrawn, which
+  also rolls the AUR back when the withdrawn version is the newest: the maintainer's choice), and a
+  tag older than the newest three (listed, only outside the window).
+- **A deb must say in its control file what its name says.** `apt-ftparchive` writes `Packages` from
+  the control file, so the name and `SHA256SUMS` are not enough: `dpkg-deb -f` (control only, no
+  maintainer script) must give a `Package` equal to the name's and one of the packages
+  `packaging/debian/control` declares, a `Version` equal to `version.sh spell rpm` of the release
+  plus the name's revision (the one spelling rule), and the name's `Architecture`. A missing field
+  or a non-deb refuses. The check runs before anything else reads the file.
+- **A signature already on `gh-pages` that does not verify counts as "differs".** `InRelease` and
+  `Release.gpg` are still not compared byte for byte, but the existing ones are checked with `gpgv`
+  against the new tree's keys, so a damaged or foreign signature is repaired by the next run.
+- **Immutable releases** (repository setting, off today, maintainer's decision, described in
+  `docs/releasing.md`): the apt step trusts a release's debs and `SHA256SUMS`, which are assets of
+  the same release, so replacing both after publishing would be signed in on the next run. Nothing in
+  the pipeline modifies a published release (`draft.sh` refuses one before its first write;
+  `name-assets.sh` is local; `publish.yml` has `contents: read`), so turning it on breaks no step.
+  Its cost is that a published release cannot be repaired and its tag cannot be reused.
+- **A published release whose `prerelease` flag disagrees with its tag stops the run** when it would
+  be used, and so does a release in the window with no deb, a deb that `SHA256SUMS` does not list or
+  lists differently, or more than one main package: nothing is skipped silently.
+- **The push is skipped when only `Date:` differs.** `Release`'s `Date:` is the clock (apt 2.4
+  ignores `SOURCE_DATE_EPOCH`), and `InRelease` and `Release.gpg` differ on every run, so none can
+  decide "changed". The comparison is the pool, the `Packages` files, the keys, `.nojekyll`, and
+  each `Release` without its `Date:` line. `Packages` is written from a sorted file list so the same
+  releases give the same bytes. The push is a single-commit force-push of `gh-pages`.
+- **A key file may hold several secret keys, and all of them sign** (rotation: one release signed by
+  both keys). In a real run, dry run included, their primary fingerprints must equal exactly the set
+  in `packaging/release/apt-key-fingerprints.txt`, which is empty until the key exists (task 5.3),
+  so nothing signs before then. The verification compares the key the site serves with the same
+  file.
+- **A dry run uses the key once.** It signs the real `Release` of the first suite in a throwaway
+  home, verifies it with `gpgv` against the key's own public half, and discards it; the public keys
+  are written to the tree (the comparison reads them, and a dry run after a real publish of the same
+  releases would otherwise always say "would force-push"). Nothing is signed into the tree or pushed.
+- **Only an uncompressed `Packages`, and no `by-hash`.** Known gap: Pages caches every file for ten
+  minutes (`max-age=600`), so for that long a client can read the new `InRelease` with the old
+  `Packages` and fail with a hash mismatch. `verify-apt.sh` treats a failed `apt update` as "not
+  there yet" and polls for up to 1500 seconds.
+- **The client text has one definition**, `apt-client.sh print`, which prints the D10 block exactly
+  for `beta` (a test holds that). The pull-request job, the verification and (task 8) the docs read
+  it and keep no copy.
+- **Signature verifiers.** Checked on 2026-10-13: Ubuntu 22.04 (apt 2.4) and Ubuntu 26.04 (apt 3.2.0)
+  verify with `gpgv`; Debian 13 (apt 3.0.3, `sqv` 1.3.0) is the cell that verifies with `sqv`.
+  The expectation is asserted on every run (`VERIFY_EXPECT_VERIFIER`), so an image that changes
+  verifier fails loudly. The key (Ed25519, SHA-512) is accepted by all three.
+- **Known limits.** Two different tags published at the same moment can race on the force-push (the
+  concurrency group is per tag); a re-run of either repairs it. Containers get `sudo`, `curl` and
+  `ca-certificates` installed first (the documented text uses them), so `smoke-test.sh`'s check for
+  `curl` cannot prove the package recommends it there; `smoke-deb` in `packages.yml` covers that.
+
 ### D11. Secrets live in one environment that needs a reviewer
 
 All publish credentials are secrets of a GitHub environment named `release`, whose required
@@ -516,7 +591,10 @@ The approval is a click on a run, not a review of the code that run executes: fo
 it is a self-click, so it does not by itself stop a `workflow_dispatch` of a workflow edited on a
 branch from reading the keys. What does is the environment's **deployment branches and tags**
 setting, limited to `main` and tags matching `v*` (task 5.5); the file that runs is then main's or a
-tag's. The publish job also checks out the tag's commit and runs the release gate on it before it
+tag's. That does not close a `v*` tag: whoever can push one can dispatch `--ref <tag>` and run
+`publish.yml` as edited there. Tag creation is restricted by the ruleset "Release tags v*" (the
+repository admin role bypasses it), and the reviewer's approval is what stands between such a tag
+and the secrets. The publish job also checks out the tag's commit and runs the release gate on it before it
 writes a secret (`tag-checkout.sh`), so a dispatch from any ref publishes the tag's own scripts and
 packaging, and a tag made by hand on a commit that is not on `main` publishes nothing.
 
@@ -531,10 +609,11 @@ packaging, and a tag made by hand on a commit that is not on `main` publishes no
 
 **Key algorithm: Ed25519, signing over SHA-512.**
 
-- Newer apt verifies with `sqv`, which rejects SHA-1 and weak RSA.
+- Newer apt can verify with `sqv`, which rejects SHA-1 and weak RSA. Checked 2026-10-13: Debian 13
+  (apt 3.0.3) does; Ubuntu 26.04 (apt 3.2.0) still uses `gpgv`, as does Ubuntu 22.04 (apt 2.4).
 - GnuPG 2.2 on Ubuntu 22.04 verifies Ed25519.
-- The live-apt verification runs on 22.04 (oldest apt) and 26.04 (newest), so both ends are
-  checked.
+- The live-apt verification runs on 22.04 (oldest apt, `gpgv`), Debian 13 (`sqv`) and 26.04
+  (newest apt, `gpgv`), so both verifiers and both ends are checked.
 - RSA 4096 is the fallback if a supported release refuses the key.
 
 **Why the signing key has no expiry.** Users hold the key as a file named by `Signed-By`. If the
@@ -672,9 +751,26 @@ stubs like `draft.sh`; the workflow only calls them):
   `copr-cli build` or `watch-build`, and never commits or pushes. A dispatch's `dry_run` defaults to
   true.
 - **Known limits.** GitHub keeps one pending run per concurrency group, so a third run for a tag
-  replaces the waiting second; `copr-cli` is installed from a hash-locked requirements file (Python 3.12 markers); the two
-  verification jobs and the apt step (6.3, 6.6) are a later change and have marked places in the
-  file.
+  replaces the waiting second; `copr-cli` is installed from a hash-locked requirements file (Python 3.12 markers).
+
+Decisions made when writing the verification jobs (6.6; `verify-channel.sh` and `verify-<family>.sh`):
+
+- **`needs: publish`.** A failed publish job skips every verification (the run is already red and
+  names the channel; re-run with `workflow_dispatch`). A dry run skips them too: it publishes
+  nothing, so there is nothing to find.
+- **They run the tag's scripts.** Each job repeats `route.sh` and `tag-checkout.sh`, then
+  `verify-channel.sh` runs `verify-<family>.sh` of the tag in a clean container of the distribution
+  being checked, with the checkout mounted read-only and nothing else. A tag cut before these
+  scripts existed cannot be verified here, as with the publish job. No secret and no environment.
+- **The version is exact.** COPR is asked for `name-<rpm version>`, apt for the exact version found
+  in the suite, and the AUR build's `pkgver` is compared first (seconds, not a ten-minute build) and
+  the installed version after. Any release number is accepted; the version is compared as text, not
+  as a pattern (`0x1x0beta1-1` once passed for `0.1.0beta1`).
+- **They wait for the channel.** COPR retries the install for 600 s, apt polls up to 1500 s (above
+  the Pages cache of ten minutes); both settings can be shortened with environment names that the
+  tests use.
+- **Fedora lists.** `FEDORA_OLDEST`, `smoke-rpm`'s matrix and `verify-copr`'s matrix are three
+  copies of one list; a test holds them equal.
 
 ### D13. The install smoke test
 

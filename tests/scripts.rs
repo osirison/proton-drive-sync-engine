@@ -12,6 +12,17 @@
 
 mod common;
 
+// The apt channel and the verification jobs (openspec change add-linux-release-pipeline, tasks 6.3
+// and 6.6). They use this file's `PublishTree`, stubs and workflow readers through `super::*`.
+#[path = "scripts/apt.rs"]
+mod apt;
+#[path = "scripts/apt_publish.rs"]
+mod apt_publish;
+#[path = "scripts/runbook.rs"]
+mod runbook;
+#[path = "scripts/verify.rs"]
+mod verify;
+
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -3006,6 +3017,7 @@ fn packages_ok_lists_every_build_and_smoke_job() {
         "smoke-rpm",
         "smoke-deb",
         "smoke-arch",
+        "apt-repo",
         "release-assets",
     ] {
         assert!(
@@ -3035,6 +3047,8 @@ fn packages_ok_lists_every_build_and_smoke_job() {
         ("smoke-rpm", "rpm"),
         ("smoke-deb", "deb"),
         ("smoke-arch", "arch"),
+        // The apt repository job installs the deb the deb job made.
+        ("apt-repo", "deb"),
     ] {
         let block = workflow
             .split(&format!("\n  {smoke}:\n"))
@@ -4834,41 +4848,49 @@ shift 3
 exec bash "$@"
 "#;
 
-/// The secret half of a throwaway Ed25519 key, armored, made once per test binary.
+/// The secret half of a throwaway Ed25519 key, armored, made once per test binary. It never expires.
 fn test_signing_key() -> &'static str {
     static KEY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    KEY.get_or_init(|| {
-        let directory = tempdir().expect("tempdir");
-        let home = directory.path().join("gpg");
-        fs::create_dir(&home).expect("gnupg home");
-        fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).expect("mode");
-        let gpg = |arguments: &[&str]| {
-            let mut command = common::sandboxed("gpg", directory.path());
-            command.env("GNUPGHOME", &home).args(arguments);
-            common::run_other_tool(&mut command)
-        };
-        let made = gpg(&[
-            "--batch",
-            "--pinentry-mode",
-            "loopback",
-            "--passphrase",
-            "",
-            "--quick-gen-key",
-            "preflight test <preflight@example.invalid>",
-            "ed25519",
-            "sign",
-            "never",
-        ]);
-        assert!(made.status.success(), "{}", stderr_of(&made));
-        let exported = gpg(&["--batch", "--armor", "--export-secret-keys"]);
-        assert!(exported.status.success(), "{}", stderr_of(&exported));
-        let mut command = common::sandboxed("gpgconf", directory.path());
-        command
-            .env("GNUPGHOME", &home)
-            .args(["--kill", "gpg-agent"]);
-        common::run_other_tool(&mut command);
-        String::from_utf8(exported.stdout).expect("armored key")
-    })
+    KEY.get_or_init(|| signing_key_expiring("never"))
+}
+
+/// The same, but expiring in a year (preflight warns about it).
+fn expiring_signing_key() -> &'static str {
+    static KEY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| signing_key_expiring("1y"))
+}
+
+fn signing_key_expiring(expiry: &str) -> String {
+    let directory = tempdir().expect("tempdir");
+    let home = directory.path().join("gpg");
+    fs::create_dir(&home).expect("gnupg home");
+    fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).expect("mode");
+    let gpg = |arguments: &[&str]| {
+        let mut command = common::sandboxed("gpg", directory.path());
+        command.env("GNUPGHOME", &home).args(arguments);
+        common::run_other_tool(&mut command)
+    };
+    let made = gpg(&[
+        "--batch",
+        "--pinentry-mode",
+        "loopback",
+        "--passphrase",
+        "",
+        "--quick-gen-key",
+        "preflight test <preflight@example.invalid>",
+        "ed25519",
+        "sign",
+        expiry,
+    ]);
+    assert!(made.status.success(), "{}", stderr_of(&made));
+    let exported = gpg(&["--batch", "--armor", "--export-secret-keys"]);
+    assert!(exported.status.success(), "{}", stderr_of(&exported));
+    let mut command = common::sandboxed("gpgconf", directory.path());
+    command
+        .env("GNUPGHOME", &home)
+        .args(["--kill", "gpg-agent"]);
+    common::run_other_tool(&mut command);
+    String::from_utf8(exported.stdout).expect("armored key")
 }
 
 struct PublishTree {
@@ -4891,6 +4913,13 @@ impl PublishTree {
             )
             .expect("copy a release script");
         }
+        // The packages this project ships, which apt-publish.sh reads from the packaging.
+        fs::create_dir_all(tree.join("debian")).expect("debian");
+        fs::copy(
+            root.join("packaging/debian/control"),
+            tree.join("debian/control"),
+        )
+        .expect("debian/control");
         let stubs = directory.path().join("publish-stubs");
         fs::create_dir(&stubs).expect("stubs");
         write_executable(&stubs.join("gh"), PUBLISH_GH_STUB);
@@ -4904,6 +4933,7 @@ impl PublishTree {
         write_executable(&container.join("chown"), CONTAINER_LOG_STUB);
         write_executable(&container.join("su"), CONTAINER_SU_STUB);
         fs::create_dir(directory.path().join("packages")).expect("packages");
+        fs::create_dir(directory.path().join("gpg-default")).expect("gpg-default");
         PublishTree { directory, stubs }
     }
 
@@ -4941,7 +4971,11 @@ impl PublishTree {
             .env("STUB_DOCKER_LOG", self.path("docker.log"))
             .env("STUB_CONTAINER_LOG", self.path("container.log"))
             .env("STUB_CONTAINER_BIN", self.path("container-stubs"))
-            .env("TODAY", "2027-01-01");
+            .env("TODAY", "2027-01-01")
+            // Where the signing scripts make their throwaway GnuPG homes (and `credentials.sh remove`
+            // looks for leftovers): inside the test, never the machine's /tmp, so a test that is
+            // killed leaves nothing there and `remove` cannot touch another run's homes.
+            .env("PUBLISH_GPG_TMPDIR", self.path("gpg-default"));
         for name in [
             "DRY_RUN",
             "PUBLISH_DRY_RUN",
@@ -4957,7 +4991,24 @@ impl PublishTree {
             "AUR_GIT_EMAIL",
             "AUR_REMOTE_BASE",
             "AUR_GENERATOR",
+            "AUR_CLONE_BASE",
             "GITHUB_PATH",
+            // What the apt and verification scripts read: a value on the host must not leak in.
+            "APT_WITHDRAWN",
+            "APT_GIT_NAME",
+            "APT_GIT_EMAIL",
+            "APT_FINGERPRINT_FILE",
+            "APT_CLIENT_ROOT",
+            "PUBLISH_TAG",
+            "VERIFY_APT_URI",
+            "VERIFY_APT_KEY_URL",
+            "VERIFY_APT_WAIT_SECS",
+            "VERIFY_APT_POLL_SECS",
+            "VERIFY_COPR_WAIT_SECS",
+            "VERIFY_COPR_POLL_SECS",
+            "VERIFY_EXPECT_VERIFIER",
+            "VERIFY_AUR_HOME",
+            "VERIFY_AUR_SUDOERS",
         ] {
             command.env_remove(name);
         }
@@ -5345,6 +5396,228 @@ fn the_credentials_are_written_private_an_empty_secret_gets_no_file_and_remove_d
     assert!(!directory.exists());
 }
 
+#[test]
+fn remove_also_deletes_the_gnupg_homes_a_killed_step_left_with_the_private_key_in_them() {
+    // apt-publish.sh and preflight.sh import the signing key into a throwaway home and remove it
+    // from an EXIT trap, which a SIGKILL or a runner timeout never runs. `remove` runs under
+    // `if: always()` and is the last chance. It takes only what these scripts make.
+    let tree = PublishTree::new();
+    let base = tree.path("leftovers");
+    fs::create_dir(&base).expect("base");
+    let make = |name: &str| {
+        let home = base.join(name);
+        fs::create_dir(&home).expect("home");
+        fs::write(home.join("private-keys-v1.d"), "x").expect("file");
+        home
+    };
+    let homes = [make("pdse-gpg.AbC123"), make("pdse-gpg.zzzzzz")];
+    // preflight.sh's log file sits beside its home.
+    fs::write(base.join("pdse-gpg.AbC123.log"), "gpg output\n").expect("log");
+    let other = make("something-else");
+    fs::write(base.join("pdse-gpg"), "no dot, not ours").expect("file");
+    let output = tree.run(
+        "credentials.sh",
+        &["remove"],
+        &[("PUBLISH_GPG_TMPDIR", &base.display().to_string())],
+    );
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    for home in &homes {
+        assert!(!home.exists(), "{} was left", home.display());
+    }
+    assert!(!base.join("pdse-gpg.AbC123.log").exists());
+    assert!(
+        other.exists(),
+        "a directory that is not a gpg home was removed"
+    );
+    assert!(
+        base.join("pdse-gpg").exists(),
+        "a file with another name was removed"
+    );
+    // Nothing to remove, and a base that does not exist, are not errors.
+    let again = tree.run(
+        "credentials.sh",
+        &["remove"],
+        &[("PUBLISH_GPG_TMPDIR", &base.display().to_string())],
+    );
+    assert!(again.status.success(), "{}", stderr_of(&again));
+    let missing = tree.run(
+        "credentials.sh",
+        &["remove"],
+        &[(
+            "PUBLISH_GPG_TMPDIR",
+            &tree.path("no-such-dir").display().to_string(),
+        )],
+    );
+    assert!(missing.status.success(), "{}", stderr_of(&missing));
+}
+
+/// Makes each path (a directory) unwritable for its owner, so `rm -rf` cannot empty it, and puts the
+/// mode back when dropped so the test's temporary directory can be deleted, a failed assert included.
+struct Locked(Vec<std::path::PathBuf>);
+
+impl Locked {
+    fn new(directories: Vec<std::path::PathBuf>) -> Self {
+        for directory in &directories {
+            fs::set_permissions(directory, fs::Permissions::from_mode(0o500)).expect("lock");
+        }
+        Locked(directories)
+    }
+}
+
+impl Drop for Locked {
+    fn drop(&mut self) {
+        for directory in &self.0 {
+            let _ = fs::set_permissions(directory, fs::Permissions::from_mode(0o700));
+        }
+    }
+}
+
+/// A directory holding one file.
+fn directory_with_file(path: &Path) {
+    fs::create_dir(path).expect("directory");
+    fs::write(path.join("private-keys-v1.d"), "x").expect("file");
+}
+
+impl PublishTree {
+    /// A `gpgconf` that records `<GNUPGHOME>|<arguments>` and does nothing else.
+    fn gpgconf_stub(&self) {
+        write_executable(
+            &self.stubs.join("gpgconf"),
+            "#!/bin/sh\nprintf '%s|%s\\n' \"$GNUPGHOME\" \"$*\" >>\"$STUB_GPGCONF_LOG\"\n",
+        );
+    }
+}
+
+#[test]
+fn remove_looks_only_at_the_top_of_the_base_directory() {
+    let tree = PublishTree::new();
+    tree.gpgconf_stub();
+    let base = tree.path("leftovers");
+    fs::create_dir(&base).expect("base");
+    directory_with_file(&base.join("pdse-gpg.top"));
+    // Something that merely sits deeper under a directory that is not ours.
+    fs::create_dir_all(base.join("keepme")).expect("keepme");
+    directory_with_file(&base.join("keepme/pdse-gpg.inner"));
+    let output = tree.run(
+        "credentials.sh",
+        &["remove"],
+        &[
+            ("PUBLISH_GPG_TMPDIR", &base.display().to_string()),
+            (
+                "STUB_GPGCONF_LOG",
+                &tree.path("gpgconf.log").display().to_string(),
+            ),
+        ],
+    );
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    assert!(!base.join("pdse-gpg.top").exists());
+    assert!(
+        base.join("keepme/pdse-gpg.inner").exists(),
+        "a nested entry was removed: the search went below the top of the base directory"
+    );
+}
+
+#[test]
+fn an_entry_that_cannot_be_removed_does_not_stop_the_others_and_the_run_fails() {
+    let tree = PublishTree::new();
+    tree.gpgconf_stub();
+    let base = tree.path("leftovers");
+    fs::create_dir(&base).expect("base");
+    // Several entries of each kind, so that whatever order `find` lists them in, some of the
+    // removable ones come after the first that cannot be removed.
+    let mut stuck = Vec::new();
+    let mut removable = Vec::new();
+    for number in 0..5 {
+        let path = base.join(format!("pdse-gpg.stuck{number}"));
+        directory_with_file(&path);
+        stuck.push(path);
+        let path = base.join(format!("pdse-gpg.fine{number}"));
+        directory_with_file(&path);
+        removable.push(path);
+    }
+    fs::write(base.join("pdse-gpg.fine0.log"), "log\n").expect("log");
+    // The credentials directory is the first thing removed and cannot be either.
+    let credentials = tree.path("credentials");
+    directory_with_file(&credentials);
+    let mut to_lock = stuck.clone();
+    to_lock.push(credentials.clone());
+    let _locked = Locked::new(to_lock);
+    // A user that can write anywhere (root) cannot make an entry unremovable this way.
+    if fs::remove_file(stuck[0].join("private-keys-v1.d")).is_ok() {
+        eprintln!("skipped: this user can remove files from a read-only directory");
+        return;
+    }
+    let output = tree.run(
+        "credentials.sh",
+        &["remove"],
+        &[
+            ("PUBLISH_GPG_TMPDIR", &base.display().to_string()),
+            (
+                "STUB_GPGCONF_LOG",
+                &tree.path("gpgconf.log").display().to_string(),
+            ),
+        ],
+    );
+    assert_eq!(output.status.code(), Some(1), "{}", stderr_of(&output));
+    for path in &removable {
+        assert!(!path.exists(), "{} was left behind", path.display());
+    }
+    assert!(!base.join("pdse-gpg.fine0.log").exists());
+    // What it could not remove is still there, and each is named.
+    let text = stderr_of(&output);
+    for path in stuck.iter().chain([&credentials]) {
+        assert!(path.exists());
+        assert!(
+            text.contains(&path.display().to_string()),
+            "{} is not named: {text}",
+            path.display()
+        );
+    }
+}
+
+#[test]
+fn each_leftover_gnupg_home_has_its_agent_stopped_and_nothing_else_does() {
+    let tree = PublishTree::new();
+    tree.gpgconf_stub();
+    let base = tree.path("leftovers");
+    fs::create_dir(&base).expect("base");
+    directory_with_file(&base.join("pdse-gpg.AAAAAA"));
+    directory_with_file(&base.join("pdse-gpg.BBBBBB"));
+    // A log beside a home is a file, and a link to a directory is not a home: no agent to stop.
+    fs::write(base.join("pdse-gpg.AAAAAA.log"), "log\n").expect("log");
+    let elsewhere = tree.path("elsewhere");
+    directory_with_file(&elsewhere);
+    std::os::unix::fs::symlink(&elsewhere, base.join("pdse-gpg.link")).expect("link");
+    let log = tree.path("gpgconf.log");
+    let output = tree.run(
+        "credentials.sh",
+        &["remove"],
+        &[
+            ("PUBLISH_GPG_TMPDIR", &base.display().to_string()),
+            ("STUB_GPGCONF_LOG", &log.display().to_string()),
+        ],
+    );
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    let mut calls = tree.log("gpgconf.log");
+    calls.sort();
+    assert_eq!(
+        calls,
+        [
+            format!(
+                "{}|--kill gpg-agent",
+                base.join("pdse-gpg.AAAAAA").display()
+            ),
+            format!(
+                "{}|--kill gpg-agent",
+                base.join("pdse-gpg.BBBBBB").display()
+            ),
+        ]
+    );
+    // The link is removed, and what it pointed to is not.
+    assert!(!base.join("pdse-gpg.link").exists());
+    assert!(elsewhere.join("private-keys-v1.d").exists());
+}
+
 // --- preflight.sh (task 6.2) --------------------------------------------------------------------
 
 impl PublishTree {
@@ -5437,6 +5710,45 @@ fn a_preflight_with_four_working_credentials_passes_and_asks_the_aur_with_the_pi
     }
     // `ssh -T` to the AUR exits 1 on success; that is not a failure.
     assert!(stderr_of(&output).contains("Welcome to AUR"));
+}
+
+#[test]
+fn a_signing_key_with_an_expiry_warns_with_an_annotation_the_runner_reads_and_still_passes() {
+    let tree = PublishTree::new();
+    let good = tree.good_credentials();
+    let output = tree.preflight(&good);
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    assert!(
+        !stdout_of(&output).contains("::warning"),
+        "a key without an expiry warned: {}",
+        stdout_of(&output)
+    );
+    let expiring = tree.path("creds/expiring");
+    fs::write(&expiring, expiring_signing_key()).expect("expiring key");
+    let environment = with(
+        &good,
+        "APT_SIGNING_KEY_FILE",
+        &expiring.display().to_string(),
+    );
+    let output = tree.preflight(&environment);
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    // A workflow command counts only at the start of a line.
+    let stdout = stdout_of(&output);
+    let annotations: Vec<&str> = stdout
+        .lines()
+        .filter(|line| line.starts_with("::warning"))
+        .collect();
+    assert_eq!(annotations.len(), 1, "{stdout}\n{}", stderr_of(&output));
+    assert!(
+        annotations[0].contains("APT_SIGNING_KEY"),
+        "{}",
+        annotations[0]
+    );
+    assert!(
+        !stderr_of(&output).contains("::warning"),
+        "the annotation was printed twice, or with a prefix: {}",
+        stderr_of(&output)
+    );
 }
 
 #[test]
@@ -6353,19 +6665,25 @@ fn the_pinned_host_keys_are_the_published_fingerprints_of_the_two_hosts() {
 
 // --- publish.yml and release.yml ----------------------------------------------------------------
 
-const PUBLISH_PINNED_EXPRESSION_LINES: [(&str, usize); 9] = [
+const PUBLISH_PINNED_EXPRESSION_LINES: [(&str, usize); 13] = [
     (
         "group: publish-${{ github.event.release.tag_name || inputs.tag }}",
         1,
     ),
-    ("GH_TOKEN: ${{ github.token }}", 1),
-    ("TAG: ${{ github.event.release.tag_name || inputs.tag }}", 1),
+    // The publish job and the three verification jobs, each with the read-only token.
+    ("GH_TOKEN: ${{ github.token }}", 4),
+    // route.sh runs in the publish job and in each of the three verification jobs.
+    ("TAG: ${{ github.event.release.tag_name || inputs.tag }}", 4),
     ("DRY_RUN: ${{ inputs.dry_run }}", 1),
     ("COPR_CONFIG: ${{ secrets.COPR_CONFIG }}", 1),
     ("AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}", 1),
     ("APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}", 1),
     ("APT_DEPLOY_KEY: ${{ secrets.APT_DEPLOY_KEY }}", 1),
     ("COPR_TOKEN_EXPIRES: ${{ vars.COPR_TOKEN_EXPIRES }}", 1),
+    ("APT_WITHDRAWN: ${{ vars.APT_WITHDRAWN }}", 1),
+    ("IMAGE: fedora:${{ matrix.fedora }}", 1),
+    ("IMAGE: ${{ matrix.image }}", 1),
+    ("VERIFY_EXPECT_VERIFIER: ${{ matrix.verifier }}", 1),
 ];
 
 #[test]
@@ -6435,8 +6753,9 @@ fn only_the_publish_job_reads_secrets_and_it_runs_in_the_release_environment() {
     // Permissions: contents read at the top, and no job asks for more.
     assert_eq!(permission_blocks(&publish), [vec!["contents: read"]]);
     assert!(!publish.contains("contents: write") && !publish.contains("write-all"));
-    // The default token reads: it is the only token, and it is not a secret.
-    assert_eq!(publish.matches("github.token").count(), 1);
+    // The default token reads: it is the only token, and it is not a secret. One in the publish
+    // job and one in each verification job.
+    assert_eq!(publish.matches("github.token").count(), 4);
     // One run at a time per tag, never cancelled.
     assert!(publish.contains("concurrency:\n  group: publish-${{ github.event.release.tag_name || inputs.tag }}\n  cancel-in-progress: false\n"));
     assert!(!publish.contains("cancel-in-progress: true"));
@@ -6506,6 +6825,8 @@ fn the_publish_steps_run_in_order_and_each_channel_runs_after_a_good_preflight_e
         "name: Install copr-cli",
         "name: Write the credentials",
         "name: Preflight",
+        // Apt before the AUR before COPR: the apt step is the quickest and the COPR step waits on builds.
+        "name: apt\n",
         "name: AUR",
         "name: COPR",
         "name: Check every step succeeded",
@@ -6518,7 +6839,7 @@ fn the_publish_steps_run_in_order_and_each_channel_runs_after_a_good_preflight_e
     );
     // Channel steps: not after a cancel, only after a successful preflight; never `always()` (a
     // person cancelling the run must stop the publishing), and never continue-on-error.
-    for step in ["AUR", "COPR"] {
+    for step in ["apt", "AUR", "COPR"] {
         let block = job
             .split("      - name: ")
             .find(|s| s.starts_with(&format!("{step}\n")))
@@ -6533,7 +6854,7 @@ fn the_publish_steps_run_in_order_and_each_channel_runs_after_a_good_preflight_e
     assert!(!job.contains("continue-on-error"));
     assert!(job.contains("id: preflight\n"));
     // The final step names the steps it checks; the cleanup always runs.
-    assert!(job.contains("if: \"always() && steps.route.outcome == 'success'\"\n        run: packaging/release/aggregate.sh preflight aur copr\n"), "the final step is missing or ungated");
+    assert!(job.contains("if: \"always() && steps.route.outcome == 'success'\"\n        run: packaging/release/aggregate.sh preflight apt aur copr\n"), "the final step is missing, ungated, or does not list every step");
     assert!(
         job.contains("if: always()\n        run: packaging/release/credentials.sh remove\n"),
         "the cleanup step is missing or ungated"
@@ -6543,16 +6864,29 @@ fn the_publish_steps_run_in_order_and_each_channel_runs_after_a_good_preflight_e
         "packaging/release/route.sh \"$TAG\"",
         "packaging/release/tag-checkout.sh \"$PUBLISH_TAG\"",
         "packaging/release/preflight.sh",
+        "packaging/release/apt-publish.sh \"$PUBLISH_TAG\"",
         "packaging/release/aur-publish.sh \"$PUBLISH_TAG\"",
         "packaging/release/copr.sh \"$PUBLISH_TAG\"",
     ] {
         assert!(job.contains(&format!("run: {call}\n")), "{call}");
     }
-    // The place the next change plugs the apt step and the verification jobs into is marked.
-    assert!(
-        publish.contains("PR 4b plugs the apt step in HERE")
-            && publish.contains("PR 4b adds the verification jobs HERE")
-    );
+    // The aggregate names exactly the steps that record a result, in step order (each of them
+    // calls record_on_exit with its own name).
+    for step in ["apt", "aur", "copr"] {
+        assert!(
+            job.contains(&format!("id: {step}\n")),
+            "no step with id {step}"
+        );
+    }
+    // The three verification jobs exist, run after the publish job and only for a real run.
+    for name in ["verify-copr", "verify-aur", "verify-apt"] {
+        let block = job_block(&publish, name);
+        assert!(block.contains("    needs: publish\n"), "{name}: {block}");
+        assert!(
+            block.contains("    if: \"!inputs.dry_run\"\n"),
+            "{name}: {block}"
+        );
+    }
     // A release is never published from a workflow, and nothing writes to a release.
     assert!(
         !publish.contains("gh release"),
@@ -6576,11 +6910,25 @@ fn the_copr_namespace_is_written_once_in_the_workflow_and_nowhere_in_the_scripts
     for entry in fs::read_dir(&directory).expect("release dir") {
         let path = entry.expect("entry").path();
         let text = fs::read_to_string(&path).expect("script");
+        // The one other place the name appears is the apt repository's public address, the GitHub
+        // Pages host of the repository's owner (design D10): a different namespace, which a user
+        // types and so cannot be read from a variable. It is allowed in that file, on that one
+        // line, and nowhere else.
+        let allowed =
+            "readonly SITE_URL=\"https://osirison.github.io/proton-drive-sync-engine-apt/\"";
+        let is_client = path.file_name().is_some_and(|name| name == "apt-client.sh");
+        let remaining = if is_client {
+            assert_eq!(text.matches(allowed).count(), 1, "{}", path.display());
+            text.replacen(allowed, "", 1)
+        } else {
+            text
+        };
         assert!(
-            !text.contains("osirison"),
+            !remaining.contains("osirison"),
             "{} holds the COPR namespace",
             path.display()
         );
+        let text = remaining;
         // None of the scripts writes to a release or the API.
         if path.file_name().is_some_and(|name| name != "draft.sh") {
             for write in [
@@ -7495,10 +7843,12 @@ fn copr_cli_is_installed_from_the_hash_locked_file_with_hashes_required_and_no_d
         .lines()
         .filter(|line| line.contains(" install "))
         .collect();
+    // The only other install is apt-utils, for apt-ftparchive, from the runner's own distribution.
     assert_eq!(
         installs,
         [
-            "          \"$RUNNER_TEMP/copr-venv/bin/pip\" install --quiet --require-hashes --no-deps -r packaging/release/copr-cli-requirements.txt"
+            "          \"$RUNNER_TEMP/copr-venv/bin/pip\" install --quiet --require-hashes --no-deps -r packaging/release/copr-cli-requirements.txt",
+            "          sudo apt-get install -y -qq --no-install-recommends apt-utils",
         ]
     );
     let requirements = fs::read_to_string(

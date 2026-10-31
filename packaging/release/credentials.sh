@@ -11,7 +11,10 @@
 # paths are handed to the later steps through GITHUB_ENV (or printed, when it is not set) as
 # COPR_CONFIG_FILE, AUR_SSH_KEY_FILE, APT_SIGNING_KEY_FILE and APT_DEPLOY_KEY_FILE.
 #
-# `remove` deletes the whole directory; the workflow runs it in an `if: always()` step.
+# `remove` deletes the whole directory, and any `pdse-gpg.*` GnuPG home or log a killed apt or
+# preflight step left in PUBLISH_GPG_TMPDIR (default /tmp), because those hold the imported private
+# key and their EXIT trap does not run on SIGKILL; the workflow runs it in an `if: always()` step. It
+# tries every entry even when one cannot be removed, then exits 1 naming each that was left.
 #
 # PUBLISH_CREDENTIALS_DIR names the directory (default $RUNNER_TEMP/publish-credentials).
 set -euo pipefail
@@ -52,7 +55,27 @@ case "${1-}" in
     done
     ;;
   remove)
-    rm -rf -- "$dir"
+    # Every entry is tried, whatever an earlier one did (this is secrets cleanup, and `set -e` would
+    # stop at the first failure and leave the rest); the exit status is 1 if any could not be removed.
+    failed=()
+    rm -rf -- "$dir" || failed+=("$dir")
+    # apt-publish.sh and preflight.sh import the signing key into a throwaway GnuPG home
+    # (${PUBLISH_GPG_TMPDIR:-/tmp}/pdse-gpg.XXXXXX, short because of gpg-agent's socket path limit) and
+    # remove it from an EXIT trap. A SIGKILL or a runner timeout never runs the trap, and this step
+    # (`if: always()`) is the last chance. preflight.sh's log file sits beside its home.
+    gpg_base="${PUBLISH_GPG_TMPDIR:-/tmp}"
+    if [[ -d "$gpg_base" ]]; then
+      while IFS= read -r -d '' leftover; do
+        if [[ -d "$leftover" && ! -L "$leftover" ]]; then
+          GNUPGHOME="$leftover" gpgconf --kill gpg-agent >/dev/null 2>&1 || true
+        fi
+        rm -rf -- "$leftover" || failed+=("$leftover")
+      done < <(find "$gpg_base" -maxdepth 1 -name 'pdse-gpg.*' -user "$(id -u)" -print0)
+    fi
+    if ((${#failed[@]} > 0)); then
+      printf 'credentials.sh: could not remove %s\n' "${failed[@]}" >&2
+      exit 1
+    fi
     ;;
   *)
     die "usage: credentials.sh <write|remove>"

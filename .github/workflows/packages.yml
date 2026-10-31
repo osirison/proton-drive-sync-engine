@@ -477,6 +477,75 @@ jobs:
             "proton-drive-sync-engine-${UPSTREAM}/packaging/smoke-test.sh"
           bash packaging/smoke-test.sh "$UPSTREAM" arch first-install.txt second-install.txt
 
+  # The apt repository, proven before any secret exists (tasks 5.3 and 6.3, design D10/D11). The tree
+  # is made by the SAME script the publish step runs (apt-publish.sh --local) from the deb built
+  # above, signed with throwaway Ed25519 keys made in the job, and served over HTTP from the runner.
+  # Then a clean container of each apt generation does what the docs tell a user, from the text
+  # apt-client.sh prints (the one definition the post-publish verification uses too): add the key and
+  # the .sources file, `apt update`, install exactly the version, run smoke-test.sh. A second check
+  # runs the key rotation of docs/releasing.md. The stand-in keys prove the signing and the client
+  # side; they do not prove the real key or the real site (the verification jobs of publish.yml do).
+  #
+  # `verifier` is the signature checker apt has in the image, asserted by verify-apt.sh: Ubuntu 22.04
+  # (apt 2.4) and 26.04 (apt 3.2) use gpgv, Debian 13 (apt 3.0) uses sqv.
+  apt-repo:
+    needs: [tarball, deb]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: ubuntu:22.04
+            verifier: gpgv
+          - image: debian:13
+            verifier: sqv
+          - image: ubuntu:26.04
+            verifier: gpgv
+    env:
+      UPSTREAM: ${{ needs.tarball.outputs.upstream }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: deb-packages
+          path: deb
+      - name: Install apt-utils
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends apt-utils
+      - name: Make the trees and the keys
+        run: packaging/release/apt-local-fixture.sh deb "$RUNNER_TEMP/apt" "$UPSTREAM"
+      - name: Serve the tree
+        run: |
+          set -euo pipefail
+          python3 -m http.server 8080 --bind 127.0.0.1 --directory "$RUNNER_TEMP/apt/serve" > "$RUNNER_TEMP/http.log" 2>&1 &
+          for _ in $(seq 1 30); do
+            curl -fsS -o /dev/null http://127.0.0.1:8080/proton-drive-sync-engine.gpg && exit 0
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/http.log"
+          exit 1
+      - name: Install from the repository in a clean container
+        env:
+          IMAGE: ${{ matrix.image }}
+          VERIFY_EXPECT_VERIFIER: ${{ matrix.verifier }}
+        run: |
+          set -euo pipefail
+          read -ra suites < "$RUNNER_TEMP/apt/suites.txt"
+          docker run --rm --network host -v "$PWD/packaging:/repo/packaging:ro" \
+            -v "$RUNNER_TEMP/apt/fingerprint.txt:/fingerprint.txt:ro" \
+            -e APT_FINGERPRINT_FILE=/fingerprint.txt -e VERIFY_APT_URI=http://127.0.0.1:8080/ \
+            -e VERIFY_APT_WAIT_SECS=0 -e VERIFY_EXPECT_VERIFIER "$IMAGE" \
+            bash /repo/packaging/release/verify-apt.sh "$UPSTREAM" "${suites[@]}"
+      - name: Rotate the signing key
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          docker run --rm --network host -v "$PWD/packaging:/repo/packaging:ro" "$IMAGE" \
+            bash /repo/packaging/release/apt-rotation-check.sh http://127.0.0.1:8080 beta
+
   # The release's asset set, checked on every package build rather than only at a tag: the draft
   # job refuses any set but the tarball, the source RPM, three RPMs, three debs and the Arch
   # package, named for the version. A change that breaks that (a new RPM subpackage, a debuginfo
@@ -518,7 +587,7 @@ jobs:
   # shapes `needs` can take.)
   packages-ok:
     if: always()
-    needs: [changes, tarball, rpm, deb, arch, smoke-rpm, smoke-deb, smoke-arch, release-assets]
+    needs: [changes, tarball, rpm, deb, arch, smoke-rpm, smoke-deb, smoke-arch, apt-repo, release-assets]
     runs-on: ubuntu-latest
     steps:
       - name: Check the results
