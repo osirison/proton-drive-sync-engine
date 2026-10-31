@@ -76,16 +76,36 @@ fn the_runbook_names_every_secret_variable_and_setting_the_publish_workflow_read
     let variables = names_after(&both, "vars.");
     let env = top_level_env_names(&publish);
     // The extraction itself must find what is known to be there, or a broken reader would pass.
-    for name in ["COPR_CONFIG", "AUR_SSH_KEY", "APT_SIGNING_KEY", "APT_DEPLOY_KEY"] {
-        assert!(secrets.contains(name), "no secret {name} found: {secrets:?}");
+    for name in [
+        "COPR_CONFIG",
+        "AUR_SSH_KEY",
+        "APT_SIGNING_KEY",
+        "APT_DEPLOY_KEY",
+    ] {
+        assert!(
+            secrets.contains(name),
+            "no secret {name} found: {secrets:?}"
+        );
     }
     for name in ["COPR_TOKEN_EXPIRES", "APT_WITHDRAWN"] {
-        assert!(variables.contains(name), "no variable {name} found: {variables:?}");
+        assert!(
+            variables.contains(name),
+            "no variable {name} found: {variables:?}"
+        );
     }
-    for name in ["COPR_OWNER", "AUR_GIT_NAME", "APT_GIT_NAME", "APT_GIT_EMAIL"] {
+    for name in [
+        "COPR_OWNER",
+        "AUR_GIT_NAME",
+        "APT_GIT_NAME",
+        "APT_GIT_EMAIL",
+    ] {
         assert!(env.contains(name), "no env value {name} found: {env:?}");
     }
-    for (kind, names) in [("secret", &secrets), ("variable", &variables), ("env value", &env)] {
+    for (kind, names) in [
+        ("secret", &secrets),
+        ("variable", &variables),
+        ("env value", &env),
+    ] {
         for name in names {
             assert!(
                 docs.contains(&format!("`{name}`")),
