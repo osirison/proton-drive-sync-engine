@@ -758,9 +758,10 @@ fn verify_apt_runs_the_documented_text_checks_the_key_installs_the_exact_version
             )),
         "{sources}"
     );
-    assert_eq!(
-        fs::read(root.join("etc/apt/keyrings/proton-drive-sync-engine.gpg")).expect("key"),
-        apt_keys()[0].public
+    assert!(
+        fs::read(root.join("etc/apt/keyrings/proton-drive-sync-engine.gpg")).expect("key")
+            == apt_keys()[0].public,
+        "the installed keyring file is not the served public key"
     );
     // The exact version is installed (with recommends), then the smoke test runs for the release.
     assert!(
@@ -1030,12 +1031,12 @@ fn verify_apt_requires_the_expected_verifier_the_recorded_key_and_the_installed_
 
 // --- the jobs in the workflows ---------------------------------------------------------------------
 
-/// The quoted items of `key: ["a", "b"]` in a job's text.
-fn matrix_list(job: &str, key: &str) -> Vec<String> {
+/// The quoted items of `field: ["a", "b"]` in a job's text.
+fn matrix_list(job: &str, field: &str) -> Vec<String> {
     let line = job
         .lines()
-        .find_map(|line| line.trim().strip_prefix(&format!("{key}: [")))
-        .unwrap_or_else(|| panic!("no `{key}: [` in the job"));
+        .find_map(|line| line.trim().strip_prefix(&format!("{field}: [")))
+        .unwrap_or_else(|| panic!("no `{field}: [` in the job"));
     line.trim_end_matches(']')
         .split(',')
         .map(|item| item.trim().trim_matches('"').to_owned())

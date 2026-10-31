@@ -490,7 +490,12 @@ fn the_fingerprint_command_shows_the_primary_key_and_not_a_subkey() {
     let output = common::run_other_tool(&mut command);
     assert!(output.status.success(), "{}", stderr_of(&output));
     // Two lines would mean the subkey's fingerprint was printed as well.
-    assert_eq!(stdout_of(&output), format!("{}\n", key.fingerprint));
+    let printed = stdout_of(&output);
+    assert!(
+        printed == format!("{}\n", key.fingerprint),
+        "the fingerprint command printed {} lines, not the one primary fingerprint",
+        printed.lines().count()
+    );
     let mut command = common::sandboxed("gpgconf", directory.path());
     command
         .env("GNUPGHOME", &home)

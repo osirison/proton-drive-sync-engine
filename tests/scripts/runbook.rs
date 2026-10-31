@@ -47,19 +47,19 @@ fn named_paths(text: &str) -> BTreeSet<String> {
         let mut rest = text;
         while let Some(at) = rest.find(prefix) {
             let tail = &rest[at..];
-            let token: String = tail
+            let word: String = tail
                 .chars()
                 .take_while(|c| c.is_ascii_alphanumeric() || "_./-".contains(*c))
                 .collect();
-            let after = tail[token.len()..].chars().next();
+            let after = tail[word.len()..].chars().next();
             rest = &rest[at + prefix.len()..];
             // `packaging/release/*.sh` and `packaging/release/verify-<family>.sh` name no file.
             if matches!(after, Some('*' | '<' | '{')) {
                 continue;
             }
-            let token = token.trim_end_matches(['.', '-']);
-            if !token.ends_with('/') && !token.is_empty() {
-                found.insert(token.to_string());
+            let word = word.trim_end_matches(['.', '-']);
+            if !word.ends_with('/') && !word.is_empty() {
+                found.insert(word.to_string());
             }
         }
     }
@@ -72,7 +72,7 @@ fn the_runbook_names_every_secret_variable_and_setting_the_publish_workflow_read
     let publish = workflow("publish.yml");
     let release = workflow("release.yml");
     let both = format!("{publish}\n{release}");
-    let secrets = names_after(&both, "secrets.");
+    let sealed_names = names_after(&both, "secrets.");
     let variables = names_after(&both, "vars.");
     let env = top_level_env_names(&publish);
     // The extraction itself must find what is known to be there, or a broken reader would pass.
@@ -87,9 +87,9 @@ fn the_runbook_names_every_secret_variable_and_setting_the_publish_workflow_read
     .enumerate()
     {
         assert!(
-            secrets.contains(name),
+            sealed_names.contains(name),
             "the reader did not find known secret number {index} (of {} found)",
-            secrets.len()
+            sealed_names.len()
         );
     }
     for name in ["COPR_TOKEN_EXPIRES", "APT_WITHDRAWN"] {
@@ -108,7 +108,7 @@ fn the_runbook_names_every_secret_variable_and_setting_the_publish_workflow_read
     }
     // Lists 0, 1 and 2 are the secrets, the variables and the env values; an entry is named by its
     // place in its sorted list, never by formatting it.
-    for (list, names) in [&secrets, &variables, &env].into_iter().enumerate() {
+    for (list, names) in [&sealed_names, &variables, &env].into_iter().enumerate() {
         for (index, name) in names.iter().enumerate() {
             assert!(
                 docs.contains(&format!("`{name}`")),
@@ -245,14 +245,14 @@ fn the_environment_is_created_before_the_first_command_that_needs_it() {
     let environment = docs
         .find("\n### The `release` environment")
         .expect("the runbook has a section that creates the release environment");
-    let secret_commands = command_lines(&docs, "gh secret set");
+    let set_offsets = command_lines(&docs, "gh secret set");
     // The reader must find the four commands, or an empty list would pass.
     assert!(
-        secret_commands.len() >= 4,
+        set_offsets.len() >= 4,
         "found {} `gh secret set` commands",
-        secret_commands.len()
+        set_offsets.len()
     );
-    for at in secret_commands {
+    for at in set_offsets {
         assert!(
             at > environment,
             "a `gh secret set` command (byte {at}) comes before the section that creates the \
@@ -270,7 +270,7 @@ fn the_table_gives_each_secret_and_variable_the_kind_and_place_the_workflows_use
     let rows = table_rows(&docs);
     // The reader finds all six, or a broken one would pass vacuously.
     assert_eq!(rows.len(), 6, "{rows:?}");
-    let set_secret = logical_commands(&docs, "gh secret set");
+    let set_entries = logical_commands(&docs, "gh secret set");
     let set_variable = logical_commands(&docs, "gh variable set");
     let mut seen_in_workflows = BTreeSet::new();
     for file in ["publish.yml", "release.yml"] {
@@ -306,12 +306,11 @@ fn the_table_gives_each_secret_and_variable_the_kind_and_place_the_workflows_use
             seen_in_workflows.contains(name),
             "the table lists {name}, which no workflow reads"
         );
-        let secret_command = set_secret.iter().find(|(set, _)| set == name);
+        let set_entry = set_entries.iter().find(|(set, _)| set == name);
         let variable_command = set_variable.iter().find(|(set, _)| set == name);
         if kind == "secret" {
             assert!(place.contains("environment `release`"), "{name}: {place}");
-            let (_, command) =
-                secret_command.unwrap_or_else(|| panic!("no `gh secret set {name}`"));
+            let (_, command) = set_entry.unwrap_or_else(|| panic!("no `gh secret set {name}`"));
             assert!(command.contains("--env release"), "{command}");
             assert!(
                 variable_command.is_none(),
@@ -325,7 +324,7 @@ fn the_table_gives_each_secret_and_variable_the_kind_and_place_the_workflows_use
             let (_, command) =
                 variable_command.unwrap_or_else(|| panic!("no `gh variable set {name}`"));
             assert!(!command.contains("--env"), "{command}");
-            assert!(secret_command.is_none(), "{name} is set as a secret too");
+            assert!(set_entry.is_none(), "{name} is set as a secret too");
         }
     }
 }

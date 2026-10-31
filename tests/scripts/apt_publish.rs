@@ -1225,7 +1225,7 @@ fn a_bad_signature_already_on_gh_pages_is_repaired_by_the_next_publish() {
             "{file}: exactly one repair push"
         );
         let good = tree.apt_checkout("apt.git", "good");
-        let keyring = good.join("proton-drive-sync-engine.gpg");
+        let public_file = good.join("proton-drive-sync-engine.gpg");
         let release = good.join("dists/beta/Release");
         let (signed, data) = if file == "InRelease" {
             (good.join("dists/beta/InRelease"), None)
@@ -1233,7 +1233,8 @@ fn a_bad_signature_already_on_gh_pages_is_repaired_by_the_next_publish() {
             (good.join("dists/beta/Release.gpg"), Some(release.as_path()))
         };
         assert_eq!(
-            tree.gpgv_valid_signatures(&keyring, &signed, data).len(),
+            tree.gpgv_valid_signatures(&public_file, &signed, data)
+                .len(),
             1,
             "{file}"
         );
@@ -1784,7 +1785,10 @@ fn the_local_mode_makes_a_signed_tree_from_directories_and_downloads_and_pushes_
             None,
         );
         assert_eq!(signatures.len(), 1, "{suite}");
-        assert_eq!(signatures[0][0], key.fingerprint, "{suite}");
+        assert!(
+            signatures[0][0] == key.fingerprint,
+            "{suite}: the signature is not by the one key recorded"
+        );
     }
     assert!(tree.gpg_homes_left().is_empty());
     // Mistakes in the arguments.
