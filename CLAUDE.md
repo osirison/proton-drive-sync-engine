@@ -47,7 +47,16 @@ packaging/release/preflight.sh   # copr, AUR, apt key, apt repo; lists every fai
 packaging/release/aur-publish.sh <tag>   # AUR tree built inside an archlinux container from the release tarball; pushes only on change
 packaging/release/copr.sh <tag>   # per routed project: skip a succeeded build, wait a running one, else build the release SRPM
 packaging/release/tag-checkout.sh <tag>   # before any secret: check out the tag's commit and run ITS gate.sh
-packaging/release/aggregate.sh preflight aur copr   # fails naming every step whose result file is not `ok`
+packaging/release/aggregate.sh preflight apt aur copr   # fails naming every step whose result file is not `ok`
+packaging/release/apt-publish.sh <tag>   # apt tree rebuilt from ALL published releases (beta = newest 3 by version, stable = newest 3 finals; `APT_WITHDRAWN` drops tags); signs; force-pushes gh-pages only if files differ (not `Date:`). Refuses until apt-key-fingerprints.txt matches the key, dry run too
+packaging/release/apt-publish.sh --local <out> <upstream>=<dir>...   # same tree on disk, no gh or push; needs apt-ftparchive (apt-utils) and APT_SIGNING_KEY_FILE
+packaging/release/apt-client.sh print|fingerprint-command|fingerprints   # the ONE text a user types for apt; recorded key fingerprints
+packaging/release/apt-local-fixture.sh <deb dir> <work dir> <version>   # PR job `apt-repo`: throwaway keys, signed trees, byte-identical Packages check (TMPDIR honoured)
+packaging/release/apt-rotation-check.sh <base URL> <suite>   # key rotation, four client cases; ONLY inside a throwaway container
+packaging/release/verify-channel.sh <copr|aur|apt> <image>   # verify jobs: docker run of verify-<family>.sh, checkout read-only
+packaging/release/verify-apt.sh <version> <suite>...   # ONLY inside a throwaway container (as is verify-copr.sh, verify-aur.sh): installs the live channel's exact version
+packaging/version.sh sort-key <version>   # sorts (LC_ALL=C) in version order: alpha < beta < rc < final, numbers as numbers
+docs/releasing.md   # the maintainer runbook; tests/scripts.rs holds its secret/variable names and script names to the workflows and the tree
 packaging/arch/aur.sh beta <assets-dir>   # AUR tree from the tarball; needs makepkg (Arch only; tests stub it)
 packaging/smoke-test.sh 0.1.0 rpm|deb|arch   # ONLY inside a throwaway container (docs/agent-notes/running-the-install-smoke-test-in-podman.md)
 cargo test --test dry_run_cli   # integration test in tests/

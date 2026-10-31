@@ -32,7 +32,7 @@
 #   APT_CLIENT_ROOT                      tests only: prefix of the two /etc directories
 #
 # THE VERIFIER. apt checks signatures with gpgv, or with sqv where the distribution ships that
-# instead (Ubuntu 26.04). The script prints which of the two packages are installed before the first
+# instead (Debian 13; checked 2026-10-13: Ubuntu 22.04 and 26.04 use gpgv). The script prints which of the two packages are installed before the first
 # `apt update` of the repository, so the log says which one verified; with VERIFY_EXPECT_VERIFIER it
 # fails when that is not so. The prerequisites it installs first (sudo, curl, ca-certificates) pull in
 # neither; gnupg, which brings gpgv, is installed only AFTER the update, for the fingerprint check.

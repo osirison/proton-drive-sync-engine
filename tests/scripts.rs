@@ -18,6 +18,8 @@ mod common;
 mod apt;
 #[path = "scripts/apt_publish.rs"]
 mod apt_publish;
+#[path = "scripts/runbook.rs"]
+mod runbook;
 #[path = "scripts/verify.rs"]
 mod verify;
 

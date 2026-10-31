@@ -332,9 +332,12 @@
 - [ ] 5.2 Register an AUR account and an SSH key used only by CI, and store the private key as
       `AUR_SSH_KEY`. Verify: `ssh -T aur@aur.archlinux.org` in the preflight steps authenticates
 - [ ] 5.3 Generate a dedicated Ed25519 signing key with no expiry (design D11). Store the armored
-      private key as `APT_SIGNING_KEY`, and record its fingerprint in the runbook (6.7). Verify: a
-      test `InRelease` signed in CI verifies with `gpgv` in Ubuntu 22.04 and with apt's `sqv` in
-      Ubuntu 26.04
+      private key as `APT_SIGNING_KEY`, and record its fingerprint in
+      `packaging/release/apt-key-fingerprints.txt` in a pull request merged before the first tag
+      (6.7 has the commands; until it holds a fingerprint `apt-publish.sh` signs nothing). Verify:
+      a test `InRelease` signed in CI verifies with `gpgv` in Ubuntu 22.04 and Ubuntu 26.04 and with
+      apt's `sqv` in Debian 13 (checked 2026-10-13: Ubuntu 26.04, apt 3.2.0, uses `gpgv`; Debian 13,
+      apt 3.0.3, is the `sqv` cell)
 - [ ] 5.4 Create the `osirison/proton-drive-sync-engine-apt` repository:
       - Pages served from `gh-pages`, with `.nojekyll`;
       - a write deploy key stored as `APT_DEPLOY_KEY`.
@@ -371,7 +374,7 @@
       false, refuses a flag that disagrees with `version.sh is-prerelease` (a beta marked final
       would otherwise reach stable), and fails closed, printing nothing. The dry run logs each
       routed channel with its COPR project and AUR package. The apt step and the verification jobs
-      (6.3, 6.6) have marked places in the file. Tests: `tests/scripts.rs` (routing, the
+      (6.3, 6.6) were added later, in PR 4b. Tests: `tests/scripts.rs` (routing, the
       workflow's pinned expression lines, permissions, step order and gating, the namespace in one
       place). Left: a dry run for a beta tag and for a final tag asking for one approval needs the
       environment (5.5) and a published release.
@@ -424,6 +427,27 @@
 
       Verify: a re-run gives identical `Packages` files, and every pooled `.deb`'s SHA-256 matches
       its release's `SHA256SUMS`
+
+      Done (PR 4b; not ticked, it needs the signing key, the apt repository and a published
+      release): `apt-publish.sh` rebuilds the whole tree from the published releases (design D10,
+      "Decisions made when writing the apt step": beta is the newest 3 of all by version, stable the
+      newest 3 finals, ordered by `version.sh sort-key`, `APT_WITHDRAWN` withdraws a tag, the push
+      is skipped when only `Date:` differs). Every deb is checked against its release's
+      `SHA256SUMS` (a missing or different sum stops the step). `apt-client.sh` is the one text of
+      the users' commands and of the recorded fingerprints (`apt-key-fingerprints.txt`, empty until
+      5.3). `--local` makes the same tree from a directory, and the pull-request job `apt-repo` runs
+      it on every package build with throwaway keys: byte-identical `Packages` twice, the install
+      on Ubuntu 22.04, Debian 13 and Ubuntu 26.04, and the key rotation (`apt-rotation-check.sh`).
+      Proven by hand and in tests: the real `apt-ftparchive` and `gpgv`, publish mode against stub
+      `gh` and a local bare repository (the first run one commit, the same run again none, a
+      change exactly one), the dry run, the withdrawal, the fingerprint refusals. Bugs that testing
+      found in publish mode and that are fixed: an unbound `APT_WITHDRAWN` on every real run, and
+      an unquoted `v*` that could withdraw a real tag; a dry run after a real publish that always
+      said "would force-push" (the key files were written only when signing); `apt-local-fixture.sh`
+      with `/tmp` hardcoded; the `apt-repo` job splitting `$(cat suites.txt)` unquoted.
+      Left: the Verify against the real repository, which needs 5.3, 5.4 and a published release;
+      `apt-publish.sh` in publish mode has not run against GitHub's real API or Pages, and
+      `apt-rotation-check.sh` has run only in containers.
 - [ ] 6.4 Add the AUR step. It runs `aur.sh` for each routed channel and pushes `PKGBUILD`,
       `.SRCINFO` and the install script to `ssh://aur@aur.archlinux.org/<pkgname>.git`, creating
       the package on its first push. It does nothing when the generated tree equals the AUR head.
@@ -497,6 +521,22 @@
         `smoke-test.sh`.
 
       Verify: the jobs fail when pointed at a channel missing the version
+
+      Done (PR 4b; not ticked, it needs a real release): `verify-copr`, `verify-aur` and
+      `verify-apt` in `publish.yml` (design D12, "Decisions made when writing the verification
+      jobs"): `needs: publish`, skipped on a dry run, no secret, no environment; each repeats
+      `route.sh` and `tag-checkout.sh` and then runs `verify-channel.sh <family> <image>`, which runs
+      the tag's `verify-<family>.sh` in a container with the checkout read-only. COPR installs the
+      exact version on Fedora 43 and 44, the AUR job builds the package with `makepkg` and compares
+      `pkgver` first, apt runs the documented commands on Ubuntu 22.04, Debian 13 and Ubuntu 26.04,
+      checks the served key against `apt-key-fingerprints.txt`, installs the exact version and runs
+      `smoke-test.sh`. Tests run each script on the host with stubs, including "a channel missing
+      the version fails" for all three; apt was also run in `ubuntu:22.04`, `debian:13` and
+      `ubuntu:26.04` against a local tree. Bugs found: `verify-aur.sh` used the version as a regex
+      (`0x1x0beta1-1` passed for `0.1.0beta1`) and could not run under stubs (it now has test
+      seams). Left: every job on a real release, `verify-aur.sh` with its default paths (never run),
+      and the COPR cells beyond a local `dnf` check of `dnf-command(copr)` and an exact-version
+      install.
 - [ ] 6.7 Write `docs/releasing.md`, the maintainer runbook:
       - bump with `version.sh`, tag, review the draft, publish, approve the environment;
       - re-run a channel with `workflow_dispatch`;
@@ -508,6 +548,16 @@
 
       Add a `docs/agent-notes/` note keyed to `copr-cli` about the 180-day expiry. Verify: a dry
       run of the publish workflow follows the runbook step by step without a missing step
+
+      Done (PR 4b; not ticked, the Verify needs a published release and section 5): `docs/releasing.md`
+      covers the channels, every secret and variable by name, the one-time setup (5.1 to 5.5) with
+      commands and checks, cutting a release, the dry run, what each verification job proves, re-runs,
+      withdrawal from apt (`APT_WITHDRAWN`), the Pages cache window, key rotation and the rule that a
+      release is never published from a workflow. The `copr-cli` note is extended with the 180-day
+      expiry. A test in `tests/scripts.rs` holds the names the workflows read, and the scripts the
+      page names, against the page. Left to the maintainer: section 5 itself, the COPR namespace,
+      and following the page against a real release (a dry run needs a published release, so the
+      first one cannot be dry-run first).
 
 ## 7. First release: 0.1.0-beta.1
 
