@@ -133,9 +133,10 @@ not looked at until the run is approved.) This reads no secret and works before 
 
    `copr-cli create` with no owner makes the project under the account in `~/.config/copr`. The
    scripts name the project `<COPR_OWNER>/<name>`, and `publish.yml` has `COPR_OWNER: osirison`. So
-   `COPR_OWNER` must equal what `copr-cli --config ~/.config/copr whoami` prints (for a project
-   under a group, `@group`, and the project is then created under that group; I have not run the
-   group form). If they differ, change `COPR_OWNER` in `publish.yml`'s top-level `env:` (and the
+   `COPR_OWNER` must equal what `copr-cli --config ~/.config/copr whoami` prints. For a project under
+   a group, `COPR_OWNER` is `@group` and the create command needs the owner prefix
+   (`@group/proton-drive-sync-engine-beta`); the command shown creates it under the account, and I
+   have not run the group form. If they differ, change `COPR_OWNER` in `publish.yml`'s top-level `env:` (and the
    tag you cut must contain the change), or create the project under the owner `publish.yml` names.
 
    `copr.sh` builds in every chroot the project has and keeps no list of its own. When a Fedora
@@ -190,8 +191,8 @@ To renew: do steps 1, 4 and 5 again (new token into `COPR_CONFIG`, new date into
    ```
 
    The AUR has no shell, so the right answer is `Welcome to AUR, <user>! Interactive shell is
-   disabled.` and **exit 1**. Exit 255 is a failure. This also tests the pinned host key. It is the
-   only credential check you can make against the real service before the first publish.
+   disabled.` and **exit 1**. Exit 255 is a failure. This also tests the pinned host key. It is a
+   check against the real service that you can make before the first publish.
 4. Delete the key now: `rm -f "$scratch/aur-ssh-key" "$scratch/aur-ssh-key.pub"`. You make no
    package by hand: the first push of `aur-publish.sh` creates `proton-drive-sync-engine-beta`, and
    the first final release creates `proton-drive-sync-engine`.
@@ -360,12 +361,14 @@ shows it as immutable.
    on, and a re-run of `release.yml` reuses it: `draft.sh` replaces its assets only, so the notes
    GitHub generated and the target it recorded stay as the first run left them. So delete the draft
    as well as the tag. `gh release view` and `gh release delete` may not find a draft by its tag, so
-   find its id and delete by id (more than one id is possible; delete each):
+   find the ids and delete by id. The loop deletes every draft of the tag: one, several, or none (a
+   failed job leaves no draft):
 
    ```sh
-   id="$(gh api repos/osirison/proton-drive-sync-engine/releases \
-     --jq '.[] | select(.tag_name == "v0.2.0" and .draft) | .id')"
-   gh api -X DELETE "repos/osirison/proton-drive-sync-engine/releases/$id"
+   for id in $(gh api --paginate repos/osirison/proton-drive-sync-engine/releases \
+     --jq '.[] | select(.tag_name == "v0.2.0" and .draft) | .id'); do
+     gh api -X DELETE "repos/osirison/proton-drive-sync-engine/releases/$id"
+   done
    git push origin :refs/tags/v0.2.0 && git tag -d v0.2.0
    ```
 
@@ -497,7 +500,7 @@ its 1500 s wait. The usual cause is the listing lagging a release that was just 
 minute and run the step again (`gh workflow run publish.yml --ref main -f tag=<tag> -f dry_run=false`).
 If it still fails, the release is a draft, was deleted, or its tag is not the one you dispatched; look
 at the release page. Two cases pass on purpose: a tag in `APT_WITHDRAWN` (the step logs "this is a
-deliberate rebuild without it"; see "Withdraw a version from apt" for why you do not dispatch one),
+deliberate rebuild without it"; see "Withdraw a version from apt" for what that does),
 and a published tag older than the newest three, which is in the listing and is simply outside the
 window.
 
@@ -515,17 +518,24 @@ window.
    The `apt` step rebuilds the tree without the withdrawn tags and pushes it, and `verify-apt` then
    finds the dispatched version and passes.
 
-Do **not** dispatch the withdrawn tag itself. The `apt` step lets it through on purpose (it logs "this
-is a deliberate rebuild without it") and does rebuild the tree without it, so the withdrawal is
-applied. But `verify-apt` then waits its full 1500 s for a version the tree no longer holds, and the
-run ends red.
+Dispatching the withdrawn tag itself also works for apt: the `apt` step lets it through on purpose (it
+logs "this is a deliberate rebuild without it") and rebuilds the tree without it. But `verify-apt`
+then waits its full 1500 s for a version the tree no longer holds, and the run ends red.
 
-What the dispatch does to the other channels: the AUR step compares with the AUR head only, and the
-COPR step skips a project that already has a succeeded build of the version. So dispatching the
-newest tag changes neither. If the withdrawn version is the **newest** release, the newest tag that is
-not withdrawn is an older one: dispatching it also pushes that older tag's `PKGBUILD` to the AUR,
-which rolls the AUR back to that version as well (there is no way to withdraw the newest version from
-apt alone), and COPR is skipped, so COPR keeps the withdrawn build until you remove it by hand.
+What a dispatch does to the other channels: the AUR step compares with the AUR head only, and the
+COPR step skips a project that already has a succeeded build of the version. A dispatch touches only
+the channels its own tag routes to. So when the withdrawn version is not the newest, dispatching the
+newest tag changes neither the AUR nor COPR. When it **is** the newest release, you choose:
+
+- **The next older tag (the default above).** The run is green, but it also pushes that older tag's
+  `PKGBUILD` to the AUR, which rolls the AUR package back to that version. Only the channels that tag
+  routes to are touched: if the withdrawn release is a final and the next older one is a pre-release,
+  only the beta AUR package changes, and the stable AUR package keeps the withdrawn final. COPR is
+  skipped (the older version already has its build), so COPR keeps the withdrawn build until you
+  remove it by hand.
+- **The withdrawn tag itself.** apt only: the AUR head already equals that tag's `PKGBUILD` and COPR
+  already has its build, so neither changes, and `verify-aur` and `verify-copr` pass. The run ends
+  red at `verify-apt`, after 1500 s. That is your choice to make, and the red run is the cost.
 
 Each suite keeps the newest three, so withdrawing one lets the next older release back into the
 window. The variable works whether or not releases are immutable (see "Immutable releases"): it

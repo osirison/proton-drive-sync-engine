@@ -530,10 +530,11 @@ design above did not settle them):
 - **The tag being published must be in the listing.** After the listing, the run stops unless the
   tag's version is among the published releases (the listing can lag a release that was just
   published; the remedy is to wait and run the step again). Two cases pass: a tag in
-  `APT_WITHDRAWN` (the tree is built without it and the step logs a deliberate rebuild; it is not
-  how a withdrawal is applied, because `verify-apt` then waits for a version the tree no longer
-  holds: dispatch the newest tag that is not withdrawn), and a tag older than the newest three
-  (listed, only outside the window).
+  `APT_WITHDRAWN` (the tree is built without it and the step logs a deliberate rebuild; that applies
+  the withdrawal to apt alone, but `verify-apt` then waits for a version the tree no longer holds
+  and the run ends red, so the default is to dispatch the newest tag that is not withdrawn, which
+  also rolls the AUR back when the withdrawn version is the newest: the maintainer's choice), and a
+  tag older than the newest three (listed, only outside the window).
 - **A deb must say in its control file what its name says.** `apt-ftparchive` writes `Packages` from
   the control file, so the name and `SHA256SUMS` are not enough: `dpkg-deb -f` (control only, no
   maintainer script) must give a `Package` equal to the name's and one of the packages
