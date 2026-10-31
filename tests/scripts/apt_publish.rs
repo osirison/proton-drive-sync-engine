@@ -61,6 +61,7 @@ case "$1" in
       packages=$(sed -n 's/.*Packages "\([^"]*\)".*/\1/p' <<<"$line")
       list=$(sed -n 's/.*FileList "\([^"]*\)".*/\1/p' <<<"$line")
       : > "$archive/$packages"
+      [ -z "$STUB_FTP_EMPTY" ] || continue
       while IFS= read -r deb; do
         [ -n "$deb" ] || continue
         printf 'Filename: %s\nSHA256: %s\n\n' "$deb" "$(sha256sum "$archive/$deb" | cut -d' ' -f1)" >> "$archive/$packages"
@@ -79,6 +80,15 @@ case "$1" in
 esac
 "#;
 
+/// A stand-in for `gpgv` that refuses one file, named by its last path component in
+/// `$STUB_GPGV_REFUSES`, and is the real `gpgv` for everything else.
+const APT_GPGV_STUB: &str = r#"#!/bin/sh
+for argument in "$@"; do
+  [ "${argument##*/}" = "$STUB_GPGV_REFUSES" ] && { echo "stub gpgv: refused $argument" >&2; exit 1; }
+done
+exec /usr/bin/gpgv "$@"
+"#;
+
 /// A stand-in for `ssh` that records its arguments and fails like an unreachable host.
 const APT_SSH_STUB: &str = "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$STUB_SSH_LOG\"\necho 'ssh: stub: no route' >&2\nexit 255\n";
 
@@ -95,15 +105,22 @@ impl PublishTree {
     fn apt_release_assets(&self, upstream: &str) -> Vec<String> {
         let directory = self.path("assets").join(format!("v{upstream}"));
         fs::create_dir_all(&directory).expect("assets");
-        let names = vec![
-            format!("{MAIN_DEB}_{upstream}-1_amd64.deb"),
-            format!("proton-sync-nautilus_{upstream}-1_all.deb"),
-            format!("proton-sync-nemo_{upstream}-1_all.deb"),
-        ];
+        // Real debs: the script reads their control files, so bytes that only look like debs stop it.
+        let mut names = Vec::new();
         let mut sums = String::new();
-        for name in &names {
-            fs::write(directory.join(name), format!("deb bytes of {name}\n")).expect("deb");
-            sums.push_str(&format!("{}  {name}\n", sha256_of(&directory.join(name))));
+        for (package, architecture) in [
+            (MAIN_DEB, "amd64"),
+            ("proton-sync-nautilus", "all"),
+            ("proton-sync-nemo", "all"),
+        ] {
+            let built = real_deb(&directory, package, upstream, architecture);
+            let name = built
+                .file_name()
+                .expect("name")
+                .to_string_lossy()
+                .into_owned();
+            sums.push_str(&format!("{}  {name}\n", sha256_of(&built)));
+            names.push(name);
         }
         // draft.sh lists every asset; the tarball is not downloaded by this step.
         sums.push_str(&format!(
@@ -763,12 +780,9 @@ fn a_release_whose_debs_do_not_match_its_checksums_stops_the_run_and_pushes_noth
         (
             "two main debs",
             Box::new(move |dir: &Path| {
+                // A second, honest deb: revision 2, named and labelled as such.
                 let renamed = format!("{MAIN_DEB}_0.2.0-2_amd64.deb");
-                fs::copy(
-                    dir.join(format!("{MAIN_DEB}_0.2.0-1_amd64.deb")),
-                    dir.join(&renamed),
-                )
-                .expect("copy");
+                deb_file(&dir.join(&renamed), MAIN_DEB, "0.2.0-2", "amd64");
                 let sums = fs::read_to_string(dir.join("SHA256SUMS")).expect("sums");
                 let sum = sha256_of(&dir.join(&renamed));
                 fs::write(dir.join("SHA256SUMS"), format!("{sums}{sum}  {renamed}\n"))
@@ -794,6 +808,483 @@ fn a_release_whose_debs_do_not_match_its_checksums_stops_the_run_and_pushes_noth
         assert_eq!(tree.results("apt").as_deref(), Some("failed"), "{what}");
         assert!(tree.gpg_homes_left().is_empty(), "{what}");
     }
+}
+
+/// Lists `name` in `dir/SHA256SUMS` with the SHA-256 of the file as it is now (replacing any line
+/// for that name), so that only what the file says about itself can give it away.
+fn list_in_sums(dir: &Path, name: &str) {
+    let sums = fs::read_to_string(dir.join("SHA256SUMS")).expect("sums");
+    let mut kept: String = sums
+        .lines()
+        .filter(|line| !line.ends_with(&format!("  {name}")))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    kept.push_str(&format!("{}  {name}\n", sha256_of(&dir.join(name))));
+    fs::write(dir.join("SHA256SUMS"), kept).expect("sums");
+}
+
+/// Puts `name` in `dir` as a real deb whose control file says `package`, `version` and
+/// `architecture`, listed in SHA256SUMS with its real SHA-256.
+fn put_deb(dir: &Path, name: &str, package: &str, version: &str, architecture: &str) {
+    let _ = fs::remove_file(dir.join(name));
+    deb_file(&dir.join(name), package, version, architecture);
+    list_in_sums(dir, name);
+}
+
+impl PublishTree {
+    /// `apt-publish.sh --local <out> <upstream>=<dir>...`, signed with the first throwaway key.
+    fn apt_local(&self, out: &Path, specs: &[(&str, &Path)], options: &[(&str, &str)]) -> Output {
+        fs::write(self.path("key"), &apt_keys()[0].secret).expect("key");
+        fs::create_dir_all(self.path("gpgtmp")).expect("tmp");
+        let mut arguments = vec!["--local".to_owned(), out.display().to_string()];
+        arguments.extend(
+            specs
+                .iter()
+                .map(|(upstream, dir)| format!("{upstream}={}", dir.display())),
+        );
+        let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
+        let key = self.path("key").display().to_string();
+        let tmp = self.path("gpgtmp").display().to_string();
+        let log = self.path("ftparchive.log").display().to_string();
+        let mut environment: Vec<(&str, &str)> = vec![
+            ("APT_SIGNING_KEY_FILE", &key),
+            ("PUBLISH_GPG_TMPDIR", &tmp),
+            ("STUB_FTP_LOG", &log),
+        ];
+        environment.extend_from_slice(options);
+        self.run("apt-publish.sh", &arguments, &environment)
+    }
+}
+
+// --- what a deb's own control file must say ---------------------------------------------------------
+
+/// What a failed run must leave: nothing pushed, nothing read by apt-ftparchive, no key on disk, and
+/// the step recorded as failed.
+fn assert_refused_before_the_tree(tree: &PublishTree, what: &str, output: &Output, message: &str) {
+    let text = stderr_of(output);
+    assert_eq!(output.status.code(), Some(1), "{what}: {text}");
+    assert!(text.contains(message), "{what}: {text}");
+    assert_eq!(
+        tree.remote_refs("apt.git"),
+        "",
+        "{what}: something was pushed"
+    );
+    assert!(
+        tree.log("ftparchive.log").is_empty(),
+        "{what}: apt-ftparchive read a deb that was refused"
+    );
+    assert_eq!(tree.results("apt").as_deref(), Some("failed"), "{what}");
+    assert!(tree.gpg_homes_left().is_empty(), "{what}");
+}
+
+#[test]
+fn a_deb_whose_control_file_does_not_match_its_name_is_never_signed_into_the_repository() {
+    if !have_tools("deb_control", &["dpkg-deb", "gpg", "gpgv"]) {
+        return;
+    }
+    let main = format!("{MAIN_DEB}_0.2.0-1_amd64.deb");
+    let nautilus = "proton-sync-nautilus_0.2.0-1_all.deb";
+    let nemo = "proton-sync-nemo_0.2.0-1_all.deb";
+    type Edit = Box<dyn Fn(&Path)>;
+    let cases: Vec<(&str, Edit, &str)> = vec![
+        (
+            "the review's deb: named for the main package, control Package sudo, Version 99.0-1",
+            Box::new({
+                let main = main.clone();
+                move |dir: &Path| put_deb(dir, &main, "sudo", "99.0-1", "amd64")
+            }),
+            "control file says Package 'sudo'",
+        ),
+        (
+            "a Package that is another package of the project",
+            Box::new(move |dir: &Path| {
+                put_deb(dir, nemo, "proton-sync-nautilus", "0.2.0-1", "all")
+            }),
+            "control file says Package 'proton-sync-nautilus'",
+        ),
+        (
+            "a Version of another release",
+            Box::new(move |dir: &Path| {
+                put_deb(dir, nautilus, "proton-sync-nautilus", "99.0-1", "all")
+            }),
+            "control file says Version '99.0-1'",
+        ),
+        (
+            "a revision other than the name's",
+            Box::new(move |dir: &Path| put_deb(dir, nemo, "proton-sync-nemo", "0.2.0-2", "all")),
+            "control file says Version '0.2.0-2'",
+        ),
+        (
+            "an Architecture other than the name's",
+            Box::new(move |dir: &Path| put_deb(dir, nemo, "proton-sync-nemo", "0.2.0-1", "amd64")),
+            "control file says Architecture 'amd64'",
+        ),
+        (
+            "a Package outside the set the project ships, named for itself",
+            Box::new(|dir: &Path| {
+                put_deb(dir, "sudo_0.2.0-1_all.deb", "sudo", "0.2.0-1", "all");
+            }),
+            "'sudo' is not a package this project ships",
+        ),
+        (
+            "bytes that are not a deb at all",
+            Box::new(move |dir: &Path| {
+                fs::write(dir.join(nemo), "not a deb\n").expect("write");
+                list_in_sums(dir, nemo);
+            }),
+            "control file cannot be read",
+        ),
+    ];
+    for (what, edit, message) in cases {
+        let tree = PublishTree::new();
+        tree.apt_world(&["0.1.0", "0.2.0"]);
+        edit(&tree.path("assets/v0.2.0"));
+        let remote = tree.apt_remote("apt.git");
+        let output = tree.apt_publish("v0.2.0", false, &remote, &[&apt_keys()[0]], &[]);
+        assert_refused_before_the_tree(&tree, what, &output, message);
+    }
+}
+
+#[test]
+fn a_machine_without_dpkg_deb_is_told_so_and_not_that_every_deb_is_unreadable() {
+    if !have_tools("no_dpkg_deb", &["dpkg-deb", "gpg", "gpgv"]) {
+        return;
+    }
+    let tree = PublishTree::new();
+    tree.apt_world(&["0.2.0"]);
+    // A PATH holding every tool this one does except dpkg-deb (the first of two equal names wins).
+    let farm = tree.path("no-dpkg-deb");
+    fs::create_dir(&farm).expect("farm");
+    for directory in std::env::split_paths(&std::env::var_os("PATH").expect("PATH")) {
+        for entry in fs::read_dir(&directory).into_iter().flatten().flatten() {
+            if entry.file_name() != "dpkg-deb" {
+                let _ = std::os::unix::fs::symlink(entry.path(), farm.join(entry.file_name()));
+            }
+        }
+    }
+    let path = format!("{}:{}", tree.stubs.display(), farm.display());
+    let remote = tree.apt_remote("apt.git");
+    let output = tree.apt_publish(
+        "v0.2.0",
+        false,
+        &remote,
+        &[&apt_keys()[0]],
+        &[("PATH", &path)],
+    );
+    assert_refused_before_the_tree(&tree, "no dpkg-deb", &output, "dpkg-deb is not installed");
+}
+
+#[test]
+fn a_prerelease_deb_passes_with_the_tilde_spelling_and_is_refused_with_the_name_spelling() {
+    if !have_tools("deb_control_beta", &["dpkg-deb", "gpg", "gpgv"]) {
+        return;
+    }
+    // The honest release: the asset names say `0.2.0-beta.1-1`, the control files say `0.2.0~beta.1-1`.
+    let tree = PublishTree::new();
+    tree.apt_world(&["0.1.0", "0.2.0-beta.1"]);
+    let remote = tree.apt_remote("apt.git");
+    let output = tree.apt_publish("v0.2.0-beta.1", false, &remote, &[&apt_keys()[0]], &[]);
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    assert_eq!(tree.apt_pushes("apt.git").len(), 1);
+    // The name's spelling in the control file is not the deb's version.
+    let tree = PublishTree::new();
+    tree.apt_world(&["0.1.0", "0.2.0-beta.1"]);
+    put_deb(
+        &tree.path("assets/v0.2.0-beta.1"),
+        &format!("{MAIN_DEB}_0.2.0-beta.1-1_amd64.deb"),
+        MAIN_DEB,
+        "0.2.0-beta.1-1",
+        "amd64",
+    );
+    let remote = tree.apt_remote("apt.git");
+    let output = tree.apt_publish("v0.2.0-beta.1", false, &remote, &[&apt_keys()[0]], &[]);
+    assert_refused_before_the_tree(
+        &tree,
+        "name spelling",
+        &output,
+        "control file says Version '0.2.0-beta.1-1'",
+    );
+}
+
+#[test]
+fn the_architecture_a_symlink_and_an_empty_packages_file_each_stop_the_step() {
+    if !have_tools("deb_rules", &["dpkg-deb", "gpg", "gpgv"]) {
+        return;
+    }
+    // Only amd64 and all debs are published (the suites list one architecture): an honest arm64 deb,
+    // named and labelled arm64, is still refused.
+    let tree = PublishTree::new();
+    tree.apt_world(&["0.1.0", "0.2.0"]);
+    put_deb(
+        &tree.path("assets/v0.2.0"),
+        "proton-sync-nemo_0.2.0-1_arm64.deb",
+        "proton-sync-nemo",
+        "0.2.0-1",
+        "arm64",
+    );
+    let remote = tree.apt_remote("apt.git");
+    let output = tree.apt_publish("v0.2.0", false, &remote, &[&apt_keys()[0]], &[]);
+    assert_refused_before_the_tree(
+        &tree,
+        "arm64",
+        &output,
+        "'proton-sync-nemo_0.2.0-1_arm64.deb' is not a deb named for this version",
+    );
+
+    // A deb that is a symlink, and one that is a directory, are not plain files (local mode reads a
+    // directory as it is; the download step could not make either).
+    for (what, make) in [("a symlink", true), ("a directory", false)] {
+        let tree = PublishTree::new();
+        tree.apt_world(&["0.2.0"]);
+        let dir = tree.path("assets/v0.2.0");
+        let nemo = dir.join("proton-sync-nemo_0.2.0-1_all.deb");
+        if make {
+            let elsewhere = tree.path("elsewhere.deb");
+            fs::rename(&nemo, &elsewhere).expect("move");
+            std::os::unix::fs::symlink(&elsewhere, &nemo).expect("symlink");
+        } else {
+            fs::remove_file(&nemo).expect("remove");
+            fs::create_dir(&nemo).expect("directory");
+        }
+        let out = tree.path("out");
+        let output = tree.apt_local(&out, &[("0.2.0", &dir)], &[]);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{what}: {}",
+            stderr_of(&output)
+        );
+        assert!(
+            stderr_of(&output).contains("proton-sync-nemo_0.2.0-1_all.deb is not a plain file"),
+            "{what}: {}",
+            stderr_of(&output)
+        );
+        assert!(!out.exists(), "{what}: a tree was written");
+    }
+
+    // apt-ftparchive that writes no package: the suite would be signed empty.
+    let tree = PublishTree::new();
+    tree.apt_world(&["0.2.0"]);
+    let remote = tree.apt_remote("apt.git");
+    let output = tree.apt_publish(
+        "v0.2.0",
+        false,
+        &remote,
+        &[&apt_keys()[0]],
+        &[("STUB_FTP_EMPTY", "1")],
+    );
+    let text = stderr_of(&output);
+    assert_eq!(output.status.code(), Some(1), "{text}");
+    assert!(
+        text.contains("the beta suite has an empty Packages file"),
+        "{text}"
+    );
+    assert_eq!(tree.remote_refs("apt.git"), "");
+    assert_eq!(tree.results("apt").as_deref(), Some("failed"));
+    assert!(tree.gpg_homes_left().is_empty());
+}
+
+#[test]
+fn a_signature_the_published_key_does_not_verify_is_never_pushed() {
+    if !have_tools("gpgv_self_check", &["dpkg-deb", "gpg", "gpgv"]) {
+        return;
+    }
+    // The real gpgv accepts a signature made with the key that was just exported, so the check can
+    // only be reached by a gpgv that refuses one file.
+    for (file, message) in [
+        (
+            "InRelease",
+            "gpgv does not accept beta/InRelease with the published key",
+        ),
+        (
+            "Release.gpg",
+            "gpgv does not accept beta/Release.gpg with the published key",
+        ),
+    ] {
+        let tree = PublishTree::new();
+        tree.apt_world(&["0.2.0-beta.1"]);
+        write_executable(&tree.stubs.join("gpgv"), APT_GPGV_STUB);
+        let remote = tree.apt_remote("apt.git");
+        let output = tree.apt_publish(
+            "v0.2.0-beta.1",
+            false,
+            &remote,
+            &[&apt_keys()[0]],
+            &[("STUB_GPGV_REFUSES", file)],
+        );
+        let text = stderr_of(&output);
+        assert_eq!(output.status.code(), Some(1), "{file}: {text}");
+        assert!(text.contains(message), "{file}: {text}");
+        assert_eq!(
+            tree.remote_refs("apt.git"),
+            "",
+            "{file}: something was pushed"
+        );
+        assert_eq!(tree.results("apt").as_deref(), Some("failed"), "{file}");
+        assert!(tree.gpg_homes_left().is_empty(), "{file}");
+    }
+}
+
+#[test]
+fn a_bad_signature_already_on_gh_pages_is_repaired_by_the_next_publish() {
+    if !have_tools("repair_signatures", &["dpkg-deb", "gpg", "gpgv", "git"]) {
+        return;
+    }
+    for file in ["InRelease", "Release.gpg"] {
+        let tree = PublishTree::new();
+        tree.apt_world(&["0.2.0-beta.1"]);
+        let remote = tree.apt_remote("apt.git");
+        let key = &apt_keys()[0];
+        let first = tree.apt_publish("v0.2.0-beta.1", false, &remote, &[key], &[]);
+        assert!(first.status.success(), "{}", stderr_of(&first));
+        assert_eq!(tree.apt_pushes("apt.git").len(), 1);
+        // The same release set again changes nothing and pushes nothing...
+        let same = tree.apt_publish("v0.2.0-beta.1", false, &remote, &[key], &[]);
+        assert!(
+            stderr_of(&same).contains("gh-pages already holds this tree"),
+            "{file}: {}",
+            stderr_of(&same)
+        );
+        assert_eq!(tree.apt_pushes("apt.git").len(), 1, "{file}");
+        // ...until a signature on the branch stops verifying (every file the decision compares is
+        // still equal).
+        let bad = tree.apt_checkout("apt.git", "bad");
+        let path = bad.join("dists/beta").join(file);
+        let mut bytes = fs::read(&path).expect("signature file");
+        let middle = bytes.len() / 2;
+        bytes[middle] ^= 0x01;
+        fs::write(&path, bytes).expect("corrupt");
+        tree.git(
+            &bad,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--quiet",
+                "-a",
+                "-m",
+                "corrupt",
+            ],
+        );
+        tree.git(
+            &bad,
+            &[
+                "push",
+                "--quiet",
+                "--force",
+                "origin",
+                "HEAD:refs/heads/gh-pages",
+            ],
+        );
+        assert_eq!(
+            tree.apt_pushes("apt.git").len(),
+            2,
+            "{file}: the corruption push"
+        );
+        let repaired = tree.apt_publish("v0.2.0-beta.1", false, &remote, &[key], &[]);
+        let text = stderr_of(&repaired);
+        assert!(repaired.status.success(), "{file}: {text}");
+        assert!(
+            !text.contains("gh-pages already holds this tree"),
+            "{file}: {text}"
+        );
+        assert_eq!(
+            tree.apt_pushes("apt.git").len(),
+            3,
+            "{file}: exactly one repair push"
+        );
+        let good = tree.apt_checkout("apt.git", "good");
+        let keyring = good.join("proton-drive-sync-engine.gpg");
+        let release = good.join("dists/beta/Release");
+        let (signed, data) = if file == "InRelease" {
+            (good.join("dists/beta/InRelease"), None)
+        } else {
+            (good.join("dists/beta/Release.gpg"), Some(release.as_path()))
+        };
+        assert_eq!(
+            tree.gpgv_valid_signatures(&keyring, &signed, data).len(),
+            1,
+            "{file}"
+        );
+    }
+}
+
+// --- the tag being published ----------------------------------------------------------------------
+
+#[test]
+fn a_tag_that_is_not_in_the_listing_stops_the_step_and_a_deliberate_rebuild_does_not() {
+    if !have_tools("tag_in_listing", &["dpkg-deb", "gpg", "gpgv"]) {
+        return;
+    }
+    let key = &apt_keys()[0];
+    // The listing lags the release that was just published: the tree would not hold it.
+    let tree = PublishTree::new();
+    tree.apt_world(&["0.1.0"]);
+    let remote = tree.apt_remote("apt.git");
+    let output = tree.apt_publish("v0.2.0", false, &remote, &[key], &[]);
+    let text = stderr_of(&output);
+    assert_eq!(output.status.code(), Some(1), "{text}");
+    assert!(
+        text.contains("v0.2.0 is not among the published releases GitHub lists"),
+        "{text}"
+    );
+    assert!(
+        text.contains("wait a minute and run the step again"),
+        "{text}"
+    );
+    assert_eq!(tree.remote_refs("apt.git"), "");
+    assert!(tree.apt_downloads().is_empty(), "something was downloaded");
+    assert_eq!(tree.results("apt").as_deref(), Some("failed"));
+    // A draft is not a published release: the listing has it, the tree must not.
+    let tree = PublishTree::new();
+    tree.apt_world(&["0.1.0"]);
+    tree.apt_listing(&[
+        ("v0.1.0".to_owned(), false, false),
+        ("v0.2.0".to_owned(), true, false),
+    ]);
+    let remote = tree.apt_remote("apt.git");
+    let output = tree.apt_publish("v0.2.0", false, &remote, &[key], &[]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr_of(&output));
+    assert_eq!(tree.remote_refs("apt.git"), "");
+
+    // A withdrawn tag is the one deliberate case: the run rebuilds the tree without it, and says so.
+    let tree = PublishTree::new();
+    tree.apt_world(&["0.1.0-beta.1", "0.1.0"]);
+    let remote = tree.apt_remote("apt.git");
+    let output = tree.apt_publish(
+        "v0.1.0",
+        false,
+        &remote,
+        &[key],
+        &[("APT_WITHDRAWN", "v0.1.0")],
+    );
+    let text = stderr_of(&output);
+    assert!(output.status.success(), "{text}");
+    assert!(
+        text.contains("v0.1.0 is in APT_WITHDRAWN: this is a deliberate rebuild without it"),
+        "{text}"
+    );
+    assert_eq!(
+        sorted(tree.remote_packages("apt.git", "beta")),
+        debs_of(&["0.1.0-beta.1"])
+    );
+
+    // A tag older than the newest three is outside the window and still in the listing: dispatching
+    // it on purpose publishes what the window holds.
+    let tree = PublishTree::new();
+    tree.apt_world(&["0.1.0", "0.2.0", "0.3.0", "0.4.0", "0.5.0"]);
+    let remote = tree.apt_remote("apt.git");
+    let output = tree.apt_publish("v0.1.0", false, &remote, &[key], &[]);
+    let text = stderr_of(&output);
+    assert!(output.status.success(), "{text}");
+    assert_eq!(
+        sorted(tree.remote_packages("apt.git", "beta")),
+        debs_of(&["0.3.0", "0.4.0", "0.5.0"])
+    );
 }
 
 #[test]
@@ -1293,23 +1784,41 @@ fn real_deb(
     upstream: &str,
     architecture: &str,
 ) -> std::path::PathBuf {
-    let root = directory.join(format!("build-{package}-{upstream}"));
-    fs::create_dir_all(root.join("DEBIAN")).expect("DEBIAN");
     let version = format!("{}-1", upstream.replace('-', "~"));
+    let file = directory.join(format!("{package}_{upstream}-1_{architecture}.deb"));
+    deb_file(&file, package, &version, architecture);
+    file
+}
+
+/// A real .deb at `file` whose control file says exactly `package`, `version` and `architecture`,
+/// whatever `file` is called: how a test makes a deb whose name and control disagree. The bytes
+/// depend only on the arguments (SOURCE_DATE_EPOCH), so a release built twice is the same release.
+fn deb_file(file: &Path, package: &str, version: &str, architecture: &str) {
+    if !super::apt::on_path("dpkg-deb") {
+        panic!(
+            "dpkg-deb is not on PATH: install dpkg (apt-publish.sh needs it, and so do these tests)"
+        );
+    }
+    let directory = file.parent().expect("a directory");
+    let root = directory.join(format!(
+        ".build-{}",
+        file.file_name().expect("name").to_string_lossy()
+    ));
+    fs::create_dir_all(root.join("DEBIAN")).expect("DEBIAN");
     fs::write(
         root.join("DEBIAN/control"),
         format!("Package: {package}\nVersion: {version}\nArchitecture: {architecture}\nMaintainer: t <t@example.invalid>\nDescription: test package\n"),
     )
     .expect("control");
-    let file = directory.join(format!("{package}_{upstream}-1_{architecture}.deb"));
     let mut command = common::sandboxed("dpkg-deb", directory);
     command
+        .env("SOURCE_DATE_EPOCH", "1700000000")
         .args(["--root-owner-group", "--build"])
         .arg(&root)
-        .arg(&file);
+        .arg(file);
     let output = common::run_other_tool(&mut command);
     assert!(output.status.success(), "{}", stderr_of(&output));
-    file
+    fs::remove_dir_all(&root).expect("remove the build directory");
 }
 
 #[test]

@@ -11,7 +11,7 @@ use std::process::Output;
 
 // --- tools a developer's machine may lack ---------------------------------------------------------
 
-fn on_path(tool: &str) -> bool {
+pub(super) fn on_path(tool: &str) -> bool {
     std::env::var_os("PATH").is_some_and(|path| {
         std::env::split_paths(&path).any(|directory| {
             fs::metadata(directory.join(tool))
@@ -386,7 +386,10 @@ fn generate_key(uid: &str, with_subkey: bool) -> AptKey {
     let home = directory.path().join("g");
     fs::create_dir(&home).expect("gnupg home");
     fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).expect("mode");
+    // A failure names the call by its number, not by its arguments (they hold the key's user id).
+    let calls = std::cell::Cell::new(0_usize);
     let gpg = |arguments: &[&str]| {
+        calls.set(calls.get() + 1);
         let mut command = common::sandboxed("gpg", directory.path());
         command
             .env("GNUPGHOME", &home)
@@ -395,7 +398,8 @@ fn generate_key(uid: &str, with_subkey: bool) -> AptKey {
         let output = common::run_other_tool(&mut command);
         assert!(
             output.status.success(),
-            "gpg {arguments:?}: {}",
+            "gpg call number {} failed: {}",
+            calls.get(),
             stderr_of(&output)
         );
         output

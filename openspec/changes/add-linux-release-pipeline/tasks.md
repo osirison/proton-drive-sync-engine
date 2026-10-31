@@ -445,6 +445,15 @@
       an unquoted `v*` that could withdraw a real tag; a dry run after a real publish that always
       said "would force-push" (the key files were written only when signing); `apt-local-fixture.sh`
       with `/tmp` hardcoded; the `apt-repo` job splitting `$(cat suites.txt)` unquoted.
+      Review round on PR #500: a deb's own control file is now read (`dpkg-deb -f`) and must match
+      its name, the version spelling and the packages `packaging/debian/control` declares (a deb
+      named for the project with `Package: sudo` was signed and published before); the run stops
+      when the tag being published is not in the listing (a withdrawn tag and a tag older than the
+      newest three pass); a signature on `gh-pages` that no longer verifies makes the tree differ;
+      `credentials.sh remove` deletes the `pdse-gpg.*` homes a killed step leaves; the guards for
+      plain files, the architecture, an empty `Packages` and the `gpgv` self-check have tests. The
+      runbook gained the refusals, the tag-not-listed failure and an immutable-releases section (a
+      repository setting, off today, the maintainer's decision).
       Left: the Verify against the real repository, which needs 5.3, 5.4 and a published release;
       `apt-publish.sh` in publish mode has not run against GitHub's real API or Pages, and
       `apt-rotation-check.sh` has run only in containers.

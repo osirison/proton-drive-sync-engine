@@ -11,7 +11,9 @@
 # paths are handed to the later steps through GITHUB_ENV (or printed, when it is not set) as
 # COPR_CONFIG_FILE, AUR_SSH_KEY_FILE, APT_SIGNING_KEY_FILE and APT_DEPLOY_KEY_FILE.
 #
-# `remove` deletes the whole directory; the workflow runs it in an `if: always()` step.
+# `remove` deletes the whole directory, and any `pdse-gpg.*` GnuPG home or log a killed apt or
+# preflight step left in PUBLISH_GPG_TMPDIR (default /tmp), because those hold the imported private
+# key and their EXIT trap does not run on SIGKILL; the workflow runs it in an `if: always()` step.
 #
 # PUBLISH_CREDENTIALS_DIR names the directory (default $RUNNER_TEMP/publish-credentials).
 set -euo pipefail
@@ -53,6 +55,19 @@ case "${1-}" in
     ;;
   remove)
     rm -rf -- "$dir"
+    # apt-publish.sh and preflight.sh import the signing key into a throwaway GnuPG home
+    # (${PUBLISH_GPG_TMPDIR:-/tmp}/pdse-gpg.XXXXXX, short because of gpg-agent's socket path limit) and
+    # remove it from an EXIT trap. A SIGKILL or a runner timeout never runs the trap, and this step
+    # (`if: always()`) is the last chance. preflight.sh's log file sits beside its home.
+    gpg_base="${PUBLISH_GPG_TMPDIR:-/tmp}"
+    if [[ -d "$gpg_base" ]]; then
+      while IFS= read -r -d '' leftover; do
+        if [[ -d "$leftover" && ! -L "$leftover" ]]; then
+          GNUPGHOME="$leftover" gpgconf --kill gpg-agent >/dev/null 2>&1 || true
+        fi
+        rm -rf -- "$leftover"
+      done < <(find "$gpg_base" -maxdepth 1 -name 'pdse-gpg.*' -user "$(id -u)" -print0)
+    fi
     ;;
   *)
     die "usage: credentials.sh <write|remove>"

@@ -235,6 +235,51 @@ waits for your approval before its first step, so before any job reads a secret;
 Reject it. A dispatch with `--ref` another branch is refused before the approval. (The tag value is
 not looked at until the run is approved.)
 
+### Immutable releases (a repository setting; your decision)
+
+**Status when this was written: off.** Nothing in the repository turns it on, and no script reads it.
+Why you may want it: the apt step trusts a release's `.deb` assets and its `SHA256SUMS`, and both are
+assets of the same release. Without immutability, anyone who can edit the release (a maintainer
+account, or a token with `contents: write`) can replace a `.deb` **and** `SHA256SUMS` after it is
+published, and the next run of the `apt` step signs the replacement into the repository.
+`apt-publish.sh` now reads each deb's own control file and refuses one that does not say what its name
+says, but it cannot tell an honest package from a tampered one with the same labels. Immutability is
+what stops the replacement.
+
+What I checked, so that turning it on cannot break the pipeline: no job in this repository changes a
+**published** release.
+
+- Only the `draft` job of `release.yml` has `contents: write`, and it runs `draft.sh`. `draft.sh`
+  lists the releases, and **refuses before its first write** when the tag already has a published
+  release ("refusing to change it. Nothing was changed."). It uploads, replaces (`--clobber`) and
+  deletes assets of a **draft** only. A stub test pins that the refusals write nothing.
+- `name-assets.sh` renames files on the runner's disk before they are uploaded. It never touches a
+  release.
+- `publish.yml` and the verification jobs have `contents: read`. The scripts they run only list
+  releases and download assets (`apt-publish.sh`, `aur-publish.sh`, `route.sh`).
+- Re-running `release.yml` for a tag that is already published fails in `draft.sh` and changes
+  nothing; task 4.2's check "a re-run after publishing fails and leaves the release unchanged"
+  therefore holds with or without the setting. Re-running `publish.yml` never writes a release.
+
+What it does, as GitHub documents it (I did not turn it on, so none of this was observed here): a
+release published **after** the setting is on cannot have assets added, replaced or removed, and its
+tag cannot be moved or deleted. A draft stays editable until you publish it. Releases published
+before it was on are not covered.
+
+Downsides, all consequences of that:
+
+- A published release with a wrong asset cannot be repaired. You fix forward with the next version
+  (the same rule as for COPR and the AUR).
+- A tag that was published is gone for good: deleting the release does not free the tag name. "Delete
+  the tag, fix, and tag again" (below) works only **before** you publish the draft. Test with drafts
+  and delete the draft, as the 4.2 live runs did; do not publish a throwaway release.
+- You cannot attach anything (a signature, a fixed `SHA256SUMS`) to a published release.
+- `APT_WITHDRAWN` is unaffected: it needs no change to the release.
+
+To turn it on: the repository's Settings, General, the Releases section, the option for immutable
+releases (GitHub's wording), **before** you publish the first release. A later release's page then
+shows it as immutable.
+
 ## Cutting a release
 
 1. **Bump the version.** In a branch:
@@ -353,6 +398,34 @@ mistake if you meant otherwise. Dispatch the newest published tag for a plain re
 **A failed channel.** Read the step's log; `aggregate.sh` lists what failed. Preflight failures name
 the credential and its renewal step. A COPR failure names the project.
 
+**The apt step refuses a deb.** Before anything is signed it reads every `.deb` of the releases it
+uses with `dpkg-deb -f` (control file only, no maintainer script runs) and stops, naming the file and
+what the control file says, unless all of these hold:
+
+- `Package` equals the package in the file's name, and is one of the packages `packaging/debian/control`
+  declares (`proton-drive-sync-engine`, `proton-sync-nautilus`, `proton-sync-nemo`). `apt-ftparchive`
+  writes `Packages` from the control file, so a deb named for this project whose control file says
+  `Package: sudo` would otherwise be offered to apt users as `sudo`.
+- `Version` equals the release's deb version (`version.sh spell rpm <version>` plus the revision in
+  the name: `0.1.0-beta.1` is `0.1.0~beta.1-1` in the control file) and `Architecture` equals the
+  name's (`amd64` or `all`; nothing else is published).
+- A field that is missing, or a file that is not a deb, is a refusal too.
+
+The remedy is a release whose debs are right: nothing from the release is published to apt. A release
+that is already published and wrong is withdrawn (below) and fixed forward with the next version. The
+check needs `dpkg-deb` (part of `dpkg`, on the runner and in every Debian and Ubuntu image); the step
+stops at once if it is missing.
+
+**The tag is not in the listing.** The apt step lists the published releases and stops with "`<tag>`
+is not among the published releases GitHub lists" when the tag it was started for is not one of them:
+a tree without it would be pushed and recorded as `ok`, and `verify-apt` would then fail only after
+its 1500 s wait. The usual cause is the listing lagging a release that was just published. Wait a
+minute and run the step again (`gh workflow run publish.yml --ref main -f tag=<tag> -f dry_run=false`).
+If it still fails, the release is a draft, was deleted, or its tag is not the one you dispatched; look
+at the release page. Two cases pass on purpose: a tag in `APT_WITHDRAWN` (the step logs "this is a
+deliberate rebuild without it"; that is how a withdrawal is applied), and a published tag older than
+the newest three, which is in the listing and is simply outside the window.
+
 **Withdraw a version from apt.** The apt tree is rebuilt from the published releases on every run.
 Set the repository variable `APT_WITHDRAWN` to the tags to leave out (space or comma separated, each
 a release tag), then dispatch a real run for a tag that is still published. Use the newest one:
@@ -364,8 +437,9 @@ gh workflow run publish.yml --ref main -f tag=v0.2.0-beta.3 -f dry_run=false
 
 Each suite keeps the newest three, so withdrawing one lets the next older release back into the
 window. A name that is not a release tag stops the run. The variable works whether or not releases
-are immutable. The release and its assets stay on GitHub; removing them is your choice. Users who
-installed it keep it.
+are immutable (see "Immutable releases"): it changes what the tree is built from, not the release.
+The release and its assets stay on GitHub; removing them is your choice. Users who installed it keep
+it.
 
 **Withdraw a version from COPR or the AUR.** No script does it. Remove the build in COPR by hand, or
 push the previous `PKGBUILD` to the AUR (a dispatch for the previous tag does that, see above), and
@@ -386,9 +460,17 @@ waiting second.)
 release enters both suites, a pre-release only `beta`. Releases are ordered by version
 (`packaging/version.sh sort-key`), never by date; `beta` holds the newest three of all of them and
 `stable` the newest three finals, and `stable` does not exist until a final release is published.
-`gh-pages` is pushed only when the pool, the `Packages` files, the keys or `.nojekyll` differ, or a
-`Release` file differs by more than its `Date:` line. Signatures differ on every run, so they decide
-nothing.
+`gh-pages` is pushed only when the pool, the `Packages` files, the keys or `.nojekyll` differ, a
+`Release` file differs by more than its `Date:` line, or a signature already on `gh-pages` does not
+verify (`gpgv`, against the keys of the new tree). Signatures differ on every run, so their bytes
+decide nothing, but a damaged or foreign `InRelease` or `Release.gpg` is repaired by the next run
+for the same releases, which logs "the signatures on gh-pages do not verify".
+
+**A killed step.** The `apt` step and preflight import the signing key into a throwaway GnuPG home
+`/tmp/pdse-gpg.*` and remove it when they exit. A step killed outright (a timeout, `SIGKILL`) cannot,
+so `credentials.sh remove`, which runs under `if: always()`, also deletes `pdse-gpg.*` homes and logs
+in `/tmp` that belong to the runner's user. Do not run `credentials.sh remove` on a machine where
+another signing run is in progress.
 
 ## Rotate the signing key
 

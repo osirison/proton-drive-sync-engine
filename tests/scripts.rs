@@ -4905,6 +4905,13 @@ impl PublishTree {
             )
             .expect("copy a release script");
         }
+        // The packages this project ships, which apt-publish.sh reads from the packaging.
+        fs::create_dir_all(tree.join("debian")).expect("debian");
+        fs::copy(
+            root.join("packaging/debian/control"),
+            tree.join("debian/control"),
+        )
+        .expect("debian/control");
         let stubs = directory.path().join("publish-stubs");
         fs::create_dir(&stubs).expect("stubs");
         write_executable(&stubs.join("gh"), PUBLISH_GH_STUB);
@@ -4918,6 +4925,7 @@ impl PublishTree {
         write_executable(&container.join("chown"), CONTAINER_LOG_STUB);
         write_executable(&container.join("su"), CONTAINER_SU_STUB);
         fs::create_dir(directory.path().join("packages")).expect("packages");
+        fs::create_dir(directory.path().join("gpg-default")).expect("gpg-default");
         PublishTree { directory, stubs }
     }
 
@@ -4955,7 +4963,11 @@ impl PublishTree {
             .env("STUB_DOCKER_LOG", self.path("docker.log"))
             .env("STUB_CONTAINER_LOG", self.path("container.log"))
             .env("STUB_CONTAINER_BIN", self.path("container-stubs"))
-            .env("TODAY", "2027-01-01");
+            .env("TODAY", "2027-01-01")
+            // Where the signing scripts make their throwaway GnuPG homes (and `credentials.sh remove`
+            // looks for leftovers): inside the test, never the machine's /tmp, so a test that is
+            // killed leaves nothing there and `remove` cannot touch another run's homes.
+            .env("PUBLISH_GPG_TMPDIR", self.path("gpg-default"));
         for name in [
             "DRY_RUN",
             "PUBLISH_DRY_RUN",
@@ -4979,7 +4991,6 @@ impl PublishTree {
             "APT_GIT_EMAIL",
             "APT_FINGERPRINT_FILE",
             "APT_CLIENT_ROOT",
-            "PUBLISH_GPG_TMPDIR",
             "PUBLISH_TAG",
             "VERIFY_APT_URI",
             "VERIFY_APT_KEY_URL",
@@ -5375,6 +5386,61 @@ fn the_credentials_are_written_private_an_empty_secret_gets_no_file_and_remove_d
     let removed = tree.run("credentials.sh", &["remove"], &[]);
     assert!(removed.status.success());
     assert!(!directory.exists());
+}
+
+#[test]
+fn remove_also_deletes_the_gnupg_homes_a_killed_step_left_with_the_private_key_in_them() {
+    // apt-publish.sh and preflight.sh import the signing key into a throwaway home and remove it
+    // from an EXIT trap, which a SIGKILL or a runner timeout never runs. `remove` runs under
+    // `if: always()` and is the last chance. It takes only what these scripts make.
+    let tree = PublishTree::new();
+    let base = tree.path("leftovers");
+    fs::create_dir(&base).expect("base");
+    let make = |name: &str| {
+        let home = base.join(name);
+        fs::create_dir(&home).expect("home");
+        fs::write(home.join("private-keys-v1.d"), "x").expect("file");
+        home
+    };
+    let homes = [make("pdse-gpg.AbC123"), make("pdse-gpg.zzzzzz")];
+    // preflight.sh's log file sits beside its home.
+    fs::write(base.join("pdse-gpg.AbC123.log"), "gpg output\n").expect("log");
+    let other = make("something-else");
+    fs::write(base.join("pdse-gpg"), "no dot, not ours").expect("file");
+    let output = tree.run(
+        "credentials.sh",
+        &["remove"],
+        &[("PUBLISH_GPG_TMPDIR", &base.display().to_string())],
+    );
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    for home in &homes {
+        assert!(!home.exists(), "{} was left", home.display());
+    }
+    assert!(!base.join("pdse-gpg.AbC123.log").exists());
+    assert!(
+        other.exists(),
+        "a directory that is not a gpg home was removed"
+    );
+    assert!(
+        base.join("pdse-gpg").exists(),
+        "a file with another name was removed"
+    );
+    // Nothing to remove, and a base that does not exist, are not errors.
+    let again = tree.run(
+        "credentials.sh",
+        &["remove"],
+        &[("PUBLISH_GPG_TMPDIR", &base.display().to_string())],
+    );
+    assert!(again.status.success(), "{}", stderr_of(&again));
+    let missing = tree.run(
+        "credentials.sh",
+        &["remove"],
+        &[(
+            "PUBLISH_GPG_TMPDIR",
+            &tree.path("no-such-dir").display().to_string(),
+        )],
+    );
+    assert!(missing.status.success(), "{}", stderr_of(&missing));
 }
 
 // --- preflight.sh (task 6.2) --------------------------------------------------------------------

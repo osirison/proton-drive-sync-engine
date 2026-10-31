@@ -523,9 +523,30 @@ design above did not settle them):
   or a back-dated release would change. It is the order dpkg gives the package versions.
 - **Withdrawal is the repository variable `APT_WITHDRAWN`**: release tags to leave out, split on
   commas and white space without the shell's own splitting (a `v*` must not expand against the
-  working directory). A name that is not a release tag stops the run. It works whether or not the
-  repository's releases are immutable (they are not, today). The next older release re-enters a
-  window it leaves.
+  working directory). A name that is not a release tag stops the run. It changes only what the tree
+  is built from, never the release, so it works whether or not the repository's releases are
+  immutable (off today; turning that on is the maintainer's decision, see below). The next older
+  release re-enters a window it leaves.
+- **The tag being published must be in the listing.** After the listing, the run stops unless the
+  tag's version is among the published releases (the listing can lag a release that was just
+  published; the remedy is to wait and run the step again). Two cases pass: a tag in
+  `APT_WITHDRAWN` (dispatching it is how a withdrawal is applied; logged as a deliberate rebuild),
+  and a tag older than the newest three (listed, only outside the window).
+- **A deb must say in its control file what its name says.** `apt-ftparchive` writes `Packages` from
+  the control file, so the name and `SHA256SUMS` are not enough: `dpkg-deb -f` (control only, no
+  maintainer script) must give a `Package` equal to the name's and one of the packages
+  `packaging/debian/control` declares, a `Version` equal to `version.sh spell rpm` of the release
+  plus the name's revision (the one spelling rule), and the name's `Architecture`. A missing field
+  or a non-deb refuses. The check runs before anything else reads the file.
+- **A signature already on `gh-pages` that does not verify counts as "differs".** `InRelease` and
+  `Release.gpg` are still not compared byte for byte, but the existing ones are checked with `gpgv`
+  against the new tree's keys, so a damaged or foreign signature is repaired by the next run.
+- **Immutable releases** (repository setting, off today, maintainer's decision, described in
+  `docs/releasing.md`): the apt step trusts a release's debs and `SHA256SUMS`, which are assets of
+  the same release, so replacing both after publishing would be signed in on the next run. Nothing in
+  the pipeline modifies a published release (`draft.sh` refuses one before its first write;
+  `name-assets.sh` is local; `publish.yml` has `contents: read`), so turning it on breaks no step.
+  Its cost is that a published release cannot be repaired and its tag cannot be reused.
 - **A published release whose `prerelease` flag disagrees with its tag stops the run** when it would
   be used, and so does a release in the window with no deb, a deb that `SHA256SUMS` does not list or
   lists differently, or more than one main package: nothing is skipped silently.

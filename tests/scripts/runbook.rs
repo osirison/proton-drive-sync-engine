@@ -76,15 +76,20 @@ fn the_runbook_names_every_secret_variable_and_setting_the_publish_workflow_read
     let variables = names_after(&both, "vars.");
     let env = top_level_env_names(&publish);
     // The extraction itself must find what is known to be there, or a broken reader would pass.
-    for name in [
+    // A failure names the item by its place in the lists here, never by formatting the secret's name.
+    for (index, name) in [
         "COPR_CONFIG",
         "AUR_SSH_KEY",
         "APT_SIGNING_KEY",
         "APT_DEPLOY_KEY",
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         assert!(
             secrets.contains(name),
-            "no secret {name} found: {secrets:?}"
+            "the reader did not find known secret number {index} (of {} found)",
+            secrets.len()
         );
     }
     for name in ["COPR_TOKEN_EXPIRES", "APT_WITHDRAWN"] {
@@ -106,10 +111,11 @@ fn the_runbook_names_every_secret_variable_and_setting_the_publish_workflow_read
         ("variable", &variables),
         ("env value", &env),
     ] {
-        for name in names {
+        for (index, name) in names.iter().enumerate() {
             assert!(
                 docs.contains(&format!("`{name}`")),
-                "docs/releasing.md does not name the {kind} `{name}` that the workflows read"
+                "docs/releasing.md does not name {kind} number {index} (in sorted order) of the {} the workflows read",
+                names.len()
             );
         }
     }

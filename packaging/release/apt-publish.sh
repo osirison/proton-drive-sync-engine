@@ -25,9 +25,13 @@
 # stops the run when it would be used: a beta marked final would otherwise reach stable.
 #
 # WHAT IT DOES
-#   1. downloads the `.deb` assets and SHA256SUMS of every release it uses; every deb must be listed
-#      in that release's SHA256SUMS with the same SHA-256, and a release in the window with no deb, a
-#      deb the sums do not list or a mismatch stops the step (nothing is skipped silently);
+#   0. stops unless the tag being published is among the published releases (the listing can lag a
+#      release just published), except a tag in APT_WITHDRAWN (a deliberate rebuild without it);
+#   1. downloads the `.deb` assets and SHA256SUMS of every release it uses; every deb must say in its
+#      own control file (dpkg-deb -f; Package, Version, Architecture) what its name says, be one of
+#      the packages packaging/debian/control declares, and be listed in that release's SHA256SUMS
+#      with the same SHA-256, and a release in the window with no deb, a deb the sums do not list or
+#      a mismatch stops the step (nothing is skipped silently);
 #   2. puts them in pool/main/p/proton-drive-sync-engine/ under their asset names and writes each
 #      suite's `Packages` with apt-ftparchive, from a sorted file list, so the same releases give
 #      the same bytes (the only text that changes between runs is `Date:` in Release, and the
@@ -45,7 +49,7 @@
 # the real Release, verified and discarded); no InRelease is signed into the tree and nothing is
 # pushed.
 #
-# Needs gh, jq, git, gpg, gpgv, apt-ftparchive (apt-utils), GITHUB_REPOSITORY, PUBLISH_CHANNELS,
+# Needs gh, jq, git, gpg, gpgv, dpkg-deb (dpkg), apt-ftparchive (apt-utils), GITHUB_REPOSITORY, PUBLISH_CHANNELS,
 # PUBLISH_DRY_RUN, APT_SIGNING_KEY_FILE, APT_DEPLOY_KEY_FILE, APT_GIT_NAME, APT_GIT_EMAIL;
 # optional APT_WITHDRAWN, APT_FINGERPRINT_FILE (a test seam), APT_REMOTE_URL (replaces the apt
 # repository's URL; the tests use a local bare repository), PUBLISH_GPG_TMPDIR (where the throwaway
@@ -95,10 +99,66 @@ newest() {
 
 # --- a release's assets -------------------------------------------------------------------------------
 
-# check_assets DIR UPSTREAM: every .deb in DIR is a plain file named for UPSTREAM and is listed in
-# DIR/SHA256SUMS with its own SHA-256. Prints the deb names, sorted.
+# The packages this project ships: the Package: lines of the packaging's own control file (the tag's
+# checkout), one per line. Nothing else may enter the repository, whatever a deb's name says.
+shipped_packages() {
+  local control="$publish_root/packaging/debian/control" packages
+  [[ -f "$control" ]] || die "$control is missing: the set of packages this project ships cannot be read"
+  packages="$(awk '$1 == "Package:" { print $2 }' "$control")"
+  [[ -n "$packages" ]] || die "$control names no package"
+  printf '%s\n' "$packages"
+}
+
+# control_field DEB FIELD: the field's value from the deb's control file. dpkg-deb -f reads the
+# control archive only and runs no maintainer script. Fails on a missing field or an unreadable deb.
+control_field() {
+  local value
+  value="$(dpkg-deb -f -- "$1" "$2" 2>/dev/null)" || return 1
+  [[ -n "$value" && "$value" != *$'\n'* ]] || return 1
+  printf '%s\n' "$value"
+}
+
+# check_deb_control DIR UPSTREAM NAME PACKAGE REVISION ARCH: what the deb's control file says about
+# itself must be what its name says. apt-ftparchive writes Packages from the control file, so a deb
+# named for this release whose control says `Package: sudo` would otherwise be signed into the
+# repository as that package. The version is spelled by version.sh (the one spelling rule) plus the
+# revision in the name.
+check_deb_control() {
+  local dir="$1" upstream="$2" name="$3" package="$4" revision="$5" architecture="$6"
+  local field_package field_version field_architecture expected_version
+  field_package="$(control_field "$dir/$name" Package)" ||
+    { log "$upstream: $name: the control file cannot be read (a missing Package field, or not a deb)"; return 1; }
+  field_version="$(control_field "$dir/$name" Version)" ||
+    { log "$upstream: $name: the control file cannot be read (a missing Version field)"; return 1; }
+  field_architecture="$(control_field "$dir/$name" Architecture)" ||
+    { log "$upstream: $name: the control file cannot be read (a missing Architecture field)"; return 1; }
+  if [[ "$field_package" != "$package" ]]; then
+    log "$upstream: $name: the control file says Package '$field_package' but the name says '$package'"
+    return 1
+  fi
+  if ! grep -Fxq -- "$field_package" <<<"$shipped"; then
+    log "$upstream: $name: '$field_package' is not a package this project ships (${shipped//$'\n'/ })"
+    return 1
+  fi
+  expected_version="$("$version_sh" spell rpm "$upstream")-$revision" || return 1
+  if [[ "$field_version" != "$expected_version" ]]; then
+    log "$upstream: $name: the control file says Version '$field_version' but this release's is '$expected_version'"
+    return 1
+  fi
+  if [[ "$field_architecture" != "$architecture" ]]; then
+    log "$upstream: $name: the control file says Architecture '$field_architecture' but the name says '$architecture'"
+    return 1
+  fi
+}
+
+# check_assets DIR UPSTREAM: every .deb in DIR is a plain file named for UPSTREAM, says in its own
+# control file what its name says (check_deb_control, before anything else reads the file) and is
+# listed in DIR/SHA256SUMS with its own SHA-256. Prints the deb names, sorted.
 check_assets() {
   local dir="$1" upstream="$2" escaped name listed actual count=0 main=0
+  local shipped
+  command -v dpkg-deb >/dev/null || die "dpkg-deb is not installed: a deb's control file cannot be read (it is part of dpkg)"
+  shipped="$(shipped_packages)" || exit 1
   [[ -s "$dir/SHA256SUMS" ]] || { log "$upstream: the release has no SHA256SUMS"; return 1; }
   escaped="${upstream//./\\.}"
   local names
@@ -106,14 +166,16 @@ check_assets() {
   while IFS= read -r name; do
     [[ -n "$name" ]] || continue
     # The names come from the release API: no path, and the shape draft.sh gave them.
-    if [[ ! "$name" =~ ^[a-z0-9][a-z0-9.+-]*_${escaped}-[0-9]+_(amd64|all)\.deb$ ]]; then
+    if [[ ! "$name" =~ ^([a-z0-9][a-z0-9.+-]*)_${escaped}-([0-9]+)_(amd64|all)\.deb$ ]]; then
       log "$upstream: '$name' is not a deb named for this version"
       return 1
     fi
+    local name_package="${BASH_REMATCH[1]}" name_revision="${BASH_REMATCH[2]}" name_architecture="${BASH_REMATCH[3]}"
     if [[ -L "$dir/$name" || ! -f "$dir/$name" ]]; then
       log "$upstream: $name is not a plain file"
       return 1
     fi
+    check_deb_control "$dir" "$upstream" "$name" "$name_package" "$name_revision" "$name_architecture" || return 1
     listed="$(awk -v n="$name" '$2 == n || $2 == "*" n { print $1 }' "$dir/SHA256SUMS")"
     actual="$(sha256sum "$dir/$name" | awk '{print $1}')"
     if [[ -z "$listed" || "$listed" == *$'\n'* ]]; then
@@ -265,10 +327,24 @@ test_sign() {
 
 # --- comparing and pushing ----------------------------------------------------------------------------
 
+# signatures_verify TREE KEYRING: every suite of TREE has an InRelease and a Release.gpg that gpgv
+# accepts with KEYRING, as a client's apt would.
+signatures_verify() {
+  local tree_dir="$1" keyring="$2" release suite_dir
+  while IFS= read -r release; do
+    [[ -n "$release" ]] || continue
+    suite_dir="$tree_dir/$(dirname "$release")"
+    gpgv --keyring "$keyring" "$suite_dir/InRelease" >/dev/null 2>&1 || return 1
+    gpgv --keyring "$keyring" "$suite_dir/Release.gpg" "$suite_dir/Release" >/dev/null 2>&1 || return 1
+  done <<<"$(cd "$tree_dir" && find dists -name Release | LC_ALL=C sort)"
+}
+
 # trees_equal NEW OLD: the same pool, Packages, keys and .nojekyll, and Release files that are equal
-# but for their Date line. InRelease and Release.gpg differ on every run (a signature carries its
-# time) and Release's Date is the clock, so none of them can decide "changed"; everything they
-# state is derived from the files compared here.
+# but for their Date line, and signatures on OLD that verify with NEW's keys. InRelease and
+# Release.gpg differ on every run (a signature carries its time) and Release's Date is the clock, so
+# neither can be compared byte for byte; everything they state is derived from the files compared
+# here. But a signature that no longer verifies (a bad file on gh-pages, or one made by a key that is
+# not the new one) is not equal: the push repairs it.
 trees_equal() {
   local new="$1" old="$2" releases_new releases_old release
   diff -r -q -x .git -x InRelease -x Release.gpg -x Release "$new" "$old" >/dev/null 2>&1 || return 1
@@ -279,6 +355,10 @@ trees_equal() {
     [[ -n "$release" ]] || continue
     [[ "$(grep -v '^Date:' "$new/$release")" == "$(grep -v '^Date:' "$old/$release")" ]] || return 1
   done <<<"$releases_new"
+  if ! signatures_verify "$old" "$new/$KEY_BASENAME.gpg"; then
+    log "the signatures on gh-pages do not verify with the keys of this tree: it differs"
+    return 1
+  fi
 }
 
 publish_tree() {
@@ -409,7 +489,17 @@ run_publish() {
     flag_of[$upstream]="$flag"
     candidates+=("$upstream")
   done <<<"$rows"
+  # The tag being published must be in the tree, or the step would push a repository without it,
+  # record `ok`, and verify-apt would fail only after its whole wait. The listing can lag a release
+  # that was just published. The one exception is a withdrawn tag: dispatching it is how a
+  # withdrawal is applied (docs/releasing.md), and the tree is meant to be built without it. A tag
+  # older than the newest three is a candidate and passes: it is listed, only the window leaves it out.
   choose_suites < <(printf '%s\n' "${candidates[@]}")
+  if [[ -n "${withdrawn[$tag_upstream_value]-}" ]]; then
+    log "$tag is in APT_WITHDRAWN: this is a deliberate rebuild without it"
+  elif ! printf '%s\n' "${candidates[@]}" | grep -Fxq -- "$tag_upstream_value"; then
+    die "$tag is not among the published releases GitHub lists (the listing can lag a release that was just published): wait a minute and run the step again; nothing is pushed"
+  fi
 
   # 2. Download and check what is used.
   local release expected
