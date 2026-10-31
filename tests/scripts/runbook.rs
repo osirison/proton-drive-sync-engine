@@ -106,16 +106,13 @@ fn the_runbook_names_every_secret_variable_and_setting_the_publish_workflow_read
     ] {
         assert!(env.contains(name), "no env value {name} found: {env:?}");
     }
-    for (kind, names) in [
-        ("secret", &secrets),
-        ("variable", &variables),
-        ("env value", &env),
-    ] {
+    // Lists 0, 1 and 2 are the secrets, the variables and the env values; an entry is named by its
+    // place in its sorted list, never by formatting it.
+    for (list, names) in [&secrets, &variables, &env].into_iter().enumerate() {
         for (index, name) in names.iter().enumerate() {
             assert!(
                 docs.contains(&format!("`{name}`")),
-                "docs/releasing.md does not name {kind} number {index} (in sorted order) of the {} the workflows read",
-                names.len()
+                "docs/releasing.md does not name entry {index} of list {list} that the workflows read"
             );
         }
     }
