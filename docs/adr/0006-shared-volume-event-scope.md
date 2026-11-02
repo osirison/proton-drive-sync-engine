@@ -324,8 +324,9 @@ leaves out is listed at the top of the file.
   nothing) are untouched.
 - **What still walks.** A fetch the server answered with an error (a rejected cursor, a reply that
   does not parse, a `4xx`) or a server refresh — a fetch that got no answer waits instead, and walks
-  only after ten minutes of silence (ADR 0004); a `Created` node absent from its known
-  parent's listing (#30); an event about the pair's own root; a directory moved in or restored; a
+  only after ten minutes of silence (ADR 0004); a node the pair holds that names a parent its
+  listing has not shown (a `Created` node absent from its known parent's listing walked too,
+  #30, until 2026-11-02 — see the addendum below); an event about the pair's own root; a directory moved in or restored; a
   duplicate id in the baseline; a tree with a directory that has no composed id (the window between
   the daemon making a folder and its own event arriving); a record in a folder with no row; a
   baseline record under an older id; **the removal of a node it holds no record of while a record
@@ -345,8 +346,8 @@ leaves out is listed at the top of the file.
   of them the saving shrinks and the log says `names no parent`; a pair **rooted at the top of the
   volume** was not covered by the live gate, and its root may behave differently (events whose
   parent is the volume top, which the model gives or omits at random); and the **listing can lag
-  the stream**, which turns a `Created` into a `not in its parent listing yet` walk (#30) however
-  well the skip works.
+  the stream**, which turned a `Created` into a `not in its parent listing yet` walk (#30) however
+  well the skip works — and, it turned out, broke the skip: see the addendum below.
 - **A residual, contrived:** the root uid names a node and `remote_root` names a path. If an
   ancestor of the folder is renamed and someone makes a different folder at the old path before the
   pair notices, no event is about the old root, so the pair keeps the old uid until its next walk and
@@ -417,6 +418,37 @@ What it did **not** cover: a pair rooted at the top of the volume (the root's pa
 volume top, whose id the stream may omit); a node restored from the trash (the event may arrive
 with a different parent or none); and foreign events that carry no parent id, which the pair
 walks for by design (point 4) and whose frequency on a real stream is not known.
+
+## Addendum (2026-11-02): the listing can stay behind the stream, and the skip assumed it could not
+
+The soundness argument above assumes the map is complete: every folder of the pair's tree has a
+row. #30's fallback broke that. On 2026-10-22 a folder was made from the iPhone app inside a held
+folder of the `Documents` pair. Its `Created` event named a held parent, the CLI's listing of that
+parent did not show it, and the pass walked (#30). The `proton-drive` CLI answers `filesystem list`
+from a local cache (`~/.cache/proton-drive-cli/cache-entities.sqlite`) that only its own volume
+event poll refreshes, and the daemon's short-lived children exit before that poll lands (its
+`events.json` cursor never advanced in six log files; no children request to the API in any of
+them), so the walk read the same stale listing. The bootstrap had captured its cursor **before** the
+walk (#294), past the folder's create. The folder was now behind the cursor and in no map. Thirty
+minutes later eight files were created inside it: each named the folder as its parent, the pair
+held it nowhere, condition S held for the (apparently complete) tree, and all eight were dropped as
+`outside this folder`. Nothing re-derived any of it; the weekly sweep read the same cache.
+
+The decision: a node the pair does not hold that its parent's listing does not show is **reported,
+not walked for** (`ListingBehind`), with everything created beneath it. The map leaves it out, the
+rest of the delta is applied, and the daemon **persists the cursor it started from**, so every poll
+asks for the same delta again until the listing shows the node; `last_error` names the folder
+meanwhile. A later event about such a node supersedes its entry (a trash, a delete, a move out:
+nothing waits; a trash of a never-placed node is still decided by the untracked-removal rule, since
+a record with no id may be it). A full walk reads the same listing, so a walk that still does not
+show every held node anchors no cursor either. A node the pair **holds** that names such a parent
+still walks, as for any parent it does not hold. The model test asserts `behind` is empty, because
+its resolver lists the truth.
+
+Residual: a pass that falls back for another reason in the same delta (a tracked node moved into
+the unlisted folder, a directory moved in by an update) walks before the behind set of that delta
+is recorded, and that walk anchors as before. The CLI's cache is the cause; the engine's part is to
+lose nothing and say so.
 
 ## Follow-ups
 

@@ -4,8 +4,8 @@ use crate::dirconfig::{DirectoryConfigResolver, EffectiveSettings};
 use crate::doctor;
 use crate::due_queue::{Cause, DueQueue, Job, JobKind};
 use crate::events::{
-    EventSource, EventsClient, RemoteChange, is_transient_fetch_error, transient_fetch_cause,
-    volume_id_from_proton_id,
+    EventSource, EventsClient, RemoteChange, is_transient_fetch_error, node_uid,
+    transient_fetch_cause, volume_id_from_proton_id,
 };
 use crate::index::{
     EntityKind, EventCursor, FileEvent, FileRecord, HistoryRetention, IndexTotals,
@@ -40,7 +40,7 @@ use crate::proton::{
 };
 use chrono::{Local, TimeZone};
 
-use crate::reconstruct::{Reconstruction, RemoteChangeResolver, reconstruct_remote};
+use crate::reconstruct::{ListingBehind, Reconstruction, RemoteChangeResolver, reconstruct_remote};
 use crate::schedule::FullScanSchedule;
 use crate::session::{CliKeyringSession, CurlHttpTransport};
 use crate::sync::{
@@ -453,6 +453,10 @@ struct PairRuntime {
     /// How long [`Self::feed_outage`] may last before the pair walks. [`FEED_OUTAGE_BOUND`]; a field
     /// so a test can shrink it, as the daemon's cadences are.
     feed_outage_bound: Duration,
+    /// Nodes the stream reported inside this folder that the listing does not show yet, `None`
+    /// while every reported node was listed (see [`ListingBehindState`]). In memory only: the
+    /// cursor it holds is persisted, so a restart replays the same delta and finds them again.
+    listing_behind: Option<ListingBehindState>,
     /// The last reported reason **this pair** could not resolve a volume + cursor, so a standing
     /// decline is logged once instead of every pass (and re-logged if the cause changes). `None`
     /// while the scope resolves. Diagnostic only — see `PairPass::resolve_event_scope`.
@@ -997,6 +1001,22 @@ struct FeedOutage {
     /// feed answers again. A walk that ends clean does not clear it — syncing is working, the feed
     /// is not, and the person is owed both facts.
     degraded: Option<String>,
+}
+
+/// Nodes inside this pair's folder that the stream reported and the `proton-drive` listing does
+/// not show ([`ListingBehind`]), as the last event-driven pass left them. Present from the pass
+/// that first saw them until a pass places them, or a full walk lists them.
+///
+/// While present the cursor stays where it was, so every poll asks for the same delta again (and
+/// applies the rest of it again, idempotently) until the listing catches up; `message` is the
+/// sentence `last_error` carries meanwhile, so the person knows which folder to look at. A full
+/// walk reads the same listing, so it is not the way out: a walk that still does not show every
+/// one of `uids` leaves the cursor alone too (see `resolve_bootstrap_cursor_update`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ListingBehindState {
+    /// The composed uids (`volumeId~nodeId`) a walk must show before the cursor may move.
+    uids: Vec<String>,
+    message: String,
 }
 
 /// A pass that ended because the change feed did not answer and the wait is still within its bound.
@@ -5537,6 +5557,7 @@ impl PairRuntime {
             remote_root_uid_asked: false,
             feed_outage: None,
             feed_outage_bound: FEED_OUTAGE_BOUND,
+            listing_behind: None,
             event_scope_declined: None,
             seen_event_source_generation: 0,
             root_watch: RootWatch::Unregistered,
@@ -6226,13 +6247,20 @@ impl<C: ProtonClient> PairPass<'_, C> {
         // takes its outcome from the same three arms, so it can never disagree with the message.
         let message = match &result {
             Ok(PassOutcome::Clean) => {
-                // The one error a clean pass keeps: the feed is still being worked around. Syncing
-                // is working and the feed is not, and the person is owed both facts.
+                // The errors a clean pass keeps: the feed is still being worked around, or the
+                // listing has not caught up with what Proton reported. Syncing is working and the
+                // feed or the listing is not, and the person is owed both facts.
                 self.pair.last_error = self
                     .pair
                     .feed_outage
                     .as_ref()
-                    .and_then(|outage| outage.degraded.clone());
+                    .and_then(|outage| outage.degraded.clone())
+                    .or_else(|| {
+                        self.pair
+                            .listing_behind
+                            .as_ref()
+                            .map(|behind| behind.message.clone())
+                    });
                 self.finalize_pass_record(PassOutcomeKind::Clean, 0, None);
                 "sync completed".to_owned()
             }
@@ -6915,7 +6943,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
         // be told from one inside the folder (#456). Asked for only when there are events to place.
         let (remote_root_uid, root_node) = self.remote_root_node_for_incremental(&delta.changes);
 
-        let (remote_entities, outside) = {
+        let (remote_entities, outside, behind) = {
             // Built here and dropped at the end of this block: its listing memo lives exactly as
             // long as the pass.
             let resolver = TargetedResolver {
@@ -6932,30 +6960,49 @@ impl<C: ProtonClient> PairPass<'_, C> {
                 &self.pair.scan_options,
                 &resolver,
             ) {
-                Reconstruction::Complete { remote, outside } => (remote, outside),
+                Reconstruction::Complete {
+                    remote,
+                    outside,
+                    behind,
+                } => (remote, outside, behind),
                 Reconstruction::FallbackToSnapshot(reason) => {
                     return Ok(IncrementalOutcome::Fallback(reason));
                 }
             }
         };
 
+        // Nodes the stream reported inside this folder that the listing does not show: the cursor
+        // stays where it is, so the next poll asks for them again, and the person is told which
+        // folder the CLI has yet to list. Said once per standing set, and once when it clears.
+        self.note_listing_behind(&volume, &behind);
+        let cursor_after = if behind.is_empty() {
+            delta.latest_event_id.clone()
+        } else {
+            cursor.last_event_id.clone()
+        };
+
         // A delta whose every event was about another folder says nothing about this one, which is
         // what an empty delta says: the same fast path, for the same reasons (a reported local
         // change, a pending deletion or a forced scan still make the pass a real one). Without
         // this a poll on a busy volume cost a walk of the whole local tree for events that were
-        // not ours. `outside` counts only events dropped as foreign, so equality means nothing
-        // was applied to the map and it is still the baseline.
-        if nothing_asks_for_a_scan && outside == delta.changes.len() {
-            self.finish_idle_pass(
-                &volume,
-                &cursor.last_event_id,
-                &delta.latest_event_id,
-                &root_node,
-            )?;
-            info!(
-                outside,
-                "event-driven pass idle; the only changes were outside this folder"
-            );
+        // not ours. `outside` counts only events dropped as foreign and `behind` only nodes left
+        // out for want of a listing, so the sum reaching the count means nothing was applied to
+        // the map and it is still the baseline.
+        if nothing_asks_for_a_scan && outside + behind.len() == delta.changes.len() {
+            self.finish_idle_pass(&volume, &cursor.last_event_id, &cursor_after, &root_node)?;
+            if behind.is_empty() {
+                info!(
+                    outside,
+                    "event-driven pass idle; the only changes were outside this folder"
+                );
+            } else {
+                info!(
+                    outside,
+                    behind = behind.len(),
+                    "event-driven pass idle; the changes in this folder are not listed yet, so \
+                     the cursor is held"
+                );
+            }
             return Ok(IncrementalOutcome::Idle);
         }
         if outside > 0 {
@@ -6986,7 +7033,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
             },
             Some(CursorUpdate {
                 scope_id: volume,
-                last_event_id: delta.latest_event_id,
+                last_event_id: cursor_after,
             }),
             root_node,
         )?;
@@ -6995,6 +7042,53 @@ impl<C: ProtonClient> PairPass<'_, C> {
             .incremental_passes_since_full_scan
             .saturating_add(1);
         Ok(IncrementalOutcome::Committed(outcome))
+    }
+
+    /// Records what this pass found the listing had not shown ([`PairRuntime::listing_behind`]),
+    /// and says so once: a warning when the set appears or changes, a line when it clears.
+    fn note_listing_behind(&mut self, volume: &str, behind: &[ListingBehind]) {
+        if behind.is_empty() {
+            if self.pair.listing_behind.take().is_some() {
+                info!("proton-drive now lists every change Proton reported in this folder");
+            }
+            return;
+        }
+        let folders: BTreeSet<&Path> = behind.iter().map(|node| node.parent.as_path()).collect();
+        let first = folders.iter().next().expect("behind is not empty");
+        let folder = self.pair.config.remote_root.join(first);
+        let message = match folders.len() {
+            1 => format!(
+                "Proton reports {} new item(s) in {} that proton-drive does not list yet; this \
+                 folder asks for them again every poll and holds its place in the change feed \
+                 until it does",
+                behind.len(),
+                folder.display()
+            ),
+            others => format!(
+                "Proton reports {} new item(s) in {} and {} other folder(s) that proton-drive \
+                 does not list yet; this folder asks for them again every poll and holds its \
+                 place in the change feed until it does",
+                behind.len(),
+                folder.display(),
+                others - 1
+            ),
+        };
+        let state = ListingBehindState {
+            uids: behind
+                .iter()
+                .map(|node| node_uid(volume, &node.node_id))
+                .collect(),
+            message,
+        };
+        if self.pair.listing_behind.as_ref() != Some(&state) {
+            warn!(
+                behind = behind.len(),
+                folder = %folder.display(),
+                "Proton reports changes in this folder that proton-drive does not list yet; the \
+                 cursor is held and they are asked for again every poll"
+            );
+        }
+        self.pair.listing_behind = Some(state);
     }
 
     /// The end of an incremental pass that found nothing for this folder to do: the cursor moves
@@ -7282,11 +7376,13 @@ impl<C: ProtonClient> PairPass<'_, C> {
             base_index.clear();
         }
 
-        let cursor_update = self.resolve_bootstrap_cursor_update(
-            pre_snapshot_cursor,
-            &remote_entities,
-            remote_root_missing,
-        );
+        let cursor_update = self
+            .resolve_bootstrap_cursor_update(
+                pre_snapshot_cursor,
+                &remote_entities,
+                remote_root_missing,
+            )
+            .filter(|_| self.walk_lists_what_the_stream_reported(&remote_entities));
         let root_node =
             self.remote_root_node_after_a_walk(remote_root_missing, cursor_update.is_some());
 
@@ -7407,6 +7503,41 @@ impl<C: ProtonClient> PairPass<'_, C> {
         }
     }
 
+    /// Whether a full walk showed every node the last event-driven pass found the listing had not
+    /// ([`PairRuntime::listing_behind`]). A walk reads the same listing, so one that still does not
+    /// show them must not anchor the cursor past their events: that is how the folder made from
+    /// the iPhone app was lost (its create was behind the cursor the bootstrap captured, the walk
+    /// did not list it, and the files made inside it were then read as outside this folder).
+    /// `false` keeps the cursor where it was and the standing message; `true` clears both.
+    fn walk_lists_what_the_stream_reported(
+        &mut self,
+        remote_entities: &HashMap<PathBuf, RemoteEntity>,
+    ) -> bool {
+        let Some(behind) = self.pair.listing_behind.as_ref() else {
+            return true;
+        };
+        let listed: HashSet<String> = remote_entities
+            .values()
+            .filter_map(|entity| entity.remote_id())
+            .collect();
+        let missing = behind
+            .uids
+            .iter()
+            .filter(|uid| !listed.contains(*uid))
+            .count();
+        if missing == 0 {
+            self.pair.listing_behind = None;
+            info!("the full walk lists every change Proton reported in this folder");
+            return true;
+        }
+        warn!(
+            missing,
+            "the full walk still does not list changes Proton reported in this folder; the \
+             cursor is held so they are asked for again"
+        );
+        false
+    }
+
     /// Names the event volume from the remote itself, for the one case nothing stored can name it:
     /// a first-ever bootstrap, whose baseline is empty and whose cursor row does not exist yet
     /// (#303). One **targeted** listing of the remote root — `list_directory`, the O(1) call the
@@ -7456,10 +7587,11 @@ impl<C: ProtonClient> PairPass<'_, C> {
     /// the root's own wrapper node, so a childless root names nothing — and a walk that listed no
     /// node can have missed no change to one.
     ///
-    /// This is one of three places that can suppress the cursor, but they are one decision, not
-    /// three that can disagree: all of them only ever force the single `cursor_update` toward
+    /// This is one of four places that can suppress the cursor, but they are one decision, not
+    /// four that can disagree: all of them only ever force the single `cursor_update` toward
     /// `None`, and the sole store site is the final commit in [`Self::execute_plan_and_commit`]
-    /// (see the withheld-delete and vanished-node holds there).
+    /// (see the withheld-delete and vanished-node holds there, and
+    /// [`Self::walk_lists_what_the_stream_reported`] at the call site).
     fn resolve_bootstrap_cursor_update(
         &self,
         pre_snapshot_cursor: PreSnapshotCursor,
@@ -39214,6 +39346,192 @@ mod tests {
             Some("cursor-1".to_owned()),
             "and the cursor moved past the events nothing in the folder is waiting on"
         );
+    }
+
+    // --- the listing behind the stream (2026-11-02) ---------------------------------------------
+
+    /// The shape of the live loss: a folder made by another client in the pair's root, then a file
+    /// made inside it. The root's listing does not show the folder yet.
+    fn folder_with_a_file_page(latest: &str) -> VolumeEventPage {
+        one_page(
+            latest,
+            vec![
+                change(RemoteChangeKind::Created, "phone", Some("root-a"), false),
+                change(RemoteChangeKind::Created, "photo", Some("phone"), false),
+            ],
+        )
+    }
+
+    /// What the CLI lists once its cache has caught up with the stream.
+    fn the_listing_catches_up(client: &MultiRootClient) {
+        remote_gains(
+            client,
+            &remote_root_of("a"),
+            remote_dir("phone", "vol~phone"),
+        );
+        remote_gains(
+            client,
+            &remote_root_of("a"),
+            remote_file_entity("phone/photo.txt", "vol~photo", &sha1_bytes(b"photo")),
+        );
+    }
+
+    #[test]
+    fn a_folder_the_listing_does_not_show_holds_the_cursor_and_syncs_once_it_is_listed() {
+        // Live, 2026-10-22: a folder made from the iPhone app was not in its parent's listing
+        // (the CLI lists from a cache its own event poll never refreshes). The pass fell back to a
+        // walk that read the same listing, the bootstrap anchored the cursor past the folder's
+        // create, and the files made inside it were then "outside this folder". Nothing re-derived
+        // any of it for eleven days.
+        let directory = tempdir().expect("tempdir");
+        let page = folder_with_a_file_page("cursor-1");
+        let (mut daemon, client, mut stepper) =
+            steady_shared_volume_daemon(directory.path(), vec![page.clone(), page]);
+        let local = daemon.runtime(0).expect("ready").config.local_root.clone();
+
+        stepper.send(LoopCommand::SyncNow(0));
+        let log = capture_log("info", || {
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        });
+
+        assert!(
+            log.contains("not listed yet, so the cursor is held")
+                && log.contains("proton-drive does not list yet"),
+            "{log}"
+        );
+        assert!(!log.contains("outside this folder"), "{log}");
+        assert!(
+            client.walks().is_empty(),
+            "no walk: it reads the same listing ({:?})",
+            client.walks()
+        );
+        assert_eq!(
+            client.listings(),
+            [(remote_root_of("a"), PathBuf::new())],
+            "the root was listed once; the file's parent has no path to list"
+        );
+        assert_eq!(
+            cursor_of(&daemon, 0),
+            Some("cursor-0".to_owned()),
+            "the cursor is held where it was"
+        );
+        let error = daemon
+            .runtime(0)
+            .expect("ready")
+            .last_error
+            .clone()
+            .expect("the person is told which folder the CLI has yet to list");
+        assert!(
+            error.contains("2 new item(s)")
+                && error.contains(&remote_root_of("a").display().to_string()),
+            "{error}"
+        );
+
+        the_listing_catches_up(&client);
+        stepper.send(LoopCommand::SyncNow(0));
+        let log = capture_log("info", || {
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        });
+
+        assert!(log.contains("now lists every change"), "{log}");
+        assert!(
+            local.join("phone/photo.txt").exists(),
+            "the same delta, asked for again, now places and downloads the file (walks {:?})",
+            client.walks()
+        );
+        assert!(client.walks().is_empty(), "{:?}", client.walks());
+        assert_eq!(cursor_of(&daemon, 0), Some("cursor-1".to_owned()));
+        assert_eq!(daemon.runtime(0).expect("ready").last_error, None);
+    }
+
+    #[test]
+    fn a_full_walk_that_still_does_not_list_the_folder_leaves_the_cursor_where_it_was() {
+        // The weekly sweep, a resync, or any fallback walks; the walk reads the same listing. A
+        // walk that does not show the nodes the stream reported must not anchor the cursor past
+        // their events, or the folder is lost exactly as it was live.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) =
+            steady_shared_volume_daemon(directory.path(), Vec::new());
+        // A source whose `latest` differs from the stored cursor, so a walk that anchored would show.
+        let page = folder_with_a_file_page("cursor-1");
+        daemon.event_source = Some(Box::new(FakeEventSource::with_pages(
+            "cursor-after-walk",
+            vec![page.clone(), page],
+        )));
+        let local = daemon.runtime(0).expect("ready").config.local_root.clone();
+
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(cursor_of(&daemon, 0), Some("cursor-0".to_owned()));
+
+        daemon.shared.pairs[0]
+            .force_full_walk
+            .store(true, Ordering::SeqCst);
+        stepper.send(LoopCommand::SyncNow(0));
+        let log = capture_log("info", || {
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        });
+
+        assert_eq!(client.walks(), [remote_root_of("a")], "the walk happened");
+        assert!(
+            log.contains("the full walk still does not list changes Proton reported"),
+            "{log}"
+        );
+        assert_eq!(
+            cursor_of(&daemon, 0),
+            Some("cursor-0".to_owned()),
+            "the walk anchored nothing: the folder's create stays ahead of the cursor"
+        );
+        assert!(
+            daemon.runtime(0).expect("ready").last_error.is_some(),
+            "and the person is still told"
+        );
+
+        // The listing catches up: the next poll replays from the held cursor and places it.
+        the_listing_catches_up(&client);
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        assert!(local.join("phone/photo.txt").exists());
+        assert_eq!(cursor_of(&daemon, 0), Some("cursor-1".to_owned()));
+        assert_eq!(daemon.runtime(0).expect("ready").last_error, None);
+    }
+
+    #[test]
+    fn a_full_walk_that_lists_the_folder_clears_the_hold() {
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) =
+            steady_shared_volume_daemon(directory.path(), Vec::new());
+        daemon.event_source = Some(Box::new(FakeEventSource::with_pages(
+            "cursor-after-walk",
+            vec![folder_with_a_file_page("cursor-1")],
+        )));
+        let local = daemon.runtime(0).expect("ready").config.local_root.clone();
+
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(daemon.runtime(0).expect("ready").last_error.is_some());
+
+        the_listing_catches_up(&client);
+        daemon.shared.pairs[0]
+            .force_full_walk
+            .store(true, Ordering::SeqCst);
+        stepper.send(LoopCommand::SyncNow(0));
+        let log = capture_log("info", || {
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        });
+
+        assert!(
+            log.contains("the full walk lists every change Proton reported"),
+            "{log}"
+        );
+        assert!(local.join("phone/photo.txt").exists());
+        assert_eq!(
+            cursor_of(&daemon, 0),
+            Some("cursor-after-walk".to_owned()),
+            "the walk showed them, so it anchors as any walk does"
+        );
+        assert_eq!(daemon.runtime(0).expect("ready").last_error, None);
     }
 
     #[test]
