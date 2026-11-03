@@ -6485,18 +6485,25 @@ printf '%s\n' '{"entries":[]}'
         let kept = fs::read_to_string(root.join(CLIENT_UID_FILE)).expect("the root's copy");
         let value: Value = serde_json::from_str(&kept).expect("json");
         let uid = value["clientUid"].as_str().expect("a client uid");
-        assert!(uid.starts_with("sdk-js-cli-"), "{uid}");
-        assert_eq!(uid.len(), "sdk-js-cli-".len() + 32, "{uid}");
+        assert!(
+            uid.starts_with("sdk-js-cli-"),
+            "the kept client uid has the CLI's prefix"
+        );
+        assert_eq!(
+            uid.len(),
+            "sdk-js-cli-".len() + 32,
+            "the kept client uid has the CLI's length"
+        );
         let seen: Vec<String> = uids
             .join("\n")
             .split("}\n")
             .filter(|chunk| !chunk.trim().is_empty())
             .map(|chunk| chunk.trim().to_owned())
             .collect();
-        assert_eq!(seen.len(), 2, "{uids:?}");
+        assert_eq!(seen.len(), 2, "two children ran");
         assert!(
             seen.iter().all(|chunk| chunk.contains(uid)),
-            "{seen:?} vs {uid}"
+            "every child saw the kept client uid"
         );
     }
 
