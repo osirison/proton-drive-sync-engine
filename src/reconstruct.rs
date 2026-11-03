@@ -15,6 +15,10 @@
 //! folder" only when the pair's tree is fully named (see [`reconstruct_remote`]); otherwise the
 //! pass walks, as it always did.
 //!
+//! **A node inside the folder that its parent's listing does not show is reported, not walked
+//! for** ([`ListingBehind`]). The `proton-drive` listing can stay behind the stream indefinitely,
+//! and a walk reads the same listing: the caller holds the cursor until the listing catches up.
+//!
 //! See `docs/adr/0001-remote-change-detection-via-volume-events.md` and
 //! `docs/adr/0006-shared-volume-event-scope.md`.
 
@@ -39,6 +43,24 @@ pub trait RemoteChangeResolver {
     fn list(&self, relative_directory: &Path) -> AppResult<Rc<HashMap<PathBuf, RemoteEntity>>>;
 }
 
+/// A node the stream says was created (or moved) in a folder this pair holds, which that folder's
+/// listing does not show. The listing has not caught up with the stream. Observed live
+/// (2026-11-02) when the `proton-drive` CLI answered `filesystem list` from the user's cache, which
+/// nothing ever refreshed (a folder made from the iPhone app was absent from its parent's listing
+/// for eleven days); the engine now lists from a cache of its own per pass (`proton::CliCacheRoot`),
+/// so what remains is the server's own lag. Nothing about the node is known but its ids, so the
+/// map leaves it out — and the caller must **not** advance the cursor past its event, or nothing
+/// re-derives it (#30, and the walk that #30 fell back to read the same cache).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ListingBehind {
+    /// The raw node id of the event.
+    pub node_id: String,
+    /// The root-relative directory whose listing was asked and did not show the node: the folder
+    /// the user can look at. For a node created beneath such a node, the same folder (the topmost
+    /// one the CLI has to list first).
+    pub parent: PathBuf,
+}
+
 /// Outcome of reconstructing the remote map from a delta.
 pub enum Reconstruction {
     /// A complete remote entity map (`base ⊕ delta`), safe to hand to the planner.
@@ -46,6 +68,10 @@ pub enum Reconstruction {
         remote: HashMap<PathBuf, RemoteEntity>,
         /// Events dropped because they describe nodes outside this pair's folder.
         outside: usize,
+        /// Events of nodes inside this folder that its listings do not show yet (see
+        /// [`ListingBehind`]), sorted by node id. The map does not hold them. While this is not
+        /// empty the caller holds the cursor where it was, so the next poll asks for them again.
+        behind: Vec<ListingBehind>,
     },
     /// A change could not be incorporated without a full re-walk; the caller must snapshot. The
     /// string is a human-readable reason for logging.
@@ -109,9 +135,13 @@ struct Deferred {
 ///   node could only have been one of the records that lack an id.
 ///
 /// A directory placed by an `Updated` while untracked (moved in from elsewhere, or restored from
-/// the trash) forces a snapshot, because volume events are per link and its subtree has none. So
-/// does an event naming a parent that an earlier event of the same delta took out of the map: the
-/// index still holds that parent's old path, which may by now belong to another folder.
+/// the trash) forces a snapshot, because volume events are per link and its subtree has none. The
+/// one exception is the daemon's own folder being linked (a directory record with no id at that
+/// very path), and only while nothing untracked has left the tree or gone behind a listing earlier
+/// in the delta: after that, the record's node may be what left, and the newcomer a stranger with
+/// its name. So does an event naming a parent that an earlier event of the same delta took out of
+/// the map: the index still holds that parent's old path, which may by now belong to another
+/// folder.
 pub fn reconstruct_remote(
     base_index: &HashMap<PathBuf, FileRecord>,
     changes: &[RemoteChange],
@@ -156,9 +186,18 @@ pub fn reconstruct_remote(
     // Every uid taken out of `uid_to_path` by an event of this delta. The index still holds such a
     // node's old path, and the path may belong to another folder by now.
     let mut taken_out: HashSet<String> = HashSet::new();
+    // Nodes inside the tree that a listing did not show ([`ListingBehind`]), by composed uid, with
+    // the composed uid of the parent the event named: a later event of the same delta about a node
+    // supersedes its entry, and a removal takes the node's behind descendants with it.
+    let mut behind: HashMap<String, BehindNode> = HashMap::new();
 
     for change in changes {
         let uid = node_uid(volume_id, &change.node_id);
+        // A later event about a node the listing had not shown says where the node is now, so
+        // the node is placed (or deferred, or taken out) by this event, not kept behind by the
+        // earlier one. Its own behind descendants stay: whatever became of the node, the listing
+        // still has not shown them — unless this event takes the node away, below.
+        let was_behind = behind.remove(&uid);
 
         // The root's own events: a rename, move or trash changes what the pair's path means, and
         // nothing about it can be placed or dropped. The bootstrap that follows learns the new
@@ -176,6 +215,14 @@ pub fn reconstruct_remote(
             || (matches!(change.kind, RemoteChangeKind::Updated) && change.trashed);
 
         if is_removal {
+            if was_behind.is_some() {
+                // Created, or moved in, then trashed or deleted before any listing showed it:
+                // nothing beneath it is waited for any more (a trash is per link, so the
+                // descendants' own events never say they went). The removal itself is then
+                // decided as any removal of a node the map does not hold, below: a record with no
+                // id yet may be this very node, which only a walk can say.
+                drop_behind_beneath(&mut behind, [uid.clone()]);
+            }
             if let Some(path) = uid_to_path.remove(&uid) {
                 // Volume events are per-link: trashing/deleting a folder flips only the
                 // folder's own link, with no events for its descendants. Cascade the removal,
@@ -185,6 +232,8 @@ pub fn reconstruct_remote(
                 // event, so it no longer sits under `path`.
                 remove_subtree(&mut remote, &mut uid_to_path, &mut taken_out, &path);
                 taken_out.insert(uid);
+                // What was created beneath the removed subtree and not yet listed went with it.
+                drop_behind_beneath(&mut behind, taken_out.iter().cloned());
             } else {
                 // Not in the map: either a node elsewhere on the volume, or a record of this pair
                 // that has no uid yet (just uploaded). Which one is only knowable once the whole
@@ -194,6 +243,34 @@ pub fn reconstruct_remote(
                     kind: DeferredKind::Removal,
                 });
             }
+            continue;
+        }
+
+        // Created, or Updated (not trashed), beneath a node a listing has not shown: the listing
+        // of that node cannot be asked (the pair has no path for it), and the folder the CLI has
+        // to list first is the same one. Checked before the parent is located, because the parent
+        // is in no map.
+        if let Some(parent_id) = change.parent_id.as_deref()
+            && let Some(parent) = behind.get(&node_uid(volume_id, parent_id))
+        {
+            // A node the pair holds that went into such a folder left the place the map has for
+            // it, and the map cannot say where it is now: the same walk as for a parent the pair
+            // does not hold at all (below).
+            if uid_to_path.contains_key(&uid) || taken_out.contains(&uid) {
+                return Reconstruction::FallbackToSnapshot(format!(
+                    "node {} is in this folder and names a parent the listing has not shown",
+                    change.node_id
+                ));
+            }
+            let listed_parent = parent.listed_parent.clone();
+            behind.insert(
+                uid,
+                BehindNode {
+                    node_id: change.node_id.clone(),
+                    parent_uid: node_uid(volume_id, parent_id),
+                    listed_parent,
+                },
+            );
             continue;
         }
 
@@ -216,6 +293,9 @@ pub fn reconstruct_remote(
             }
         };
 
+        // The directory whose listing is about to be asked, kept for the case where it does not
+        // show the node.
+        let listed_parent = parent_path.clone();
         let listing = match parent_path {
             Some(parent_path) => match resolver.list(&parent_path) {
                 Ok(listing) => listing,
@@ -270,6 +350,11 @@ pub fn reconstruct_remote(
                         change.node_id
                     ));
                 }
+                // A node the listing had not shown that now names a parent the pair does not
+                // hold went somewhere else, and what was created beneath it went along.
+                if was_behind.is_some() {
+                    drop_behind_beneath(&mut behind, [uid.clone()]);
+                }
                 deferred.push(Deferred {
                     node_id: change.node_id.clone(),
                     kind: DeferredKind::Placement,
@@ -285,17 +370,24 @@ pub fn reconstruct_remote(
                     RemoteEntity::Directory(_) => scan_options.allows_relative_directory(&path),
                 };
                 let tracked = uid_to_path.contains_key(&uid);
+                // A directory record that exists at this very path without a uid is the daemon's
+                // own folder being linked, not a newcomer — unless an untracked node left the tree,
+                // or went behind a listing, earlier in this delta: that node may have been the
+                // daemon's folder, and this one a stranger that took its name (model seed 18422:
+                // the daemon's `b` trashed, then a folder with a subtree moved in as `b`).
+                let is_the_daemons_own_folder =
+                    is_unnamed_directory_record(&remote, &path, volume_id)
+                        && deferred.is_empty()
+                        && behind.is_empty();
                 if allowed
                     && !tracked
                     && matches!(change.kind, RemoteChangeKind::Updated)
                     && matches!(entity, RemoteEntity::Directory(_))
-                    && !is_unnamed_directory_record(&remote, &path, volume_id)
+                    && !is_the_daemons_own_folder
                 {
                     // Moved in from elsewhere, or restored from the trash: volume events are per
                     // link, so nothing describes what is inside it. The map would hold an empty
-                    // directory where the remote has a subtree. (A directory record that exists at
-                    // this very path without a uid is the daemon's own folder being linked, not a
-                    // newcomer.)
+                    // directory where the remote has a subtree.
                     return Reconstruction::FallbackToSnapshot(format!(
                         "directory {} (node {}) appeared by an update, so its contents have no \
                          events of their own",
@@ -319,19 +411,32 @@ pub fn reconstruct_remote(
                 }
             }
             None => {
-                // A *created* node missing from its parent listing is almost always the CLI
-                // listing lagging the event stream (observed live: seconds behind), not a node
-                // that vanished. Dropping it would advance the cursor past a create nothing
-                // re-derives — the periodic full-tree resync is off by default and a restart
-                // warm-starts from the cursor — so re-anchor with a full walk instead. This is
-                // symmetric with the root-listing branch above, which already falls back here.
-                // The bootstrap that follows captures a fresh cursor past this event, so a node
-                // created then trashed before any listing saw it cannot loop (#30).
-                if matches!(change.kind, RemoteChangeKind::Created) {
-                    return Reconstruction::FallbackToSnapshot(format!(
-                        "created node {} is not in its parent listing yet",
-                        change.node_id
-                    ));
+                // A node the pair does not hold, missing from the listing of the parent its event
+                // names: the listing has not caught up with the stream ([`ListingBehind`]). It
+                // used to force a full walk (#30), on the reading that the lag was seconds; the
+                // walk reads the same listing, and the bootstrap captured its cursor past the
+                // event before walking, so a node the walk did not show either was lost for good,
+                // and everything created beneath it was then read as "outside this folder". So
+                // the node is left out of the map and reported, and the caller holds the cursor.
+                // `listed_parent` is always set here: the root listing of a pair without a root
+                // uid (above) falls back before reaching this point when the node is absent.
+                let tracked = uid_to_path.contains_key(&uid);
+                if let Some(listed_parent) = listed_parent
+                    && (matches!(change.kind, RemoteChangeKind::Created) || !tracked)
+                {
+                    behind.insert(
+                        uid,
+                        BehindNode {
+                            node_id: change.node_id.clone(),
+                            parent_uid: change
+                                .parent_id
+                                .as_deref()
+                                .map(|parent_id| node_uid(volume_id, parent_id))
+                                .unwrap_or_default(),
+                            listed_parent,
+                        },
+                    );
+                    continue;
                 }
                 // Updated: the node was already tracked, so absence is a real move/trash — drop
                 // any stale location, and what was beneath it (events are per link, so nothing
@@ -339,6 +444,7 @@ pub fn reconstruct_remote(
                 if let Some(old_path) = uid_to_path.remove(&uid) {
                     remove_subtree(&mut remote, &mut uid_to_path, &mut taken_out, &old_path);
                     taken_out.insert(uid);
+                    drop_behind_beneath(&mut behind, taken_out.iter().cloned());
                 }
             }
         }
@@ -463,7 +569,54 @@ pub fn reconstruct_remote(
         }
     }
 
-    Reconstruction::Complete { remote, outside }
+    let mut behind: Vec<ListingBehind> = behind
+        .into_values()
+        .map(|node| ListingBehind {
+            node_id: node.node_id,
+            parent: node.listed_parent,
+        })
+        .collect();
+    behind.sort();
+    Reconstruction::Complete {
+        remote,
+        outside,
+        behind,
+    }
+}
+
+/// A node inside the tree that a listing did not show, while the delta is read (see
+/// [`ListingBehind`], its reported form).
+struct BehindNode {
+    node_id: String,
+    /// The composed uid of the parent the node's event named: how a removal finds what was
+    /// created beneath the node.
+    parent_uid: String,
+    listed_parent: PathBuf,
+}
+
+/// Takes every node created beneath any of `gone` (transitively) out of `behind`: a node whose
+/// parent left the tree, or was never listed and has now left, went with it. The nodes of `gone`
+/// themselves are not in `behind` (a removed node of the map never was; a behind node is taken out
+/// by its own later event before this is called).
+fn drop_behind_beneath(
+    behind: &mut HashMap<String, BehindNode>,
+    gone: impl IntoIterator<Item = String>,
+) {
+    let mut gone: HashSet<String> = gone.into_iter().collect();
+    loop {
+        let dropped: Vec<String> = behind
+            .iter()
+            .filter(|(_, node)| gone.contains(&node.parent_uid))
+            .map(|(uid, _)| uid.clone())
+            .collect();
+        if dropped.is_empty() {
+            return;
+        }
+        for uid in dropped {
+            behind.remove(&uid);
+            gone.insert(uid);
+        }
+    }
 }
 
 /// The root-relative path of the directory an event says its node sits in: the in-pass map first
@@ -850,11 +1003,42 @@ mod tests {
 
     fn complete(reconstruction: Reconstruction) -> (HashMap<PathBuf, RemoteEntity>, usize) {
         match reconstruction {
-            Reconstruction::Complete { remote, outside } => (remote, outside),
+            Reconstruction::Complete {
+                remote,
+                outside,
+                behind,
+            } => {
+                assert!(
+                    behind.is_empty(),
+                    "expected a reconstruction with every node listed, got behind: {behind:?}"
+                );
+                (remote, outside)
+            }
             Reconstruction::FallbackToSnapshot(reason) => {
                 panic!("expected a complete reconstruction, got fallback: {reason}")
             }
         }
+    }
+
+    /// A complete reconstruction with nodes the listing has not shown: the map, the outside count
+    /// and the nodes left behind.
+    fn complete_behind(
+        reconstruction: Reconstruction,
+    ) -> (HashMap<PathBuf, RemoteEntity>, usize, Vec<ListingBehind>) {
+        match reconstruction {
+            Reconstruction::Complete {
+                remote,
+                outside,
+                behind,
+            } => (remote, outside, behind),
+            Reconstruction::FallbackToSnapshot(reason) => {
+                panic!("expected a complete reconstruction, got fallback: {reason}")
+            }
+        }
+    }
+
+    fn behind_ids(behind: &[ListingBehind]) -> Vec<&str> {
+        behind.iter().map(|node| node.node_id.as_str()).collect()
     }
 
     fn expect_fallback(outcome: Reconstruction, fragment: &str) {
@@ -1066,24 +1250,284 @@ mod tests {
     }
 
     #[test]
-    fn a_created_node_absent_from_its_parent_forces_a_snapshot() {
-        // #30: a create absent from its parent listing is the CLI listing lagging the event
+    fn a_created_node_absent_from_its_parent_is_left_behind() {
+        // #30: a create absent from its parent listing is the CLI listing behind the event
         // stream, not a vanished node. Dropping it would advance the cursor past a create that
         // nothing re-derives (the periodic resync is off by default, and a restart warm-starts).
+        // It used to force a walk; the walk reads the same listing, so the node is reported
+        // instead and the caller holds the cursor.
         let base = base_of(vec![directory_record("docs", Some("vol~docs"))]);
         let resolver = FakeResolver::with_tree(vec![remote_directory("docs", "vol~docs")])
             .indexed("vol~docs", "docs");
         let outcome = reconstruct(&base, &[created("node-new", "docs")], None, &resolver);
-        expect_fallback(outcome, "node-new");
+        let (map, outside, behind) = complete_behind(outcome);
+        assert_eq!(map.len(), 1, "the map is the baseline: {:?}", map.keys());
+        assert_eq!(outside, 0);
+        assert_eq!(
+            behind,
+            vec![ListingBehind {
+                node_id: "node-new".to_owned(),
+                parent: PathBuf::from("docs"),
+            }]
+        );
     }
 
     #[test]
-    fn a_created_node_absent_from_its_parent_still_forces_a_snapshot_with_a_root_uid() {
+    fn a_created_node_absent_from_its_parent_is_left_behind_with_a_root_uid_too() {
         // #30 again, on the path #456 added: the parent is the root, which is now a known parent.
         let base = named_tree();
         let resolver = FakeResolver::default();
         let outcome = reconstruct(&base, &[created("node-new", "root")], ROOT, &resolver);
-        expect_fallback(outcome, "not in its parent listing yet");
+        let (map, outside, behind) = complete_behind(outcome);
+        assert_eq!(map.len(), base.len());
+        assert_eq!(outside, 0);
+        assert_eq!(behind_ids(&behind), ["node-new"]);
+        assert_eq!(behind[0].parent, PathBuf::new(), "the root's own listing");
+    }
+
+    // --- the listing behind the stream (2026-11-02) --------------------------------------------
+
+    /// The response Proton gave on 2026-11-02 for the cursor before a folder made from the iPhone
+    /// app inside `docs` (ids shortened): the folder's own create, then its files' creates.
+    const FOLDER_WITH_FILES: &str =
+        include_str!("../tests/fixtures/volume-events-folder-with-files.json");
+
+    fn folder_with_files() -> Vec<RemoteChange> {
+        crate::events::parse_volume_events(FOLDER_WITH_FILES)
+            .expect("the captured page parses")
+            .changes
+    }
+
+    #[test]
+    fn files_created_inside_a_folder_the_listing_does_not_show_are_behind_not_outside() {
+        // The live failure: the folder `Llqr…` was created in `docs` (held, named) and the CLI's
+        // listing of `docs` did not show it; the files made inside it name `Llqr…` as their
+        // parent, which the pair holds nowhere. Condition S held for the tree, so they were
+        // dropped as "outside this folder" and the cursor moved past all of them.
+        let base = base_of(vec![
+            directory_record("docs", Some("vol~GOFEby1gEiSABeGbi4Bcm_hd")),
+            file_record("docs/a.pdf", "hash-a", Some("vol~a")),
+        ]);
+        let resolver = FakeResolver::with_tree(vec![
+            remote_directory("docs", "vol~GOFEby1gEiSABeGbi4Bcm_hd"),
+            remote_file("docs/a.pdf", "vol~a", "hash-a"),
+        ]);
+        let changes = folder_with_files();
+        assert_eq!(changes.len(), 4, "the fixture: one folder, three files");
+
+        let (map, outside, behind) = complete_behind(reconstruct(&base, &changes, ROOT, &resolver));
+
+        assert_eq!(map.len(), base.len(), "nothing placed, nothing removed");
+        assert_eq!(outside, 0, "nothing was read as outside this folder");
+        assert_eq!(
+            behind_ids(&behind),
+            [
+                "LlqrJsuOCxEzl0CAAroquYT2",
+                "WDl_Oaxso8MSF6XRoIvmIPau",
+                "WGk_tSUvJBJnMGw8R_POz5aZ",
+                "aGM3yEC3uYJdEHQnfvyilDTm",
+            ]
+        );
+        assert!(
+            behind.iter().all(|node| node.parent == Path::new("docs")),
+            "every one names the folder the CLI has to list first: {behind:?}"
+        );
+        assert_eq!(
+            resolver.listings(),
+            [PathBuf::from("docs")],
+            "the folder is listed once; the files' parent has no path to list"
+        );
+    }
+
+    #[test]
+    fn once_the_listing_shows_the_folder_the_same_delta_places_everything() {
+        // The next poll replays the same delta from the held cursor, and the listing has caught
+        // up: the folder and its files are placed, and nothing is left behind.
+        let base = base_of(vec![directory_record(
+            "docs",
+            Some("vol~GOFEby1gEiSABeGbi4Bcm_hd"),
+        )]);
+        let resolver = FakeResolver::with_tree(vec![
+            remote_directory("docs", "vol~GOFEby1gEiSABeGbi4Bcm_hd"),
+            remote_directory("docs/phone", "vol~LlqrJsuOCxEzl0CAAroquYT2"),
+            remote_file("docs/phone/1.jpg", "vol~WGk_tSUvJBJnMGw8R_POz5aZ", "h1"),
+            remote_file("docs/phone/2.jpg", "vol~aGM3yEC3uYJdEHQnfvyilDTm", "h2"),
+            remote_file("docs/phone/3.jpg", "vol~WDl_Oaxso8MSF6XRoIvmIPau", "h3"),
+        ]);
+
+        let (map, outside) = complete(reconstruct(&base, &folder_with_files(), ROOT, &resolver));
+
+        assert_eq!(outside, 0);
+        let mut paths: Vec<_> = map.keys().cloned().collect();
+        paths.sort();
+        assert_eq!(
+            paths,
+            [
+                PathBuf::from("docs"),
+                PathBuf::from("docs/phone"),
+                PathBuf::from("docs/phone/1.jpg"),
+                PathBuf::from("docs/phone/2.jpg"),
+                PathBuf::from("docs/phone/3.jpg"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_node_behind_that_is_then_trashed_takes_what_was_made_beneath_it_and_holds_nothing() {
+        // #30's loop: a node created and trashed before any listing showed it must not hold the
+        // cursor for ever. A trash is per link, so the files made inside it have no event of
+        // their own saying they went; they go with it.
+        let base = named_tree();
+        let resolver = FakeResolver::with_tree(vec![remote_directory("docs", "vol~docs")]);
+        let changes = [
+            created("phone", "docs"),
+            created("photo", "phone"),
+            trashed("phone", "docs"),
+        ];
+
+        let (map, outside) = complete(reconstruct(&base, &changes, ROOT, &resolver));
+
+        assert_eq!(map.len(), base.len());
+        assert_eq!(
+            outside, 1,
+            "the removal is decided as any removal of a node the map does not hold: every record \
+             is named, so it was never one of them"
+        );
+    }
+
+    #[test]
+    fn a_node_behind_that_is_then_deleted_holds_nothing() {
+        let base = named_tree();
+        let resolver = FakeResolver::with_tree(vec![remote_directory("docs", "vol~docs")]);
+        let changes = [created("phone", "docs"), deleted("phone")];
+
+        let (map, outside) = complete(reconstruct(&base, &changes, ROOT, &resolver));
+
+        assert_eq!(map.len(), base.len());
+        assert_eq!(outside, 1);
+    }
+
+    #[test]
+    fn a_node_behind_that_is_then_trashed_still_walks_for_a_record_with_no_id() {
+        // The daemon made `a` last pass and its row has no id yet; the stream then says a node
+        // was created in the root and trashed, and the end-state listing shows neither. The node
+        // may be `a` itself, and only a walk can say: the removal is not dropped on the strength
+        // of the create having been left behind.
+        let base = base_of(vec![file_record("a", "hash-a", None)]);
+        let resolver = FakeResolver::default();
+        let changes = [created("n3", "root"), trashed("n3", "root")];
+
+        let outcome = reconstruct(&base, &changes, ROOT, &resolver);
+
+        expect_fallback(outcome, "has no composed id");
+    }
+
+    #[test]
+    fn a_tracked_folder_trashed_takes_what_was_created_beneath_it_and_not_listed() {
+        // `docs/photo` was created (not listed), then `docs` itself was trashed: the trash is per
+        // link, so nothing ever says the photo went, and the cursor must not wait for it.
+        let base = named_tree();
+        let resolver = FakeResolver::with_tree(vec![remote_directory("docs", "vol~docs")])
+            .indexed("vol~docs", "docs");
+        let changes = [created("photo", "docs"), trashed("docs", "root")];
+
+        let (map, outside) = complete(reconstruct(&base, &changes, ROOT, &resolver));
+
+        assert!(map.is_empty(), "{:?}", map.keys());
+        assert_eq!(outside, 0);
+    }
+
+    #[test]
+    fn a_tracked_node_moved_under_a_folder_the_listing_does_not_show_walks() {
+        // `docs/a.txt` moved into a folder created in `docs` that the listing does not show: the
+        // map's path for it is stale and nothing says where it is, as for any parent the pair
+        // does not hold. Reading it as staying put left a phantom; as gone, a deletion.
+        let base = named_tree();
+        let resolver = FakeResolver::with_tree(vec![remote_directory("docs", "vol~docs")])
+            .indexed("vol~docs", "docs");
+        let changes = [created("phone", "docs"), updated("a", "phone")];
+
+        let outcome = reconstruct(&base, &changes, ROOT, &resolver);
+
+        expect_fallback(outcome, "names a parent the listing has not shown");
+    }
+
+    #[test]
+    fn a_node_behind_that_then_moves_out_of_the_folder_is_outside_with_what_was_beneath_it() {
+        // Created in `docs` (not shown), then moved to a folder the pair does not hold: the later
+        // event says where it is, and it is somewhere else. Nothing waits.
+        let base = named_tree();
+        let resolver = FakeResolver::with_tree(vec![remote_directory("docs", "vol~docs")]);
+        let changes = [
+            created("phone", "docs"),
+            created("photo", "phone"),
+            updated("phone", "elsewhere"),
+        ];
+
+        let (map, outside) = complete(reconstruct(&base, &changes, ROOT, &resolver));
+
+        assert_eq!(map.len(), base.len());
+        assert_eq!(outside, 1, "the move out; the photo went with it");
+    }
+
+    #[test]
+    fn an_untracked_node_moved_in_that_the_listing_does_not_show_is_behind() {
+        // A file moved into `docs` from elsewhere arrives as Updated for a node the pair never
+        // held. Absent from the listing it used to be dropped without a word, the Updated branch
+        // reading absence as the move of a tracked node.
+        let base = named_tree();
+        let resolver = FakeResolver::with_tree(vec![remote_directory("docs", "vol~docs")]);
+
+        let (map, outside, behind) = complete_behind(reconstruct(
+            &base,
+            &[updated("moved-in", "docs")],
+            ROOT,
+            &resolver,
+        ));
+
+        assert_eq!(map.len(), base.len());
+        assert_eq!(outside, 0);
+        assert_eq!(behind_ids(&behind), ["moved-in"]);
+    }
+
+    #[test]
+    fn a_tracked_node_absent_from_its_listing_is_still_read_as_moved_or_trashed() {
+        // The Updated branch for a node the pair holds is unchanged: absence from the listing is
+        // a real move or trash, not a listing behind the stream.
+        let base = named_tree();
+        let resolver = FakeResolver::with_tree(vec![remote_directory("docs", "vol~docs")])
+            .indexed("vol~docs", "docs");
+
+        let (map, outside) = complete(reconstruct(&base, &[updated("a", "docs")], ROOT, &resolver));
+
+        assert_eq!(outside, 0);
+        assert!(
+            !map.contains_key(Path::new("docs/a.txt")),
+            "{:?}",
+            map.keys()
+        );
+    }
+
+    #[test]
+    fn a_node_behind_leaves_the_rest_of_the_delta_applied() {
+        // The held cursor replays everything next poll, idempotently; meanwhile what the listing
+        // does show is placed, so one node the CLI cannot list does not stall the folder.
+        let base = named_tree();
+        let resolver = FakeResolver::with_tree(vec![
+            remote_directory("docs", "vol~docs"),
+            remote_file("docs/b.txt", "vol~b", "hash-b"),
+        ]);
+        let changes = [created("phone", "docs"), created("b", "docs")];
+
+        let (map, outside, behind) = complete_behind(reconstruct(&base, &changes, ROOT, &resolver));
+
+        assert_eq!(outside, 0);
+        assert_eq!(behind_ids(&behind), ["phone"]);
+        assert!(
+            map.contains_key(Path::new("docs/b.txt")),
+            "{:?}",
+            map.keys()
+        );
     }
 
     #[test]
@@ -2185,6 +2629,61 @@ mod tests {
         let mut paths: Vec<_> = map.keys().cloned().collect();
         paths.sort();
         assert_eq!(paths, [PathBuf::from("c.txt")]);
+    }
+
+    #[test]
+    fn a_folder_that_takes_the_name_of_the_daemons_unlinked_folder_after_it_left_walks() {
+        // Model seed 18422 (`[retaken names]`, 100k run, 2026-11-03): the daemon made `b` (its
+        // record has no id yet), another client trashed it, then moved a folder of its own, with
+        // a subtree, into the root under the same name. "The daemon's own folder being linked by
+        // an update" read the newcomer as that folder and placed it empty: `b/b` and `b/b/a` were
+        // missing from a map reported complete.
+        let base = base_of(vec![
+            directory_record("b", None),
+            file_record("c.txt", "hash-c", Some("vol~c")),
+        ]);
+        let resolver = FakeResolver::with_tree(vec![
+            remote_directory("b", "vol~newcomer"),
+            remote_directory("b/b", "vol~inner"),
+            remote_directory("b/b/a", "vol~deep"),
+        ]);
+        expect_fallback(
+            reconstruct(
+                &base,
+                &[
+                    created("own", "root"),
+                    trashed("c", "root"),
+                    trashed("own", "root"),
+                    created("newcomer", "elsewhere"),
+                    created("inner", "newcomer"),
+                    updated("newcomer", "root"),
+                    created("deep", "inner"),
+                ],
+                ROOT,
+                &resolver,
+            ),
+            "directory b (node newcomer) appeared by an update",
+        );
+    }
+
+    #[test]
+    fn the_daemons_own_folder_linked_by_an_update_is_placed_while_nothing_left_the_tree() {
+        // The control for the test above: the same record, and the first event about the node at
+        // its path is an update. Nothing untracked left or went behind, so it is the daemon's
+        // folder getting its id, not a newcomer.
+        let base = base_of(vec![directory_record("b", None)]);
+        let resolver = FakeResolver::with_tree(vec![remote_directory("b", "vol~own")]);
+        let (map, outside) = complete(reconstruct(
+            &base,
+            &[updated("own", "root")],
+            ROOT,
+            &resolver,
+        ));
+        assert_eq!(outside, 0);
+        assert_eq!(
+            map.get(Path::new("b")).and_then(RemoteEntity::remote_id),
+            Some("vol~own".to_owned())
+        );
     }
 
     #[test]
