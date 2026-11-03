@@ -271,6 +271,34 @@ const SCOPE_DIR_PREFIX: &str = "scope-";
 const SCOPE_DIR_MODE: u32 = 0o700;
 static SCOPE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+/// Whether the CLI keeps its sign-in on disk in its data directory rather than in the OS
+/// keyring. `PROTON_DRIVE_UNSAFE_SECRETS` truthy does that (bundle `Eg()`: one of `yes`, `y`,
+/// `1`, `true`, case-insensitive; the session store is then `GU(appDir)`, a file in the data
+/// directory); `PROTON_DRIVE_CREDENTIALS_STORE=unsafe_file` is the
+/// newer CLI's spelling (the one `doctor` knows), read as the same place. [`CLI_CACHE_DIR_ENV`]
+/// moves the data directory, so a child pointed at a fresh scope would be signed out: a caller
+/// that finds this true leaves the user's cache in place rather than lose the sign-in.
+pub fn cli_keeps_its_session_in_its_data_dir() -> bool {
+    session_in_data_dir(
+        std::env::var_os("PROTON_DRIVE_UNSAFE_SECRETS"),
+        std::env::var_os("PROTON_DRIVE_CREDENTIALS_STORE"),
+    )
+}
+
+/// [`cli_keeps_its_session_in_its_data_dir`] with the environment values passed in.
+fn session_in_data_dir(
+    unsafe_secrets: Option<OsString>,
+    credentials_store: Option<OsString>,
+) -> bool {
+    let unsafe_secrets = unsafe_secrets.is_some_and(|value| {
+        matches!(
+            value.to_string_lossy().to_ascii_lowercase().as_str(),
+            "yes" | "y" | "1" | "true"
+        )
+    });
+    unsafe_secrets || credentials_store.is_some_and(|value| value == "unsafe_file")
+}
+
 /// Where the engine keeps the `proton-drive` caches its children read and write: a directory of
 /// its own under the per-user state directory (`paths::default_cli_cache_root`), never the user's
 /// `~/.cache/proton-drive-cli`.
@@ -6539,6 +6567,25 @@ printf '%s\n' '{"entries":[]}'
         assert!(!dead.exists(), "a dead process's scope is swept");
         assert!(own.is_dir(), "this process's own entries are kept");
         assert!(other.is_dir(), "anything not named like a scope is kept");
+    }
+
+    #[test]
+    fn a_sign_in_kept_on_disk_is_recognised_from_either_spelling() {
+        // The CLI's own truthy set for `PROTON_DRIVE_UNSAFE_SECRETS`, case-insensitive; and the
+        // newer `PROTON_DRIVE_CREDENTIALS_STORE`, where only `unsafe_file` is on disk in the data
+        // directory (`pass` is elsewhere, `keychain` is the keyring).
+        let value = |text: &str| Some(OsString::from(text));
+        for truthy in ["1", "y", "yes", "true", "TRUE", "Yes"] {
+            assert!(session_in_data_dir(value(truthy), None), "{truthy}");
+        }
+        for falsy in ["0", "no", "false", "", "maybe"] {
+            assert!(!session_in_data_dir(value(falsy), None), "{falsy:?}");
+        }
+        assert!(session_in_data_dir(None, value("unsafe_file")));
+        assert!(!session_in_data_dir(None, value("pass")));
+        assert!(!session_in_data_dir(None, value("keychain")));
+        assert!(!session_in_data_dir(None, None));
+        assert!(session_in_data_dir(value("1"), value("keychain")));
     }
 
     #[test]

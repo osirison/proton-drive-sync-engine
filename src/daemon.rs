@@ -2779,22 +2779,47 @@ enum Step {
 /// The `--dry-run` report. Returns the whole [`DryRunReport`] rather than the bare plan because
 /// `summary.matched_files` is a planner fact no plan row carries (#242).
 pub fn preview_plan(config: &DaemonConfig) -> AppResult<DryRunReport> {
-    let client = ProtonDriveClient::with_command_policy(
+    let client = real_client(
         config.proton_cli.clone(),
         command_policy_from_config(config),
-    )
-    .with_cli_cache_root(cli_cache_root()?);
+    )?;
     preview_plan_with_client(config, &client)
 }
 
-/// The one [`CliCacheRoot`] every real client of this process is built with: the daemon's and the
-/// preview's, so the two never share a cache directory (each pass makes its own under it) and
-/// neither reads the user's.
-fn cli_cache_root() -> AppResult<CliCacheRoot> {
-    Ok(CliCacheRoot::new(
+/// The one way a real `proton-drive` client of this process is built — the daemon's and the
+/// preview's — so the two never disagree about the cache their children read: a
+/// [`CliCacheRoot`] of the engine's own (each pass makes its own directory under it, and neither
+/// process reads the user's), unless the CLI's sign-in lives in the very directory that root
+/// would move (see [`cli_cache_root`]).
+fn real_client(executable: PathBuf, policy: CommandPolicy) -> AppResult<ProtonDriveClient> {
+    let client = ProtonDriveClient::with_command_policy(executable, policy);
+    Ok(match cli_cache_root()? {
+        Some(root) => client.with_cli_cache_root(root),
+        None => client,
+    })
+}
+
+/// The [`CliCacheRoot`] for [`real_client`]. `None` when the CLI keeps its sign-in on disk in its
+/// data directory (`PROTON_DRIVE_UNSAFE_SECRETS`, or `PROTON_DRIVE_CREDENTIALS_STORE=unsafe_file`):
+/// `PROTON_DRIVE_CACHE_DIR` moves that directory too, so a child pointed at a fresh scope would be
+/// signed out and every pass would fail. Such a setup keeps the user's own cache, as before the
+/// engine owned one, and is told once that a change made on another device may not reach a
+/// listing.
+fn cli_cache_root() -> AppResult<Option<CliCacheRoot>> {
+    if crate::proton::cli_keeps_its_session_in_its_data_dir() {
+        warn!(
+            "the proton-drive sign-in is kept on disk in its data directory \
+             (PROTON_DRIVE_UNSAFE_SECRETS or PROTON_DRIVE_CREDENTIALS_STORE=unsafe_file), which \
+             a cache of the engine's own would move; its children read the user's proton-drive \
+             cache instead, so a change made on another device may not reach a listing until \
+             that cache is refreshed"
+        );
+        return Ok(None);
+    }
+    Ok(Some(CliCacheRoot::new(
         crate::paths::default_cli_cache_root()?,
         crate::paths::interactive_cli_client_uid_path(),
-    ))
+    )))
 }
 
 /// The cache scope of one pass ([`ProtonClient::begin_pass_cache`]), closed when dropped, so every
@@ -2918,11 +2943,7 @@ impl Daemon<ProtonDriveClient> {
         let Some(first) = configs.first() else {
             return Err(boxed_error("a daemon needs at least one folder pair"));
         };
-        let proton = ProtonDriveClient::with_command_policy(
-            first.proton_cli.clone(),
-            command_policy_from_config(first),
-        )
-        .with_cli_cache_root(cli_cache_root()?);
+        let proton = real_client(first.proton_cli.clone(), command_policy_from_config(first))?;
         let mut daemon = Self::from_pairs_with_opener(
             configs,
             proton,
@@ -6491,6 +6512,12 @@ impl<C: ProtonClient> PairPass<'_, C> {
             self.pair.is_first_reconcile = true;
             self.pair.force_local_rescan = true;
             self.pair.incremental_passes_since_full_scan = 0;
+            // The nodes the listing had not shown were held for the cursor the truncation just
+            // discarded. A hold that outlived it would keep `walk_lists_what_the_stream_reported`
+            // refusing to anchor, and a pair with no cursor walks every pass: a cold walk per
+            // poll until the listing showed nodes of a baseline the user threw away. This pass's
+            // walk is the new truth and anchors as any first walk does.
+            self.pair.listing_behind = None;
             // The user asked to start over: the baseline this stood in for is discarded with the
             // rest (the persisted force went with the truncation; the in-memory one is spent by
             // this pass, which plans no deletion).
@@ -39611,6 +39638,56 @@ mod tests {
             "the walk showed them, so it anchors as any walk does"
         );
         assert_eq!(daemon.runtime(0).expect("ready").last_error, None);
+    }
+
+    #[test]
+    fn a_reset_discards_the_hold_with_the_cursor_it_protected() {
+        // The hold keeps the cursor where it was so the stream is asked again; a reset discards
+        // that cursor. A hold that outlived it would keep the reset's walk, and every walk after
+        // it, from anchoring, and a pair with no cursor walks every pass: a cold walk per poll
+        // until the listing showed nodes of a baseline the user threw away.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) =
+            steady_shared_volume_daemon(directory.path(), Vec::new());
+        daemon.event_source = Some(Box::new(FakeEventSource::with_pages(
+            "cursor-after-walk",
+            vec![folder_with_a_file_page("cursor-1")],
+        )));
+
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(
+            daemon.runtime(0).expect("ready").last_error.is_some(),
+            "the folder is held"
+        );
+        assert_eq!(cursor_of(&daemon, 0), Some("cursor-0".to_owned()));
+
+        // The listing still does not show the folder when the user starts over.
+        daemon.shared.pairs[0]
+            .reset_index
+            .store(true, Ordering::SeqCst);
+        stepper.send(LoopCommand::SyncNow(0));
+        let log = capture_log("info", || {
+            assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        });
+
+        assert!(log.contains("index reset"), "{log}");
+        assert!(
+            !log.contains("the full walk still does not list"),
+            "the hold went with the cursor it protected: {log}"
+        );
+        assert_eq!(client.walks(), [remote_root_of("a")]);
+        assert_eq!(
+            cursor_of(&daemon, 0),
+            Some("cursor-after-walk".to_owned()),
+            "the reset's walk anchors as any first walk does"
+        );
+        assert_eq!(daemon.runtime(0).expect("ready").last_error, None);
+
+        // And the pass after it replays from that cursor instead of walking again.
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(client.walks().len(), 1, "{:?}", client.walks());
     }
 
     /// `journal` is one pass's entries: one `begin` first, one `end` last. Answers what the pass

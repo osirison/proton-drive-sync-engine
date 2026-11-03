@@ -628,15 +628,10 @@ exit 64
         report["plan"].as_array().expect("dry-run report plan")
     }
 
-    #[test]
-    fn dry_run_runs_the_cli_on_a_fresh_private_cache_under_the_state_home() {
-        // The preview builds its own client, so it too must give its `proton-drive` children a
-        // cache of the engine's own (`proton::CliCacheRoot`), under `$XDG_STATE_HOME`, mode 0700,
-        // gone when the run ends. The fake records what it was given.
-        let directory = tempdir().expect("tempdir");
-        let local_root = directory.path().join("local");
-        fs::create_dir(&local_root).expect("local root");
-        let fake_proton_drive = directory.path().join("fake-cache-recording-proton-drive");
+    /// A `proton-drive` that records, per child, the cache directory it was given (`<unset>` when
+    /// none), that directory's mode and its contents, and answers an empty listing.
+    fn write_cache_recording_fake(directory: &Path) -> PathBuf {
+        let fake_proton_drive = directory.join("fake-cache-recording-proton-drive");
         fs::write(
             &fake_proton_drive,
             r#"#!/bin/sh
@@ -659,6 +654,68 @@ exit 64
             .permissions();
         permissions.set_mode(0o700);
         fs::set_permissions(&fake_proton_drive, permissions).expect("script permissions");
+        fake_proton_drive
+    }
+
+    #[test]
+    fn dry_run_keeps_the_users_cache_when_the_sign_in_lives_in_the_clis_data_directory() {
+        // `PROTON_DRIVE_UNSAFE_SECRETS` keeps the sign-in (and the cache password) in the CLI's
+        // data directory, which `PROTON_DRIVE_CACHE_DIR` moves: a child pointed at a fresh scope
+        // would be signed out. Such a setup runs on the user's cache, as before, and is told.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let fake_proton_drive = write_cache_recording_fake(directory.path());
+
+        let output = run_to_completion(
+            syncd_command(directory.path())
+                .env("PROTON_DRIVE_UNSAFE_SECRETS", "yes")
+                // The sandbox silences everything below `error`; the sentence under test is a warning.
+                .env("RUST_LOG", "warn")
+                .arg("--local-root")
+                .arg(&local_root)
+                .arg("--remote-root")
+                .arg("/Drive/RemoteFolder")
+                .arg("--proton-cli")
+                .arg(&fake_proton_drive)
+                .arg("--no-events-driven")
+                .arg("--dry-run"),
+        );
+        assert_success(&output);
+
+        let recorded_caches = fs::read_to_string(format!("{}.caches", fake_proton_drive.display()))
+            .unwrap_or_default();
+        let caches: Vec<&str> = recorded_caches.lines().collect();
+        assert!(!caches.is_empty(), "the fake was run");
+        assert!(
+            caches.iter().all(|cache| *cache == "<unset>"),
+            "no cache of the engine's: {caches:?}"
+        );
+        assert!(
+            !directory
+                .path()
+                .join("proton-drive-sync")
+                .join("cli-cache")
+                .exists(),
+            "and no root was made"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("PROTON_DRIVE_UNSAFE_SECRETS")
+                && stderr.contains("read the user's proton-drive cache"),
+            "{stderr}"
+        );
+    }
+
+    #[test]
+    fn dry_run_runs_the_cli_on_a_fresh_private_cache_under_the_state_home() {
+        // The preview builds its own client, so it too must give its `proton-drive` children a
+        // cache of the engine's own (`proton::CliCacheRoot`), under `$XDG_STATE_HOME`, mode 0700,
+        // gone when the run ends. The fake records what it was given.
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let fake_proton_drive = write_cache_recording_fake(directory.path());
 
         let output = run_to_completion(
             syncd_command(directory.path())

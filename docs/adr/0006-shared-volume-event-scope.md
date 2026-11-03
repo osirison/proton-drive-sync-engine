@@ -445,6 +445,10 @@ show every held node anchors no cursor either. A node the pair **holds** that na
 still walks, as for any parent it does not hold. The model test asserts `behind` is empty, because
 its resolver lists the truth.
 
+A `reset-index` discards the hold with the cursor it protected: the reset's walk is the new
+baseline and anchors as any first walk does. A hold that outlived the cursor would keep every walk
+from anchoring, and a pair with no cursor walks every pass.
+
 Residual: a pass that falls back for another reason in the same delta (a tracked node moved into
 the unlisted folder, a directory moved in by an update) walks before the behind set of that delta
 is recorded, and that walk anchors as before. The CLI's cache is the cause; the engine's part is to
@@ -497,13 +501,18 @@ root). A pass opens a scope; its first child makes `scope-<pid>-<n>` (0700), eve
 pass shares it through `PROTON_DRIVE_CACHE_DIR`, and the end of the pass removes it. The three
 pass bodies open one (a sync, an apply, a reset; the plan verb; the one-shot preview), and a child
 asked outside any pass is refused rather than left on the user's cache. The IPC `List` verb, which
-runs beside a pass, takes a throwaway of its own per call. An idle pass makes no directory. The uid
-at the root is adopted from the interactive CLI's `clientUid.json` the first time (so drafts the
-engine left before this change are still its own), else generated. Scopes of dead pids are swept
-once per client. Rejected: a per-daemon cache discarded before each walk and kept between
-incremental passes, because an incremental pass's placements and downloads would then read node
-metadata (a phone edit's new revision) from a cache no event refreshes; and a targeted re-list for
-the `behind` path alone, because the weekly sweep would still verify nothing.
+runs beside a pass, takes a throwaway of its own per call. One setup gets no root at all: a CLI
+whose sign-in is on disk in its data directory (`PROTON_DRIVE_UNSAFE_SECRETS` truthy, which the
+bundle's `Eg()` turns into a session file under `appDir`, `GU(appDir)`; or the newer
+`PROTON_DRIVE_CREDENTIALS_STORE=unsafe_file`, read as the same place), because the variable moves
+that directory too and every child would be signed out. It keeps the user's cache, as before, and
+the daemon says once that a change made on another device may not reach a listing. An idle pass
+makes no directory. The uid at the root is adopted from the interactive CLI's `clientUid.json` the
+first time (so drafts the engine left before this change are still its own), else generated.
+Scopes of dead pids are swept once per client. Rejected: a per-daemon cache discarded before each
+walk and kept between incremental passes, because an incremental pass's placements and downloads
+would then read node metadata (a phone edit's new revision) from a cache no event refreshes; and a
+targeted re-list for the `behind` path alone, because the weekly sweep would still verify nothing.
 
 Cost, measured on the maintainer's `Documents` pair (~1000 folders, ~5.4k files) on 2026-11-03: a
 cold full walk ~80 min against ~28 warm, so every scheduled sweep, resync, bootstrap, plan and apply
