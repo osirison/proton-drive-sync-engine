@@ -5,10 +5,10 @@ use serde_json::Value;
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::OsString;
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -227,6 +227,12 @@ pub struct ProtonDriveClient {
     /// Serializes this client's `proton-drive` invocations — see [`CliGate`] for the decision and
     /// why one is needed at all. Shared by clones, so a cloned client is still the same gate.
     gate: Arc<CliGate>,
+    /// Where this client's children keep their `proton-drive` caches ([`CliCacheRoot`]); `None`
+    /// leaves them on the user's own cache, which only a test double or an onboarding probe wants.
+    cache_root: Option<CliCacheRoot>,
+    /// The pass's cache scope (see [`ProtonClient::begin_pass_cache`]). Shared by clones, as the
+    /// gate is, so a cloned client is still inside the same pass.
+    cache_state: Arc<Mutex<CacheState>>,
 }
 
 // Manual impl: `dyn ProgressSink` has no `Debug`, so the derive is no longer available.
@@ -239,7 +245,341 @@ impl std::fmt::Debug for ProtonDriveClient {
             .field("progress_sink", &self.progress_sink.is_some())
             .field("wait_hook", &self.wait_hook.is_some())
             .field("gate", &self.gate)
+            .field("cache_root", &self.cache_root)
             .finish()
+    }
+}
+
+/// The environment variable the `proton-drive` CLI reads for where its caches live. It moves the
+/// CLI's cache directory (`cache-entities.sqlite`, `cache-crypto.sqlite`), its data directory
+/// (`clientUid.json`, `events.json`, `events.lock`) **and** its log directory to the one path
+/// (bundle, `GO0()`: `if (Z) return { cacheDir: Z, appDir: Z, logDir: Z }`). The session is not
+/// there: it is read from the OS keyring (`Bun.secrets`), so a child pointed at an empty directory
+/// is still signed in.
+pub const CLI_CACHE_DIR_ENV: &str = "PROTON_DRIVE_CACHE_DIR";
+/// The file the CLI reads its client identity from inside its data directory, and the prefix it
+/// insists on (`clientUid.startsWith(`${prefix}-`)`, else it generates a new one): what a draft
+/// upload is attributed to. A draft left by a failed upload is only resumed by the client whose
+/// uid matches; another client's draft refuses the upload ("Existing draft conflict by another
+/// client"). So every scope carries the same uid, kept at the root.
+const CLIENT_UID_FILE: &str = "clientUid.json";
+const CLIENT_UID_PREFIX: &str = "sdk-js-cli";
+/// Name prefix of a scope directory under the root: `scope-<pid>-<n>`. The pid is what the sweep
+/// of a crashed process's leftovers reads.
+const SCOPE_DIR_PREFIX: &str = "scope-";
+/// Owner-only, like every state directory of the engine.
+const SCOPE_DIR_MODE: u32 = 0o700;
+static SCOPE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+/// Whether the CLI keeps its sign-in on disk in its data directory rather than in the OS
+/// keyring. `PROTON_DRIVE_UNSAFE_SECRETS` truthy does that (bundle `Eg()`: one of `yes`, `y`,
+/// `1`, `true`, case-insensitive; the session store is then `GU(appDir)`, a file in the data
+/// directory); `PROTON_DRIVE_CREDENTIALS_STORE=unsafe_file` is the
+/// newer CLI's spelling (the one `doctor` knows), read as the same place. [`CLI_CACHE_DIR_ENV`]
+/// moves the data directory, so a child pointed at a fresh scope would be signed out: a caller
+/// that finds this true leaves the user's cache in place rather than lose the sign-in.
+pub fn cli_keeps_its_session_in_its_data_dir() -> bool {
+    session_in_data_dir(
+        std::env::var_os("PROTON_DRIVE_UNSAFE_SECRETS"),
+        std::env::var_os("PROTON_DRIVE_CREDENTIALS_STORE"),
+    )
+}
+
+/// [`cli_keeps_its_session_in_its_data_dir`] with the environment values passed in.
+fn session_in_data_dir(
+    unsafe_secrets: Option<OsString>,
+    credentials_store: Option<OsString>,
+) -> bool {
+    let unsafe_secrets = unsafe_secrets.is_some_and(|value| {
+        matches!(
+            value.to_string_lossy().to_ascii_lowercase().as_str(),
+            "yes" | "y" | "1" | "true"
+        )
+    });
+    unsafe_secrets || credentials_store.is_some_and(|value| value == "unsafe_file")
+}
+
+/// Where the engine keeps the `proton-drive` caches its children read and write: a directory of
+/// its own under the per-user state directory (`paths::default_cli_cache_root`), never the user's
+/// `~/.cache/proton-drive-cli`.
+///
+/// **Why the engine owns the cache at all.** The CLI answers `filesystem list` and `info` from
+/// `cache-entities.sqlite`. A folder's children are read from the cache alone once a
+/// `node-children-<uid>` marker is set, and a node's metadata (name, parent, active revision,
+/// `claimedDigests.sha1`, trashed state) is read from the cache until the node is marked stale.
+/// Nothing expires either: the marker is only reset by a `node_created` event the CLI's own event
+/// loop delivers, a node is only marked stale by a `node_updated` event it delivers, and that loop
+/// is started without being awaited and abandoned when the command exits (bundle: `bB.start()`
+/// sets `this.processPromise = this.processEvents()` and returns; the CLI's `main` calls
+/// `process.exit(0)` right after the command). In 4,700 runs on 2026-11-03 no volume event ever
+/// reached the handler and no node was ever logged `is stale`. So a change another device made
+/// — a new folder, an edit, a rename, a trash — never reaches a listing read from that cache, and
+/// an edit made on a phone reads as "remote unchanged" for ever. The engine therefore gives every
+/// pass a cache that did not exist before the pass ([`ProtonClient::begin_pass_cache`]), and every
+/// interactive browse one of its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CliCacheRoot {
+    dir: PathBuf,
+    /// The interactive CLI's own `clientUid.json`, adopted the first time the root's copy is made
+    /// so the engine keeps the identity its uploads had before it owned a cache (drafts it left are
+    /// still its own). `None`, or a file that is not usable, generates one.
+    adopt_client_uid_from: Option<PathBuf>,
+}
+
+impl CliCacheRoot {
+    pub fn new(dir: PathBuf, adopt_client_uid_from: Option<PathBuf>) -> Self {
+        Self {
+            dir,
+            adopt_client_uid_from,
+        }
+    }
+
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+}
+
+/// The pass's cache scope. `Armed` is a pass with no child yet: the directory is made by the first
+/// child, so the thousands of idle polls a day make none.
+enum PassCache {
+    Idle,
+    Armed,
+    Open(CliCacheScope),
+}
+
+struct CacheState {
+    pass: PassCache,
+    /// Leftovers of a crashed process are swept once per client, before its first scope.
+    swept: bool,
+}
+
+/// One fresh cache directory under the root, mode 0700, holding only the shared `clientUid.json`
+/// when made, and removed when dropped.
+struct CliCacheScope {
+    dir: PathBuf,
+}
+
+impl CliCacheScope {
+    fn create(root: &CliCacheRoot, client_uid: &[u8]) -> AppResult<Self> {
+        loop {
+            let sequence = SCOPE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let dir = root.dir.join(format!(
+                "{SCOPE_DIR_PREFIX}{}-{sequence}",
+                std::process::id()
+            ));
+            let mut builder = fs::DirBuilder::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(SCOPE_DIR_MODE);
+            }
+            match builder.create(&dir) {
+                Ok(()) => {
+                    // Held from here so a failure below removes the directory again.
+                    let scope = Self { dir };
+                    fs::write(scope.dir.join(CLIENT_UID_FILE), client_uid).map_err(|error| {
+                        boxed_error(format!(
+                            "could not seed the proton-drive cache scope {}: {error}",
+                            scope.dir.display()
+                        ))
+                    })?;
+                    debug!(scope = %scope.dir.display(), "opened a fresh proton-drive cache");
+                    return Ok(scope);
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => {
+                    return Err(boxed_error(format!(
+                        "could not create the proton-drive cache scope {}: {error}",
+                        dir.display()
+                    )));
+                }
+            }
+        }
+    }
+}
+
+impl Drop for CliCacheScope {
+    fn drop(&mut self) {
+        if let Err(error) = fs::remove_dir_all(&self.dir) {
+            warn!(
+                scope = %self.dir.display(),
+                error = %error,
+                "could not remove a proton-drive cache scope"
+            );
+        }
+    }
+}
+
+/// Makes the root (0700) and answers the bytes of its `clientUid.json`, making that too on first
+/// use: adopted from [`CliCacheRoot::adopt_client_uid_from`] when usable, else generated. Two
+/// processes making it at once (a daemon and a `--dry-run` preview) both end with the file one of
+/// them wrote: `create_new`, then a re-read on `AlreadyExists`.
+fn prepare_cache_root(root: &CliCacheRoot) -> AppResult<Vec<u8>> {
+    fs::create_dir_all(&root.dir).map_err(|error| {
+        boxed_error(format!(
+            "could not create the proton-drive cache root {}: {error}",
+            root.dir.display()
+        ))
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&root.dir, fs::Permissions::from_mode(SCOPE_DIR_MODE)).map_err(
+            |error| {
+                boxed_error(format!(
+                    "could not make the proton-drive cache root {} private: {error}",
+                    root.dir.display()
+                ))
+            },
+        )?;
+    }
+    let path = root.dir.join(CLIENT_UID_FILE);
+    if let Ok(existing) = fs::read(&path)
+        && client_uid_is_usable(&existing)
+    {
+        return Ok(existing);
+    }
+    let adopted = root
+        .adopt_client_uid_from
+        .as_ref()
+        .and_then(|from| fs::read(from).ok())
+        .filter(|bytes| client_uid_is_usable(bytes));
+    let bytes = adopted.unwrap_or_else(|| {
+        let uid = format!("{CLIENT_UID_PREFIX}-{}", random_hex_token());
+        format!("{{\n  \"clientUid\": \"{uid}\"\n}}\n").into_bytes()
+    });
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+    {
+        Ok(mut file) => {
+            file.write_all(&bytes).map_err(|error| {
+                boxed_error(format!(
+                    "could not write the proton-drive client id {}: {error}",
+                    path.display()
+                ))
+            })?;
+            Ok(bytes)
+        }
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            let existing = fs::read(&path)?;
+            if client_uid_is_usable(&existing) {
+                Ok(existing)
+            } else {
+                // An unusable file nobody of ours wrote: the scope goes without, and the CLI makes
+                // a uid of its own for that scope (a draft it leaves is then another client's).
+                Ok(bytes)
+            }
+        }
+        Err(error) => Err(boxed_error(format!(
+            "could not write the proton-drive client id {}: {error}",
+            path.display()
+        ))),
+    }
+}
+
+/// What the CLI accepts (`Ig()`): a JSON object whose `clientUid` is a string with its prefix.
+fn client_uid_is_usable(bytes: &[u8]) -> bool {
+    serde_json::from_slice::<Value>(bytes)
+        .ok()
+        .and_then(|value| value.get("clientUid")?.as_str().map(ToOwned::to_owned))
+        .is_some_and(|uid| uid.starts_with(&format!("{CLIENT_UID_PREFIX}-")))
+}
+
+/// 32 hex characters from the OS, or from the clock and the pid when `/dev/urandom` is not there.
+fn random_hex_token() -> String {
+    let mut bytes = [0u8; 16];
+    let read = fs::File::open("/dev/urandom")
+        .and_then(|mut file| file.read_exact(&mut bytes))
+        .is_ok();
+    if !read {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|since| since.as_nanos())
+            .unwrap_or_default();
+        bytes = (nanos ^ (u128::from(std::process::id()) << 96)).to_le_bytes();
+    }
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Removes the scopes of processes that are gone: a crashed daemon or preview leaves its directory
+/// behind, and nothing else would ever remove it. Another live process's scopes are left alone,
+/// as is anything not named like a scope.
+fn sweep_dead_scopes(root: &Path) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    let own = std::process::id();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = scope_owner_pid(&name.to_string_lossy()) else {
+            continue;
+        };
+        if pid == own || process_is_alive(pid) {
+            continue;
+        }
+        match fs::remove_dir_all(entry.path()) {
+            Ok(()) => {
+                debug!(scope = %entry.path().display(), "swept a dead process's proton-drive cache")
+            }
+            Err(error) => warn!(
+                scope = %entry.path().display(),
+                error = %error,
+                "could not sweep a dead process's proton-drive cache"
+            ),
+        }
+    }
+}
+
+/// The pid in `scope-<pid>-<n>`; `None` for any other name.
+fn scope_owner_pid(name: &str) -> Option<u32> {
+    let rest = name.strip_prefix(SCOPE_DIR_PREFIX)?;
+    let (pid, sequence) = rest.split_once('-')?;
+    if sequence.is_empty() || !sequence.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    pid.parse().ok()
+}
+
+/// `kill(pid, 0)`: `ESRCH` is the one answer that means gone. Anything else (alive, or `EPERM`,
+/// which cannot be one of ours but is still someone's) keeps the directory.
+fn process_is_alive(pid: u32) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return true;
+    };
+    // SAFETY: signal 0 delivers nothing; the call only asks whether `pid` can be signalled.
+    if unsafe { libc::kill(pid, 0) } == 0 {
+        return true;
+    }
+    io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+}
+
+/// Which cache a child reads, decided by the call site and resolved in `run_once`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChildCache {
+    /// The pass's scope (the daemon's own path, the preview, every transfer).
+    Pass,
+    /// A scope of this child's own: the control socket's `list` verb runs beside a pass on the
+    /// IPC task and must neither read the user's stale cache nor share the pass's directory.
+    Throwaway,
+}
+
+/// The resolved cache of one child: the directory to point it at, and — for a throwaway — the
+/// scope kept alive until the child has exited.
+enum ChildCacheDir {
+    Inherited,
+    Pass(PathBuf),
+    Throwaway(CliCacheScope),
+}
+
+impl ChildCacheDir {
+    fn path(&self) -> Option<&Path> {
+        match self {
+            Self::Inherited => None,
+            Self::Pass(dir) => Some(dir),
+            Self::Throwaway(scope) => Some(&scope.dir),
+        }
     }
 }
 
@@ -354,6 +694,18 @@ pub trait ProtonClient: Send + Sync {
     /// The default is a no-op, mirroring [`Self::install_cancel_flag`], so test doubles are
     /// unaffected unless they opt in.
     fn install_progress_sink(&mut self, _sink: Arc<dyn ProgressSink>) {}
+    /// Opens the cache scope of a pass: until [`Self::end_pass_cache`], every `proton-drive`
+    /// child of this client reads and writes one cache directory that did not exist before this
+    /// call ([`CliCacheRoot`] says why a cache older than the pass is worthless). The directory is
+    /// made by the pass's first child and removed at the end, so an idle pass makes none. Opening
+    /// a pass inside a pass is an engine bug and is refused; a refusal fails the pass, because a
+    /// listing read from the user's own cache is the thing being prevented. The default does
+    /// nothing: a double shells out to nothing.
+    fn begin_pass_cache(&self) -> AppResult<()> {
+        Ok(())
+    }
+    /// Closes the scope [`Self::begin_pass_cache`] opened, removing its directory. Idempotent.
+    fn end_pass_cache(&self) {}
 }
 
 /// One file in a batched download (see [`ProtonClient::download_many`]): fetch `remote_path`
@@ -725,14 +1077,68 @@ impl ProtonDriveClient {
     }
 
     pub fn new(executable: impl Into<PathBuf>) -> Self {
-        Self {
-            executable: executable.into(),
-            command_policy: CommandPolicy::default(),
-            cancel_flag: Arc::new(AtomicBool::new(false)),
-            progress_sink: None,
-            wait_hook: None,
-            gate: Arc::new(CliGate::new()),
+        Self::with_command_policy(executable, CommandPolicy::default())
+    }
+
+    /// Points this client's children at a cache of the engine's own (see [`CliCacheRoot`]). The
+    /// daemon and the `--dry-run` preview set it; without it the children inherit whatever cache
+    /// the environment names, which is the user's.
+    pub fn with_cli_cache_root(mut self, root: CliCacheRoot) -> Self {
+        self.cache_root = Some(root);
+        self
+    }
+
+    /// The directory the current pass's children read, once one of them has made it. A test seam
+    /// and a diagnostic: `None` outside a pass, or inside one that spawned nothing yet.
+    pub fn pass_cache_dir(&self) -> Option<PathBuf> {
+        match &self.cache_state.lock().expect("cache state lock").pass {
+            PassCache::Open(scope) => Some(scope.dir.clone()),
+            PassCache::Idle | PassCache::Armed => None,
         }
+    }
+
+    /// Resolves which cache directory one child reads (see [`ChildCache`]), making the pass's
+    /// scope on its first child. With no root configured every child inherits the environment.
+    fn child_cache_dir(&self, which: ChildCache, operation: &str) -> AppResult<ChildCacheDir> {
+        let Some(root) = &self.cache_root else {
+            return Ok(ChildCacheDir::Inherited);
+        };
+        let mut state = self.cache_state.lock().expect("cache state lock");
+        match which {
+            ChildCache::Throwaway => {
+                let client_uid = Self::prepare_root_once(root, &mut state)?;
+                Ok(ChildCacheDir::Throwaway(CliCacheScope::create(
+                    root,
+                    &client_uid,
+                )?))
+            }
+            ChildCache::Pass => match &state.pass {
+                PassCache::Open(scope) => Ok(ChildCacheDir::Pass(scope.dir.clone())),
+                PassCache::Armed => {
+                    let client_uid = Self::prepare_root_once(root, &mut state)?;
+                    let scope = CliCacheScope::create(root, &client_uid)?;
+                    let dir = scope.dir.clone();
+                    state.pass = PassCache::Open(scope);
+                    Ok(ChildCacheDir::Pass(dir))
+                }
+                // Fail closed: a child spawned outside any pass would read the user's own cache,
+                // the stale one, and nothing would say so.
+                PassCache::Idle => Err(boxed_error(format!(
+                    "proton-drive {operation} was asked outside a pass: no CLI cache scope is \
+                     open (engine bug)"
+                ))),
+            },
+        }
+    }
+
+    /// [`prepare_cache_root`] plus the one-time sweep of a dead process's leftovers.
+    fn prepare_root_once(root: &CliCacheRoot, state: &mut CacheState) -> AppResult<Vec<u8>> {
+        let client_uid = prepare_cache_root(root)?;
+        if !state.swept {
+            sweep_dead_scopes(&root.dir);
+            state.swept = true;
+        }
+        Ok(client_uid)
     }
 
     pub fn with_timeout(executable: impl Into<PathBuf>, timeout: Duration) -> Self {
@@ -753,6 +1159,11 @@ impl ProtonDriveClient {
             progress_sink: None,
             wait_hook: None,
             gate: Arc::new(CliGate::new()),
+            cache_root: None,
+            cache_state: Arc::new(Mutex::new(CacheState {
+                pass: PassCache::Idle,
+                swept: false,
+            })),
         }
     }
 }
@@ -775,6 +1186,28 @@ impl Default for CommandPolicy {
 impl ProtonClient for ProtonDriveClient {
     fn cli_gate(&self) -> Option<Arc<CliGate>> {
         Some(Arc::clone(&self.gate))
+    }
+
+    fn begin_pass_cache(&self) -> AppResult<()> {
+        if self.cache_root.is_none() {
+            return Ok(());
+        }
+        let mut state = self.cache_state.lock().expect("cache state lock");
+        match state.pass {
+            PassCache::Idle => {
+                state.pass = PassCache::Armed;
+                Ok(())
+            }
+            PassCache::Armed | PassCache::Open(_) => Err(boxed_error(
+                "a proton-drive cache scope is already open: a pass began inside a pass (engine \
+                 bug)",
+            )),
+        }
+    }
+
+    fn end_pass_cache(&self) {
+        // Dropping an `Open` scope removes its directory.
+        self.cache_state.lock().expect("cache state lock").pass = PassCache::Idle;
     }
 
     fn list(&self, remote_root: &Path) -> AppResult<HashMap<PathBuf, RemoteFile>> {
@@ -1414,6 +1847,7 @@ impl ProtonDriveClient {
             true,
             self.command_policy.timeout,
             GateWait::Forever,
+            ChildCache::Pass,
         )
     }
 
@@ -1430,6 +1864,7 @@ impl ProtonDriveClient {
             false,
             self.command_policy.timeout,
             GateWait::Forever,
+            ChildCache::Pass,
         )
     }
 
@@ -1442,13 +1877,22 @@ impl ProtonDriveClient {
         args: &[OsString],
         timeout: Duration,
     ) -> AppResult<Output> {
-        self.run_proton_drive_with_logging(operation, args, 1, true, timeout, GateWait::Forever)
+        self.run_proton_drive_with_logging(
+            operation,
+            args,
+            1,
+            true,
+            timeout,
+            GateWait::Forever,
+            ChildCache::Pass,
+        )
     }
 
     /// As [`Self::run_proton_drive`] with `attempts = 1`, but the wait for the [`CliGate`] is
     /// bounded: the invocation is abandoned with [`CliBusy`] rather than queued behind a long
     /// transfer. One attempt on purpose — an interactive caller retries by asking again, and a
-    /// retry behind a gate only adds latency to an answer the user is waiting on.
+    /// retry behind a gate only adds latency to an answer the user is waiting on. The child runs
+    /// on a throwaway cache of its own ([`ChildCache::Throwaway`]): it is not part of any pass.
     fn run_proton_drive_interactive(
         &self,
         operation: &str,
@@ -1462,9 +1906,11 @@ impl ProtonDriveClient {
             true,
             self.command_policy.timeout,
             GateWait::AtMost(wait),
+            ChildCache::Throwaway,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn run_proton_drive_with_logging(
         &self,
         operation: &str,
@@ -1473,11 +1919,12 @@ impl ProtonDriveClient {
         warn_on_unsuccessful_exit: bool,
         timeout: Duration,
         gate_wait: GateWait,
+        child_cache: ChildCache,
     ) -> AppResult<Output> {
         let attempts = attempts.max(1);
         let mut last_error = None;
         for attempt in 1..=attempts {
-            let output = match self.run_once(operation, args, timeout, gate_wait) {
+            let output = match self.run_once(operation, args, timeout, gate_wait, child_cache) {
                 Ok(output) => output,
                 // A busy gate is not a failed command: nothing was spawned, so there is nothing to
                 // report and nothing a retry could fix — waiting again would just spend the budget
@@ -1567,12 +2014,12 @@ impl ProtonDriveClient {
     ///   to read it;
     /// - event polling shells `curl` (`session.rs`), not this CLI.
     ///
-    /// The only remaining way to reach `SQLITE_BUSY` is an *external* `proton-drive` process
-    /// sharing this user's cache; on Linux — the platform this project targets, precisely because
-    /// there is no Proton desktop client — that reduces to the user running `proton-drive` by hand
-    /// while the daemon is live. Narrow; hence this note rather than in-engine retries. (The lock
-    /// is keyed on `$XDG_STATE_HOME`, so the one way to defeat it is to deliberately point two
-    /// daemons at different state homes — an explicit opt-in to the contention.)
+    /// With a [`CliCacheRoot`] configured the children do not share the user's cache at all: each
+    /// pass's children share a directory of the pass's own, and a browse takes one of its own, so
+    /// the user running `proton-drive` by hand beside the daemon no longer contends with it. What
+    /// the gate still serializes is the engine's own children, which share a pass's directory.
+    /// (The lock is keyed on `$XDG_STATE_HOME`, so the one way to defeat it is to deliberately
+    /// point two daemons at different state homes — an explicit opt-in to the contention.)
     ///
     /// Defenses already in place, by command class:
     /// - **Read-only** listings (`list` / `list_directory`) pass `list_attempts` (> 1), so a
@@ -1594,6 +2041,7 @@ impl ProtonDriveClient {
         args: &[OsString],
         timeout: Duration,
         gate_wait: GateWait,
+        child_cache: ChildCache,
     ) -> AppResult<Output> {
         // THE serialization point: every `proton-drive` child this client spawns passes through
         // here, so taking the gate around the child is what makes "one invocation at a time" a
@@ -1614,7 +2062,10 @@ impl ProtonDriveClient {
                 }
             },
         };
-        let mut child = self.spawn_once(args)?;
+        // After the gate, so a throwaway scope is made and removed while nothing else runs; held
+        // until the child has exited.
+        let cache = self.child_cache_dir(child_cache, operation)?;
+        let mut child = self.spawn_once(args, cache.path())?;
         // Drain stdout and stderr on separate threads *while the child runs*. A `proton-drive`
         // command whose output exceeds the OS pipe buffer (~64 KiB) fills that buffer and then
         // blocks on `write`, making no further progress, because nothing reads the pipe until the
@@ -1712,7 +2163,7 @@ impl ProtonDriveClient {
         }
     }
 
-    fn spawn_once(&self, args: &[OsString]) -> AppResult<Child> {
+    fn spawn_once(&self, args: &[OsString], cache_dir: Option<&Path>) -> AppResult<Child> {
         let mut busy_attempts = 0;
         loop {
             let mut command = Command::new(&self.executable);
@@ -1721,6 +2172,9 @@ impl ProtonDriveClient {
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
+            if let Some(cache_dir) = cache_dir {
+                command.env(CLI_CACHE_DIR_ENV, cache_dir);
+            }
             // Put the child in its own process group (group id == its own pid) so
             // that a timed-out or cancelled command can be terminated as a whole
             // tree via `terminate_child_tree`. Without this, killing only the
@@ -5609,6 +6063,7 @@ exit 0
                 true,
                 Duration::from_secs(10),
                 GateWait::AtMost(budget),
+                ChildCache::Throwaway,
             )
             .expect_err("a held gate must refuse a bounded caller");
         let elapsed = started.elapsed();
@@ -5812,6 +6267,342 @@ exit 0
     #[cfg(not(unix))]
     fn failing_status() -> ExitStatus {
         Command::new("false").status().expect("a failing status")
+    }
+
+    // --- the engine-owned CLI cache (`CliCacheRoot`) --------------------------------------
+
+    /// A `proton-drive` that records, per child, the cache directory it was given (`<unset>`
+    /// when none), that directory's mode, and the client uid it found there.
+    #[cfg(unix)]
+    fn cache_recording_cli(directory: &Path) -> PathBuf {
+        write_script(
+            directory,
+            "fake-proton-drive",
+            r#"#!/bin/sh
+printf '%s\n' "${PROTON_DRIVE_CACHE_DIR:-<unset>}" >> "$0.caches"
+if [ -n "$PROTON_DRIVE_CACHE_DIR" ]; then
+  stat -c '%a' "$PROTON_DRIVE_CACHE_DIR" >> "$0.modes"
+  cat "$PROTON_DRIVE_CACHE_DIR/clientUid.json" >> "$0.uids"
+  printf '\n' >> "$0.uids"
+fi
+printf '%s\n' '{"entries":[]}'
+"#,
+        )
+    }
+
+    #[cfg(unix)]
+    fn recorded_lines(executable: &Path, suffix: &str) -> Vec<String> {
+        fs::read_to_string(format!("{}.{suffix}", executable.display()))
+            .unwrap_or_default()
+            .lines()
+            .map(ToOwned::to_owned)
+            .collect()
+    }
+
+    #[cfg(unix)]
+    fn scoped_client(directory: &Path) -> (ProtonDriveClient, PathBuf, PathBuf) {
+        let executable = cache_recording_cli(directory);
+        let root = directory.join("state").join("cli-cache");
+        let client = ProtonDriveClient::with_command_policy(
+            &executable,
+            CommandPolicy::new(Duration::from_secs(10), 1),
+        )
+        .with_cli_cache_root(CliCacheRoot::new(root.clone(), None));
+        (client, executable, root)
+    }
+
+    #[cfg(unix)]
+    fn mode_of(path: &Path) -> u32 {
+        fs::metadata(path).expect("metadata").permissions().mode() & 0o777
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_pass_gives_its_children_one_fresh_private_cache_and_removes_it_at_the_end() {
+        let directory = tempdir().expect("tempdir");
+        let (client, executable, root) = scoped_client(directory.path());
+
+        client.begin_pass_cache().expect("a pass opens");
+        for _ in 0..2 {
+            client
+                .list_directory(Path::new("/Drive/RemoteFolder"), Path::new(""))
+                .expect("listing");
+        }
+        let caches = recorded_lines(&executable, "caches");
+        assert_eq!(caches.len(), 2);
+        assert_eq!(caches[0], caches[1], "one cache for the whole pass");
+        let scope = PathBuf::from(&caches[0]);
+        assert_eq!(scope.parent(), Some(root.as_path()));
+        assert!(
+            scope
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(&format!("scope-{}-", std::process::id()))),
+            "{scope:?}"
+        );
+        assert_eq!(recorded_lines(&executable, "modes"), ["700", "700"]);
+        assert_eq!(mode_of(&root), 0o700);
+        assert_eq!(client.pass_cache_dir(), Some(scope.clone()));
+        assert!(scope.is_dir());
+
+        client.end_pass_cache();
+        assert!(!scope.exists(), "the scope is removed with the pass");
+        assert_eq!(client.pass_cache_dir(), None);
+        assert!(root.is_dir(), "the root stays");
+
+        // The next pass reads nothing the last one wrote: a new directory.
+        client.begin_pass_cache().expect("a second pass opens");
+        client
+            .list_directory(Path::new("/Drive/RemoteFolder"), Path::new(""))
+            .expect("listing");
+        let caches = recorded_lines(&executable, "caches");
+        assert_ne!(caches[2], caches[0]);
+        client.end_pass_cache();
+        assert!(!Path::new(&caches[2]).exists());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn an_idle_pass_makes_no_directory() {
+        let directory = tempdir().expect("tempdir");
+        let (client, _executable, root) = scoped_client(directory.path());
+        client.begin_pass_cache().expect("a pass opens");
+        client.end_pass_cache();
+        assert!(
+            !root.exists(),
+            "nothing is made for a pass that spawned nothing"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_child_outside_a_pass_is_refused_once_a_root_is_configured() {
+        // Fail closed: the alternative is a child reading the user's own cache, the stale one,
+        // with nothing saying so.
+        let directory = tempdir().expect("tempdir");
+        let (client, executable, _root) = scoped_client(directory.path());
+        let error = client
+            .list_directory(Path::new("/Drive/RemoteFolder"), Path::new(""))
+            .expect_err("no pass is open");
+        assert!(error.to_string().contains("outside a pass"), "{error}");
+        assert!(
+            recorded_lines(&executable, "caches").is_empty(),
+            "nothing was spawned"
+        );
+
+        // And a client with no root (a test double's, the onboarding probe's) is unchanged: the
+        // child inherits the environment.
+        let unscoped = ProtonDriveClient::with_command_policy(
+            &executable,
+            CommandPolicy::new(Duration::from_secs(10), 1),
+        );
+        unscoped
+            .list_directory(Path::new("/Drive/RemoteFolder"), Path::new(""))
+            .expect("listing");
+        let caches = recorded_lines(&executable, "caches");
+        assert_eq!(caches.len(), 1);
+        assert!(
+            !caches[0].starts_with(directory.path().to_str().expect("utf-8 tempdir")),
+            "no directory of the engine's: {caches:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn opening_a_pass_inside_a_pass_is_refused() {
+        let directory = tempdir().expect("tempdir");
+        let (client, _executable, _root) = scoped_client(directory.path());
+        client.begin_pass_cache().expect("a pass opens");
+        let error = client
+            .begin_pass_cache()
+            .expect_err("a pass inside a pass is an engine bug");
+        assert!(error.to_string().contains("already open"), "{error}");
+        client.end_pass_cache();
+        client.end_pass_cache();
+        client.begin_pass_cache().expect("closing is idempotent");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_browse_runs_on_a_throwaway_cache_of_its_own() {
+        // The control socket's `list` runs beside a pass on the IPC task: it must neither read
+        // the user's cache nor the pass's directory, and it leaves nothing behind.
+        let directory = tempdir().expect("tempdir");
+        let (client, executable, root) = scoped_client(directory.path());
+        client.begin_pass_cache().expect("a pass opens");
+        client
+            .list_directory(Path::new("/Drive/RemoteFolder"), Path::new(""))
+            .expect("the pass's listing");
+        client
+            .browse_directory(
+                Path::new("/Drive/RemoteFolder"),
+                Path::new(""),
+                Duration::from_secs(1),
+            )
+            .expect("the browse");
+        let caches = recorded_lines(&executable, "caches");
+        assert_eq!(caches.len(), 2);
+        let (pass, browse) = (PathBuf::from(&caches[0]), PathBuf::from(&caches[1]));
+        assert_ne!(pass, browse);
+        assert_eq!(browse.parent(), Some(root.as_path()));
+        assert_eq!(recorded_lines(&executable, "modes"), ["700", "700"]);
+        assert!(!browse.exists(), "removed once the child exited");
+        assert!(pass.is_dir(), "the pass's own directory is untouched");
+        client.end_pass_cache();
+
+        // Outside any pass a browse is still answered, on a throwaway: the fail-closed rule is
+        // for the pass's children only.
+        client
+            .browse_directory(
+                Path::new("/Drive/RemoteFolder"),
+                Path::new(""),
+                Duration::from_secs(1),
+            )
+            .expect("a browse outside a pass");
+        let caches = recorded_lines(&executable, "caches");
+        assert_eq!(caches.len(), 3);
+        assert!(!Path::new(&caches[2]).exists());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn every_scope_carries_the_one_client_uid_of_the_root() {
+        let directory = tempdir().expect("tempdir");
+        let (client, executable, root) = scoped_client(directory.path());
+        for _ in 0..2 {
+            client.begin_pass_cache().expect("a pass opens");
+            client
+                .list_directory(Path::new("/Drive/RemoteFolder"), Path::new(""))
+                .expect("listing");
+            client.end_pass_cache();
+        }
+        let uids = recorded_lines(&executable, "uids");
+        let uids: Vec<&str> = uids
+            .iter()
+            .map(|line| line.trim())
+            .filter(|line| !line.is_empty())
+            .collect();
+        let kept = fs::read_to_string(root.join(CLIENT_UID_FILE)).expect("the root's copy");
+        let value: Value = serde_json::from_str(&kept).expect("json");
+        let uid = value["clientUid"].as_str().expect("a client uid");
+        assert!(
+            uid.starts_with("sdk-js-cli-"),
+            "the kept client uid has the CLI's prefix"
+        );
+        assert_eq!(
+            uid.len(),
+            "sdk-js-cli-".len() + 32,
+            "the kept client uid has the CLI's length"
+        );
+        let seen: Vec<String> = uids
+            .join("\n")
+            .split("}\n")
+            .filter(|chunk| !chunk.trim().is_empty())
+            .map(|chunk| chunk.trim().to_owned())
+            .collect();
+        assert_eq!(seen.len(), 2, "two children ran");
+        assert!(
+            seen.iter().all(|chunk| chunk.contains(uid)),
+            "every child saw the kept client uid"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn the_interactive_clis_client_uid_is_adopted_when_usable_and_generated_otherwise() {
+        let directory = tempdir().expect("tempdir");
+        let executable = cache_recording_cli(directory.path());
+        let adopt = directory.path().join("clientUid.json");
+        fs::write(&adopt, b"{\"clientUid\":\"sdk-js-cli-adopted-identity\"}").expect("write");
+        let root = directory.path().join("adopting");
+        let client = ProtonDriveClient::with_command_policy(
+            &executable,
+            CommandPolicy::new(Duration::from_secs(10), 1),
+        )
+        .with_cli_cache_root(CliCacheRoot::new(root.clone(), Some(adopt.clone())));
+        client.begin_pass_cache().expect("a pass opens");
+        client
+            .list_directory(Path::new("/Drive/RemoteFolder"), Path::new(""))
+            .expect("listing");
+        client.end_pass_cache();
+        assert!(
+            fs::read_to_string(root.join(CLIENT_UID_FILE))
+                .expect("the root's copy")
+                .contains("sdk-js-cli-adopted-identity")
+        );
+        assert!(
+            recorded_lines(&executable, "uids")
+                .join("\n")
+                .contains("sdk-js-cli-adopted-identity")
+        );
+
+        // Unusable (another prefix, or not the file's shape): generated instead.
+        fs::write(&adopt, b"{\"clientUid\":\"other-prefix-1\"}").expect("write");
+        let root = directory.path().join("generating");
+        let client = ProtonDriveClient::with_command_policy(
+            &executable,
+            CommandPolicy::new(Duration::from_secs(10), 1),
+        )
+        .with_cli_cache_root(CliCacheRoot::new(root.clone(), Some(adopt)));
+        client.begin_pass_cache().expect("a pass opens");
+        client
+            .list_directory(Path::new("/Drive/RemoteFolder"), Path::new(""))
+            .expect("listing");
+        client.end_pass_cache();
+        let kept = fs::read_to_string(root.join(CLIENT_UID_FILE)).expect("the root's copy");
+        assert!(kept.contains("\"clientUid\": \"sdk-js-cli-"), "{kept}");
+        assert!(!kept.contains("other-prefix"), "{kept}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn the_scopes_of_a_dead_process_are_swept_and_everything_else_is_kept() {
+        let directory = tempdir().expect("tempdir");
+        let (client, _executable, root) = scoped_client(directory.path());
+        // No pid is this large on Linux (`pid_max` is at most 4194304), so its owner is gone.
+        let dead = root.join("scope-2147483647-0");
+        let own = root.join(format!("scope-{}-9999", std::process::id()));
+        let other = root.join("not-a-scope");
+        for dir in [&dead, &own, &other] {
+            fs::create_dir_all(dir).expect("leftover");
+        }
+        client.begin_pass_cache().expect("a pass opens");
+        client
+            .list_directory(Path::new("/Drive/RemoteFolder"), Path::new(""))
+            .expect("listing");
+        client.end_pass_cache();
+        assert!(!dead.exists(), "a dead process's scope is swept");
+        assert!(own.is_dir(), "this process's own entries are kept");
+        assert!(other.is_dir(), "anything not named like a scope is kept");
+    }
+
+    #[test]
+    fn a_sign_in_kept_on_disk_is_recognised_from_either_spelling() {
+        // The CLI's own truthy set for `PROTON_DRIVE_UNSAFE_SECRETS`, case-insensitive; and the
+        // newer `PROTON_DRIVE_CREDENTIALS_STORE`, where only `unsafe_file` is on disk in the data
+        // directory (`pass` is elsewhere, `keychain` is the keyring).
+        let value = |text: &str| Some(OsString::from(text));
+        for truthy in ["1", "y", "yes", "true", "TRUE", "Yes"] {
+            assert!(session_in_data_dir(value(truthy), None), "{truthy}");
+        }
+        for falsy in ["0", "no", "false", "", "maybe"] {
+            assert!(!session_in_data_dir(value(falsy), None), "{falsy:?}");
+        }
+        assert!(session_in_data_dir(None, value("unsafe_file")));
+        assert!(!session_in_data_dir(None, value("pass")));
+        assert!(!session_in_data_dir(None, value("keychain")));
+        assert!(!session_in_data_dir(None, None));
+        assert!(session_in_data_dir(value("1"), value("keychain")));
+    }
+
+    #[test]
+    fn a_scope_name_carries_its_owners_pid() {
+        assert_eq!(scope_owner_pid("scope-123-4"), Some(123));
+        assert_eq!(scope_owner_pid("scope-123-"), None);
+        assert_eq!(scope_owner_pid("scope-123"), None);
+        assert_eq!(scope_owner_pid("scope-x-4"), None);
+        assert_eq!(scope_owner_pid("scope-12-3x"), None);
+        assert_eq!(scope_owner_pid("clientUid.json"), None);
     }
 
     fn write_script(directory: &Path, name: &str, content: &str) -> PathBuf {

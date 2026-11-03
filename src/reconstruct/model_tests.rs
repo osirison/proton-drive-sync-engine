@@ -1042,7 +1042,13 @@ fn run_seeds(shape: Shape, root_known: bool, seeds: std::ops::Range<u64>) -> Tal
         );
         match outcome {
             Reconstruction::FallbackToSnapshot(_) => tally.fallback += 1,
-            Reconstruction::Complete { remote, outside } => {
+            Reconstruction::Complete {
+                remote,
+                outside,
+                behind,
+            } => {
+                // The model's resolver lists the truth, so no listing is ever behind the stream.
+                assert!(behind.is_empty(), "seed {seed}: behind {behind:?}");
                 match difference(&truth, &remote, &scenario) {
                     None => tally.complete_correct += 1,
                     Some(diff) => tally.note_wrong(
@@ -1294,7 +1300,13 @@ fn two_passes(seeds: std::ops::Range<u64>) -> (Tally, u64) {
             &second_resolver,
         ) {
             Reconstruction::FallbackToSnapshot(_) => tally.fallback += 1,
-            Reconstruction::Complete { remote, outside } => {
+            Reconstruction::Complete {
+                remote,
+                outside,
+                behind,
+            } => {
+                // The model's resolver lists the truth, so no listing is ever behind the stream.
+                assert!(behind.is_empty(), "seed {seed}: behind {behind:?}");
                 match difference(&truth, &remote, &scenario) {
                     None => tally.complete_correct += 1,
                     Some(diff) => tally.note_wrong(

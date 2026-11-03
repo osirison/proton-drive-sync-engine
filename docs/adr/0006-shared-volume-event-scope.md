@@ -324,8 +324,9 @@ leaves out is listed at the top of the file.
   nothing) are untouched.
 - **What still walks.** A fetch the server answered with an error (a rejected cursor, a reply that
   does not parse, a `4xx`) or a server refresh — a fetch that got no answer waits instead, and walks
-  only after ten minutes of silence (ADR 0004); a `Created` node absent from its known
-  parent's listing (#30); an event about the pair's own root; a directory moved in or restored; a
+  only after ten minutes of silence (ADR 0004); a node the pair holds that names a parent its
+  listing has not shown (a `Created` node absent from its known parent's listing walked too,
+  #30, until 2026-11-02 — see the addendum below); an event about the pair's own root; a directory moved in or restored; a
   duplicate id in the baseline; a tree with a directory that has no composed id (the window between
   the daemon making a folder and its own event arriving); a record in a folder with no row; a
   baseline record under an older id; **the removal of a node it holds no record of while a record
@@ -345,8 +346,8 @@ leaves out is listed at the top of the file.
   of them the saving shrinks and the log says `names no parent`; a pair **rooted at the top of the
   volume** was not covered by the live gate, and its root may behave differently (events whose
   parent is the volume top, which the model gives or omits at random); and the **listing can lag
-  the stream**, which turns a `Created` into a `not in its parent listing yet` walk (#30) however
-  well the skip works.
+  the stream**, which turned a `Created` into a `not in its parent listing yet` walk (#30) however
+  well the skip works — and, it turned out, broke the skip: see the addendum below.
 - **A residual, contrived:** the root uid names a node and `remote_root` names a path. If an
   ancestor of the folder is renamed and someone makes a different folder at the old path before the
   pair notices, no event is about the old root, so the pair keeps the old uid until its next walk and
@@ -417,6 +418,121 @@ What it did **not** cover: a pair rooted at the top of the volume (the root's pa
 volume top, whose id the stream may omit); a node restored from the trash (the event may arrive
 with a different parent or none); and foreign events that carry no parent id, which the pair
 walks for by design (point 4) and whose frequency on a real stream is not known.
+
+## Addendum (2026-11-02): the listing can stay behind the stream, and the skip assumed it could not
+
+The soundness argument above assumes the map is complete: every folder of the pair's tree has a
+row. #30's fallback broke that. On 2026-10-22 a folder was made from the iPhone app inside a held
+folder of the `Documents` pair. Its `Created` event named a held parent, the CLI's listing of that
+parent did not show it, and the pass walked (#30). The `proton-drive` CLI answers `filesystem list`
+from a local cache (`~/.cache/proton-drive-cli/cache-entities.sqlite`) that only its own volume
+event poll refreshes, and the daemon's short-lived children exit before that poll lands (its
+`events.json` cursor never advanced in six log files; no children request to the API in any of
+them), so the walk read the same stale listing. The bootstrap had captured its cursor **before** the
+walk (#294), past the folder's create. The folder was now behind the cursor and in no map. Thirty
+minutes later eight files were created inside it: each named the folder as its parent, the pair
+held it nowhere, condition S held for the (apparently complete) tree, and all eight were dropped as
+`outside this folder`. Nothing re-derived any of it; the weekly sweep read the same cache.
+
+The decision: a node the pair does not hold that its parent's listing does not show is **reported,
+not walked for** (`ListingBehind`), with everything created beneath it. The map leaves it out, the
+rest of the delta is applied, and the daemon **persists the cursor it started from**, so every poll
+asks for the same delta again until the listing shows the node; `last_error` names the folder
+meanwhile. A later event about such a node supersedes its entry (a trash, a delete, a move out:
+nothing waits; a trash of a never-placed node is still decided by the untracked-removal rule, since
+a record with no id may be it). A full walk reads the same listing, so a walk that still does not
+show every held node anchors no cursor either. A node the pair **holds** that names such a parent
+still walks, as for any parent it does not hold. The model test asserts `behind` is empty, because
+its resolver lists the truth.
+
+A `reset-index` discards the hold with the cursor it protected: the reset's walk is the new
+baseline and anchors as any first walk does. A hold that outlived the cursor would keep every walk
+from anchoring, and a pair with no cursor walks every pass.
+
+Residual: a pass that falls back for another reason in the same delta (a tracked node moved into
+the unlisted folder, a directory moved in by an update) walks before the behind set of that delta
+is recorded, and that walk anchors as before. The CLI's cache is the cause; the engine's part is to
+lose nothing and say so.
+
+## Addendum (2026-11-03): the CLI's cache is never revalidated, so the engine owns the cache it reads
+
+The addendum above held the events; this one makes them arrive. Moving the user's cache aside
+(`~/.cache/proton-drive-cli` → a `.stale-2026-11-03` copy, kept) made the very next listing show
+the folder, and the files are on disk. The CLI's bundled source (a bun single-file executable;
+the JS was cut out of the binary and pretty-printed) says why, and how far it goes:
+
+- **Children.** `iterateFolderChildren` reads from the cache alone once `isFolderChildrenLoaded`
+  answers true (`node-children-<uid>` set to `"loaded"` after a full children fetch). The marker is
+  removed by `resetFolderChildrenLoaded`, called from exactly two places: the cache listener on a
+  `node_created` event (`if (J.parentNodeUid) await this.cache.resetFolderChildrenLoaded(J.parentNodeUid)`)
+  and the CLI's own `notifyChildCreated` after its own upload or mkdir. A `tree_refresh` event
+  removes every `children-volume:<id>` marker. There is no TTL.
+- **Nodes.** `getNode` returns the cached node unless `isStale`; `isStale` is set by the cache
+  listener on `node_updated` (which also copies the new parent and trash state), by `tree_refresh`
+  (`setNodesStaleFromVolume`), and by the CLI's own `notifyNodeChanged`; `node_deleted` removes the
+  node. No TTL either. So another client's rename, edit, move or trash reaches the cache only through
+  the event loop.
+- **The event loop never runs to the handler in a CLI command.** `bG.create(..., H.isLoggedIn())`
+  subscribes at start-up from `events.json`; `bB.start()` sets `this.processPromise =
+  this.processEvents()` and returns without awaiting it; the command runs and reads the cache; the
+  CLI's `dispose()` detaches the listeners and awaits only handlers already running; `main` calls
+  `process.exit(0)`. The in-flight events GET is abandoned. Six log files, ~4,700 runs on
+  2026-11-03: `Updating latest event ID` 50 times, all for scope `drive:core`, never a volume;
+  `is stale` never. `events.json` is rewritten with the stored id on every subscribe
+  (`setLatestEventId(J, Z, Y.getLatestEventId())`), which is why it never moved.
+- **`PROTON_DRIVE_CACHE_DIR`** sets the cache, data and log directory to one path (`GO0()`:
+  `if (Z) return { cacheDir: Z, appDir: Z, logDir: Z }`): `cache-entities.sqlite`,
+  `cache-crypto.sqlite`, `clientUid.json`, `events.json`, `events.lock`, `config.json` and
+  `proton-drive.log*` all move. The session does not: it is in the OS keyring (`Bun.secrets`), so a
+  child pointed at an empty directory is signed in. There is **no** `--cache-dir` option on the
+  Proton CLI (the `--cache-dir` string in the binary belongs to bun's own `bun install` help) and no
+  per-invocation bypass or refresh flag: the CLI's options are `--help`, `--json`, `--verbose` and
+  each command's own. `logout` clears the caches, which is not an option.
+- **A fresh directory costs a client identity.** `clientUid.json` is generated per data directory
+  (`sdk-js-cli-<uuid>`), and an upload that finds a draft left by another uid refuses
+  (`handleConflictError`: a draft is deleted and retried only when
+  `ConflictDraftClientUID === this.clientUid`; `overrideExistingDraftByOtherClient` is never set by
+  the CLI). So the engine keeps one uid and seeds it into every directory it makes.
+
+The decision (`proton::CliCacheRoot`): the engine trusts a CLI cache for the length of one pass and
+no longer. Every real client is built with a root under the per-user state directory
+(`$XDG_STATE_HOME/proton-drive-sync/cli-cache`, 0700, beside the global lock, never inside a sync
+root). A pass opens a scope; its first child makes `scope-<pid>-<n>` (0700), every child of the
+pass shares it through `PROTON_DRIVE_CACHE_DIR`, and the end of the pass removes it. The three
+pass bodies open one (a sync, an apply, a reset; the plan verb; the one-shot preview), and a child
+asked outside any pass is refused rather than left on the user's cache. The IPC `List` verb, which
+runs beside a pass, takes a throwaway of its own per call. One setup gets no root at all: a CLI
+whose sign-in is on disk in its data directory (`PROTON_DRIVE_UNSAFE_SECRETS` truthy, which the
+bundle's `Eg()` turns into a session file under `appDir`, `GU(appDir)`; or the newer
+`PROTON_DRIVE_CREDENTIALS_STORE=unsafe_file`, read as the same place), because the variable moves
+that directory too and every child would be signed out. It keeps the user's cache, as before, and
+the daemon says once that a change made on another device may not reach a listing. An idle pass
+makes no directory. The uid at the root is adopted from the interactive CLI's `clientUid.json` the
+first time (so drafts the engine left before this change are still its own), else generated.
+Scopes of dead pids are swept once per client. Rejected: a per-daemon cache discarded before each
+walk and kept between incremental passes, because an incremental pass's placements and downloads
+would then read node metadata (a phone edit's new revision) from a cache no event refreshes; and a
+targeted re-list for the `behind` path alone, because the weekly sweep would still verify nothing.
+
+Cost, measured on the maintainer's `Documents` pair (~1000 folders, ~5.4k files) on 2026-11-03: a
+cold full walk ~80 min against ~28 warm, so every scheduled sweep, resync, bootstrap, plan and apply
+re-plan pays the cold price; an incremental pass with a child resolves each listed parent's path
+from `/my-files` down (seconds); an idle pass pays nothing. The CLI's own debug log of the engine's
+children goes with the scope, so a diagnosis like this one has only the engine's log and the CLI's
+stderr on failure.
+
+The 100,000-scenario model run, finished for the first time with this change, found one wrong
+reconstruction in `[retaken names]` (seed 18422): the daemon's own folder `b` (record without an
+id) was trashed by another client, which then moved a folder with a subtree into the root as `b`;
+the "daemon's own folder being linked" exception placed the newcomer empty. The exception now holds
+only while nothing untracked left the tree or went behind a listing earlier in the delta
+(`a_folder_that_takes_the_name_of_the_daemons_unlinked_folder_after_it_left_walks`), which costs
+nine more fallbacks per 100,000 of that shape; the rerun is clean.
+
+Residuals: the onboarding probe (`gui-core::probe_remote_via_cli`, run only before any daemon
+exists) and `proton-sync doctor` still read the user's cache; a draft the engine left under a uid
+the interactive CLI never had (none known) refuses its upload until the draft is gone; the CLI's
+`clientUid` prefix (`sdk-js-cli`) is pinned, and a CLI that changes it generates a uid per scope.
 
 ## Follow-ups
 

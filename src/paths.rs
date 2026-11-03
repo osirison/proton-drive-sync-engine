@@ -13,6 +13,13 @@ const DEFAULT_LOCKFILE_NAME: &str = "proton-sync.lock";
 const DEFAULT_INDEX_NAME: &str = "sync_index.db";
 /// Filename of the user-global single-instance lock (see [`default_global_lock_path`]).
 const GLOBAL_LOCK_NAME: &str = "single-instance.lock";
+/// Directory, beside the global lock, of the `proton-drive` caches the engine's children use (see
+/// [`default_cli_cache_root`]).
+const CLI_CACHE_DIR_NAME: &str = "cli-cache";
+/// The interactive CLI's own data directory under `$XDG_DATA_HOME`, and the file in it that names
+/// the client (see [`interactive_cli_client_uid_path`]).
+const INTERACTIVE_CLI_DATA_DIR: &str = "proton-drive-cli";
+const INTERACTIVE_CLI_CLIENT_UID_FILE: &str = "clientUid.json";
 /// Name of the per-sync-root directory that holds all of the engine's persistent state (the SQLite
 /// index and its status/metrics sidecars) plus the instance lockfile. It lives at the top of
 /// `local_root` (like `.git`) and is ignored by scanning, planning, the base-index filter, and the
@@ -51,8 +58,9 @@ pub fn default_state_db_path(local_root: &Path) -> PathBuf {
 /// The **user-global** single-instance lock: the same path for every `proton-syncd` this user
 /// runs, regardless of session, `XDG_RUNTIME_DIR`, sync root, or `--socket-path`. It admits at
 /// most one daemon per user account, because every daemon shells the same `proton-drive` CLI —
-/// whose SQLite cache **and** session store are shared per user and are not safe for concurrent
-/// use (`SQLITE_BUSY`; see the concurrency note on `ProtonDriveClient::run_proton_drive` and #23).
+/// whose session store is shared per user, and whose SQLite caches were until the engine gave each
+/// pass a cache of its own ([`default_cli_cache_root`]); neither is safe for concurrent use
+/// (`SQLITE_BUSY`; see the concurrency note on `ProtonDriveClient::run_proton_drive` and #23).
 ///
 /// Deliberately keyed on `$XDG_STATE_HOME` (→ `~/.local/state`) — a *per-user*, always-resolvable
 /// location — and **not** on the per-session runtime dir: `$XDG_RUNTIME_DIR` is unset or differs
@@ -65,6 +73,42 @@ pub fn default_state_db_path(local_root: &Path) -> PathBuf {
 /// closed (#74).
 pub fn default_global_lock_path() -> AppResult<PathBuf> {
     Ok(global_lock_path_in(user_state_dir()?))
+}
+
+/// Where the engine's `proton-drive` children keep their caches (`proton::CliCacheRoot`): beside
+/// the global lock, under the same per-user state directory, so it is per user, outside every sync
+/// root, and resolvable whenever the lock is. Never the user's own `~/.cache/proton-drive-cli`:
+/// that cache is what the engine stopped trusting.
+pub fn default_cli_cache_root() -> AppResult<PathBuf> {
+    Ok(user_state_dir()?
+        .join(APP_STATE_DIR)
+        .join(CLI_CACHE_DIR_NAME))
+}
+
+/// The interactive CLI's `clientUid.json` (`$XDG_DATA_HOME`, else `~/.local/share`, then
+/// `proton-drive-cli/`), which the engine **reads once** to keep the client identity its uploads
+/// had before it owned a cache (a draft it left is still its own). `None` when neither variable is
+/// usable; nothing is created or written there.
+pub fn interactive_cli_client_uid_path() -> Option<PathBuf> {
+    interactive_cli_client_uid_path_in(env::var_os("XDG_DATA_HOME"), env::var_os("HOME"))
+}
+
+/// [`interactive_cli_client_uid_path`] with the environment values passed in (see
+/// [`user_state_dir_from`] for why).
+fn interactive_cli_client_uid_path_in(
+    data_home: Option<OsString>,
+    home: Option<OsString>,
+) -> Option<PathBuf> {
+    let data_dir = match (absolute_dir(data_home), absolute_dir(home)) {
+        (Some(dir), _) => dir,
+        (None, Some(home)) => home.join(".local").join("share"),
+        (None, None) => return None,
+    };
+    Some(
+        data_dir
+            .join(INTERACTIVE_CLI_DATA_DIR)
+            .join(INTERACTIVE_CLI_CLIENT_UID_FILE),
+    )
 }
 
 /// [`default_global_lock_path`] for a caller that only looks at the lock (`doctor`'s probe): it
@@ -297,6 +341,44 @@ fn absolute_dir(value: Option<OsString>) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_cli_cache_root_sits_beside_the_global_lock() {
+        // Both from the one state directory, so the cache root is resolvable exactly when the
+        // lock is, and never inside a sync root.
+        let root = default_cli_cache_root().expect("a state directory");
+        let lock = default_global_lock_path().expect("a state directory");
+        assert_eq!(root.parent(), lock.parent());
+        assert_eq!(
+            root.file_name().and_then(|name| name.to_str()),
+            Some("cli-cache")
+        );
+    }
+
+    #[test]
+    fn the_interactive_cli_client_uid_follows_xdg_data_home_then_home() {
+        let path = |xdg: Option<&str>, home: Option<&str>| {
+            interactive_cli_client_uid_path_in(xdg.map(OsString::from), home.map(OsString::from))
+        };
+        assert_eq!(
+            path(Some("/data"), Some("/home/me")),
+            Some(PathBuf::from("/data/proton-drive-cli/clientUid.json"))
+        );
+        assert_eq!(
+            path(None, Some("/home/me")),
+            Some(PathBuf::from(
+                "/home/me/.local/share/proton-drive-cli/clientUid.json"
+            ))
+        );
+        // A relative value is ignored like an unset one, as everywhere in this module.
+        assert_eq!(
+            path(Some("data"), Some("/home/me")),
+            Some(PathBuf::from(
+                "/home/me/.local/share/proton-drive-cli/clientUid.json"
+            ))
+        );
+        assert_eq!(path(None, None), None);
+    }
 
     #[test]
     fn the_default_config_path_follows_xdg_then_home() {

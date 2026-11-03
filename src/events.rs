@@ -450,6 +450,37 @@ mod tests {
     const MIXED: &str = include_str!("../tests/fixtures/volume-events-mixed.json");
     const REFRESH: &str = include_str!("../tests/fixtures/volume-events-refresh.json");
     const LATEST: &str = include_str!("../tests/fixtures/volume-events-latest.json");
+    const FOLDER_WITH_FILES: &str =
+        include_str!("../tests/fixtures/volume-events-folder-with-files.json");
+
+    #[test]
+    fn parses_the_live_page_of_a_folder_created_with_files_inside_it() {
+        // Captured 2026-11-02 (ids shortened): a folder made from the iPhone app, then its files.
+        // Each file names the folder as its parent; the folder names the pair's held folder. The
+        // page's `EventID` is the last event's, and a page from that cursor is empty.
+        let page = parse_volume_events(FOLDER_WITH_FILES).expect("parse the live page");
+        assert_eq!(page.latest_event_id, "ByUJ_sj7HYfhqF78KNQJzQ");
+        assert!(!page.more && !page.refresh);
+        assert_eq!(page.changes.len(), 4);
+        assert!(
+            page.changes
+                .iter()
+                .all(|change| change.kind == RemoteChangeKind::Created && !change.trashed)
+        );
+        let folder = &page.changes[0];
+        assert_eq!(folder.node_id, "LlqrJsuOCxEzl0CAAroquYT2");
+        assert_eq!(
+            folder.parent_id.as_deref(),
+            Some("GOFEby1gEiSABeGbi4Bcm_hd")
+        );
+        assert!(
+            page.changes[1..]
+                .iter()
+                .all(|file| file.parent_id.as_deref() == Some(folder.node_id.as_str())),
+            "every file names the new folder as its parent"
+        );
+        assert_eq!(page.changes[3].event_id, page.latest_event_id);
+    }
 
     #[test]
     fn parses_a_create_event() {
