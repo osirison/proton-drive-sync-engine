@@ -34,8 +34,8 @@ use crate::ipc::{
     TRANSFERS_REPORTED, TransferActivity, bind_listener, read_request, write_response,
 };
 use crate::proton::{
-    AuthFailure, CommandPolicy, DownloadRequest, ProgressSink, ProtonClient, ProtonDriveClient,
-    RemoteEntity, RemoteListingStatus, is_auth_failure_error, is_cli_busy_error,
+    AuthFailure, CliCacheRoot, CommandPolicy, DownloadRequest, ProgressSink, ProtonClient,
+    ProtonDriveClient, RemoteEntity, RemoteListingStatus, is_auth_failure_error, is_cli_busy_error,
     is_node_not_found_error,
 };
 use chrono::{Local, TimeZone};
@@ -2782,14 +2782,45 @@ pub fn preview_plan(config: &DaemonConfig) -> AppResult<DryRunReport> {
     let client = ProtonDriveClient::with_command_policy(
         config.proton_cli.clone(),
         command_policy_from_config(config),
-    );
+    )
+    .with_cli_cache_root(cli_cache_root()?);
     preview_plan_with_client(config, &client)
+}
+
+/// The one [`CliCacheRoot`] every real client of this process is built with: the daemon's and the
+/// preview's, so the two never share a cache directory (each pass makes its own under it) and
+/// neither reads the user's.
+fn cli_cache_root() -> AppResult<CliCacheRoot> {
+    Ok(CliCacheRoot::new(
+        crate::paths::default_cli_cache_root()?,
+        crate::paths::interactive_cli_client_uid_path(),
+    ))
+}
+
+/// The cache scope of one pass ([`ProtonClient::begin_pass_cache`]), closed when dropped, so every
+/// exit of a pass body — an early return, the feed hold, a panic — closes it. Opened by the three
+/// pass bodies and nowhere else: `reconcile_blocking` (a sync, an apply, a reset), `plan_only_blocking`
+/// (the plan verb) and `preview_plan_with_client` (the one-shot `--dry-run`).
+struct PassCacheScope<'c, C: ProtonClient>(&'c C);
+
+impl<'c, C: ProtonClient> PassCacheScope<'c, C> {
+    fn open(proton: &'c C) -> AppResult<Self> {
+        proton.begin_pass_cache()?;
+        Ok(Self(proton))
+    }
+}
+
+impl<C: ProtonClient> Drop for PassCacheScope<'_, C> {
+    fn drop(&mut self) {
+        self.0.end_pass_cache();
+    }
 }
 
 pub fn preview_plan_with_client(
     config: &DaemonConfig,
     proton: &impl ProtonClient,
 ) -> AppResult<DryRunReport> {
+    let _cache = PassCacheScope::open(proton)?;
     // Through the *same* projection the daemon's constructor uses, so a preview and a real pass can
     // never disagree about which keys describe the tree (ADR 0005 §2). A preview rehearses ONE pair
     // — the one the caller hands over: the default pair, or the one `proton-syncd --pair NAME`
@@ -2890,7 +2921,8 @@ impl Daemon<ProtonDriveClient> {
         let proton = ProtonDriveClient::with_command_policy(
             first.proton_cli.clone(),
             command_policy_from_config(first),
-        );
+        )
+        .with_cli_cache_root(cli_cache_root()?);
         let mut daemon = Self::from_pairs_with_opener(
             configs,
             proton,
@@ -6020,6 +6052,10 @@ impl<C: ProtonClient> PairPass<'_, C> {
 
     /// The blocking half of [`Self::plan_now`] — see its docs for the inertness family.
     fn plan_only_blocking(&mut self) -> AppResult<StoredPlan> {
+        // A cache of this pass's own (`PassCacheScope`) is not an observation: nothing is read
+        // from it that an earlier pass wrote, and it is removed with the pass.
+        let proton: &Arc<C> = self.proton;
+        let _cache = PassCacheScope::open(proton.as_ref())?;
         // Refused in the sync's own words, and **without** the once-per-cause latch or a demotion:
         // this pass observes and consumes nothing. Without the first check the scan trips over the
         // missing folder and answers a bare OS error with no path; without the second it plans the
@@ -6206,7 +6242,13 @@ impl<C: ProtonClient> PairPass<'_, C> {
             self.pair.pass_log.started_epoch_secs,
             self.pair.pass_log.kind,
         );
-        let result = self.reconcile_blocking_inner();
+        // The pass's own `proton-drive` cache (`PassCacheScope`): the reference is copied out of
+        // the pass so the guard outlives the `&mut self` borrow below.
+        let proton: &Arc<C> = self.proton;
+        let result = match PassCacheScope::open(proton.as_ref()) {
+            Ok(_cache) => self.reconcile_blocking_inner(),
+            Err(error) => Err(error),
+        };
         // What this pass proved about the session (#103), decided before the message below so the
         // reply that carries the message already carries the verdict.
         //
@@ -26621,9 +26663,34 @@ mod tests {
         sink: Arc<Mutex<Option<Arc<dyn ProgressSink>>>>,
         /// What `cli_gate` answers: a gate a test can hold to stand in for a running `list` child.
         gate: Option<Arc<crate::proton::CliGate>>,
+        /// The cache scope calls and the remote reads between them, in order (`begin`, `walk`,
+        /// `list`, `download`, `end`): what a pass asked of the CLI relative to the cache it was
+        /// given.
+        cache_journal: Arc<Mutex<Vec<String>>>,
     }
 
     impl MultiRootClient {
+        fn journal(&self, entry: &str) {
+            self.cache_journal
+                .lock()
+                .expect("cache journal lock")
+                .push(entry.to_owned());
+        }
+
+        fn cache_journal(&self) -> Vec<String> {
+            self.cache_journal
+                .lock()
+                .expect("cache journal lock")
+                .clone()
+        }
+
+        fn clear_cache_journal(&self) {
+            self.cache_journal
+                .lock()
+                .expect("cache journal lock")
+                .clear();
+        }
+
         fn with_tree(self, remote_root: impl AsRef<Path>, entities: Vec<RemoteEntity>) -> Self {
             let tree = entities
                 .into_iter()
@@ -26720,6 +26787,15 @@ mod tests {
             self.gate.clone()
         }
 
+        fn begin_pass_cache(&self) -> AppResult<()> {
+            self.journal("begin");
+            Ok(())
+        }
+
+        fn end_pass_cache(&self) {
+            self.journal("end");
+        }
+
         fn list(&self, remote_root: &Path) -> AppResult<HashMap<PathBuf, RemoteFile>> {
             Ok(self
                 .tree(remote_root)
@@ -26732,6 +26808,7 @@ mod tests {
             &self,
             remote_root: &Path,
         ) -> AppResult<RemoteListingStatus> {
+            self.journal("walk");
             self.walks
                 .lock()
                 .expect("walks lock")
@@ -26763,6 +26840,7 @@ mod tests {
             remote_root: &Path,
             relative_directory: &Path,
         ) -> AppResult<HashMap<PathBuf, RemoteEntity>> {
+            self.journal("list");
             self.listings
                 .lock()
                 .expect("listings lock")
@@ -26853,6 +26931,7 @@ mod tests {
         }
 
         fn download(&self, _remote_path: &Path, destination: &Path) -> AppResult<()> {
+            self.journal("download");
             self.downloads
                 .lock()
                 .expect("downloads lock")
@@ -39532,6 +39611,126 @@ mod tests {
             "the walk showed them, so it anchors as any walk does"
         );
         assert_eq!(daemon.runtime(0).expect("ready").last_error, None);
+    }
+
+    /// `journal` is one pass's entries: one `begin` first, one `end` last. Answers what the pass
+    /// read from the remote in between.
+    fn one_scope(what: &str, journal: &[String]) -> Vec<String> {
+        let (first, rest) = journal.split_first().expect("a pass opened a scope");
+        let (last, between) = rest.split_last().expect("a pass closed its scope");
+        assert_eq!(
+            (first.as_str(), last.as_str()),
+            ("begin", "end"),
+            "{what}: {journal:?}"
+        );
+        assert!(
+            !between
+                .iter()
+                .any(|entry| entry == "begin" || entry == "end"),
+            "{what}: one scope per pass: {journal:?}"
+        );
+        between.to_vec()
+    }
+
+    /// A pass that walked: the walk is its first remote read and it listed nothing by itself. The
+    /// downloads after it are not pinned: the fake's download writes bytes that never match the
+    /// claimed digest, so a walk plans the same file again.
+    fn assert_walked(what: &str, journal: &[String]) -> Vec<String> {
+        let between = one_scope(what, journal);
+        assert_eq!(
+            between.first().map(String::as_str),
+            Some("walk"),
+            "{what}: {journal:?}"
+        );
+        assert!(
+            !between.iter().any(|entry| entry == "list"),
+            "{what}: {journal:?}"
+        );
+        assert_eq!(
+            between.iter().filter(|entry| *entry == "walk").count(),
+            1,
+            "{what}: one walk: {journal:?}"
+        );
+        between
+    }
+
+    #[test]
+    fn every_pass_reads_the_remote_inside_a_cache_scope_of_its_own() {
+        // Every remote read of a pass — a targeted listing, a transfer, a full walk, the plan
+        // verb's walk and an apply's re-plan — happens between `begin_pass_cache` and
+        // `end_pass_cache`, and each pass opens its own: the CLI's cache is trusted for the length
+        // of one pass and no longer (`proton::CliCacheRoot`), or a change made on another device
+        // never reaches a listing.
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, client, mut stepper) = steady_shared_volume_daemon(
+            directory.path(),
+            vec![folder_with_a_file_page("cursor-1")],
+        );
+        let local = daemon.runtime(0).expect("ready").config.local_root.clone();
+        the_listing_catches_up(&client);
+        client.clear_cache_journal();
+
+        // An incremental pass: the created nodes are placed by listings and the file downloaded.
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(local.join("phone/photo.txt").exists());
+        let journal = client.cache_journal();
+        let between = one_scope("incremental", &journal);
+        assert!(
+            between.contains(&"list".to_owned()) && !between.contains(&"walk".to_owned()),
+            "{journal:?}"
+        );
+        assert_eq!(
+            between.last().map(String::as_str),
+            Some("download"),
+            "{journal:?}"
+        );
+        client.clear_cache_journal();
+
+        // An idle pass opens and closes a scope with nothing in between (the real client makes
+        // no directory for it).
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert!(
+            one_scope("idle", &client.cache_journal()).is_empty(),
+            "{:?}",
+            client.cache_journal()
+        );
+        client.clear_cache_journal();
+
+        // A full walk.
+        daemon.shared.pairs[0]
+            .force_full_walk
+            .store(true, Ordering::SeqCst);
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_walked("full walk", &client.cache_journal());
+        client.clear_cache_journal();
+
+        // The plan verb walks in a scope of its own, and the apply re-plans by a walk in another.
+        remote_gains(
+            &client,
+            &remote_root_of("a"),
+            remote_file_entity("later.txt", "vol~later", &sha1_bytes(b"later")),
+        );
+        daemon.shared.pairs[0].book_plan_request();
+        stepper.send(LoopCommand::PlanNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        assert_eq!(
+            assert_walked("plan", &client.cache_journal()),
+            ["walk"],
+            "a plan transfers nothing"
+        );
+        client.clear_cache_journal();
+        let token = reviewed_token(&daemon.shared.pairs[0]);
+        daemon.shared.pairs[0]
+            .book_apply_request(&token, false)
+            .expect("token accepted");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        let between = assert_walked("apply", &client.cache_journal());
+        assert!(between.contains(&"download".to_owned()), "{between:?}");
+        assert!(local.join("later.txt").exists());
     }
 
     #[test]

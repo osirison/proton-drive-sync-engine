@@ -450,6 +450,81 @@ the unlisted folder, a directory moved in by an update) walks before the behind 
 is recorded, and that walk anchors as before. The CLI's cache is the cause; the engine's part is to
 lose nothing and say so.
 
+## Addendum (2026-11-03): the CLI's cache is never revalidated, so the engine owns the cache it reads
+
+The addendum above held the events; this one makes them arrive. Moving the user's cache aside
+(`~/.cache/proton-drive-cli` → a `.stale-2026-11-03` copy, kept) made the very next listing show
+the folder, and the files are on disk. The CLI's bundled source (a bun single-file executable;
+the JS was cut out of the binary and pretty-printed) says why, and how far it goes:
+
+- **Children.** `iterateFolderChildren` reads from the cache alone once `isFolderChildrenLoaded`
+  answers true (`node-children-<uid>` set to `"loaded"` after a full children fetch). The marker is
+  removed by `resetFolderChildrenLoaded`, called from exactly two places: the cache listener on a
+  `node_created` event (`if (J.parentNodeUid) await this.cache.resetFolderChildrenLoaded(J.parentNodeUid)`)
+  and the CLI's own `notifyChildCreated` after its own upload or mkdir. A `tree_refresh` event
+  removes every `children-volume:<id>` marker. There is no TTL.
+- **Nodes.** `getNode` returns the cached node unless `isStale`; `isStale` is set by the cache
+  listener on `node_updated` (which also copies the new parent and trash state), by `tree_refresh`
+  (`setNodesStaleFromVolume`), and by the CLI's own `notifyNodeChanged`; `node_deleted` removes the
+  node. No TTL either. So another client's rename, edit, move or trash reaches the cache only through
+  the event loop.
+- **The event loop never runs to the handler in a CLI command.** `bG.create(..., H.isLoggedIn())`
+  subscribes at start-up from `events.json`; `bB.start()` sets `this.processPromise =
+  this.processEvents()` and returns without awaiting it; the command runs and reads the cache; the
+  CLI's `dispose()` detaches the listeners and awaits only handlers already running; `main` calls
+  `process.exit(0)`. The in-flight events GET is abandoned. Six log files, ~4,700 runs on
+  2026-11-03: `Updating latest event ID` 50 times, all for scope `drive:core`, never a volume;
+  `is stale` never. `events.json` is rewritten with the stored id on every subscribe
+  (`setLatestEventId(J, Z, Y.getLatestEventId())`), which is why it never moved.
+- **`PROTON_DRIVE_CACHE_DIR`** sets the cache, data and log directory to one path (`GO0()`:
+  `if (Z) return { cacheDir: Z, appDir: Z, logDir: Z }`): `cache-entities.sqlite`,
+  `cache-crypto.sqlite`, `clientUid.json`, `events.json`, `events.lock`, `config.json` and
+  `proton-drive.log*` all move. The session does not: it is in the OS keyring (`Bun.secrets`), so a
+  child pointed at an empty directory is signed in. There is **no** `--cache-dir` option on the
+  Proton CLI (the `--cache-dir` string in the binary belongs to bun's own `bun install` help) and no
+  per-invocation bypass or refresh flag: the CLI's options are `--help`, `--json`, `--verbose` and
+  each command's own. `logout` clears the caches, which is not an option.
+- **A fresh directory costs a client identity.** `clientUid.json` is generated per data directory
+  (`sdk-js-cli-<uuid>`), and an upload that finds a draft left by another uid refuses
+  (`handleConflictError`: a draft is deleted and retried only when
+  `ConflictDraftClientUID === this.clientUid`; `overrideExistingDraftByOtherClient` is never set by
+  the CLI). So the engine keeps one uid and seeds it into every directory it makes.
+
+The decision (`proton::CliCacheRoot`): the engine trusts a CLI cache for the length of one pass and
+no longer. Every real client is built with a root under the per-user state directory
+(`$XDG_STATE_HOME/proton-drive-sync/cli-cache`, 0700, beside the global lock, never inside a sync
+root). A pass opens a scope; its first child makes `scope-<pid>-<n>` (0700), every child of the
+pass shares it through `PROTON_DRIVE_CACHE_DIR`, and the end of the pass removes it. The three
+pass bodies open one (a sync, an apply, a reset; the plan verb; the one-shot preview), and a child
+asked outside any pass is refused rather than left on the user's cache. The IPC `List` verb, which
+runs beside a pass, takes a throwaway of its own per call. An idle pass makes no directory. The uid
+at the root is adopted from the interactive CLI's `clientUid.json` the first time (so drafts the
+engine left before this change are still its own), else generated. Scopes of dead pids are swept
+once per client. Rejected: a per-daemon cache discarded before each walk and kept between
+incremental passes, because an incremental pass's placements and downloads would then read node
+metadata (a phone edit's new revision) from a cache no event refreshes; and a targeted re-list for
+the `behind` path alone, because the weekly sweep would still verify nothing.
+
+Cost, measured on the maintainer's `Documents` pair (~1000 folders, ~5.4k files) on 2026-11-03: a
+cold full walk ~80 min against ~28 warm, so every scheduled sweep, resync, bootstrap, plan and apply
+re-plan pays the cold price; an incremental pass with a child resolves each listed parent's path
+from `/my-files` down (seconds); an idle pass pays nothing. The CLI's own debug log of the engine's
+children goes with the scope, so a diagnosis like this one has only the engine's log and the CLI's
+stderr on failure.
+
+The 100,000-scenario model run, finished for the first time with this change, found one wrong
+reconstruction in `[retaken names]` (seed 18422): the daemon's own folder `b` (record without an
+id) was trashed by another client, which then moved a folder with a subtree into the root as `b`;
+the "daemon's own folder being linked" exception placed the newcomer empty. The exception now holds
+only while nothing untracked left the tree or went behind a listing earlier in the delta
+(`a_folder_that_takes_the_name_of_the_daemons_unlinked_folder_after_it_left_walks`), which costs
+nine more fallbacks per 100,000 of that shape; the rerun is clean.
+
+Residuals: the onboarding probe (`gui-core::probe_remote_via_cli`, run only before any daemon
+exists) and `proton-sync doctor` still read the user's cache; a draft the engine left under a uid
+the interactive CLI never had (none known) refuses its upload until the draft is gone; the CLI's
+`clientUid` prefix (`sdk-js-cli`) is pinned, and a CLI that changes it generates a uid per scope.
+
 ## Follow-ups
 
 - Backfill ids by name (above), if the S-failure rate on the live log is worth it.

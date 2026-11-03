@@ -44,13 +44,13 @@ pub trait RemoteChangeResolver {
 }
 
 /// A node the stream says was created (or moved) in a folder this pair holds, which that folder's
-/// listing does not show. The listing has not caught up with the stream: the `proton-drive` CLI
-/// answers `filesystem list` from a local cache that only its own event poll refreshes, and a
-/// short-lived child exits before that poll lands (observed live, 2026-11-02: a folder made from
-/// the iPhone app was absent from its parent's listing for eleven days). Nothing about the node is
-/// known but its ids, so the map leaves it out — and the caller must **not** advance the cursor
-/// past its event, or nothing re-derives it (#30, and the walk that #30 fell back to reads the
-/// same cache).
+/// listing does not show. The listing has not caught up with the stream. Observed live
+/// (2026-11-02) when the `proton-drive` CLI answered `filesystem list` from the user's cache, which
+/// nothing ever refreshed (a folder made from the iPhone app was absent from its parent's listing
+/// for eleven days); the engine now lists from a cache of its own per pass (`proton::CliCacheRoot`),
+/// so what remains is the server's own lag. Nothing about the node is known but its ids, so the
+/// map leaves it out — and the caller must **not** advance the cursor past its event, or nothing
+/// re-derives it (#30, and the walk that #30 fell back to read the same cache).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ListingBehind {
     /// The raw node id of the event.
@@ -135,9 +135,13 @@ struct Deferred {
 ///   node could only have been one of the records that lack an id.
 ///
 /// A directory placed by an `Updated` while untracked (moved in from elsewhere, or restored from
-/// the trash) forces a snapshot, because volume events are per link and its subtree has none. So
-/// does an event naming a parent that an earlier event of the same delta took out of the map: the
-/// index still holds that parent's old path, which may by now belong to another folder.
+/// the trash) forces a snapshot, because volume events are per link and its subtree has none. The
+/// one exception is the daemon's own folder being linked (a directory record with no id at that
+/// very path), and only while nothing untracked has left the tree or gone behind a listing earlier
+/// in the delta: after that, the record's node may be what left, and the newcomer a stranger with
+/// its name. So does an event naming a parent that an earlier event of the same delta took out of
+/// the map: the index still holds that parent's old path, which may by now belong to another
+/// folder.
 pub fn reconstruct_remote(
     base_index: &HashMap<PathBuf, FileRecord>,
     changes: &[RemoteChange],
@@ -366,17 +370,24 @@ pub fn reconstruct_remote(
                     RemoteEntity::Directory(_) => scan_options.allows_relative_directory(&path),
                 };
                 let tracked = uid_to_path.contains_key(&uid);
+                // A directory record that exists at this very path without a uid is the daemon's
+                // own folder being linked, not a newcomer — unless an untracked node left the tree,
+                // or went behind a listing, earlier in this delta: that node may have been the
+                // daemon's folder, and this one a stranger that took its name (model seed 18422:
+                // the daemon's `b` trashed, then a folder with a subtree moved in as `b`).
+                let is_the_daemons_own_folder =
+                    is_unnamed_directory_record(&remote, &path, volume_id)
+                        && deferred.is_empty()
+                        && behind.is_empty();
                 if allowed
                     && !tracked
                     && matches!(change.kind, RemoteChangeKind::Updated)
                     && matches!(entity, RemoteEntity::Directory(_))
-                    && !is_unnamed_directory_record(&remote, &path, volume_id)
+                    && !is_the_daemons_own_folder
                 {
                     // Moved in from elsewhere, or restored from the trash: volume events are per
                     // link, so nothing describes what is inside it. The map would hold an empty
-                    // directory where the remote has a subtree. (A directory record that exists at
-                    // this very path without a uid is the daemon's own folder being linked, not a
-                    // newcomer.)
+                    // directory where the remote has a subtree.
                     return Reconstruction::FallbackToSnapshot(format!(
                         "directory {} (node {}) appeared by an update, so its contents have no \
                          events of their own",
@@ -2618,6 +2629,61 @@ mod tests {
         let mut paths: Vec<_> = map.keys().cloned().collect();
         paths.sort();
         assert_eq!(paths, [PathBuf::from("c.txt")]);
+    }
+
+    #[test]
+    fn a_folder_that_takes_the_name_of_the_daemons_unlinked_folder_after_it_left_walks() {
+        // Model seed 18422 (`[retaken names]`, 100k run, 2026-11-03): the daemon made `b` (its
+        // record has no id yet), another client trashed it, then moved a folder of its own, with
+        // a subtree, into the root under the same name. "The daemon's own folder being linked by
+        // an update" read the newcomer as that folder and placed it empty: `b/b` and `b/b/a` were
+        // missing from a map reported complete.
+        let base = base_of(vec![
+            directory_record("b", None),
+            file_record("c.txt", "hash-c", Some("vol~c")),
+        ]);
+        let resolver = FakeResolver::with_tree(vec![
+            remote_directory("b", "vol~newcomer"),
+            remote_directory("b/b", "vol~inner"),
+            remote_directory("b/b/a", "vol~deep"),
+        ]);
+        expect_fallback(
+            reconstruct(
+                &base,
+                &[
+                    created("own", "root"),
+                    trashed("c", "root"),
+                    trashed("own", "root"),
+                    created("newcomer", "elsewhere"),
+                    created("inner", "newcomer"),
+                    updated("newcomer", "root"),
+                    created("deep", "inner"),
+                ],
+                ROOT,
+                &resolver,
+            ),
+            "directory b (node newcomer) appeared by an update",
+        );
+    }
+
+    #[test]
+    fn the_daemons_own_folder_linked_by_an_update_is_placed_while_nothing_left_the_tree() {
+        // The control for the test above: the same record, and the first event about the node at
+        // its path is an update. Nothing untracked left or went behind, so it is the daemon's
+        // folder getting its id, not a newcomer.
+        let base = base_of(vec![directory_record("b", None)]);
+        let resolver = FakeResolver::with_tree(vec![remote_directory("b", "vol~own")]);
+        let (map, outside) = complete(reconstruct(
+            &base,
+            &[updated("own", "root")],
+            ROOT,
+            &resolver,
+        ));
+        assert_eq!(outside, 0);
+        assert_eq!(
+            map.get(Path::new("b")).and_then(RemoteEntity::remote_id),
+            Some("vol~own".to_owned())
+        );
     }
 
     #[test]
