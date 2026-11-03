@@ -4315,10 +4315,27 @@ mod tests {
         );
     }
 
+    /// Creates a FIFO with `libc::mkfifo`. Shelling out to `mkfifo` fails on Ubuntu 26.04, whose
+    /// coreutils rejects non-UTF-8 arguments, so the path goes in as its raw bytes.
+    #[cfg(unix)]
+    fn make_fifo(path: &std::path::Path) {
+        use std::os::unix::ffi::OsStrExt;
+
+        let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).expect("no NUL in path");
+        // SAFETY: `c_path` is a valid NUL-terminated string that lives across the call.
+        let rc = unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) };
+        assert_eq!(
+            rc,
+            0,
+            "mkfifo {}: {}",
+            path.display(),
+            std::io::Error::last_os_error()
+        );
+    }
+
     /// A root holding one ordinary file plus every local kind the walk cannot sync, and the scan of
-    /// it. `mkfifo` is shelled rather than pulled in as a dependency; a device node needs root and
-    /// is therefore not exercised here — `UnsyncableReason::LocalDevice` is covered only by the
-    /// classifier's own arm.
+    /// it. FIFOs come from `make_fifo`; a device node needs root and is therefore not exercised
+    /// here — `UnsyncableReason::LocalDevice` is covered only by the classifier's own arm.
     #[cfg(unix)]
     fn scan_a_root_of_special_files(
         options: Option<ScanOptions>,
@@ -4336,11 +4353,7 @@ mod tests {
             .expect("symlink to a folder");
         std::os::unix::fs::symlink(root.join("nowhere"), root.join("broken-link"))
             .expect("dangling symlink");
-        let fifo = std::process::Command::new("mkfifo")
-            .arg(root.join("pipe"))
-            .status()
-            .expect("run mkfifo");
-        assert!(fifo.success(), "mkfifo must succeed");
+        make_fifo(&root.join("pipe"));
 
         let options = options.unwrap_or_else(|| {
             ScanOptions::new(root, &[], &[], &[], &ConflictNaming::default()).expect("options")
@@ -4506,11 +4519,7 @@ mod tests {
         let directory = tempdir().expect("tempdir");
         let root = directory.path();
         let name = OsStr::from_bytes(b"caf\xe9.pipe");
-        let status = std::process::Command::new("mkfifo")
-            .arg(root.join(name))
-            .status()
-            .expect("run mkfifo");
-        assert!(status.success());
+        make_fifo(&root.join(name));
 
         let options =
             ScanOptions::new(root, &[], &[], &[], &ConflictNaming::default()).expect("options");
