@@ -6429,6 +6429,15 @@ impl<C: ProtonClient> PairPass<'_, C> {
             warn!("index reset: baseline, event cursors and delete approvals discarded");
         }
 
+        // An apply re-plans against the same ground truth the plan pass used: a full remote walk.
+        // Reconstructed `baseline ⊕ delta` cannot see a row that only a walk sees (a folder whose
+        // events are behind the cursor), so it would compute a different plan, call that a
+        // divergence and refuse for ever. The walk is a bootstrap-style pass, so the cursor is read
+        // before it and moved only by a fully successful commit (#294/#303). It is not the
+        // `resync` latch: that stays consumed (or not) exactly as before.
+        let full_walk =
+            resync_requested || matches!(self.pair.pass_intent, PassIntent::Apply { .. });
+
         // Load the baseline before scanning so the scan can reuse each unchanged file's
         // recorded SHA-1 (matching size + mtime) instead of re-hashing the whole tree.
         let base_records = load_index(&self.pair.connection)?;
@@ -6442,7 +6451,7 @@ impl<C: ProtonClient> PairPass<'_, C> {
         if self.pair.is_first_reconcile {
             // `--full-walk` (a process-lifetime config flag, not the consumed atomic) stays in
             // force across a failed first pass, so the requested full walk still happens on retry.
-            let force_bootstrap = resync_requested || self.pair.config.warm_start.force_full_walk;
+            let force_bootstrap = full_walk || self.pair.config.warm_start.force_full_walk;
             let result = self.first_reconcile(base_records, force_bootstrap);
             // CLEAN only — a partial pass is not a success (#136). The re-queued failed paths
             // would keep the next pass non-idle anyway, but the "startup snapshots first" floor is
@@ -6461,18 +6470,14 @@ impl<C: ProtonClient> PairPass<'_, C> {
         // a full-tree snapshot (O(folders)). Any doubt — no cursor, a server refresh, an events
         // error, or an unresolvable node — falls through to the snapshot below, which is exactly
         // today's behavior. When `events_driven` is off this predicate is always false.
-        if !resync_requested && self.should_try_incremental(&base_records) {
+        if !full_walk && self.should_try_incremental(&base_records) {
             self.set_pass_kind(PassKind::Incremental);
             // Events may have been lost (#51): this pass must stat-walk the local tree
             // instead of taking the idle fast-path, which only knows about `pending_changes`.
             //
-            // An **apply** forces it for a different reason (#100): the idle fast-path returns
-            // before `execute_plan_and_commit`, so an apply landing on an idle cycle would never
-            // reach the token comparison — it would neither execute nor report, and its client
-            // would poll for ever. A pass that was asked to apply always plans.
-            let force_local_scan = self.pair.force_local_rescan
-                || matches!(self.pair.pass_intent, PassIntent::Apply { .. });
-            match self.try_incremental_reconcile(&base_records, force_local_scan)? {
+            // (An apply never gets here: it walks, above, and so always plans — the idle fast-path
+            // would otherwise return before the token comparison and leave its client polling.)
+            match self.try_incremental_reconcile(&base_records, self.pair.force_local_rescan)? {
                 IncrementalOutcome::Committed(outcome) => {
                     // Same rule as the first-pass floor above: only a clean pass discharges a
                     // pending rescan, because only a clean pass acted on everything it scanned.
@@ -23895,9 +23900,10 @@ mod tests {
     }
 
     #[test]
-    fn a_held_pass_seals_a_booked_apply_as_failed_with_the_reason() {
-        // An apply is a request a client polls with no deadline. A held pass consumed it, so it must
-        // answer it — and say the true thing, that nothing was applied.
+    fn an_apply_is_not_held_by_a_change_feed_that_does_not_answer() {
+        // An apply re-plans by a full walk, as the plan pass did, and never streams the feed — so a
+        // feed that cannot be reached neither holds it nor loses its verdict (it once sealed
+        // `Failed`, when the apply took the incremental path).
         let directory = tempdir().expect("tempdir");
         let source = FakeEventSource::new("cursor-0");
         let script = source.since_script();
@@ -23912,17 +23918,16 @@ mod tests {
             .expect("token accepted");
         script.fail_transiently(1, TIMED_OUT);
 
-        daemon.reconcile_blocking().expect_held("held");
+        daemon
+            .reconcile_blocking()
+            .expect_clean("the apply walks and never asks the feed");
 
+        assert_eq!(script.calls(), 0, "the feed was never asked");
         match daemon.shared.pair().apply_outcome().expect("a verdict") {
-            ApplyOutcome::Failed {
-                apply_seq: sealed,
-                error,
-            } => {
-                assert_eq!(sealed, apply_seq);
-                assert!(error.contains("change feed did not answer"), "{error}");
-            }
-            other => panic!("expected a failed verdict, got {other:?}"),
+            ApplyOutcome::Applied {
+                apply_seq: sealed, ..
+            } => assert_eq!(sealed, apply_seq),
+            other => panic!("expected an applied verdict, got {other:?}"),
         }
         assert_eq!(daemon.pair().pass_intent, PassIntent::Sync);
     }
@@ -26212,8 +26217,8 @@ mod tests {
 
         assert_eq!(
             full_walks.load(Ordering::SeqCst),
-            walks_after_planning,
-            "the apply still runs as an incremental pass; it is only the idle SKIP that is suppressed"
+            walks_after_planning + 1,
+            "the apply re-plans by a full walk, as the plan pass did, so it always reaches the comparison"
         );
         match daemon.shared.pair().apply_outcome().expect("verdict") {
             ApplyOutcome::Applied {
@@ -26226,6 +26231,63 @@ mod tests {
             }
             other => panic!("an idle apply must still report a verdict, got {other:?}"),
         }
+    }
+
+    /// A plan pass sees Proton by a full walk, so a reviewed row can come from something only a
+    /// full walk sees (a folder the event feed no longer reports). The apply must re-plan the same
+    /// way: against `baseline ⊕ empty delta` it computed an empty plan, called that a divergence,
+    /// and refused for ever. Driven through `step_blocking`, as the daemon's loop does.
+    #[test]
+    fn an_apply_of_a_row_only_a_full_walk_sees_is_applied_not_refused() {
+        let directory = tempdir().expect("tempdir");
+        let (mut daemon, _full_walks) = steady_state_event_daemon(&directory);
+        daemon.event_source_factory = Box::new(|| None);
+        // The remote now holds a file the baseline and the (empty) event delta know nothing about.
+        let mut remote = daemon.proton.remote_entities.clone();
+        remote.insert(
+            PathBuf::from("walk-only.txt"),
+            remote_file_entity("walk-only.txt", "vol~nw", sha1_bytes(b"walk").as_str()),
+        );
+        daemon.proton = Arc::new(EventFakeClient {
+            remote_entities: remote,
+            ..(*daemon.proton).clone()
+        });
+        let mut stepper = Stepper::quiet(&mut daemon);
+
+        daemon.shared.pair().book_plan_request();
+        stepper.send(LoopCommand::PlanNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+        let plan = computed_plan(&daemon.shared);
+        assert_eq!(plan.total, 1, "the plan shows the download");
+        let apply_seq = daemon
+            .shared
+            .pair()
+            .book_apply_request(&plan.token, false)
+            .expect("token accepted");
+        stepper.send(LoopCommand::SyncNow(0));
+        assert_eq!(stepper.step(&mut daemon), Step::Idle);
+
+        match daemon.shared.pair().apply_outcome().expect("verdict") {
+            ApplyOutcome::Applied {
+                apply_seq: sealed,
+                executed,
+                failed,
+                ..
+            } => {
+                assert_eq!(sealed, apply_seq);
+                assert_eq!((executed, failed), (1, 0));
+            }
+            other => panic!("the reviewed plan must be applied, got {other:?}"),
+        }
+        assert!(
+            daemon
+                .pair()
+                .config
+                .local_root
+                .join("walk-only.txt")
+                .exists(),
+            "the reviewed download must have landed"
+        );
     }
 
     // ---------------------------------------------------------------------------------------
