@@ -28788,13 +28788,32 @@ mod tests {
             }
         }
         let captured = Captured::default();
+        LIVE_LOG.with(|live| *live.borrow_mut() = Some(Arc::clone(&captured.0)));
         let subscriber = tracing_subscriber::fmt()
             .with_writer(captured.clone())
             .with_ansi(false)
             .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
             .finish();
         with_subscriber(subscriber, run);
+        LIVE_LOG.with(|live| *live.borrow_mut() = None);
         String::from_utf8(captured.0.lock().expect("log lock").clone()).expect("utf-8")
+    }
+
+    thread_local! {
+        /// The buffer of the `capture_log` running on this thread, so a test body running on the
+        /// same thread can wait for a line that another thread logs (see [`log_so_far`]).
+        static LIVE_LOG: std::cell::RefCell<Option<Arc<Mutex<Vec<u8>>>>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    /// What the enclosing `capture_log` has captured so far. Waiting on a fake's "started" flag
+    /// proves nothing about a line logged after the work returns; wait for the line itself.
+    fn log_so_far() -> String {
+        LIVE_LOG.with(|live| {
+            live.borrow().as_ref().map_or_else(String::new, |buffer| {
+                String::from_utf8_lossy(&buffer.lock().expect("log lock")).into_owned()
+            })
+        })
     }
 
     /// Runs `run` with `subscriber` as this thread's default.
@@ -29162,7 +29181,10 @@ mod tests {
         );
         let probe = Arc::clone(&environment);
         let log = run_daemon_logged(daemon, |_, _| async move {
-            wait_for("the check", || !probe.ran().is_empty()).await;
+            wait_for("the check's line", || {
+                log_so_far().contains("check=\"proton-drive\"") && !probe.ran().is_empty()
+            })
+            .await;
             tokio::time::sleep(Duration::from_millis(200)).await;
         });
         let lines: Vec<&str> = log
@@ -29192,7 +29214,10 @@ mod tests {
             );
             let probe = Arc::clone(&environment);
             let log = run_daemon_logged(daemon, |_, _| async move {
-                wait_for("the check", || !probe.ran().is_empty()).await;
+                wait_for("the check's line", || {
+                    log_so_far().contains("check=\"proton-drive\"") && !probe.ran().is_empty()
+                })
+                .await;
                 tokio::time::sleep(Duration::from_millis(200)).await;
             });
             let asked = environment.asked();
@@ -29230,7 +29255,11 @@ mod tests {
         daemon.set_environment(Arc::clone(&environment) as Arc<_>);
         let probe = Arc::clone(&environment);
         let log = run_daemon_logged(daemon, |_, _| async move {
-            wait_for("the check", || probe.asked().contains(&"curl".into())).await;
+            wait_for("the curl warning", || {
+                log_so_far().contains("check=\"curl\"")
+            })
+            .await;
+            assert!(probe.asked().contains(&"curl".into()));
             tokio::time::sleep(Duration::from_millis(200)).await;
         });
         let warnings: Vec<&str> = log
@@ -29342,7 +29371,13 @@ mod tests {
                 "`version` must not start while the gate is held"
             );
             drop(held);
-            wait_for("version after the gate is free", || !probe.ran().is_empty()).await;
+            // `ran` is recorded when `version` starts, and the line is logged only after it
+            // returns; a shutdown in between suppresses the line. Wait for the line.
+            wait_for("the version line after the gate is free", || {
+                log_so_far().contains("proton-drive 1.2.3")
+            })
+            .await;
+            assert!(!probe.ran().is_empty());
         });
         assert!(log.contains("proton-drive 1.2.3"), "{log}");
     }
