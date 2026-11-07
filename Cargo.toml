@@ -16,7 +16,7 @@ fs2 = "0.4"
 globset = "0.4"
 indicatif = "0.18"
 notify = "8.2.0"
-rusqlite = { version = "0.40.1", features = ["bundled"] }
+rusqlite = { version = "0.41.0", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.150"
 sha1 = "0.11.0"
