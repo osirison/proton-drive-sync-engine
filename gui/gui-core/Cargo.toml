@@ -10,7 +10,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1.1"
 toml_edit = "0.25"
-rusqlite = { version = "0.40.1", features = ["bundled"] }
+rusqlite = { version = "0.41.0", features = ["bundled"] }
 # `statvfs` for the free-space check on the local root (C4). Already in the tree as a transitive
 # dependency of the Tauri stack; taken directly here so the syscall is a safe call rather than an
 # `unsafe` libc block in a crate that has none.
