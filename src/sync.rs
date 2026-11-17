@@ -4,7 +4,7 @@ use crate::index::{
 use crate::proton::{RemoteDirectory, RemoteEntity, RemoteFile};
 use crate::{AppResult, boxed_error};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
@@ -738,6 +738,31 @@ pub fn plan_sync_entities_with_stats(
     base_index: &HashMap<PathBuf, FileRecord>,
     naming: &ConflictNaming,
 ) -> PlanOutcome {
+    plan_sync_entities_with_stats_held(
+        local_entities,
+        remote_entities,
+        base_index,
+        naming,
+        &HashSet::new(),
+    )
+}
+
+/// [`plan_sync_entities_with_stats`] for maps the caller has already **cut** of held paths (the
+/// daemon's `HeldPaths`: items the local walk could not use, taken out of all three maps so they
+/// are neither read as deleted nor planned an action).
+///
+/// `held` is the set of those cut paths. They are absent from the maps, so the planner could
+/// otherwise prove a tracked ancestor's subtree clean without them and plan a recursive delete
+/// that disposes of the held item along with its parent. Each held path therefore falsifies its
+/// nearest tracked ancestor's deletion verdict, exactly as an untracked live entity does, and the
+/// parent falls back to the non-destructive recreate. Pure: the set is data, nothing is read.
+pub fn plan_sync_entities_with_stats_held(
+    local_entities: &HashMap<PathBuf, LocalEntityState>,
+    remote_entities: &HashMap<PathBuf, RemoteEntity>,
+    base_index: &HashMap<PathBuf, FileRecord>,
+    naming: &ConflictNaming,
+    held: &HashSet<PathBuf>,
+) -> PlanOutcome {
     let mut paths = BTreeSet::new();
     paths.extend(local_entities.keys().cloned());
     paths.extend(remote_entities.keys().cloned());
@@ -752,6 +777,7 @@ pub fn plan_sync_entities_with_stats(
         base_index,
         &suppressed_paths,
         naming,
+        held,
     );
     let mut plan = transition_actions;
     let mut matched_files = 0u64;
@@ -1716,6 +1742,7 @@ fn compute_directory_deletion_verdicts(
     base_index: &HashMap<PathBuf, FileRecord>,
     suppressed_paths: &BTreeSet<PathBuf>,
     naming: &ConflictNaming,
+    held: &HashSet<PathBuf>,
 ) -> HashMap<PathBuf, bool> {
     if !any_base_directory_is_one_sided(local_entities, remote_entities, base_index) {
         // Nothing can read a verdict this pass, so proving anything is dead work. This is the
@@ -1738,6 +1765,16 @@ fn compute_directory_deletion_verdicts(
         if base_index.contains_key(path) {
             continue;
         }
+        if let Some(ancestor) = nearest_tracked_ancestor(path, base_index) {
+            subtree_clean.insert(ancestor, false);
+        }
+    }
+    // A held path was cut from all three maps, so nothing above sees it. It is live data the proof
+    // cannot examine (the local side's copy, or the remote's, is exactly what a recursive delete
+    // would dispose of), so it falsifies its nearest tracked ancestor the same way. This covers
+    // both directions: a remote-deleted parent (no recursive `LocalDelete`) and a locally deleted
+    // one whose held child's remote copy is not in the map (no recursive `RemoteDelete`).
+    for path in held {
         if let Some(ancestor) = nearest_tracked_ancestor(path, base_index) {
             subtree_clean.insert(ancestor, false);
         }
@@ -3948,6 +3985,114 @@ mod tests {
         );
     }
 
+    /// `docs/old.txt` is held by the daemon, so it is cut from all three maps. Without telling the
+    /// planner, `docs` reads as a clean subtree and is deleted whole, held file included.
+    type HeldChildMaps = (
+        HashMap<PathBuf, LocalEntityState>,
+        HashMap<PathBuf, RemoteEntity>,
+        HashMap<PathBuf, FileRecord>,
+        HashSet<PathBuf>,
+    );
+
+    fn held_child_maps() -> HeldChildMaps {
+        let mut base_index = HashMap::new();
+        base_index.insert(
+            PathBuf::from("docs"),
+            directory_base("docs", Some("docs-id")),
+        );
+        base_index.insert(
+            PathBuf::from("docs/report.txt"),
+            base("docs/report.txt", Some("report-id"), "same-hash"),
+        );
+        (
+            HashMap::new(),
+            HashMap::new(),
+            base_index,
+            HashSet::from([PathBuf::from("docs/old.txt")]),
+        )
+    }
+
+    #[test]
+    fn a_held_child_blocks_the_recursive_local_delete_of_its_parent() {
+        let (mut local_entities, remote_entities, base_index, held) = held_child_maps();
+        local_entities.insert(PathBuf::from("docs"), local_directory("docs"));
+        local_entities.insert(
+            PathBuf::from("docs/report.txt"),
+            LocalEntityState::File(local("docs/report.txt", "same-hash")),
+        );
+
+        let unaware = plan_sync_entities_with_stats(&local_entities, &remote_entities, &base_index);
+        assert!(
+            unaware
+                .actions
+                .iter()
+                .any(|action| action.path == Path::new("docs")
+                    && action.action == SyncAction::LocalDelete),
+            "precondition: without the held set the parent is deleted: {:?}",
+            unaware.actions
+        );
+
+        let aware = super::plan_sync_entities_with_stats_held(
+            &local_entities,
+            &remote_entities,
+            &base_index,
+            &ConflictNaming::default(),
+            &held,
+        );
+        assert!(
+            !aware
+                .actions
+                .iter()
+                .any(|action| action.action == SyncAction::LocalDelete
+                    && action.entity_kind == EntityKind::Directory),
+            "a held child vetoes the recursive local delete: {:?}",
+            aware.actions
+        );
+    }
+
+    #[test]
+    fn a_held_child_blocks_the_recursive_remote_delete_of_its_parent() {
+        // The other direction: the folder is gone locally (the held child's local copy cannot be
+        // seen) while the remote still has it.
+        let (local_entities, mut remote_entities, base_index, held) = held_child_maps();
+        remote_entities.insert(
+            PathBuf::from("docs"),
+            remote_directory("docs", Some("docs-id")),
+        );
+        remote_entities.insert(
+            PathBuf::from("docs/report.txt"),
+            RemoteEntity::File(remote("docs/report.txt", "report-id", Some("same-hash"))),
+        );
+
+        let unaware = plan_sync_entities_with_stats(&local_entities, &remote_entities, &base_index);
+        assert!(
+            unaware
+                .actions
+                .iter()
+                .any(|action| action.path == Path::new("docs")
+                    && action.action == SyncAction::RemoteDelete),
+            "precondition: without the held set the parent is deleted: {:?}",
+            unaware.actions
+        );
+
+        let aware = super::plan_sync_entities_with_stats_held(
+            &local_entities,
+            &remote_entities,
+            &base_index,
+            &ConflictNaming::default(),
+            &held,
+        );
+        assert!(
+            !aware
+                .actions
+                .iter()
+                .any(|action| action.action == SyncAction::RemoteDelete
+                    && action.entity_kind == EntityKind::Directory),
+            "a held child vetoes the recursive remote delete: {:?}",
+            aware.actions
+        );
+    }
+
     #[test]
     fn untracked_local_descendant_blocks_recursive_local_directory_delete() {
         // The remote side deleted `docs` wholesale, but the user has since created a
@@ -4277,6 +4422,7 @@ mod tests {
             &base_index,
             &BTreeSet::new(),
             &ConflictNaming::default(),
+            &HashSet::new(),
         );
 
         assert!(

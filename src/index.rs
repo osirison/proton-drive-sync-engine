@@ -2595,7 +2595,8 @@ fn build_glob_set(patterns: &[String]) -> AppResult<GlobSet> {
 /// A modification date the engine cannot use, carried as a **typed** error so the walk can tell it
 /// from every other failure by downcast (as [`vanished_entry_to_skip`] tells a vanished entry),
 /// never by reading its text. Two causes: the date is before 1 January 1970 (an unzipped archive
-/// can carry 1881), which the index's unsigned-epoch seconds cannot hold, or the filesystem would
+/// can carry 1881), which `SystemTime::duration_since(UNIX_EPOCH)` refuses (the index itself
+/// stores signed `i64` seconds; it is that conversion that cannot answer), or the filesystem would
 /// not give a date at all.
 ///
 /// Not a vanish and not a permission failure, so [`unusable_date_to_hold`] is the one place that
@@ -4616,8 +4617,9 @@ mod tests {
         );
     }
 
-    /// Sets the modification date of a file **or a folder** to 1881, which `duration_since` the
-    /// epoch refuses. A folder is opened read-only as a `File`: `futimens` needs ownership, not
+    /// Sets the modification date of a file **or a folder** to 1881, which
+    /// `SystemTime::duration_since(UNIX_EPOCH)` refuses (the index stores signed seconds; it is
+    /// the conversion that cannot answer). A folder is opened read-only as a `File`: `futimens` needs ownership, not
     /// write access. Set it **after** anything is created inside, because creating an entry resets
     /// the folder's own date.
     fn set_date_before_1970(path: &Path) {
@@ -4694,6 +4696,50 @@ mod tests {
                 Path::new("okdir/inner.txt")
             ],
             "the siblings are kept; the held items and everything under the held folder are not"
+        );
+    }
+
+    #[test]
+    fn an_unsyncable_entry_from_a_build_without_entity_kind_parses_as_a_file() {
+        let entry: UnsyncableEntry =
+            serde_json::from_str(r#"{"relative_path":"pipe","reason":"local_fifo"}"#)
+                .expect("a report that predates entity_kind still parses");
+        assert_eq!(entry.entity_kind, EntityKind::File);
+        assert_eq!(entry.relative_path, PathBuf::from("pipe"));
+        assert_eq!(entry.reason, UnsyncableReason::LocalFifo);
+    }
+
+    /// Only an unusable DATE becomes a hold. A permission failure must still fail the scan, since
+    /// dropping the entry would replan it as deleted.
+    #[cfg(unix)]
+    #[test]
+    fn a_permission_error_still_fails_the_scan_instead_of_being_held() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempdir().expect("tempdir");
+        let root = directory.path();
+        fs::create_dir(root.join("locked")).expect("folder");
+        fs::write(root.join("locked/inner.txt"), b"inner").expect("child");
+        fs::set_permissions(root.join("locked"), fs::Permissions::from_mode(0o000))
+            .expect("remove every permission");
+        // A process that can read it anyway (root, or a filesystem that ignores modes) cannot
+        // show this, so say so and stop rather than assert something false.
+        if fs::read_dir(root.join("locked")).is_ok() {
+            eprintln!("skipped: this process can read a mode-000 folder (running as root?)");
+            fs::set_permissions(root.join("locked"), fs::Permissions::from_mode(0o755))
+                .expect("restore");
+            return;
+        }
+
+        let options =
+            ScanOptions::new(root, &[], &[], &[], &ConflictNaming::default()).expect("options");
+        let result = scan_local_tree(root, &options, &HashMap::new(), None);
+        fs::set_permissions(root.join("locked"), fs::Permissions::from_mode(0o755))
+            .expect("restore so the tempdir can be removed");
+        assert!(
+            result.is_err(),
+            "an unreadable folder must fail the scan, not be held: {:?}",
+            result.map(|scan| scan.unsyncable)
         );
     }
 

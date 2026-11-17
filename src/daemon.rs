@@ -46,7 +46,7 @@ use crate::session::{CliKeyringSession, CurlHttpTransport};
 use crate::sync::{
     ConflictNaming, DeleteDirection, DryRunReport, PlanSummary, PlannedAction, SyncAction,
     TransferDirection, UnsyncableItem, UnsyncableOrigin, UnsyncableReason,
-    directory_move_descendant_path_pairs, is_strict_descendant, plan_sync_entities_with_stats,
+    directory_move_descendant_path_pairs, is_strict_descendant, plan_sync_entities_with_stats_held,
     plan_token, unsyncable_items,
 };
 use crate::trash::{LocalDeleteMode, dispose};
@@ -2918,11 +2918,12 @@ fn build_plan_report(
     // A rehearsal is a full walk, so it holds only what this walk held — the same set a full pass
     // holds, which is what keeps a reviewed plan's token the one an apply re-derives.
     let held = HeldPaths::from_walk(&local_scan);
-    let mut outcome = plan_sync_entities_with_stats(
+    let mut outcome = plan_sync_entities_with_stats_held(
         &held.without(&local_scan.entities),
         &held.without(&remote_entities),
         &held.without(&base_index),
         &config.conflict_naming,
+        &held.0,
     );
     prepend_remote_root_creation_if_missing(&mut outcome.actions, remote_root_missing);
     info!(
@@ -7905,11 +7906,12 @@ impl<C: ProtonClient> PairPass<'_, C> {
         let local_files = held.without(local_files);
         let local_files: &HashMap<PathBuf, LocalFileState> = &local_files;
         let remote_root_missing = remote_map.remote_root_missing;
-        let outcome = plan_sync_entities_with_stats(
+        let outcome = plan_sync_entities_with_stats_held(
             local_entities,
             remote_entities,
             base_index,
             &self.pair.config.conflict_naming,
+            &held.0,
         );
         let matched_files = outcome.matched_files;
         let mut plan = outcome.actions;
@@ -21829,7 +21831,8 @@ mod tests {
         );
     }
 
-    /// Sets a file's or a folder's date to 1881, which the index's epoch seconds cannot hold. A
+    /// Sets a file's or a folder's date to 1881, which `duration_since(UNIX_EPOCH)` refuses (the
+    /// index stores signed seconds; the scan's conversion is what cannot answer). A
     /// folder is opened read-only as a `File` (`futimens` needs ownership, not write access), and
     /// it is dated **after** anything is made inside it, because creating an entry resets the
     /// folder's own date.
@@ -21985,6 +21988,101 @@ mod tests {
         assert!(local_root.join("folder/inner.txt").exists());
     }
 
+    /// `folder/` is synced and holds a held file (`old.txt`, dated 1881) and a normal synced one
+    /// (`ok.txt`). The remote has deleted `folder/` and everything in it. Runs the plan verb and
+    /// then a real pass, and returns what each planned and did.
+    #[cfg(unix)]
+    fn remote_deletes_the_parent_of_a_held_item(
+        guard_local_deletes: bool,
+    ) -> (
+        tempfile::TempDir,
+        PathBuf,
+        Vec<crate::sync::PlannedAction>,
+        Vec<RecordedOperation>,
+    ) {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        fs::create_dir(local_root.join("folder")).expect("folder");
+        fs::write(local_root.join("folder/old.txt"), b"held").expect("held file");
+        fs::write(local_root.join("folder/ok.txt"), b"fine").expect("sibling");
+        set_date_before_1970(&local_root.join("folder/old.txt"));
+        let (client, ops) = RecordingProtonClient::with_remote_entities(HashMap::new());
+        let mut config = test_config(directory.path(), &local_root);
+        config.delete_approval_local = guard_local_deletes;
+        config.delete_approval_remote = guard_local_deletes;
+        let mut daemon = Daemon::with_client(config, client).expect("daemon");
+        for record in [
+            directory_record("folder", Some("vol~d1")),
+            base_record("folder/old.txt", Some("vol~n1"), &sha1_bytes(b"held")),
+            base_record("folder/ok.txt", Some("vol~n2"), &sha1_bytes(b"fine")),
+        ] {
+            upsert_record(&daemon.pair().connection, &record).expect("seed the baseline");
+        }
+        let report = daemon.pass().plan_only_blocking().expect("plan completes");
+        let planned = report.actions.clone();
+        let _ = daemon.reconcile_blocking();
+        let operations = ops.lock().expect("operations lock").clone();
+        (directory, local_root, planned, operations)
+    }
+
+    /// The parent-delete hole: the held file is cut from the maps, so the planner used to prove
+    /// `folder/` clean and plan a recursive `LocalDelete` of it, and the executor disposed of the
+    /// whole folder with the held file inside. A held path now falsifies its nearest tracked
+    /// ancestor, so the parent is not deleted.
+    #[cfg(unix)]
+    #[test]
+    fn a_remote_delete_of_the_parent_does_not_delete_a_held_item() {
+        let (_directory, local_root, planned, _operations) =
+            remote_deletes_the_parent_of_a_held_item(false);
+        assert!(
+            planned
+                .iter()
+                .all(|action| !(action.action == SyncAction::LocalDelete
+                    && (action.path == Path::new("folder")
+                        || action.path == Path::new("folder/old.txt")))),
+            "no LocalDelete of the folder or the held file is planned: {planned:?}"
+        );
+        assert!(
+            local_root.join("folder/old.txt").exists(),
+            "the held file is still on disk after the pass (guard off, so a planned delete would \
+             have run); plan: {planned:?}"
+        );
+        // What it plans instead: the parent is recreated on Proton (the planner's own non-destructive
+        // answer) and only the file that is not held is deleted locally.
+        let mut rows: Vec<(&Path, SyncAction)> = planned
+            .iter()
+            .map(|action| (action.path.as_path(), action.action))
+            .collect();
+        rows.sort_by_key(|row| row.0);
+        assert_eq!(
+            rows,
+            vec![
+                (Path::new("folder"), SyncAction::CreateRemoteDirectory),
+                (Path::new("folder/ok.txt"), SyncAction::LocalDelete),
+            ]
+        );
+    }
+
+    /// The same under the DEFAULT policy (ask every time). Before the fix the recursive
+    /// `LocalDelete` of `folder` was planned here too and waited for approval; the approval would
+    /// then have disposed of the held file, with a subtree count that left it out.
+    #[cfg(unix)]
+    #[test]
+    fn a_remote_delete_of_the_parent_plans_no_folder_delete_under_the_default_policy() {
+        let (_directory, local_root, planned, _operations) =
+            remote_deletes_the_parent_of_a_held_item(true);
+        assert!(
+            planned
+                .iter()
+                .all(|action| !(action.action == SyncAction::LocalDelete
+                    && action.entity_kind == EntityKind::Directory)),
+            "no recursive LocalDelete of a folder is planned, so there is nothing to approve: \
+             {planned:?}"
+        );
+        assert!(local_root.join("folder/old.txt").exists());
+    }
+
     /// The cursor rule: while an item is held the cursor keeps moving, so a remote edit to it may
     /// be behind the cursor and no incremental pass would see it again. When the date is fixed, an
     /// incremental pass keeps the path held and latches a full walk; that walk plans it normally
@@ -22114,6 +22212,83 @@ mod tests {
                 .expect("reload")
                 .is_empty(),
             "and the shorter list is persisted"
+        );
+    }
+
+    /// The remote's copy differs from the held file's (someone edited it while it was held). After
+    /// the date is fixed the full walk must see the difference and plan a conflict, never an
+    /// upload over the remote edit.
+    ///
+    /// Limit: `EventFakeClient` serves one fixed remote map, so the "edit" is already there when
+    /// pass 1 walks, rather than arriving through the event stream while the item is held. What is
+    /// proved is the walk's side: the release plans against the true remote state.
+    #[cfg(unix)]
+    #[test]
+    fn a_remote_edit_made_while_an_item_is_held_is_met_by_the_full_walk_not_overwritten() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        fs::write(local_root.join("old.txt"), b"v1 local").expect("held file");
+        set_date_before_1970(&local_root.join("old.txt"));
+        let client = EventFakeClient::new(HashMap::from([(
+            PathBuf::from("old.txt"),
+            remote_file_entity("old.txt", "vol~n2", &sha1_bytes(b"v2 edited remotely")),
+        )]));
+        let mut daemon = Daemon::with_client_and_event_source(
+            event_config(directory.path(), &local_root),
+            client,
+            Some(Box::new(FakeEventSource::new("cursor-0"))),
+        )
+        .expect("daemon");
+        daemon.event_source_factory = Box::new(|| None);
+
+        daemon.reconcile_blocking().expect_clean("bootstrap");
+        assert_eq!(
+            fs::read(local_root.join("old.txt")).expect("local copy"),
+            b"v1 local",
+            "held: not downloaded over"
+        );
+
+        File::open(local_root.join("old.txt"))
+            .expect("open")
+            .set_modified(UNIX_EPOCH + Duration::from_secs(1_700_000_000))
+            .expect("fix the date");
+        daemon.pair_mut().force_local_rescan = true;
+        daemon
+            .reconcile_blocking()
+            .expect_clean("incremental, fixed");
+        assert!(
+            daemon.shared.pairs[0]
+                .force_full_walk
+                .load(Ordering::SeqCst),
+            "the incremental pass asks for a full walk instead of releasing"
+        );
+        assert_eq!(
+            daemon
+                .pair()
+                .last_plan_summary
+                .as_ref()
+                .expect("a plan was made")
+                .total,
+            0,
+            "and plans nothing on the still-held path"
+        );
+
+        // The walk. Its conflict needs a sidecar download the fake cannot serve, so the pass may
+        // end partial; what it PLANNED is the point.
+        let _ = daemon.reconcile_blocking();
+        let summary = daemon
+            .pair()
+            .last_plan_summary
+            .clone()
+            .expect("the walk made a plan");
+        assert_eq!(
+            summary.uploads, 0,
+            "no upload over the remote edit: {summary:?}"
+        );
+        assert_eq!(
+            summary.conflicts, 1,
+            "the two versions are a conflict: {summary:?}"
         );
     }
 
