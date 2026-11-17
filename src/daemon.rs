@@ -28439,8 +28439,8 @@ mod tests {
     fn a_pause_on_one_pair_cancels_only_that_pairs_queued_apply() {
         let directory = tempdir().expect("tempdir");
         let (mut daemon, _client, mut stepper) = steady_two_pair_daemon(directory.path());
-        for pair in 0..2 {
-            daemon.shared.pairs[pair].book_plan_request();
+        for (pair, shared) in daemon.shared.pairs.iter().enumerate().take(2) {
+            shared.book_plan_request();
             stepper.send(LoopCommand::PlanNow(pair));
         }
         assert_eq!(stepper.step(&mut daemon), Step::Idle);
