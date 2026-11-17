@@ -353,6 +353,11 @@ const NOT_DRAWN = new Map([
     "likewise — a name that is not valid UTF-8, so the remote listing could never name it (#270)",
   ],
   ["ACTIVITY.neverSyncedDialog.cannotKind.unrepresentable_path.many", "and its plural"],
+  [
+    "ACTIVITY.neverSyncedDialog.cannotKind.local_unusable_date.one",
+    "likewise — a file or folder dated before 1970 (an unzipped archive), held and left alone",
+  ],
+  ["ACTIVITY.neverSyncedDialog.cannotKind.local_unusable_date.many", "and its plural"],
   // S7's two sub-screens (#244). The deck draws `Add skip rules` and `See all 471 actions` and no
   // destination for either, so the two headings and the empty-list line are written rather than
   // measured. Everything else on both screens is borrowed from a surface the deck DOES draw, which
