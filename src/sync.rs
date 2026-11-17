@@ -89,6 +89,13 @@ pub struct PlannedAction {
 pub enum UnsyncableOrigin {
     /// Observed by the local stat-walk (or by planning against it).
     Local,
+    /// Observed by the local stat-walk, and **held** while it stands (a file or folder whose date
+    /// cannot be used, [`UnsyncableReason::LocalUnusableDate`]). Only a full walk drops it by
+    /// absence. An incremental pass keeps it held even when its own local walk no longer sees the
+    /// item bad, because the event cursor may have moved past a remote edit to that path while it
+    /// was held; the pass latches a full walk instead, which plans the path against the true remote
+    /// state before the hold ends.
+    LocalHeld,
     /// Observed in the remote map.
     Remote,
     /// A token this build does not know, so its producer is unknown. Treated like [`Self::Remote`]
@@ -138,6 +145,13 @@ pub enum UnsyncableReason {
     /// No POSIX type is left, so this is not expected to occur — it exists so an entry the scanner
     /// drops is always *named*, never silently absent from the report.
     LocalSpecialFile,
+    /// A file or folder whose modification date the engine cannot use: it is before 1 January
+    /// 1970 (an unzipped archive can carry 1881), or the filesystem would not give it. The item is
+    /// **held**, not dropped: it is taken out of the local scan, the remote map and the baseline
+    /// before planning, exactly like a path an exclude rule hides, because a path missing from the
+    /// local scan reads as locally deleted. A folder is held whole, and so is everything under it.
+    /// Setting a current date on the item releases it.
+    LocalUnusableDate,
     /// A token from a newer build, preserved verbatim so a downgrade renders it instead of failing
     /// the whole document.
     Other(String),
@@ -155,6 +169,7 @@ impl UnsyncableReason {
             | Self::LocalFifo
             | Self::LocalDevice
             | Self::LocalSpecialFile => UnsyncableOrigin::Local,
+            Self::LocalUnusableDate => UnsyncableOrigin::LocalHeld,
             Self::RemoteNotDownloadable => UnsyncableOrigin::Remote,
             Self::Other(_) => UnsyncableOrigin::Unknown,
         }
@@ -184,6 +199,7 @@ impl UnsyncableReason {
             Self::LocalFifo => "local_fifo",
             Self::LocalDevice => "local_device",
             Self::LocalSpecialFile => "local_special_file",
+            Self::LocalUnusableDate => "local_unusable_date",
             Self::Other(token) => token,
         }
     }
@@ -216,6 +232,10 @@ impl UnsyncableReason {
             Self::LocalSpecialFile => {
                 "it is not a regular file or a directory, so there is nothing to copy"
             }
+            Self::LocalUnusableDate => {
+                "its modification date is before 1 January 1970 or cannot be read, so it is held \
+                 back — set a current date on it (for example with `touch`) and it syncs"
+            }
             Self::Other(_) => "the daemon reported a reason this build does not know",
         }
     }
@@ -229,6 +249,7 @@ impl UnsyncableReason {
             "local_fifo" => Self::LocalFifo,
             "local_device" => Self::LocalDevice,
             "local_special_file" => Self::LocalSpecialFile,
+            "local_unusable_date" => Self::LocalUnusableDate,
             other => Self::Other(other.to_owned()),
         }
     }
@@ -2922,6 +2943,10 @@ mod tests {
             (UnsyncableReason::LocalFifo, UnsyncableOrigin::Local),
             (UnsyncableReason::LocalDevice, UnsyncableOrigin::Local),
             (UnsyncableReason::LocalSpecialFile, UnsyncableOrigin::Local),
+            (
+                UnsyncableReason::LocalUnusableDate,
+                UnsyncableOrigin::LocalHeld,
+            ),
         ];
         for (reason, origin) in all {
             assert_eq!(
@@ -5263,6 +5288,7 @@ mod tests {
             },
             vec![UnsyncableEntry {
                 relative_path: PathBuf::from("run/socket"),
+                entity_kind: EntityKind::File,
                 reason: UnsyncableReason::LocalSocket,
             }],
         );

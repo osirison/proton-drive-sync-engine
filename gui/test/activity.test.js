@@ -229,13 +229,22 @@ test("every local kind is drawn, and each is named by what it is", () => {
     unsyncable("local_device", "b.dev"),
     unsyncable("local_special_file", "c.odd"),
     unsyncable("unrepresentable_path", "d\ufffd.txt"),
+    unsyncable("local_unusable_date", "e.zip"),
   ]);
-  assert.equal(count, 6);
+  assert.equal(count, 7);
   // BY PATH, so the list does not reshuffle between polls: `.cache/session.sock`, `a.pipe`,
   // `b.dev`, `c.odd`, `d�.txt`, `projects/current`.
   assert.deepEqual(
     rows.map((r) => r.note),
-    ["a socket", "a pipe", "a device", "not a file", "an unreadable name", "a shortcut"],
+    [
+      "a socket",
+      "a pipe",
+      "a device",
+      "not a file",
+      "an unreadable name",
+      "an item with an unusable date",
+      "a shortcut",
+    ],
   );
 });
 

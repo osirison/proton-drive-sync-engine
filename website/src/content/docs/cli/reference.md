@@ -208,7 +208,10 @@ paused, and skips its first pass, until you `resume` it. The exception is a paus
   `can't sync` and grouped by cause. Each item is `{ path, entity_kind, reason,
   first_seen_epoch_secs }`. `reason` is a token — `remote_not_downloadable` (a Proton
   Docs/Sheets document, or a node the remote listing could not fully decode),
-  `unrepresentable_path` (a name that is not valid UTF-8), or one of the local kinds
+  `unrepresentable_path` (a name that is not valid UTF-8), `local_unusable_date` (a file or
+  folder dated before 1 January 1970, or whose date cannot be read: it is **held**, not
+  dropped, so nothing is deleted or downloaded over it, a folder is held whole with everything
+  under it, and setting a current date on it releases it), or one of the local kinds
   `local_symlink` / `local_socket` / `local_fifo` / `local_device` / `local_special_file` —
   and **an unfamiliar one must be rendered verbatim, not rejected**: more may be added, and
   that is exactly how these were.
@@ -216,8 +219,9 @@ paused, and skips its first pass, until you `resume` it. The exception is a paus
   The list is *merged*, not recomputed per pass, so `first_seen_epoch_secs` answers "how long
   has this been stuck". A path leaves it when a pass plans a real action for it; it also
   leaves by absence, but only from a pass whose evidence covers where the reason came from —
-  a local kind on any pass that ran the local scan, a remote one only on a full-tree walk
-  (`proton-sync resync` forces one). A path an exclude glob or include filter hides is **not**
+  a local kind on any pass that ran the local scan, a remote one (and a held date) only on a
+  full-tree walk (`proton-sync resync` forces one; fixing a held item's date makes the next
+  pass one). A path an exclude glob or include filter hides is **not**
   here: that is a rule you wrote, not a limitation.
 - `auth` — what the daemon believes about your Proton sign-in: `signed-in`, `signed-out`, or
   `unknown`. See [Sign-in state](#sign-in-state).

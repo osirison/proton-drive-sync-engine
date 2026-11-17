@@ -927,6 +927,9 @@ export const ACTIVITY = {
       local_device: { one: "a device", many: "devices" },
       local_special_file: { one: "not a file", many: "things that aren't files" },
       unrepresentable_path: { one: "an unreadable name", many: "unreadable names" },
+      // A real file or folder, held back until its modification date is a usable one (before 1970,
+      // or unreadable). The noun phrase names what is wrong, not what it is: it may be either.
+      local_unusable_date: { one: "an item with an unusable date", many: "items with unusable dates" },
     },
     reassurance: "Nothing here is at risk — it's just not backed up.",
     done: "Done",
