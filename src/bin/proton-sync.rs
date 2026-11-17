@@ -567,14 +567,15 @@ fn print_pair_reply(
         Commands::History => print_history(response, style),
         Commands::Activity { .. } => print_activity(response, style),
         Commands::Pending => print_pending(&response.pending_deletions, pair),
+        // Print-only: the exit code comes from `reply_exit_code`, so these returns are dropped.
         Commands::List { .. } => {
-            print_listing(response, false, style);
+            let _ = print_listing(response, false, style);
         }
         Commands::Plan { .. } => {
-            report_plan(response, false, style, pair);
+            let _ = report_plan(response, false, style, pair);
         }
         Commands::Apply { .. } => {
-            report_apply(response, false, style, pair);
+            let _ = report_apply(response, false, style, pair);
         }
         Commands::Pause
         | Commands::Resume
@@ -2210,7 +2211,8 @@ fn report_apply(
                     // Not a second rendering: the reply carries the fresh plan under the same field
                     // `plan` prints from. Same `pair` this apply was run with, so `run_it_line`
                     // inside it echoes it too.
-                    report_plan(response, false, style, pair);
+                    // The command's exit code is `apply_exit_code` below, not the plan's.
+                    let _ = report_plan(response, false, style, pair);
                 } else {
                     eprintln!(
                         "The plan changed since you reviewed it, so nothing was applied. Run \
