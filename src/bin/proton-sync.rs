@@ -2432,17 +2432,19 @@ mod tests {
             unsyncable("run/queue", UnsyncableReason::LocalFifo),
             unsyncable("dev/loop0", UnsyncableReason::LocalDevice),
             unsyncable("odd", UnsyncableReason::LocalSpecialFile),
+            unsyncable("Invoices/old-pack", UnsyncableReason::LocalUnusableDate),
             unsyncable("Unsorted/Networth", UnsyncableReason::RemoteNotDownloadable),
         ];
         let out = unsyncable_lines(&items, &plain_style()).join("\n");
 
-        assert!(out.contains("6 item(s) cannot be synced:"), "{out}");
+        assert!(out.contains("7 item(s) cannot be synced:"), "{out}");
         for reason in [
             UnsyncableReason::LocalSocket,
             UnsyncableReason::LocalSymlink,
             UnsyncableReason::LocalFifo,
             UnsyncableReason::LocalDevice,
             UnsyncableReason::LocalSpecialFile,
+            UnsyncableReason::LocalUnusableDate,
             UnsyncableReason::RemoteNotDownloadable,
         ] {
             let heading = format!("{} — {}", reason.as_str(), reason.describe());
@@ -2457,6 +2459,7 @@ mod tests {
             "run/queue",
             "dev/loop0",
             "odd",
+            "Invoices/old-pack",
             "Unsorted/Networth",
         ] {
             assert!(out.contains(path), "{path} must be named: {out}");

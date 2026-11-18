@@ -2024,6 +2024,7 @@ mod tests {
                 truncated: false,
                 cannot_sync: vec![crate::index::UnsyncableEntry {
                     relative_path: non_utf8_path(b"-socket"),
+                    entity_kind: crate::index::EntityKind::File,
                     reason: UnsyncableReason::LocalSocket,
                 }],
             }))),

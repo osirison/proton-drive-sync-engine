@@ -45,8 +45,9 @@ use crate::schedule::FullScanSchedule;
 use crate::session::{CliKeyringSession, CurlHttpTransport};
 use crate::sync::{
     ConflictNaming, DeleteDirection, DryRunReport, PlanSummary, PlannedAction, SyncAction,
-    TransferDirection, UnsyncableItem, UnsyncableOrigin, directory_move_descendant_path_pairs,
-    is_strict_descendant, plan_sync_entities_with_stats, plan_token, unsyncable_items,
+    TransferDirection, UnsyncableItem, UnsyncableOrigin, UnsyncableReason,
+    directory_move_descendant_path_pairs, is_strict_descendant, plan_sync_entities_with_stats_held,
+    plan_token, unsyncable_items,
 };
 use crate::trash::{LocalDeleteMode, dispose};
 use crate::{AppResult, boxed_error};
@@ -2914,11 +2915,15 @@ fn build_plan_report(
     if remote_root_missing {
         base_index.clear();
     }
-    let mut outcome = plan_sync_entities_with_stats(
-        &local_scan.entities,
-        &remote_entities,
-        &base_index,
+    // A rehearsal is a full walk, so it holds only what this walk held — the same set a full pass
+    // holds, which is what keeps a reviewed plan's token the one an apply re-derives.
+    let held = HeldPaths::from_walk(&local_scan);
+    let mut outcome = plan_sync_entities_with_stats_held(
+        &held.without(&local_scan.entities),
+        &held.without(&remote_entities),
+        &held.without(&base_index),
         &config.conflict_naming,
+        &held.0,
     );
     prepend_remote_root_creation_if_missing(&mut outcome.actions, remote_root_missing);
     info!(
@@ -7694,6 +7699,40 @@ impl<C: ProtonClient> PairPass<'_, C> {
         }
     }
 
+    /// The paths this pass plans around as held, and whether a standing held item is no longer
+    /// seen bad by it.
+    ///
+    /// * A **full walk** (bootstrap, warm-start fallback, plan report, apply) holds exactly what its
+    ///   own local walk held. It plans against the true remote state, so a path that is fine now is
+    ///   planned normally and its standing item is dropped by absence (`pass_proves_absence_of`).
+    /// * An **incremental pass** holds its own walk's findings **plus every standing item** with
+    ///   this reason. While an item was held the pass kept moving the event cursor, so a remote
+    ///   edit to that path may lie behind it; the reconstructed remote map of an incremental pass
+    ///   cannot be trusted for the path until a walk has seen it. The `bool` is set when a standing
+    ///   item is not held by this pass's own walk, and the caller latches the next pass as a full
+    ///   walk. Rejected alternative: holding the cursor while anything is held. On a first-ever
+    ///   bootstrap there is no cursor to hold, so every pass would walk the whole tree.
+    fn paths_to_hold(
+        &self,
+        local_scan: &LocalScan,
+        remote_map: RemoteMapShape,
+    ) -> (HeldPaths, bool) {
+        let mut held = HeldPaths::from_walk(local_scan);
+        if remote_map.full_snapshot {
+            return (held, false);
+        }
+        let standing: Vec<&Path> = self
+            .pair
+            .unsyncable
+            .iter()
+            .filter(|item| item.reason == UnsyncableReason::LocalUnusableDate)
+            .map(|item| item.path.as_path())
+            .collect();
+        let released = standing.iter().any(|path| !held.holds(path));
+        held.0.extend(standing.into_iter().map(Path::to_path_buf));
+        (held, released)
+    }
+
     /// Folds this pass's evidence into the standing unsyncable list, names each new entry at `warn`
     /// exactly once per run, and persists the result (#295, #232).
     ///
@@ -7749,10 +7788,10 @@ impl<C: ProtonClient> PairPass<'_, C> {
         let mut observed = unsyncable_items(plan, now);
         observed.extend(local_unsyncable.iter().map(|entry| UnsyncableItem {
             path: entry.relative_path.clone(),
-            // The engine knows two kinds and none of these is a directory it would descend into —
-            // a symlink to a folder is not followed either — so every local drop is filed as a
-            // file. The `reason` is what says *what* it really is.
-            entity_kind: EntityKind::File,
+            // The scan says what it dropped. Most local drops are files (a symlink to a folder is
+            // not followed either, so it is filed as a file and the `reason` says what it really
+            // is); a folder whose date cannot be used is held whole and is a directory.
+            entity_kind: entry.entity_kind,
             reason: entry.reason.clone(),
             first_seen_epoch_secs: now,
         }));
@@ -7854,13 +7893,25 @@ impl<C: ProtonClient> PairPass<'_, C> {
         cursor_update: Option<CursorUpdate>,
         root_node: RootNodeUpdate,
     ) -> AppResult<PassOutcome> {
-        let local_entities = &local_scan.entities;
+        // What this pass holds (`HeldPaths`): its own walk's findings and, on an incremental pass,
+        // the standing items too. Taken out of every map before planning, so a held path is
+        // neither read as deleted nor planned an action, and everything below uses the cut maps.
+        let (held, standing_item_released) = self.paths_to_hold(local_scan, remote_map);
+        let local_entities = held.without(&local_scan.entities);
+        let local_entities: &HashMap<PathBuf, LocalEntityState> = &local_entities;
+        let remote_entities = held.without(remote_entities);
+        let remote_entities: &HashMap<PathBuf, RemoteEntity> = &remote_entities;
+        let base_index = held.without(base_index);
+        let base_index: &HashMap<PathBuf, FileRecord> = &base_index;
+        let local_files = held.without(local_files);
+        let local_files: &HashMap<PathBuf, LocalFileState> = &local_files;
         let remote_root_missing = remote_map.remote_root_missing;
-        let outcome = plan_sync_entities_with_stats(
+        let outcome = plan_sync_entities_with_stats_held(
             local_entities,
             remote_entities,
             base_index,
             &self.pair.config.conflict_naming,
+            &held.0,
         );
         let matched_files = outcome.matched_files;
         let mut plan = outcome.actions;
@@ -7913,6 +7964,23 @@ impl<C: ProtonClient> PairPass<'_, C> {
                 skip_destructive
             }
         };
+        // A held item this incremental pass no longer sees bad (its date was fixed, or it was
+        // deleted) is NOT released here, even though this walk is clean: while it was held the
+        // cursor kept moving, so a remote edit to that path may be behind it, and no incremental
+        // pass would see that edit again. It stays held for this pass, and the next pass walks the
+        // whole tree, which plans the path against the true remote state and ends the hold
+        // (`UnsyncableOrigin::LocalHeld`). After the apply comparison above, because a refused apply
+        // must leave the daemon exactly as it found it; the latch is idempotent, so a pass that
+        // fails later asks for the same walk.
+        if standing_item_released {
+            info!(
+                "a path held for its date is no longer unusable; the next pass walks the whole tree \
+                 to plan it against the remote"
+            );
+            self.pair_shared
+                .force_full_walk
+                .store(true, Ordering::SeqCst);
+        }
         // Before anything about the pass is mutated — the published summary, the withheld ages,
         // the pending list: a directory swapped in since the scan (the remote walk between them
         // can take minutes) is not the one this plan describes. Typed, so the pass ends with the
@@ -10997,7 +11065,12 @@ impl RemoteMapShape {
 fn pass_proves_absence_of(origin: UnsyncableOrigin, full_snapshot: bool) -> bool {
     match origin {
         UnsyncableOrigin::Local => true,
-        UnsyncableOrigin::Remote | UnsyncableOrigin::Unknown => full_snapshot,
+        // A held item is seen by the local walk but its absence is proved by a full walk only: an
+        // incremental pass that no longer sees it bad cannot know what the remote did to that path
+        // while it was held (see [`UnsyncableOrigin::LocalHeld`]).
+        UnsyncableOrigin::LocalHeld | UnsyncableOrigin::Remote | UnsyncableOrigin::Unknown => {
+            full_snapshot
+        }
     }
 }
 
@@ -11403,6 +11476,58 @@ fn filter_base_index(
             EntityKind::Directory => scan_options.allows_relative_directory(path),
         })
         .collect()
+}
+
+/// Paths a pass **holds**: files and folders the local walk could not use (a modification date the
+/// engine cannot represent, `UnsyncableReason::LocalUnusableDate`).
+///
+/// A held path is treated exactly like one an exclude rule hides (the selective-sync invariant): it
+/// is removed from the local entities, the remote map **and** the base index before anything is
+/// planned, and a held folder takes everything under it (a component-wise path prefix, so `a/b`
+/// holds `a/b/c` and not `a/bc`). Dropping it from the local scan alone is the one thing that must
+/// not happen, because a path missing locally reads as locally deleted: a synced file would plan a
+/// remote delete, a folder a recursive one, and a remote copy with no index row a download over the
+/// local copy.
+///
+/// ONE DEFINITION, TWO CALLERS: `build_plan_report` (the plan verb and `--dry-run`) and
+/// `execute_plan_and_commit` (every real pass) both apply it. If only one did, every `apply` would
+/// re-plan to a different token than the one reviewed and be refused.
+#[derive(Debug, Default)]
+struct HeldPaths(HashSet<PathBuf>);
+
+impl HeldPaths {
+    /// What this pass's own local walk held.
+    fn from_walk(scan: &LocalScan) -> Self {
+        Self(
+            scan.unsyncable
+                .iter()
+                .filter(|entry| entry.reason == UnsyncableReason::LocalUnusableDate)
+                .map(|entry| entry.relative_path.clone())
+                .collect(),
+        )
+    }
+
+    /// Whether `path` is held, or lies under a held folder.
+    fn holds(&self, path: &Path) -> bool {
+        !self.0.is_empty() && path.ancestors().any(|ancestor| self.0.contains(ancestor))
+    }
+
+    /// `map` without every held path. Borrowed untouched when nothing is held, which is almost
+    /// always, so an ordinary pass copies nothing.
+    fn without<'a, V: Clone>(
+        &self,
+        map: &'a HashMap<PathBuf, V>,
+    ) -> std::borrow::Cow<'a, HashMap<PathBuf, V>> {
+        if self.0.is_empty() {
+            return std::borrow::Cow::Borrowed(map);
+        }
+        std::borrow::Cow::Owned(
+            map.iter()
+                .filter(|(path, _)| !self.holds(path))
+                .map(|(path, value)| (path.clone(), value.clone()))
+                .collect(),
+        )
+    }
 }
 
 fn command_policy_from_config(config: &DaemonConfig) -> CommandPolicy {
@@ -21447,6 +21572,7 @@ mod tests {
     fn socket_entry(path: &str) -> UnsyncableEntry {
         UnsyncableEntry {
             relative_path: PathBuf::from(path),
+            entity_kind: EntityKind::File,
             reason: UnsyncableReason::LocalSocket,
         }
     }
@@ -21583,6 +21709,7 @@ mod tests {
             &[],
             &[UnsyncableEntry {
                 relative_path: PathBuf::from("thing"),
+                entity_kind: EntityKind::File,
                 reason: UnsyncableReason::LocalSymlink,
             }],
             false,
@@ -21701,6 +21828,467 @@ mod tests {
                 .expect("reload")
                 .is_empty(),
             "and the shorter list is persisted"
+        );
+    }
+
+    /// Sets a file's or a folder's date to 1881, which `duration_since(UNIX_EPOCH)` refuses (the
+    /// index stores signed seconds; the scan's conversion is what cannot answer). A
+    /// folder is opened read-only as a `File` (`futimens` needs ownership, not write access), and
+    /// it is dated **after** anything is made inside it, because creating an entry resets the
+    /// folder's own date.
+    fn set_date_before_1970(path: &Path) {
+        File::open(path)
+            .expect("open for its date")
+            .set_modified(UNIX_EPOCH - Duration::from_secs(2_808_000_000))
+            .expect("set a date before 1970");
+    }
+
+    /// A path an item with an unusable date is held under: the item, or anything below it.
+    fn is_under_held_item(path: &Path) -> bool {
+        path == Path::new("old.txt") || path.starts_with("folder")
+    }
+
+    /// The hazard that makes "skipped" mean HELD: a path missing from the local scan reads as
+    /// locally deleted. Here a synced file and a synced folder (with a child) are dated 1881 and
+    /// have an index record and a remote copy each, so an item merely dropped from the scan would
+    /// plan a remote delete of the file and a recursive one of the folder — and the pass must
+    /// instead complete, plan nothing on them, name them, and agree with the plan report.
+    #[cfg(unix)]
+    #[test]
+    fn an_item_with_an_unusable_date_is_held_not_read_as_deleted_and_the_plan_report_agrees() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let old_bytes = b"synced before the date went bad";
+        fs::write(local_root.join("old.txt"), old_bytes).expect("old file");
+        fs::create_dir(local_root.join("folder")).expect("old folder");
+        fs::write(local_root.join("folder/inner.txt"), b"inner").expect("inner file");
+        fs::write(local_root.join("ok.txt"), b"fine").expect("sibling file");
+        set_date_before_1970(&local_root.join("old.txt"));
+        set_date_before_1970(&local_root.join("folder"));
+        let old_hash = sha1_bytes(old_bytes);
+        let inner_hash = sha1_bytes(b"inner");
+        let (client, ops) = RecordingProtonClient::with_remote_entities(HashMap::from([
+            (
+                PathBuf::from("old.txt"),
+                remote_file_entity("old.txt", "vol~n1", &old_hash),
+            ),
+            (PathBuf::from("folder"), remote_dir("folder", "vol~d1")),
+            (
+                PathBuf::from("folder/inner.txt"),
+                remote_file_entity("folder/inner.txt", "vol~n2", &inner_hash),
+            ),
+        ]));
+        let mut daemon = Daemon::with_client(test_config(directory.path(), &local_root), client)
+            .expect("daemon");
+        for record in [
+            base_record("old.txt", Some("vol~n1"), &old_hash),
+            directory_record("folder", Some("vol~d1")),
+            base_record("folder/inner.txt", Some("vol~n2"), &inner_hash),
+        ] {
+            upsert_record(&daemon.pair().connection, &record).expect("seed the baseline");
+        }
+
+        // The plan verb first: it is built by `build_plan_report`, the other planner caller.
+        let report = daemon.pass().plan_only_blocking().expect("plan completes");
+        assert!(
+            report
+                .actions
+                .iter()
+                .all(|action| !is_under_held_item(&action.path)),
+            "the plan report plans nothing on a held path: {:?}",
+            report.actions
+        );
+        assert!(
+            report
+                .actions
+                .iter()
+                .any(|action| action.path == Path::new("ok.txt")
+                    && action.action == SyncAction::Upload),
+            "and the sibling plans as usual: {:?}",
+            report.actions
+        );
+        let mut reported: Vec<(PathBuf, EntityKind, UnsyncableReason)> = report
+            .cannot_sync
+            .iter()
+            .map(|entry| {
+                (
+                    entry.relative_path.clone(),
+                    entry.entity_kind,
+                    entry.reason.clone(),
+                )
+            })
+            .collect();
+        reported.sort_by(|left, right| left.0.cmp(&right.0));
+        assert_eq!(
+            reported,
+            vec![
+                (
+                    PathBuf::from("folder"),
+                    EntityKind::Directory,
+                    UnsyncableReason::LocalUnusableDate
+                ),
+                (
+                    PathBuf::from("old.txt"),
+                    EntityKind::File,
+                    UnsyncableReason::LocalUnusableDate
+                ),
+            ],
+            "the plan report names the folder alone, and the file"
+        );
+
+        // The real pass.
+        daemon
+            .reconcile_blocking()
+            .expect_clean("a pass with held items completes");
+        let operations = ops.lock().expect("operations lock").clone();
+        assert!(
+            operations.iter().all(|operation| {
+                let text = format!("{operation:?}");
+                !text.contains("old.txt") && !text.contains("folder")
+            }),
+            "no delete, download or upload touched a held path: {operations:?}"
+        );
+        assert!(
+            operations.iter().any(
+                |operation| matches!(operation, RecordedOperation::Upload { relative_path, .. }
+                    if relative_path == Path::new("ok.txt"))
+            ),
+            "the pass otherwise ran: {operations:?}"
+        );
+        let mut standing: Vec<(PathBuf, EntityKind, UnsyncableReason)> = daemon
+            .pair()
+            .unsyncable
+            .iter()
+            .map(|item| (item.path.clone(), item.entity_kind, item.reason.clone()))
+            .collect();
+        standing.sort_by(|left, right| left.0.cmp(&right.0));
+        assert_eq!(
+            standing, reported,
+            "the standing list says what the report said"
+        );
+        for path in ["old.txt", "folder"] {
+            assert!(
+                daemon.pair().reported_unsyncable.contains(Path::new(path)),
+                "{path} was warned about (the once-per-run latch the WARN sits behind)"
+            );
+        }
+        let baseline = load_index(&daemon.pair().connection).expect("index");
+        for path in ["old.txt", "folder", "folder/inner.txt"] {
+            assert!(
+                baseline.contains_key(Path::new(path)),
+                "the held path's baseline row is untouched: {path}"
+            );
+        }
+        assert_eq!(
+            fs::read(local_root.join("old.txt")).expect("local copy"),
+            old_bytes,
+            "the local copy is as it was"
+        );
+        assert!(local_root.join("folder/inner.txt").exists());
+    }
+
+    /// `folder/` is synced and holds a held file (`old.txt`, dated 1881) and a normal synced one
+    /// (`ok.txt`). The remote has deleted `folder/` and everything in it. Runs the plan verb and
+    /// then a real pass, and returns what each planned and did.
+    #[cfg(unix)]
+    fn remote_deletes_the_parent_of_a_held_item(
+        guard_local_deletes: bool,
+    ) -> (
+        tempfile::TempDir,
+        PathBuf,
+        Vec<crate::sync::PlannedAction>,
+        Vec<RecordedOperation>,
+    ) {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        fs::create_dir(local_root.join("folder")).expect("folder");
+        fs::write(local_root.join("folder/old.txt"), b"held").expect("held file");
+        fs::write(local_root.join("folder/ok.txt"), b"fine").expect("sibling");
+        set_date_before_1970(&local_root.join("folder/old.txt"));
+        let (client, ops) = RecordingProtonClient::with_remote_entities(HashMap::new());
+        let mut config = test_config(directory.path(), &local_root);
+        config.delete_approval_local = guard_local_deletes;
+        config.delete_approval_remote = guard_local_deletes;
+        let mut daemon = Daemon::with_client(config, client).expect("daemon");
+        for record in [
+            directory_record("folder", Some("vol~d1")),
+            base_record("folder/old.txt", Some("vol~n1"), &sha1_bytes(b"held")),
+            base_record("folder/ok.txt", Some("vol~n2"), &sha1_bytes(b"fine")),
+        ] {
+            upsert_record(&daemon.pair().connection, &record).expect("seed the baseline");
+        }
+        let report = daemon.pass().plan_only_blocking().expect("plan completes");
+        let planned = report.actions.clone();
+        let _ = daemon.reconcile_blocking();
+        let operations = ops.lock().expect("operations lock").clone();
+        (directory, local_root, planned, operations)
+    }
+
+    /// The parent-delete hole: the held file is cut from the maps, so the planner used to prove
+    /// `folder/` clean and plan a recursive `LocalDelete` of it, and the executor disposed of the
+    /// whole folder with the held file inside. A held path now falsifies its nearest tracked
+    /// ancestor, so the parent is not deleted.
+    #[cfg(unix)]
+    #[test]
+    fn a_remote_delete_of_the_parent_does_not_delete_a_held_item() {
+        let (_directory, local_root, planned, _operations) =
+            remote_deletes_the_parent_of_a_held_item(false);
+        assert!(
+            planned
+                .iter()
+                .all(|action| !(action.action == SyncAction::LocalDelete
+                    && (action.path == Path::new("folder")
+                        || action.path == Path::new("folder/old.txt")))),
+            "no LocalDelete of the folder or the held file is planned: {planned:?}"
+        );
+        assert!(
+            local_root.join("folder/old.txt").exists(),
+            "the held file is still on disk after the pass (guard off, so a planned delete would \
+             have run); plan: {planned:?}"
+        );
+        // What it plans instead: the parent is recreated on Proton (the planner's own non-destructive
+        // answer) and only the file that is not held is deleted locally.
+        let mut rows: Vec<(&Path, SyncAction)> = planned
+            .iter()
+            .map(|action| (action.path.as_path(), action.action))
+            .collect();
+        rows.sort_by_key(|row| row.0);
+        assert_eq!(
+            rows,
+            vec![
+                (Path::new("folder"), SyncAction::CreateRemoteDirectory),
+                (Path::new("folder/ok.txt"), SyncAction::LocalDelete),
+            ]
+        );
+    }
+
+    /// The same under the DEFAULT policy (ask every time). Before the fix the recursive
+    /// `LocalDelete` of `folder` was planned here too and waited for approval; the approval would
+    /// then have disposed of the held file, with a subtree count that left it out.
+    #[cfg(unix)]
+    #[test]
+    fn a_remote_delete_of_the_parent_plans_no_folder_delete_under_the_default_policy() {
+        let (_directory, local_root, planned, _operations) =
+            remote_deletes_the_parent_of_a_held_item(true);
+        assert!(
+            planned
+                .iter()
+                .all(|action| !(action.action == SyncAction::LocalDelete
+                    && action.entity_kind == EntityKind::Directory)),
+            "no recursive LocalDelete of a folder is planned, so there is nothing to approve: \
+             {planned:?}"
+        );
+        assert!(local_root.join("folder/old.txt").exists());
+    }
+
+    /// The cursor rule: while an item is held the cursor keeps moving, so a remote edit to it may
+    /// be behind the cursor and no incremental pass would see it again. When the date is fixed, an
+    /// incremental pass keeps the path held and latches a full walk; that walk plans it normally
+    /// and ends the hold. Without the latch this local-only-looking path would be uploaded over
+    /// whatever the remote holds.
+    #[cfg(unix)]
+    #[test]
+    fn a_held_item_is_released_only_by_the_full_walk_an_incremental_pass_latches() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        let ok_hash = sha1_bytes(b"fine");
+        let old_hash = sha1_bytes(b"v1");
+        fs::write(local_root.join("ok.txt"), b"fine").expect("sibling");
+        fs::write(local_root.join("old.txt"), b"v1").expect("held file");
+        set_date_before_1970(&local_root.join("old.txt"));
+        let client = EventFakeClient::new(HashMap::from([
+            (
+                PathBuf::from("ok.txt"),
+                remote_file_entity("ok.txt", "vol~n1", &ok_hash),
+            ),
+            (
+                PathBuf::from("old.txt"),
+                remote_file_entity("old.txt", "vol~n2", &old_hash),
+            ),
+        ]));
+        let full_walks = Arc::clone(&client.full_walks);
+        let mut daemon = Daemon::with_client_and_event_source(
+            event_config(directory.path(), &local_root),
+            client,
+            Some(Box::new(FakeEventSource::new("cursor-0"))),
+        )
+        .expect("daemon");
+        daemon.event_source_factory = Box::new(|| None);
+        let latched = |daemon: &Daemon<EventFakeClient>| {
+            daemon.shared.pairs[0]
+                .force_full_walk
+                .load(Ordering::SeqCst)
+        };
+        let planned = |daemon: &Daemon<EventFakeClient>| {
+            daemon
+                .pair()
+                .last_plan_summary
+                .as_ref()
+                .expect("a plan was made")
+                .total
+        };
+
+        // Pass 1, a full walk: the remote copy has no index row, so a path merely dropped from the
+        // scan would be downloaded over the local file.
+        daemon.reconcile_blocking().expect_clean("bootstrap");
+        assert_eq!(full_walks.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            fs::read(local_root.join("old.txt")).expect("local copy"),
+            b"v1",
+            "not downloaded over"
+        );
+        assert_eq!(daemon.pair().unsyncable.len(), 1);
+        assert_eq!(
+            daemon.pair().unsyncable[0].reason,
+            UnsyncableReason::LocalUnusableDate
+        );
+        let first_seen = daemon.pair().unsyncable[0].first_seen_epoch_secs;
+        assert!(
+            load_event_cursor(&daemon.pair().connection, "vol")
+                .expect("cursor read")
+                .is_some(),
+            "a held item does not hold the cursor: a first bootstrap would then walk every pass"
+        );
+
+        // Pass 2, incremental, still bad: held again, nothing planned, no walk asked for.
+        daemon.pair_mut().force_local_rescan = true;
+        daemon
+            .reconcile_blocking()
+            .expect_clean("incremental, still bad");
+        assert_eq!(full_walks.load(Ordering::SeqCst), 1, "incremental");
+        assert_eq!(planned(&daemon), 0, "nothing planned on the held path");
+        assert!(!latched(&daemon), "nothing was released");
+        assert_eq!(
+            daemon.pair().unsyncable[0].first_seen_epoch_secs,
+            first_seen
+        );
+
+        // The date is fixed. Pass 3, incremental: it no longer sees the item bad, but it cannot
+        // know what the remote did meanwhile, so it holds it and asks for a walk.
+        File::open(local_root.join("old.txt"))
+            .expect("open")
+            .set_modified(UNIX_EPOCH + Duration::from_secs(1_700_000_000))
+            .expect("fix the date");
+        daemon.pair_mut().force_local_rescan = true;
+        daemon
+            .reconcile_blocking()
+            .expect_clean("incremental, fixed");
+        assert_eq!(full_walks.load(Ordering::SeqCst), 1, "still incremental");
+        assert_eq!(
+            planned(&daemon),
+            0,
+            "held by the standing item: no upload over the remote's copy"
+        );
+        assert!(latched(&daemon), "a full walk is latched");
+        assert_eq!(
+            daemon.pair().unsyncable.len(),
+            1,
+            "an incremental pass does not end the hold"
+        );
+
+        // Pass 4 is that walk: the path plans against the true remote state, and the hold ends.
+        daemon.reconcile_blocking().expect_clean("the full walk");
+        assert_eq!(full_walks.load(Ordering::SeqCst), 2, "a full walk");
+        assert!(!latched(&daemon), "consumed");
+        assert_eq!(
+            daemon
+                .pair()
+                .last_plan_summary
+                .as_ref()
+                .expect("plan")
+                .auto_links,
+            1,
+            "planned normally: both copies match, so it is linked"
+        );
+        assert!(
+            daemon.pair().unsyncable.is_empty(),
+            "the full walk ended the hold"
+        );
+        assert!(
+            load_unsyncable_items(&daemon.pair().connection)
+                .expect("reload")
+                .is_empty(),
+            "and the shorter list is persisted"
+        );
+    }
+
+    /// The remote's copy differs from the held file's (someone edited it while it was held). After
+    /// the date is fixed the full walk must see the difference and plan a conflict, never an
+    /// upload over the remote edit.
+    ///
+    /// Limit: `EventFakeClient` serves one fixed remote map, so the "edit" is already there when
+    /// pass 1 walks, rather than arriving through the event stream while the item is held. What is
+    /// proved is the walk's side: the release plans against the true remote state.
+    #[cfg(unix)]
+    #[test]
+    fn a_remote_edit_made_while_an_item_is_held_is_met_by_the_full_walk_not_overwritten() {
+        let directory = tempdir().expect("tempdir");
+        let local_root = directory.path().join("local");
+        fs::create_dir(&local_root).expect("local root");
+        fs::write(local_root.join("old.txt"), b"v1 local").expect("held file");
+        set_date_before_1970(&local_root.join("old.txt"));
+        let client = EventFakeClient::new(HashMap::from([(
+            PathBuf::from("old.txt"),
+            remote_file_entity("old.txt", "vol~n2", &sha1_bytes(b"v2 edited remotely")),
+        )]));
+        let mut daemon = Daemon::with_client_and_event_source(
+            event_config(directory.path(), &local_root),
+            client,
+            Some(Box::new(FakeEventSource::new("cursor-0"))),
+        )
+        .expect("daemon");
+        daemon.event_source_factory = Box::new(|| None);
+
+        daemon.reconcile_blocking().expect_clean("bootstrap");
+        assert_eq!(
+            fs::read(local_root.join("old.txt")).expect("local copy"),
+            b"v1 local",
+            "held: not downloaded over"
+        );
+
+        File::open(local_root.join("old.txt"))
+            .expect("open")
+            .set_modified(UNIX_EPOCH + Duration::from_secs(1_700_000_000))
+            .expect("fix the date");
+        daemon.pair_mut().force_local_rescan = true;
+        daemon
+            .reconcile_blocking()
+            .expect_clean("incremental, fixed");
+        assert!(
+            daemon.shared.pairs[0]
+                .force_full_walk
+                .load(Ordering::SeqCst),
+            "the incremental pass asks for a full walk instead of releasing"
+        );
+        assert_eq!(
+            daemon
+                .pair()
+                .last_plan_summary
+                .as_ref()
+                .expect("a plan was made")
+                .total,
+            0,
+            "and plans nothing on the still-held path"
+        );
+
+        // The walk. Its conflict needs a sidecar download the fake cannot serve, so the pass may
+        // end partial; what it PLANNED is the point.
+        let _ = daemon.reconcile_blocking();
+        let summary = daemon
+            .pair()
+            .last_plan_summary
+            .clone()
+            .expect("the walk made a plan");
+        assert_eq!(
+            summary.uploads, 0,
+            "no upload over the remote edit: {summary:?}"
+        );
+        assert_eq!(
+            summary.conflicts, 1,
+            "the two versions are a conflict: {summary:?}"
         );
     }
 

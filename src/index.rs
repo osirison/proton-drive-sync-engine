@@ -285,8 +285,7 @@ impl LocalEntityState {
 /// conflating the two would file a rule the user wrote under "cannot be synced at all".
 ///
 /// Serializable because a one-shot report carries it too (#315: `sync::DryRunReport::cannot_sync`).
-/// It is the *observation*, so it has no first-seen stamp to serialize and deliberately no
-/// `entity_kind` either — the reason is what says what the entry really is.
+/// It is the *observation*, so it has no first-seen stamp to serialize.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnsyncableEntry {
     /// Relative to the scan root. Lossy on the wire like every other path this engine publishes
@@ -294,7 +293,17 @@ pub struct UnsyncableEntry {
     /// the kind of name that needs it.
     #[serde(with = "crate::lossy_path")]
     pub relative_path: PathBuf,
+    /// What the entry is. Every drop of #232 is a file (a symlink to a folder is not followed
+    /// either), but a folder whose date cannot be used is held whole
+    /// ([`UnsyncableReason::LocalUnusableDate`]) and is a directory. `#[serde(default)]` so a
+    /// report from a build that predates the field still parses, as the file it always was.
+    #[serde(default = "unsyncable_entry_default_kind")]
+    pub entity_kind: EntityKind,
     pub reason: UnsyncableReason,
+}
+
+fn unsyncable_entry_default_kind() -> EntityKind {
+    EntityKind::File
 }
 
 /// Everything one local stat-walk observed: the entities it kept, and the entries it dropped as
@@ -2275,9 +2284,24 @@ fn visit_directory(
         if file_type.is_dir() {
             if options.allows_directory_traversal(relative_path) {
                 if options.allows_relative_directory(relative_path) {
-                    let Some(state) = vanished_entry_to_skip(local_directory_state(root, &path))?
-                    else {
-                        continue;
+                    let state = match vanished_entry_to_skip(unusable_date_to_hold(
+                        local_directory_state(root, &path),
+                    ))? {
+                        Some(Ok(state)) => state,
+                        Some(Err(_)) => {
+                            // A folder whose date cannot be used is HELD WHOLE: reported on its
+                            // own path, and not descended into, so nothing under it is reported
+                            // or scanned. The caller removes the folder and everything below it
+                            // from every map it plans from (`daemon::HeldPaths`), because
+                            // dropping them from the scan alone would read as a local delete.
+                            scan.unsyncable.push(UnsyncableEntry {
+                                relative_path: relative_path.to_path_buf(),
+                                entity_kind: EntityKind::Directory,
+                                reason: UnsyncableReason::LocalUnusableDate,
+                            });
+                            continue;
+                        }
+                        None => continue,
                     };
                     scan.entities.insert(
                         state.relative_path.clone(),
@@ -2304,6 +2328,7 @@ fn visit_directory(
         if !file_type.is_file() {
             scan.unsyncable.push(UnsyncableEntry {
                 relative_path: relative_path.to_path_buf(),
+                entity_kind: EntityKind::File,
                 reason: local_unsyncable_reason(&file_type),
             });
             continue;
@@ -2312,10 +2337,20 @@ fn visit_directory(
             *files_seen += 1;
             observe(*files_seen, &path);
         }
-        let Some(state) =
-            vanished_entry_to_skip(local_file_state_reusing_hash(root, &path, known))?
-        else {
-            continue;
+        let state = match vanished_entry_to_skip(unusable_date_to_hold(
+            local_file_state_reusing_hash(root, &path, known),
+        ))? {
+            Some(Ok(state)) => state,
+            Some(Err(_)) => {
+                // Held, not dropped: see the folder arm above.
+                scan.unsyncable.push(UnsyncableEntry {
+                    relative_path: relative_path.to_path_buf(),
+                    entity_kind: EntityKind::File,
+                    reason: UnsyncableReason::LocalUnusableDate,
+                });
+                continue;
+            }
+            None => continue,
         };
         scan.entities
             .insert(state.relative_path.clone(), LocalEntityState::File(state));
@@ -2557,6 +2592,72 @@ fn build_glob_set(patterns: &[String]) -> AppResult<GlobSet> {
     Ok(builder.build()?)
 }
 
+/// A modification date the engine cannot use, carried as a **typed** error so the walk can tell it
+/// from every other failure by downcast (as [`vanished_entry_to_skip`] tells a vanished entry),
+/// never by reading its text. Two causes: the date is before 1 January 1970 (an unzipped archive
+/// can carry 1881), which `SystemTime::duration_since(UNIX_EPOCH)` refuses (the index itself
+/// stores signed `i64` seconds; it is that conversion that cannot answer), or the filesystem would
+/// not give a date at all.
+///
+/// Not a vanish and not a permission failure, so [`unusable_date_to_hold`] is the one place that
+/// turns it into a **hold** (`visit_directory`), while every other caller (the executor stat-ing a
+/// file it just wrote) still sees an ordinary error for that one action.
+#[derive(Debug)]
+pub struct UnusableDate {
+    pub path: PathBuf,
+    cause: String,
+}
+
+impl std::fmt::Display for UnusableDate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "mtime before epoch or unreadable for {}: {}",
+            self.path.display(),
+            self.cause
+        )
+    }
+}
+
+impl std::error::Error for UnusableDate {}
+
+/// The modification time of `metadata` in whole seconds since the epoch, or an [`UnusableDate`].
+/// A `modified()` error of kind `NotFound` stays a plain I/O error: the entry vanished, and
+/// [`vanished_entry_to_skip`] owns that case.
+fn modification_seconds(metadata: &fs::Metadata, absolute_path: &Path) -> AppResult<i64> {
+    let unusable = |cause: String| -> Box<dyn std::error::Error + Send + Sync> {
+        Box::new(UnusableDate {
+            path: absolute_path.to_path_buf(),
+            cause,
+        })
+    };
+    let modified = match metadata.modified() {
+        Ok(modified) => modified,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err(error.into()),
+        Err(error) => return Err(unusable(format!("the date could not be read: {error}"))),
+    };
+    match modified.duration_since(UNIX_EPOCH) {
+        Ok(since_epoch) => Ok(since_epoch.as_secs() as i64),
+        Err(error) => Err(unusable(format!(
+            "the date is {} seconds before 1 January 1970: {error}",
+            error.duration().as_secs()
+        ))),
+    }
+}
+
+/// Splits an [`UnusableDate`] off a per-entry result: `Ok(Err(date))` is a hold, every other error
+/// propagates unchanged (a permission failure must still fail the scan, since dropping the entry
+/// would replan it as deleted).
+fn unusable_date_to_hold<T>(result: AppResult<T>) -> AppResult<Result<T, UnusableDate>> {
+    match result {
+        Ok(value) => Ok(Ok(value)),
+        Err(error) => match error.downcast::<UnusableDate>() {
+            Ok(unusable) => Ok(Err(*unusable)),
+            Err(other) => Err(other),
+        },
+    }
+}
+
 pub fn local_file_state(root: &Path, absolute_path: &Path) -> AppResult<LocalFileState> {
     local_file_state_reusing_hash(root, absolute_path, &HashMap::new())
 }
@@ -2577,16 +2678,7 @@ pub fn local_file_state_reusing_hash(
     known: &HashMap<PathBuf, FileRecord>,
 ) -> AppResult<LocalFileState> {
     let metadata = fs::metadata(absolute_path)?;
-    let mtime = metadata
-        .modified()?
-        .duration_since(UNIX_EPOCH)
-        .map_err(|err| {
-            boxed_error(format!(
-                "mtime before epoch for {}: {err}",
-                absolute_path.display()
-            ))
-        })?
-        .as_secs() as i64;
+    let mtime = modification_seconds(&metadata, absolute_path)?;
     let relative_path = absolute_path.strip_prefix(root).map_err(|err| {
         boxed_error(format!(
             "failed to compute relative path for {} against {}: {err}",
@@ -2621,16 +2713,7 @@ pub fn local_file_state_reusing_hash(
 
 pub fn local_directory_state(root: &Path, absolute_path: &Path) -> AppResult<LocalDirectoryState> {
     let metadata = fs::metadata(absolute_path)?;
-    let mtime = metadata
-        .modified()?
-        .duration_since(UNIX_EPOCH)
-        .map_err(|err| {
-            boxed_error(format!(
-                "mtime before epoch for {}: {err}",
-                absolute_path.display()
-            ))
-        })?
-        .as_secs() as i64;
+    let mtime = modification_seconds(&metadata, absolute_path)?;
     let relative_path = absolute_path.strip_prefix(root).map_err(|err| {
         boxed_error(format!(
             "failed to compute relative path for {} against {}: {err}",
@@ -4531,6 +4614,132 @@ mod tests {
             scan.unsyncable[0].relative_path,
             PathBuf::from(name),
             "and the path stays byte-exact, because the store's key is a BLOB"
+        );
+    }
+
+    /// Sets the modification date of a file **or a folder** to 1881, which
+    /// `SystemTime::duration_since(UNIX_EPOCH)` refuses (the index stores signed seconds; it is
+    /// the conversion that cannot answer). A folder is opened read-only as a `File`: `futimens` needs ownership, not
+    /// write access. Set it **after** anything is created inside, because creating an entry resets
+    /// the folder's own date.
+    fn set_date_before_1970(path: &Path) {
+        let before_the_epoch = UNIX_EPOCH - std::time::Duration::from_secs(2_808_000_000);
+        fs::File::open(path)
+            .expect("open for its date")
+            .set_modified(before_the_epoch)
+            .expect("set a date before 1970");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_item_dated_before_1970_is_held_and_reported_instead_of_failing_the_scan() {
+        let directory = tempdir().expect("tempdir");
+        let root = directory.path();
+        fs::write(root.join("ok.txt"), b"fine").expect("sibling file");
+        fs::write(root.join("old.txt"), b"old").expect("old file");
+        fs::create_dir(root.join("okdir")).expect("sibling folder");
+        fs::write(root.join("okdir/inner.txt"), b"fine").expect("sibling child");
+        fs::write(root.join("okdir/old_inner.txt"), b"old").expect("old file in a good folder");
+        fs::create_dir_all(root.join("old_dir/deep")).expect("old folder");
+        fs::write(root.join("old_dir/child.txt"), b"child").expect("child");
+        fs::write(root.join("old_dir/deep/grandchild.txt"), b"grandchild").expect("grandchild");
+        set_date_before_1970(&root.join("old.txt"));
+        set_date_before_1970(&root.join("okdir/old_inner.txt"));
+        set_date_before_1970(&root.join("old_dir"));
+
+        let options =
+            ScanOptions::new(root, &[], &[], &[], &ConflictNaming::default()).expect("options");
+        let scan = scan_local_tree(root, &options, &HashMap::new(), None)
+            .expect("one item with an unusable date must not fail the scan");
+
+        let mut held: Vec<(PathBuf, EntityKind, UnsyncableReason)> = scan
+            .unsyncable
+            .iter()
+            .map(|entry| {
+                (
+                    entry.relative_path.clone(),
+                    entry.entity_kind,
+                    entry.reason.clone(),
+                )
+            })
+            .collect();
+        held.sort_by(|left, right| left.0.cmp(&right.0));
+        assert_eq!(
+            held,
+            vec![
+                (
+                    PathBuf::from("okdir/old_inner.txt"),
+                    EntityKind::File,
+                    UnsyncableReason::LocalUnusableDate
+                ),
+                (
+                    PathBuf::from("old.txt"),
+                    EntityKind::File,
+                    UnsyncableReason::LocalUnusableDate
+                ),
+                (
+                    PathBuf::from("old_dir"),
+                    EntityKind::Directory,
+                    UnsyncableReason::LocalUnusableDate
+                ),
+            ],
+            "the folder is reported alone, and nothing under it"
+        );
+
+        let mut kept: Vec<&Path> = scan.entities.keys().map(PathBuf::as_path).collect();
+        kept.sort();
+        assert_eq!(
+            kept,
+            vec![
+                Path::new("ok.txt"),
+                Path::new("okdir"),
+                Path::new("okdir/inner.txt")
+            ],
+            "the siblings are kept; the held items and everything under the held folder are not"
+        );
+    }
+
+    #[test]
+    fn an_unsyncable_entry_from_a_build_without_entity_kind_parses_as_a_file() {
+        let entry: UnsyncableEntry =
+            serde_json::from_str(r#"{"relative_path":"pipe","reason":"local_fifo"}"#)
+                .expect("a report that predates entity_kind still parses");
+        assert_eq!(entry.entity_kind, EntityKind::File);
+        assert_eq!(entry.relative_path, PathBuf::from("pipe"));
+        assert_eq!(entry.reason, UnsyncableReason::LocalFifo);
+    }
+
+    /// Only an unusable DATE becomes a hold. A permission failure must still fail the scan, since
+    /// dropping the entry would replan it as deleted.
+    #[cfg(unix)]
+    #[test]
+    fn a_permission_error_still_fails_the_scan_instead_of_being_held() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempdir().expect("tempdir");
+        let root = directory.path();
+        fs::create_dir(root.join("locked")).expect("folder");
+        fs::write(root.join("locked/inner.txt"), b"inner").expect("child");
+        fs::set_permissions(root.join("locked"), fs::Permissions::from_mode(0o000))
+            .expect("remove every permission");
+        // A process that can read it anyway (root, or a filesystem that ignores modes) cannot
+        // show this, so say so and stop rather than assert something false.
+        if fs::read_dir(root.join("locked")).is_ok() {
+            eprintln!("skipped: this process can read a mode-000 folder (running as root?)");
+            fs::set_permissions(root.join("locked"), fs::Permissions::from_mode(0o755))
+                .expect("restore");
+            return;
+        }
+
+        let options =
+            ScanOptions::new(root, &[], &[], &[], &ConflictNaming::default()).expect("options");
+        let result = scan_local_tree(root, &options, &HashMap::new(), None);
+        fs::set_permissions(root.join("locked"), fs::Permissions::from_mode(0o755))
+            .expect("restore so the tempdir can be removed");
+        assert!(
+            result.is_err(),
+            "an unreadable folder must fail the scan, not be held: {:?}",
+            result.map(|scan| scan.unsyncable)
         );
     }
 
